@@ -25,14 +25,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Give this run its own peppy data root so the reused self-hosted runner
+      # does not accumulate or collide on /tmp/.peppy across runs. Only the Rust
+      # cargo steps below opt in via env; the release-scripts step is left alone
+      # so scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
+      - name: Set up isolated peppy data root
+        run: |
+          PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
+          mkdir -p "$PEPPY_RUN_HOME/tmpdir"
+          echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
+
       - name: Run tests
-        run: cargo test
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test
 
       - name: Run container e2e tests
-        run: cargo test -p core-node --features container_e2e --test container_e2e
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test -p core-node --features container_e2e --test container_e2e
 
       - name: Run documentation integration tests
-        run: cargo test -p docs-integration-tests
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test -p docs-integration-tests
 
       - name: Detect scripts/ changes
         id: scripts_changed
@@ -47,3 +63,10 @@ jobs:
           (github.event_name == 'pull_request' && github.base_ref == 'main')
           || steps.scripts_changed.outputs.scripts == 'true'
         run: ./scripts/run_tests.sh --all
+
+      # Reclaim the per-run data root so disk does not grow on every run. Runs
+      # even when a test step failed. The persistent build-tool cache at
+      # $HOME/.peppy/tmp is intentionally left in place (see build_helpers::cache_dir).
+      - name: Clean up isolated peppy data root
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/peppy-home"

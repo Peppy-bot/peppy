@@ -4,7 +4,9 @@ use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
+use peppylib::messaging::{
+    SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
+};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
@@ -177,7 +179,7 @@ async fn handle_node_remove_request_inner(
                     core_instance_id,
                     SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
                     SHUTDOWN_SERVICE,
-                    Some(&producer),
+                    ServiceTarget::Producer(&producer),
                 )
                 .await
             }
@@ -259,7 +261,7 @@ async fn handle_node_remove_request_inner(
                     core_instance_id,
                     SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
                     SHUTDOWN_SERVICE,
-                    Some(&producer),
+                    ServiceTarget::Producer(&producer),
                     Payload::from_static(b"shutdown"),
                     SHUTDOWN_TIMEOUT,
                 )

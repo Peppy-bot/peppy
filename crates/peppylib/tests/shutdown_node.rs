@@ -6,7 +6,7 @@ use common::{
 };
 use peppylib::types::Payload;
 use peppylib::{
-    messaging::{MessengerHandle, ProducerRef, SHUTDOWN_SERVICE, ServiceMessenger},
+    messaging::{MessengerHandle, ProducerRef, SHUTDOWN_SERVICE, ServiceMessenger, ServiceTarget},
     services::shutdown::listen_for_shutdown,
 };
 use std::sync::Arc;
@@ -41,7 +41,7 @@ async fn shutdown_node() {
         CALLER_INSTANCE_ID,
         test_node_target(TEST_NODE_NAME),
         SHUTDOWN_SERVICE,
-        Some(&ProducerRef::new(
+        ServiceTarget::Producer(&ProducerRef::new(
             client.core_node_name.as_str(),
             client.instance_id.as_str(),
         )),

@@ -8,11 +8,13 @@ use common::{
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::node::Name;
-use core_node_api::encoding::NodeStopRequest;
+use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
+use core_node_api::names;
 use peppylib::core_node::transport::poll_node_stop;
-use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -425,5 +427,114 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     assert!(
         node_stack.find_by_instance_id(&instance_id).is_none(),
         "instance should be removed from the node stack after a graceful stop"
+    );
+}
+
+/// Regression for `node_stop` routing on a multi-daemon network: user node
+/// names are not unique across core nodes, so two `node_stop` listeners with
+/// the SAME node name + tag can coexist on DIFFERENT core nodes (the
+/// per-instance-listener case `node_stop` is hand-written for). The service
+/// root encodes only name + tag, so an unscoped discovery could be won by the
+/// foreign core node's listener — which would answer "unknown instance" while
+/// the right reply is dropped. `poll_node_stop` scopes its discovery to the
+/// caller's bound core node, so the foreign listener must never answer.
+///
+/// Before the scoping fix, each iteration was a discovery race the foreign
+/// listener (registered first, to bias the race against us) could win.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
+    const NODE_NAME: &str = "camera";
+    const LOCAL_CORE_NODE: &str = "local_core_node";
+    const LOCAL_LISTENER_INSTANCE_ID: &str = "local_listener_instance";
+    const FOREIGN_CORE_NODE: &str = "foreign_core_node";
+    const FOREIGN_LISTENER_INSTANCE_ID: &str = "foreign_listener_instance";
+    const TARGET_INSTANCE_ID: &str = "doomed_instance";
+
+    // One mock messaging network shared by both core nodes and the caller —
+    // the multi-daemon topology where both listeners' queryables would match
+    // an unscoped `node_stop` selector.
+    let shared_messenger = common::create_mock_messenger().await;
+
+    // Foreign listener FIRST: same node name + tag as the local one, hosted
+    // by a different core node. It must never see a scoped request; if it
+    // ever answers, the distinctive failure below fails the assertions.
+    let foreign_hits = Arc::new(AtomicUsize::new(0));
+    let _foreign_listener = {
+        let handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+        let mut endpoint = ServiceMessenger::listen(
+            &handle,
+            FOREIGN_CORE_NODE,
+            FOREIGN_LISTENER_INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+            names::NODE_STOP,
+        )
+        .await
+        .expect("foreign node_stop listener should start");
+        let foreign_hits = Arc::clone(&foreign_hits);
+        AbortOnDrop(peppylib::runtime::spawn(async move {
+            endpoint
+                .handle_requests(move |_context| {
+                    foreign_hits.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        NodeStopResponse::failure(
+                            "foreign core node must never answer a scoped node_stop",
+                        )
+                        .encode()
+                        .map_err(Into::into)
+                    }
+                })
+                .await
+        }))
+    };
+
+    let _local_listener = {
+        let handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+        let mut endpoint = ServiceMessenger::listen(
+            &handle,
+            LOCAL_CORE_NODE,
+            LOCAL_LISTENER_INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+            names::NODE_STOP,
+        )
+        .await
+        .expect("local node_stop listener should start");
+        AbortOnDrop(peppylib::runtime::spawn(async move {
+            endpoint
+                .handle_requests(|_context| async move {
+                    NodeStopResponse::success().encode().map_err(Into::into)
+                })
+                .await
+        }))
+    };
+
+    // Allow both listeners to fully establish their queryables.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Each iteration runs a fresh discover-then-pin sequence; without the
+    // bound-core-node scope the foreign listener could win any of them.
+    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    for i in 0..10 {
+        let response = poll_node_stop(
+            &NodeStopRequest::new(TARGET_INSTANCE_ID),
+            &caller_handle,
+            LOCAL_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("scoped node_stop request should complete");
+
+        assert!(
+            response.success,
+            "scoped node_stop #{i} was answered by the foreign core node: {:?}",
+            response.error_message
+        );
+    }
+
+    assert_eq!(
+        foreign_hits.load(Ordering::SeqCst),
+        0,
+        "the foreign core node's node_stop handler must never see a scoped request"
     );
 }

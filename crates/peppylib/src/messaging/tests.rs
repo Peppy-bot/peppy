@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use crate::error::Error;
 use crate::messaging::{
     ActionMessenger, ConsumerFilter, MessengerHandle, ProducerRef, ResultStatus, SenderTarget,
-    ServiceMessenger, TopicMessenger,
+    ServiceMessenger, ServiceTarget, TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
@@ -893,7 +893,7 @@ async fn service_communication_poll_no_instance_id_target() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None, // Fully wildcard: we don't pin any target producer
+            ServiceTarget::Any, // Fully wildcard: we don't pin any target producer
             request_payload.clone(),
             Duration::from_secs(2),
         )
@@ -1076,7 +1076,7 @@ async fn service_communication_poll_specific_instance_id() {
             test_node_target(listener_node_name),
             listener_service_name,
             // We pin listener 2's producer as the target
-            Some(&ProducerRef::new(
+            ServiceTarget::Producer(&ProducerRef::new(
                 listener_core_node2,
                 listener_instance_id2,
             )),
@@ -1204,7 +1204,7 @@ async fn service_communication_poll_wrong_node() {
                 test_node_target(listener_node_name),
                 listener_service_name,
                 // Use a wrong instance_id here (the core_node is the real one)
-                Some(&ProducerRef::new(listener_core_node, "wrong_node")),
+                ServiceTarget::Producer(&ProducerRef::new(listener_core_node, "wrong_node")),
                 request_payload.clone(),
                 Duration::from_secs(1),
             )
@@ -1346,7 +1346,7 @@ async fn service_communication_poll_wrong_core_node() {
             test_node_target(listener_node_name),
             listener_service_name,
             // Pin a producer on the wrong core_node (the instance_id is the real one)
-            Some(&ProducerRef::new("wrong_core_node", listener_instance_id)),
+            ServiceTarget::Producer(&ProducerRef::new("wrong_core_node", listener_instance_id)),
             request_payload.clone(),
             Duration::from_millis(200),
         )
@@ -1394,6 +1394,116 @@ async fn service_communication_poll_wrong_core_node() {
         .expect("router shutdown timed out");
 }
 
+/// `ServiceTarget::CoreNode` scopes discovery to one core node: with two
+/// listeners exposing the SAME service shape (same node name + tag + service)
+/// on DIFFERENT core nodes, a core-node-scoped poll must always be answered
+/// by the listener on that core node — the foreign one can never win the
+/// discovery probe because the scoped selector never matches its queryable.
+/// With `ServiceTarget::Any` this would be a wire-level race either listener
+/// could win (see `service_communication_poll_no_instance_id_target`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_communication_poll_core_node_scoped() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_CORE_NODE: &str = "caller_core_node";
+
+    let request_payload = Payload::from_static(b"enable=true");
+    let foreign_call_count = Arc::new(AtomicUsize::new(0));
+
+    // The foreign listener is registered FIRST so that, without scoping, it
+    // would be at least as likely to win the discovery race as the scoped one.
+    let foreign_core_node = "foreign_core_node";
+    let foreign_instance_id = "foreign_instance";
+    let foreign_task = {
+        let service_expose_handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            foreign_core_node,
+            foreign_instance_id,
+            test_node_target(listener_node_name),
+            listener_service_name,
+        )
+        .await
+        .expect("foreign service should start");
+
+        let foreign_call_count = Arc::clone(&foreign_call_count);
+        tokio::spawn(async move {
+            service
+                .handle_requests(|_request| {
+                    foreign_call_count.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(Payload::from_static(b"foreign")) }
+                })
+                .await
+        })
+    };
+
+    let scoped_core_node = "scoped_core_node";
+    let scoped_instance_id = "scoped_instance";
+    let scoped_task = {
+        let service_expose_handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            scoped_core_node,
+            scoped_instance_id,
+            test_node_target(listener_node_name),
+            listener_service_name,
+        )
+        .await
+        .expect("scoped service should start");
+
+        tokio::spawn(async move {
+            service
+                .handle_requests(|_request| async move { Ok(Payload::from_static(b"scoped")) })
+                .await
+        })
+    };
+
+    // Allow both services to fully establish their listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Each iteration runs a fresh discover-then-pin sequence; without the
+    // core-node scope the foreign listener would win some of these races.
+    let caller_handle = router.messenger().await;
+    for i in 0..10 {
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            test_node_target(listener_node_name),
+            listener_service_name,
+            ServiceTarget::CoreNode(scoped_core_node),
+            request_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("scoped poll should receive a response");
+
+        assert_eq!(
+            response.core_node(),
+            scoped_core_node,
+            "scoped poll #{i} was answered by a foreign core node"
+        );
+        assert_eq!(response.instance_id(), scoped_instance_id);
+        assert_eq!(response.payload(), &Payload::from_static(b"scoped"));
+    }
+
+    assert_eq!(
+        foreign_call_count.load(Ordering::SeqCst),
+        0,
+        "the foreign core node's handler must never see a scoped request"
+    );
+
+    foreign_task.abort();
+    scoped_task.abort();
+    tokio::time::timeout(Duration::from_secs(2), router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_service_not_started() {
     let router = TestRouterContext::start().await;
@@ -1416,7 +1526,7 @@ async fn service_communication_fails_service_not_started() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
+            ServiceTarget::Any,
             Payload::from_static(b"enable=true"),
             Duration::from_secs(1),
         )
@@ -1506,7 +1616,7 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
+            ServiceTarget::Any,
             Duration::from_secs(5),
             128, // request_size
             256, // response_size
@@ -1661,7 +1771,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
+            ServiceTarget::Any,
             request_payload.clone(),
             caller_success_timeout,
         )
@@ -1680,7 +1790,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
+            ServiceTarget::Any,
             request_payload,
             caller_failure_timeout,
         )
@@ -1804,7 +1914,10 @@ async fn service_handle_request_processes_multiple_messages() {
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
                 listener_service_name,
-                Some(&ProducerRef::new(listener_core_node, listener_instance_id)),
+                ServiceTarget::Producer(&ProducerRef::new(
+                    listener_core_node,
+                    listener_instance_id,
+                )),
                 request_payload.clone(),
                 Duration::from_secs(5),
             )
@@ -1949,7 +2062,10 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         &caller_id,
                         test_node_target(listener_node_name),
                         listener_service_name,
-                        Some(&ProducerRef::new(listener_core_node, listener_instance_id)),
+                        ServiceTarget::Producer(&ProducerRef::new(
+                            listener_core_node,
+                            listener_instance_id,
+                        )),
                         request_payload.clone(),
                         Duration::from_secs(5),
                     )
@@ -3391,7 +3507,7 @@ async fn service_communication_poll_full_wildcard_discovers() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None, // full-wildcard target — must trigger discovery
+            ServiceTarget::Any, // full-wildcard target — must trigger discovery
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -3647,7 +3763,7 @@ async fn service_poll_same_core_distinct_instances_pinned_routes_to_pinned() {
             test_node_target(node_name),
             service_name,
             // fully pinned: no discovery probe is issued
-            Some(&ProducerRef::new(shared_core, pinned_inst)),
+            ServiceTarget::Producer(&ProducerRef::new(shared_core, pinned_inst)),
             Payload::from_static(b"mode=position"),
             Duration::from_secs(2),
         )
@@ -3748,7 +3864,7 @@ async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
         test_node_target(node_name),
         service_name,
         // fully pinned: no discovery probe is issued
-        Some(&ProducerRef::new(shared_core, left_inst)),
+        ServiceTarget::Producer(&ProducerRef::new(shared_core, left_inst)),
         Payload::from_static(b"mode=position"),
         caller_budget,
     )
@@ -4176,7 +4292,7 @@ async fn pinned_calls_issue_zero_probes() {
         test_node_target(node_name),
         pinned_service_name,
         // fully pinned: must issue zero discovery probes
-        Some(&pinned),
+        ServiceTarget::Producer(&pinned),
         Payload::from_static(b"enable=true"),
         Duration::from_secs(5),
     )
@@ -4270,7 +4386,7 @@ async fn pinned_calls_issue_zero_probes() {
         "caller_instance",
         test_node_target(node_name),
         control_service_name,
-        None, // full wildcard: discover-then-pin must probe
+        ServiceTarget::Any, // full wildcard: discover-then-pin must probe
         Payload::from_static(b"enable=true"),
         Duration::from_secs(5),
     )
@@ -4571,7 +4687,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
         "caller_instance",
         test_node_target(node_name),
         service_name,
-        None,
+        ServiceTarget::Any,
     )
     .await
     .expect("is_reachable should not error");
@@ -4592,7 +4708,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
         "caller_instance",
         test_node_target(node_name),
         service_name,
-        None,
+        ServiceTarget::Any,
         Duration::from_secs(2),
         64,   // request_size
         4096, // response_size
@@ -4612,7 +4728,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
         "caller_instance",
         test_node_target(node_name),
         service_name,
-        Some(&ProducerRef::new(busy_core, busy_inst)),
+        ServiceTarget::Producer(&ProducerRef::new(busy_core, busy_inst)),
         Payload::from_static(b"enable=true"),
         Duration::from_secs(10),
     )

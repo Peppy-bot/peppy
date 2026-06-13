@@ -46,6 +46,61 @@ async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -
 
 pub struct ServiceMessenger;
 
+/// Producer scope of a [`ServiceMessenger::poll`] / [`ServiceMessenger::is_reachable`]
+/// / [`ServiceMessenger::probe_latency`] call: how much of the producer's
+/// `(core_node, instance_id)` wire address the caller pins up front. Maps
+/// onto [`ServiceWireSender`]'s two independent target slots; an enum rather
+/// than two `Option`s so the invalid "instance without core" half-address is
+/// unrepresentable.
+#[derive(Debug, Clone, Copy)]
+pub enum ServiceTarget<'a> {
+    /// Genuine wildcard: any producer whose service root matches answers.
+    /// `poll` runs a discover-then-pin sequence so only one producer's user
+    /// handler ever sees the request.
+    Any,
+    /// Scope to producers hosted by this core node, leaving the instance
+    /// slot wildcarded. For callers that know which core node must answer
+    /// but cannot know the producer's per-boot instance_id — e.g.
+    /// `node_stop`, whose service root (node name + tag) is not unique
+    /// across daemons. `poll` still discovers, but only among that core
+    /// node's producers.
+    CoreNode(&'a str),
+    /// Full `(core_node, instance_id)` pin: addresses that producer
+    /// directly, no discovery probe and no discovery timeout.
+    Producer(&'a ProducerRef),
+}
+
+impl ServiceTarget<'_> {
+    /// Builds the wire sender for this scope, mapping the enum onto
+    /// [`ServiceWireSender`]'s two target slots:
+    /// `Any` → `(None, None)`, `CoreNode` → `(Some, None)`,
+    /// `Producer` → `(Some, Some)`.
+    fn wire_sender(
+        &self,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: SenderTarget,
+        to_service_name: &str,
+    ) -> Result<ServiceWireSender> {
+        let pinned = match self {
+            ServiceTarget::Producer(producer) => Some(*producer),
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) => None,
+        };
+        let sender = ServiceWireSender::new(
+            bound_core_node,
+            as_instance_id,
+            pinned,
+            to_target,
+            to_service_name,
+            ServiceKind::Service,
+        )?;
+        match self {
+            ServiceTarget::CoreNode(core_node) => Ok(sender.scoped_to_core_node(core_node)?),
+            ServiceTarget::Any | ServiceTarget::Producer(_) => Ok(sender),
+        }
+    }
+}
+
 /// Server-side endpoint for a single service. Wraps the per-link-id queryable
 /// fan-in produced by [`pmi::MessengerBackend::listen_service`]: each inbound
 /// request carries its own [`ResponseToken`], so responding no longer needs
@@ -324,16 +379,19 @@ impl ServiceMessenger {
     /// producers advertise under the reserved `_` segment and Zenoh's
     /// matcher unifies the two.
     ///
-    /// `target` is the producer's full `(core_node, instance_id)` wire
-    /// address. `Some(target)` — a pinned slot, or a `from_any` slot
+    /// `target` scopes which producer answers.
+    /// [`ServiceTarget::Producer`] — a pinned slot, or a `from_any` slot
     /// bound to exactly one producer — addresses that producer directly:
     /// **no discovery probe is issued and no discovery timeout applies**;
     /// the call has the caller's whole `response_timeout` to itself.
-    /// `None` is a genuine wildcard (`from_any`): a discover-then-pin
-    /// sequence sends a lightweight probe to identify a single responding
-    /// producer, then delivers the real request pinned to it. The probe
-    /// is answered by the transport adapter before the user handler runs,
-    /// so non-winning producers never see the request.
+    /// [`ServiceTarget::Any`] is a genuine wildcard (`from_any`): a
+    /// discover-then-pin sequence sends a lightweight probe to identify a
+    /// single responding producer, then delivers the real request pinned
+    /// to it. The probe is answered by the transport adapter before the
+    /// user handler runs, so non-winning producers never see the request.
+    /// [`ServiceTarget::CoreNode`] discovers the same way, but the probe's
+    /// selector is scoped to that core node, so producers hosted elsewhere
+    /// can never win the pin even when their service root matches.
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
@@ -344,7 +402,7 @@ impl ServiceMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
-        target: Option<&ProducerRef>,
+        target: ServiceTarget<'_>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
@@ -352,15 +410,13 @@ impl ServiceMessenger {
 
         let started_at = Instant::now();
         let resolved: ProducerRef = match target {
-            Some(producer) => producer.clone(),
-            None => {
-                let probe_sender = ServiceWireSender::new(
+            ServiceTarget::Producer(producer) => producer.clone(),
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) => {
+                let probe_sender = target.wire_sender(
                     bound_core_node,
                     as_instance_id,
-                    None,
                     to_target.clone(),
                     to_service_name,
-                    ServiceKind::Service,
                 )?;
                 // Discovery is capped at DISCOVERY_TIMEOUT or the caller's
                 // response budget, whichever is shorter; a tight
@@ -392,13 +448,11 @@ impl ServiceMessenger {
             None => None,
         };
 
-        let sender = ServiceWireSender::new(
+        let sender = ServiceTarget::Producer(&resolved).wire_sender(
             bound_core_node,
             as_instance_id,
-            Some(&resolved),
             to_target,
             to_service_name,
-            ServiceKind::Service,
         )?;
         messenger
             .poll_service(
@@ -410,9 +464,9 @@ impl ServiceMessenger {
             .await
     }
 
-    /// Sends a lightweight probe to check whether a service is listening at
-    /// the targeted producer (`Some` = a full `(core_node, instance_id)`
-    /// pin, `None` = any matching producer). The probe is answered by the
+    /// Sends a lightweight probe to check whether a service is listening
+    /// within the [`ServiceTarget`] scope (a full producer pin, one core
+    /// node, or any matching producer). The probe is answered by the
     /// transport adapter; the user handler is never invoked. Returns
     /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
     /// unreachable.
@@ -427,16 +481,10 @@ impl ServiceMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
-        target: Option<&ProducerRef>,
+        target: ServiceTarget<'_>,
     ) -> Result<bool> {
-        let sender = ServiceWireSender::new(
-            bound_core_node,
-            as_instance_id,
-            target,
-            to_target,
-            to_service_name,
-            ServiceKind::Service,
-        )?;
+        let sender =
+            target.wire_sender(bound_core_node, as_instance_id, to_target, to_service_name)?;
         match messenger
             .poll_service(
                 &sender,
@@ -479,19 +527,13 @@ impl ServiceMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
-        target: Option<&ProducerRef>,
+        target: ServiceTarget<'_>,
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
     ) -> Result<(Duration, usize)> {
-        let sender = ServiceWireSender::new(
-            bound_core_node,
-            as_instance_id,
-            target,
-            to_target,
-            to_service_name,
-            ServiceKind::Service,
-        )?;
+        let sender =
+            target.wire_sender(bound_core_node, as_instance_id, to_target, to_service_name)?;
         let request = Payload::from(pmi::build_sized_probe_request(request_size, response_size));
         let started = Instant::now();
         let reply = messenger

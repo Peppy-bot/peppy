@@ -8,6 +8,11 @@ pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
 
+/// Overrides the peppy data root (the `.peppy` directory itself). Mirrors the
+/// `PEPPY_HOME` install prefix from scripts/install.sh. When set and non-empty,
+/// it is used verbatim as `PeppyDirs::root`.
+pub const PEPPY_HOME_ENV: &str = "PEPPY_HOME";
+
 pub const DEFAULT_MESSAGING_HOST: &str = "127.0.0.1";
 pub const DEFAULT_MESSAGING_PORT: u16 = 7448;
 pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
@@ -179,25 +184,65 @@ impl PeppyDirs {
     }
 }
 
-/// Uses the standard application data directory.
+/// Resolves the peppy data root (the `.peppy` directory).
 ///
-/// - Production: `~/.peppy`
-/// - Development: `/tmp/.peppy`
+/// Precedence:
+/// 1. `PEPPY_HOME` if set and non-empty, used verbatim as the root.
+/// 2. Otherwise the standard application data directory:
+///    - Production: `~/.peppy`
+///    - Development: `/tmp/.peppy`
+///
+/// `var_os` plus the empty-string guard means `PEPPY_HOME=` is treated as unset
+/// rather than rooting at the empty path, matching `env_state_file_path()` in
+/// `daemon_state.rs`.
+pub fn peppy_root_dir() -> PathBuf {
+    resolve_root(std::env::var_os(PEPPY_HOME_ENV))
+}
+
+/// Implementation of [`peppy_root_dir`] with the `PEPPY_HOME` value made
+/// explicit, so the precedence can be tested without mutating process env.
+fn resolve_root(home_override: Option<std::ffi::OsString>) -> PathBuf {
+    if let Some(home) = home_override.filter(|v| !v.is_empty()) {
+        return PathBuf::from(home);
+    }
+    match app_env() {
+        AppEnv::Prod => dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".peppy"),
+        AppEnv::Dev => std::env::temp_dir().join(".peppy"),
+    }
+}
+
+/// Uses the standard application data directory (see [`peppy_root_dir`]).
 impl Default for PeppyDirs {
     fn default() -> Self {
-        let root = match app_env() {
-            AppEnv::Prod => dirs::home_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join(".peppy"),
-            AppEnv::Dev => std::env::temp_dir().join(".peppy"),
-        };
-        Self { root }
+        Self::new(peppy_root_dir())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_root_uses_peppy_home_override_verbatim() {
+        let root = resolve_root(Some("/custom/run-home".into()));
+        assert_eq!(root, PathBuf::from("/custom/run-home"));
+    }
+
+    #[test]
+    fn resolve_root_ignores_empty_override_and_falls_back_to_default() {
+        // Empty PEPPY_HOME is treated as unset, not as the empty path.
+        let with_empty = resolve_root(Some(std::ffi::OsString::new()));
+        let unset = resolve_root(None);
+        assert_eq!(with_empty, unset);
+        // The fallback still ends in `.peppy` (Dev or Prod root).
+        assert!(
+            unset.ends_with(".peppy"),
+            "fallback root: {}",
+            unset.display()
+        );
+    }
 
     /// Ensures that static files in peppylib-py/ that cannot be programmatically
     /// templated stay in sync with the canonical PYTHON_MIN_VERSION/PYTHON_MAX_VERSION constants.
