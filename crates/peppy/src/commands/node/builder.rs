@@ -63,7 +63,6 @@ pub async fn build_node_async(
         core_node_name,
         CALLER_INSTANCE_ID,
         Some(core_node_name),
-        None,
         GOAL_TIMEOUT,
     )
     .await

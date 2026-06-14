@@ -562,8 +562,8 @@ pub fn build_consumed_action(
         "TARGET_NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    let send_goal_target_instance_id_expr =
-        crate::generator::python::services::consumed_from_instance_id_python_expr(dependency);
+    let send_goal_pinned_target_expr =
+        crate::generator::python::services::consumed_target_python_expr(dependency);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -571,8 +571,7 @@ pub fn build_consumed_action(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{send_goal_target_expr},"));
     builder.line("TARGET_ACTION_NAME,");
-    builder.line("None,");
-    builder.line(&format!("{send_goal_target_instance_id_expr},"));
+    builder.line(&format!("{send_goal_pinned_target_expr},"));
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");
@@ -613,6 +612,13 @@ pub fn build_consumed_action(
     if feedback_format.is_some() {
         builder.line("async def on_next_feedback_message(self) -> FeedbackMessage:");
         builder.indent();
+        builder.line("\"\"\"Receive the next feedback message for this goal.");
+        builder.blank_line();
+        builder.line("Raises RuntimeError when the producer closed the stream cleanly");
+        builder.line("(end-of-stream sentinel) and ConnectionError when the producer");
+        builder.line("instance disappeared without closing it (process killed, crashed);");
+        builder.line("in the latter case get_result resolves to ResultStatus.ABANDONED.");
+        builder.line("\"\"\"");
         builder.line("feedback = await self._inner.on_next_feedback()");
         if schema_info.feedback.is_some() {
             builder.line("payload = feedback.payload");

@@ -250,43 +250,45 @@ Then the launcher accepts one `--bind` per producer instance, each under a disti
 
 None of the binding keys (`front_cam`, `back_left_cam`, `back_right_cam`) match a declared `link_id`, so each one falls into the `extras` from_any slot. All three producer instances accumulate under that single slot, and the consumer receives messages from all of them through the generated `extras_video_stream` module. The free-form key is just a label; it does not surface in the consumer's generated code.
 
-Inside the consumer, every consumed-topic API returns the **producer's `instance_id`** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned id as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.). New producer instances added in a future launcher show up automatically.
+Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.). New producer instances added in a future launcher show up automatically.
 
 <Tabs>
   <TabItem label="Python">
     ```python
+    from peppylib import ProducerRef
     from peppygen.consumed_topics import extras_video_stream
 
-    frames_by_producer: dict[str, Frame] = {}
+    frames_by_producer: dict[ProducerRef, Frame] = {}
 
     while True:
-        instance_id, frame = await extras_video_stream.on_next_message_received(node_runner)
-        # Use the returned id as a runtime key; do not compare against a hard-coded name.
-        frames_by_producer[instance_id] = frame
+        producer, frame = await extras_video_stream.on_next_message_received(node_runner)
+        # Key by the returned ProducerRef (its full core_node/instance_id
+        # identity); do not compare against a hard-coded name.
+        frames_by_producer[producer] = frame
         reconstruct(frames_by_producer)
     ```
   </TabItem>
   <TabItem label="Rust">
     ```rust
     use peppygen::consumed_topics::extras_video_stream;
+    use peppylib::messaging::ProducerRef;
     use std::collections::HashMap;
 
-    let mut frames_by_producer: HashMap<String, Frame> = HashMap::new();
+    let mut frames_by_producer: HashMap<ProducerRef, Frame> = HashMap::new();
 
     loop {
-        let (instance_id, frame) = extras_video_stream::on_next_message_received(
-            &node_runner,
-            None,
-        ).await?;
-        // Use the returned id as a runtime key; do not compare against a hard-coded name.
-        frames_by_producer.insert(instance_id, frame);
+        let (producer, frame) =
+            extras_video_stream::on_next_message_received(&node_runner).await?;
+        // Key by the returned producer identity; do not compare against a
+        // hard-coded name.
+        frames_by_producer.insert(producer, frame);
         reconstruct(&frames_by_producer);
     }
     ```
   </TabItem>
 </Tabs>
 
-The same applies when the producers are a mix of node identities, as long as each conforms to `depth_camera:v1`: a launcher can bind two `realsense_d405:v1` instances and one `zed_2i:v1` instance into the same `from_any` slot, since the matching predicate is conformance, not node identity. The `instance_id` returned with each message still identifies the exact producer, regardless of which node implementation it came from.
+The same applies when the producers are a mix of node identities, as long as each conforms to `depth_camera:v1`: a launcher can bind two `realsense_d405:v1` instances and one `zed_2i:v1` instance into the same `from_any` slot, since the matching predicate is conformance, not node identity. The `(core_node, instance_id)` identity returned with each message still pinpoints the exact producer, regardless of which node implementation it came from.
 
 ## sha256 pinning
 

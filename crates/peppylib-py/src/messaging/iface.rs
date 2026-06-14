@@ -1,4 +1,6 @@
-use peppylib::messaging::{InterfaceIdentifier, NodeIdentifier, SenderTarget, SenderTargetError};
+use peppylib::messaging::{
+    InterfaceIdentifier, NodeIdentifier, ProducerRef, SenderTarget, SenderTargetError,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -90,5 +92,60 @@ impl PySenderTarget {
 impl PySenderTarget {
     pub(crate) fn into_inner(self) -> SenderTarget {
         self.inner
+    }
+}
+
+/// Python wrapper for [`ProducerRef`] — the publisher's full
+/// `(core_node, instance_id)` wire identity. Returned alongside every consumed
+/// message, and accepted by every producer-targeting call site (topic
+/// subscribe, service poll, action send_goal) so a consumer can pass the
+/// identity it received straight back. `instance_id` alone is only unique
+/// within one stack, so the pair is what distinguishes producers across the
+/// whole mesh; a `from_any` consumer keys per-producer state on it.
+/// `frozen, eq, hash` make it usable directly as a `dict` key, mirroring the
+/// Rust `HashMap<ProducerRef, _>` idiom. `from_py_object` lets it be extracted
+/// as a call argument.
+#[pyclass(name = "ProducerRef", frozen, eq, hash, from_py_object)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct PyProducerRef {
+    pub(crate) inner: ProducerRef,
+}
+
+#[pymethods]
+impl PyProducerRef {
+    #[new]
+    pub(crate) fn new(core_node: String, instance_id: String) -> Self {
+        Self {
+            inner: ProducerRef::new(core_node, instance_id),
+        }
+    }
+
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.inner.core_node
+    }
+
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.inner.instance_id
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProducerRef({:?}, {:?})",
+            self.inner.core_node, self.inner.instance_id
+        )
+    }
+}
+
+impl PyProducerRef {
+    pub(crate) fn into_inner(self) -> ProducerRef {
+        self.inner
+    }
+}
+
+impl From<ProducerRef> for PyProducerRef {
+    fn from(inner: ProducerRef) -> Self {
+        Self { inner }
     }
 }

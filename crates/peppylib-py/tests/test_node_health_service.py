@@ -8,7 +8,13 @@ import asyncio
 
 import pytest
 
-from peppylib import MessengerHandle, SenderTarget, ServiceMessenger, ZenohdInstance
+from peppylib import (
+    MessengerHandle,
+    ProducerRef,
+    SenderTarget,
+    ServiceMessenger,
+    ZenohdInstance,
+)
 from peppylib.config import NODE_HEALTH_SERVICE
 from peppylib.services import NodeHealthService
 
@@ -44,8 +50,7 @@ async def test_node_health_request_response_roundtrip():
             CALLER_INSTANCE_ID,
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
             NODE_HEALTH_SERVICE,
-            TEST_CORE_NODE_NAME,
-            TEST_INSTANCE_ID,
+            ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID),
             request_payload,
             2.0,)
 

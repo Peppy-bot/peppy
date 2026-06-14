@@ -322,8 +322,8 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         .as_ref()
         .expect("failure response should include error_message");
     assert!(
-        error_message.contains("has running instances"),
-        "error should mention running instances, got: {}",
+        error_message.contains("has tracked instances"),
+        "error should mention tracked instances, got: {}",
         error_message
     );
     assert!(

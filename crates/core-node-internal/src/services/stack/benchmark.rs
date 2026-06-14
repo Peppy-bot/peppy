@@ -10,6 +10,10 @@
 //!   real-sized response (sizes estimated from the message schema), so the
 //!   round-trip reflects real serialization + transport. The framework still
 //!   auto-answers them: no user handler runs and no goal is created.
+//! - Topic edges get a synthetic *node-probe* row: a `Probe`-kind query to the
+//!   producer node's always-on `node_health` framework service, with the reply
+//!   sized from the topic's message schema. It rides the same probe auto-answer
+//!   path, so no handler runs and the real topic key is never published.
 //! - Real topic latency is *observe-only*: we subscribe to the producer's live
 //!   traffic and never publish onto a real topic key.
 
@@ -31,7 +35,8 @@ use core_node_api::encoding::{
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::messaging::{
-    CLOCK_OFFSET_SERVICE, ConcurrentAction, ConsumerFilter, PendingGoal, SenderTarget,
+    CLOCK_OFFSET_SERVICE, ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal,
+    SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{
@@ -216,12 +221,15 @@ struct Edge {
     /// Producer-declared QoS for topic edges; the delivery subscription matches
     /// it so it receives the producer's frames.
     qos: QoSProfile,
-    /// For service/action edges: estimated serialized size (bytes) of the real
-    /// request and response messages, so the probe carries real-sized payloads
-    /// instead of an empty sentinel. `0` when the message schema is unavailable
-    /// (falls back to an empty probe). The `*_variable` flags mark a schema with
-    /// variable-length fields (string/bytes/unbounded array), so the size is a
-    /// lower bound. Always `0`/`false` for topic edges.
+    /// Estimated serialized size (bytes) of the real messages, so probes carry
+    /// real-sized payloads instead of an empty sentinel. For service/action
+    /// edges: the request and response message sizes. For topic edges: the
+    /// request side stays `0` (a topic has no request leg; the node-probe sends
+    /// a bare probe) and the response side is the topic message size, so the
+    /// producer's framework replies with a topic-sized body. `0` when the
+    /// message schema is unavailable (falls back to an empty probe). The
+    /// `*_variable` flags mark a schema with variable-length fields
+    /// (string/bytes/unbounded array), so the size is a lower bound.
     probe_request_size: usize,
     probe_response_size: usize,
     request_variable: bool,
@@ -352,7 +360,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
                     origin: producer.origin,
                     kind,
                     qos,
-                    // Filled in for service/action edges by resolve_probe_sizes.
+                    // Filled in by resolve_probe_sizes.
                     probe_request_size: 0,
                     probe_response_size: 0,
                     request_variable: false,
@@ -429,12 +437,14 @@ fn resolve_conformed_topic_qos(
     }
 }
 
-/// Estimate the real request/response payload sizes for each service/action edge
-/// from the producer's message schema, so probes can carry real-sized payloads.
-/// Resolves the request/response `MessageFormat` from the producer's node config
-/// (direct deps) or interface contract (conformance deps), then estimates a
-/// lower-bound serialized size. Leaves an edge at `0` (empty probe) when the
-/// schema can't be resolved — never aborts.
+/// Estimate the real payload sizes for each edge from the producer's message
+/// schema, so probes can carry real-sized payloads. Service/action edges
+/// resolve their request/response `MessageFormat`s; topic edges resolve the
+/// topic's `MessageFormat` as the response side (the node-probe asks the
+/// producer to reply with a topic-sized body). Formats come from the producer's
+/// node config (direct deps) or interface contract (conformance deps), then a
+/// lower-bound serialized size is estimated. Leaves an edge at `0` (empty
+/// probe) when the schema can't be resolved, and never aborts.
 fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &PeppyDirs) {
     let by_key: HashMap<(&str, &str), &NodeConfig> = configs
         .iter()
@@ -444,9 +454,6 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
         HashMap::new();
 
     for edge in edges.iter_mut() {
-        if !matches!(edge.kind, InterfaceKind::Service | InterfaceKind::Action) {
-            continue;
-        }
         let (req, resp) = match &edge.origin {
             None => {
                 let producer = by_key
@@ -474,7 +481,9 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
     }
 }
 
-/// Request/response size estimates for a service/action exposed by a node config.
+/// Request/response size estimates for an interface exposed by a node config.
+/// Topic edges have no request leg, so the topic message size lands on the
+/// response side (the node-probe asks for a topic-sized reply).
 fn formats_from_node(
     node: Option<&NodeConfig>,
     kind: InterfaceKind,
@@ -513,12 +522,25 @@ fn formats_from_node(
                     .map(estimate_serialized_size),
             )
         }
-        InterfaceKind::Topic => (None, None),
+        InterfaceKind::Topic => {
+            let topic = node
+                .interfaces
+                .topics
+                .as_ref()
+                .and_then(|t| t.emits.as_ref())
+                .and_then(|v| v.iter().find(|e| e.name == name));
+            (
+                None,
+                topic
+                    .and_then(|t| t.message_format.as_ref())
+                    .map(estimate_serialized_size),
+            )
+        }
     }
 }
 
-/// Request/response size estimates for a service/action declared in an interface
-/// contract.
+/// Request/response size estimates for an interface declared in an interface
+/// contract. Same response-side convention for topics as [`formats_from_node`].
 fn formats_from_interface(
     doc: Option<&config::interface::PeppyInterface>,
     kind: InterfaceKind,
@@ -551,7 +573,15 @@ fn formats_from_interface(
                     .map(estimate_serialized_size),
             )
         }
-        InterfaceKind::Topic => (None, None),
+        InterfaceKind::Topic => {
+            let topic = doc.interfaces.topics.iter().find(|e| e.name == name);
+            (
+                None,
+                topic
+                    .and_then(|t| t.message_format.as_ref())
+                    .map(estimate_serialized_size),
+            )
+        }
     }
 }
 
@@ -639,15 +669,62 @@ async fn run_benchmark(
 
     for edge in &edges {
         match edge.kind {
-            InterfaceKind::Service | InterfaceKind::Action => {
+            InterfaceKind::Service => {
                 emit_feedback(
                     tx,
                     BenchmarkFeedbackStep::Probing,
                     format!("Probing {}", edge_label(edge)),
                 );
-                rows.push(measure_probe(ctx, edge, warmup, samples, timeout).await);
+                rows.push(
+                    measure_probe(
+                        ctx,
+                        edge,
+                        warmup,
+                        samples,
+                        timeout,
+                        MeasurementKind::ServiceProbe,
+                    )
+                    .await,
+                );
             }
+            InterfaceKind::Action => {
+                emit_feedback(
+                    tx,
+                    BenchmarkFeedbackStep::Probing,
+                    format!("Probing {}", edge_label(edge)),
+                );
+                rows.push(
+                    measure_probe(
+                        ctx,
+                        edge,
+                        warmup,
+                        samples,
+                        timeout,
+                        MeasurementKind::ActionProbe,
+                    )
+                    .await,
+                );
+            }
+            // A topic edge yields two rows: a synthetic node-probe (handler-free
+            // round-trip with a topic-schema-sized reply) and the observe-only
+            // delivery measurement on live traffic.
             InterfaceKind::Topic => {
+                emit_feedback(
+                    tx,
+                    BenchmarkFeedbackStep::Probing,
+                    format!("Probing producer node of {}", edge_label(edge)),
+                );
+                rows.push(
+                    measure_probe(
+                        ctx,
+                        edge,
+                        warmup,
+                        samples,
+                        timeout,
+                        MeasurementKind::NodeProbe,
+                    )
+                    .await,
+                );
                 emit_feedback(
                     tx,
                     BenchmarkFeedbackStep::TopicDelivery,
@@ -702,20 +779,30 @@ fn row_from_samples(
     }
 }
 
-/// Timed `Probe` round-trips to a service or an action's goal service. The user
-/// handler never runs; the measurement is clock-independent.
+/// Timed `Probe` round-trips, dispatched by `measurement`:
+/// - [`MeasurementKind::ServiceProbe`] / [`MeasurementKind::ActionProbe`] target
+///   the edge's own service (or the action's goal service);
+/// - [`MeasurementKind::NodeProbe`] (topic edges) targets the producer node's
+///   always-on `node_health` framework service, asking for a reply sized from
+///   the topic's message schema; the real topic key is never published.
+///
+/// The user handler never runs; the measurement is clock-independent.
 async fn measure_probe(
     ctx: &BenchmarkActionContext,
     edge: &Edge,
     warmup: u32,
     samples: u32,
     timeout: Duration,
+    measurement: MeasurementKind,
 ) -> InterfaceLatency {
-    let measurement = match edge.kind {
-        InterfaceKind::Action => MeasurementKind::ActionProbe,
-        _ => MeasurementKind::ServiceProbe,
+    // The node-probe rides the node-keyed wire path regardless of how the topic
+    // itself is keyed: `node_health` is a per-node framework service, so an
+    // interface-conformance edge still probes the producer node directly.
+    let target = match measurement {
+        MeasurementKind::NodeProbe => SenderTarget::node(&edge.to_node, &edge.to_tag),
+        _ => edge.target(),
     };
-    let target = match edge.target() {
+    let target = match target {
         Ok(t) => t,
         Err(e) => {
             return row_from_samples(
@@ -726,6 +813,10 @@ async fn measure_probe(
                 Some(format!("invalid target: {e}")),
             );
         }
+    };
+    let service_name = match measurement {
+        MeasurementKind::NodeProbe => NODE_HEALTH_SERVICE,
+        _ => edge.interface.as_str(),
     };
 
     // Carry a real-payload-sized request and ask the producer to reply with the
@@ -745,16 +836,15 @@ async fn measure_probe(
     // sample, which would make the note flicker depending on ordering.
     let mut honored_full = false;
     for i in 0..total {
-        let result = match edge.kind {
-            InterfaceKind::Action => {
+        let result = match measurement {
+            MeasurementKind::ActionProbe => {
                 ActionMessenger::probe_latency(
                     &ctx.messenger,
                     &ctx.bound_core_node,
                     &ctx.core_instance_id,
                     target.clone(),
-                    &edge.interface,
-                    Some(&ctx.bound_core_node),
-                    None,
+                    service_name,
+                    None, // wildcard: the edge's producers all live on this daemon
                     timeout,
                     request_size,
                     response_size,
@@ -767,9 +857,8 @@ async fn measure_probe(
                     &ctx.bound_core_node,
                     &ctx.core_instance_id,
                     target.clone(),
-                    &edge.interface,
-                    Some(&ctx.bound_core_node),
-                    None,
+                    service_name,
+                    ServiceTarget::Any, // the edge's producers all live on this daemon
                     timeout,
                     request_size,
                     response_size,
@@ -836,8 +925,7 @@ async fn poll_producer_offset(
             &ctx.core_instance_id,
             target.clone(),
             CLOCK_OFFSET_SERVICE,
-            Some(&ctx.bound_core_node),
-            None,
+            ServiceTarget::Any, // the node's clock_offset endpoint lives on this daemon
             request,
             timeout,
         )
@@ -922,7 +1010,6 @@ async fn measure_topic_delivery(
         Some(target),
         false,
         &edge.interface,
-        Some(&ctx.bound_core_node),
         &ConsumerFilter::Any,
         edge.qos.clone(),
     )
@@ -1146,6 +1233,60 @@ mod tests {
         assert_eq!(human_bytes(512), "512B");
         assert_eq!(human_bytes(1500), "1.5KB");
         assert_eq!(human_bytes(6_220_800), "6.2MB");
+    }
+
+    #[test]
+    fn formats_from_node_sizes_topic_message_on_response_side() {
+        let provider = parse(
+            r#"{
+                peppy_schema: "node_v1",
+                manifest: { name: "camera", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["camera"] },
+                interfaces: { topics: { emits: [ {
+                    name: "frames",
+                    message_format: {
+                        width: "u32",
+                        height: "u32",
+                        frame: { $type: "array", $items: "u8" }
+                    }
+                } ] } }
+            }"#,
+        );
+        let (req, resp) = formats_from_node(Some(&provider), InterfaceKind::Topic, "frames");
+        assert!(req.is_none(), "a topic has no request leg");
+        let resp = resp.expect("topic message sized");
+        assert!(resp.bytes > 0);
+        assert!(resp.has_variable, "unbounded frame array is a lower bound");
+        // An unknown topic name resolves to no size (→ empty probe).
+        assert_eq!(
+            formats_from_node(Some(&provider), InterfaceKind::Topic, "nope").1,
+            None
+        );
+    }
+
+    #[test]
+    fn formats_from_interface_sizes_topic_message_on_response_side() {
+        let doc = config::interface::PeppyInterfaceParser::from_content(
+            r#"{
+                peppy_schema: "interface_v1",
+                manifest: { name: "uvc_camera", tag: "v1" },
+                interfaces: { topics: [ {
+                    name: "video_stream",
+                    message_format: {
+                        encoding: "string",
+                        width: "u32",
+                        height: "u32",
+                        frame: { $type: "array", $items: "u8" }
+                    }
+                } ] }
+            }"#,
+        )
+        .expect("parse interface");
+        let (req, resp) = formats_from_interface(Some(&doc), InterfaceKind::Topic, "video_stream");
+        assert!(req.is_none(), "a topic has no request leg");
+        let resp = resp.expect("topic message sized");
+        assert!(resp.bytes > 0);
+        assert!(resp.has_variable);
     }
 
     #[test]

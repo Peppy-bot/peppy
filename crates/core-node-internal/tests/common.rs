@@ -18,7 +18,7 @@ use core_node_api::encoding::{
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::{
-    ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, TopicMessenger,
+    ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, ServiceTarget, TopicMessenger,
 };
 use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::services::health::listen_for_node_health;
@@ -61,8 +61,7 @@ async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Paylo
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         service,
-        Some(&started.core_node_name),
-        None,
+        ServiceTarget::Any, // discover the daemon's random per-boot service instance
         payload,
         Duration::from_secs(5),
     )
@@ -221,8 +220,10 @@ pub async fn wait_until_service_reachable(
             "ready_probe",
             test_node_target(to_node_name),
             to_service_name,
-            Some(target_core_node),
-            Some(target_instance_id),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+                target_core_node,
+                target_instance_id,
+            )),
         )
         .await
         {
@@ -255,8 +256,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         names::CLOCK,
-        Some(&started.core_node_name),
-        None,
+        ServiceTarget::Any, // discover the daemon's random per-boot service instance
         request_payload,
         Duration::from_secs(5),
     )
@@ -300,7 +300,6 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         Some(core_node_target(&started.core_node_name)),
         false,
         names::CLOCK,
-        Some(&started.core_node_name),
         &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
@@ -328,67 +327,9 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
 }
 
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
-    let dir = TempDir::new_in(test_tmp_root()).expect("test data dir");
+    let dir = TempDir::new_in(config::test_helpers::test_tmp_root()).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
     (dir, peppy_dirs)
-}
-
-/// Root for all test scratch directories, placed under `$HOME` rather than the
-/// system temp dir for two reasons:
-/// 1. On macOS, Lima 2.0+ only mounts `~` into the guest VM, so node paths must
-///    live under `$HOME` to be visible inside the VM (system temp such as
-///    `/var/folders/...` is inaccessible).
-/// 2. On Linux dev/CI machines `/tmp` is frequently a size-quota'd `tmpfs`;
-///    building a node there (the cargo `target/` alone is ~2 GB) trips the
-///    per-user quota. `$HOME` lives on the roomy backing disk instead.
-///
-/// Every scratch dir handed out from here is a [`TempDir`], so it is removed
-/// when its guard drops — normal completion and panics both clean up, and
-/// nothing is carried over to the next run. As a backstop for runs that were
-/// hard-killed before their guards could run, the first call per test binary
-/// reclaims leftovers older than [`STALE_TEST_TMP_AGE`]; that age floor keeps
-/// concurrently-running test binaries from deleting each other's live dirs.
-fn test_tmp_root() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let root = PathBuf::from(home).join(".peppy/test-tmp");
-    std::fs::create_dir_all(&root).expect("create ~/.peppy/test-tmp/");
-
-    static RECLAIM: std::sync::Once = std::sync::Once::new();
-    RECLAIM.call_once(|| reclaim_stale_test_tmp(&root));
-
-    root
-}
-
-/// Scratch older than this is treated as abandoned by an earlier run and is
-/// safe to delete. Far longer than any real test run (which finishes in
-/// minutes), so an in-flight run is never affected.
-const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
-
-/// Best-effort removal of stale leftovers directly under `root`. Errors are
-/// ignored on purpose: reclaiming scratch must never fail a test.
-fn reclaim_stale_test_tmp(root: &Path) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    let now = std::time::SystemTime::now();
-    for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let too_old = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age >= STALE_TEST_TMP_AGE);
-        if !too_old {
-            continue;
-        }
-        if metadata.is_dir() {
-            let _ = std::fs::remove_dir_all(entry.path());
-        } else {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
 }
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -545,7 +486,6 @@ async fn send_node_run_goal(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         names::NODE_RUN_ACTION,
-        Some(core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -847,7 +787,6 @@ async fn send_node_add_and_wait_internal<'a>(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         names::NODE_ADD_ACTION,
-        Some(core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -992,7 +931,6 @@ async fn send_node_build_and_wait_internal(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         names::NODE_BUILD_ACTION,
-        Some(core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -1467,12 +1405,12 @@ pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
 }
 
 pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> TempDir {
-    // Build under the shared test-tmp root (see `test_tmp_root`) and keep the
+    // Build under the shared test-tmp root (see `config::test_helpers::test_tmp_root`) and keep the
     // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
     // ~2 GB cargo build are reclaimed when the returned guard drops.
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
-        .tempdir_in(test_tmp_root())
+        .tempdir_in(config::test_helpers::test_tmp_root())
         .expect("failed to create temp directory for test node");
 
     init_cargo_project(node_dir.path(), node_name);

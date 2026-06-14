@@ -9,10 +9,36 @@ use std::{
 
 use crate::launcher::Name;
 
+/// Fully-qualified producer address. The wire addresses a producer by the
+/// `(core_node, instance_id)` pair — `instance_id` alone is only unique
+/// within one stack, while the pair is unique across the whole mesh — so
+/// every reference to a producer below the validator carries both halves.
+/// The validator stamps `core_node` when it materializes bindings (see
+/// `crate::launcher::validate_bindings`); after that point a half-address
+/// is unrepresentable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ProducerRef {
+    pub core_node: String,
+    pub instance_id: String,
+}
+
+impl ProducerRef {
+    pub fn new(core_node: impl Into<String>, instance_id: impl Into<String>) -> Self {
+        Self {
+            core_node: core_node.into(),
+            instance_id: instance_id.into(),
+        }
+    }
+}
+
 /// Resolved per-slot binding for one of this consumer instance's declared
 /// `depends_on` entries. The validator translates a launcher / CLI `(KEY,
-/// VALUE)` binding map into this slot-keyed view before serializing into
-/// `NodeInstanceConfig` so the spawned node does no re-resolution work.
+/// VALUE)` binding map into this slot-keyed view — stamping each producer
+/// with the launching daemon's `core_node` — before serializing into
+/// `NodeInstanceConfig`, so the spawned node does no re-resolution work
+/// and always holds wire-complete producer addresses.
 ///
 /// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
 /// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
@@ -23,8 +49,8 @@ use crate::launcher::Name;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SlotBinding {
-    Pinned { producer_instance_id: String },
-    FromAnyBound { producer_instance_ids: Vec<String> },
+    Pinned { producer: ProducerRef },
+    FromAnyBound { producers: Vec<ProducerRef> },
     FromAnyUnbound,
 }
 
@@ -90,21 +116,32 @@ fn default_daemon_grace_secs() -> u64 {
     crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
 }
 
+fn default_shutdown_grace_secs() -> u64 {
+    crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+}
+
 /// Node lifecycle settings the daemon resolves once (from `peppy_config.json5`)
 /// and ships to each spawned node. `daemon_grace_secs` is the grace period the
 /// node's daemon-liveness watchdog waits, after the daemon's heartbeat goes
 /// silent, before shutting itself down — the uncatchable-death safety net.
+/// `shutdown_grace_secs` is the cooperative-shutdown window: the daemon waits
+/// this long for a stopping node to exit before SIGKILL, and the node runtime
+/// bounds its registered shutdown hooks by the same window so cleanup can never
+/// hang a stop (or outlive a dead daemon) indefinitely.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleRuntimeConfig {
     #[serde(default = "default_daemon_grace_secs")]
     pub daemon_grace_secs: u64,
+    #[serde(default = "default_shutdown_grace_secs")]
+    pub shutdown_grace_secs: u64,
 }
 
 impl Default for LifecycleRuntimeConfig {
     fn default() -> Self {
         Self {
             daemon_grace_secs: default_daemon_grace_secs(),
+            shutdown_grace_secs: default_shutdown_grace_secs(),
         }
     }
 }
@@ -336,7 +373,8 @@ mod tests {
             "default lifecycle should not be serialized: {serialized}"
         );
 
-        // An explicit lifecycle block round-trips.
+        // A partial lifecycle block fills the missing field from its default
+        // and an explicit block round-trips.
         let custom: RuntimeConfig = serde_json5::from_str(
             r#"{
                 messaging_host: "127.0.0.1",
@@ -350,9 +388,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(custom.lifecycle.daemon_grace_secs, 42);
+        assert_eq!(
+            custom.lifecycle.shutdown_grace_secs,
+            crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+        );
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
         assert_eq!(reparsed.lifecycle, custom.lifecycle);
+
+        let custom_shutdown: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: { instance_id: "camera_front" },
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                lifecycle: { shutdown_grace_secs: 7 }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(custom_shutdown.lifecycle.shutdown_grace_secs, 7);
+        let reparsed: RuntimeConfig =
+            serde_json5::from_str(&serde_json5::to_string(&custom_shutdown).unwrap()).unwrap();
+        assert_eq!(reparsed.lifecycle, custom_shutdown.lifecycle);
     }
 
     /// A launch config written before `discovery` existed (no `discovery` key)
@@ -450,9 +509,11 @@ mod tests {
     }
 
     /// Pin the wire contract of `SlotBinding`: it is internally tagged on
-    /// `kind` with snake_case variants and field names. A rename or tag change
-    /// here is a `graph_json` / launch-config wire break, so assert the exact
-    /// JSON shape and that each variant round-trips back to itself.
+    /// `kind` with snake_case variants and field names, and every producer
+    /// reference is the full `(core_node, instance_id)` pair. A rename or
+    /// tag change here is a `graph_json` / launch-config wire break, so
+    /// assert the exact JSON shape and that each variant round-trips back
+    /// to itself.
     #[test]
     fn slot_binding_serde_contract() {
         use serde_json::json;
@@ -460,15 +521,27 @@ mod tests {
         let cases = [
             (
                 SlotBinding::Pinned {
-                    producer_instance_id: "p1".to_string(),
+                    producer: ProducerRef::new("core_a", "p1"),
                 },
-                json!({ "kind": "pinned", "producer_instance_id": "p1" }),
+                json!({
+                    "kind": "pinned",
+                    "producer": { "core_node": "core_a", "instance_id": "p1" }
+                }),
             ),
             (
                 SlotBinding::FromAnyBound {
-                    producer_instance_ids: vec!["p3".to_string(), "p4".to_string()],
+                    producers: vec![
+                        ProducerRef::new("core_a", "p3"),
+                        ProducerRef::new("core_a", "p4"),
+                    ],
                 },
-                json!({ "kind": "from_any_bound", "producer_instance_ids": ["p3", "p4"] }),
+                json!({
+                    "kind": "from_any_bound",
+                    "producers": [
+                        { "core_node": "core_a", "instance_id": "p3" },
+                        { "core_node": "core_a", "instance_id": "p4" }
+                    ]
+                }),
             ),
             (
                 SlotBinding::FromAnyUnbound,
@@ -481,6 +554,38 @@ mod tests {
             let decoded: SlotBinding =
                 serde_json::from_value(expected).expect("deserialize SlotBinding");
             assert_eq!(decoded, value, "SlotBinding did not round-trip");
+        }
+    }
+
+    /// Half-addresses must be unrepresentable at the parse boundary: the
+    /// pre-`ProducerRef` serialized shapes (instance_id-only) and a
+    /// `producer` object missing `core_node` are hard parse errors, not
+    /// defaulted values. No compatibility shims.
+    #[test]
+    fn slot_binding_rejects_half_address_payloads() {
+        use serde_json::json;
+
+        let rejected = [
+            // Old pinned shape: instance_id without a core_node.
+            json!({ "kind": "pinned", "producer_instance_id": "p1" }),
+            // Old from_any_bound shape.
+            json!({ "kind": "from_any_bound", "producer_instance_ids": ["p3", "p4"] }),
+            // New field name but half an address.
+            json!({ "kind": "pinned", "producer": { "instance_id": "p1" } }),
+            json!({ "kind": "pinned", "producer": { "core_node": "core_a" } }),
+            // Unknown extra field on the pair.
+            json!({
+                "kind": "pinned",
+                "producer": { "core_node": "core_a", "instance_id": "p1", "extra": 1 }
+            }),
+        ];
+        for payload in rejected {
+            let result: std::result::Result<SlotBinding, _> =
+                serde_json::from_value(payload.clone());
+            assert!(
+                result.is_err(),
+                "half-address payload must fail to parse, but parsed: {payload}"
+            );
         }
     }
 

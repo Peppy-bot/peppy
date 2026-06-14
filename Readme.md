@@ -24,6 +24,24 @@ Non-goals:
 
 ## 🛠️ Installation
 
+### New machine setup
+
+To provision a fresh development machine, run:
+
+```
+./scripts/setup_machine.sh
+```
+
+It installs the following tooling with each project's recommended method, skipping anything already present:
+
+- **qemu** (`apt` on Ubuntu, Homebrew on macOS)
+- **Go** (official go.dev tarball into `/usr/local/go` on Ubuntu, Homebrew on macOS)
+- **pixi** (official installer)
+- **uv** (official installer)
+- **Lima** (Homebrew, macOS only)
+
+Supported platforms are Ubuntu and macOS. On macOS the script expects [Homebrew](https://brew.sh) to be installed first. When Go is installed from the tarball on Ubuntu, the script adds `/usr/local/go/bin` to your `~/.profile`, so open a new shell (or `source ~/.profile`) afterwards.
+
 ### Prerequisites
 
 Install [cargo & Rust](https://doc.rust-lang.org/cargo/getting-started/installation.html) then make sure the Rust toolchain is up to date with:

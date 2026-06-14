@@ -1,4 +1,4 @@
-use super::iface::PySenderTarget;
+use super::iface::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger};
@@ -32,6 +32,14 @@ impl PyTopicMessage {
     #[getter]
     fn core_node(&self) -> &str {
         &self.core_node
+    }
+
+    /// The publisher's full `(core_node, instance_id)` identity as a structured
+    /// [`PyProducerRef`]. This is what generated consumed-topic callbacks return
+    /// alongside the message; a `from_any` consumer keys per-producer state on it.
+    #[getter]
+    fn producer(&self) -> PyProducerRef {
+        PyProducerRef::new(self.core_node.clone(), self.instance_id.clone())
     }
 }
 
@@ -76,10 +84,12 @@ impl PyTopicMessenger {
     /// `SenderTarget.interface(name, tag)` to match the publisher's target,
     /// or `None` to match any publisher. `is_from_any` marks the slot as
     /// `from_any: true` (gates the messenger's per-`(name, tag)`
-    /// reservation). `from_instance_id` pins a single producer instance;
-    /// `None` wildcards.
+    /// reservation). `from_producer` pins a single producer by its full
+    /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity; `None`
+    /// wildcards. Generated code splices
+    /// `node_runner.pinned_producer_for(link_id)` here.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_core_node, from_instance_id, qos, is_from_any=false))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, is_from_any=false))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -88,16 +98,15 @@ impl PyTopicMessenger {
         as_instance_id: String,
         from_target: Option<PySenderTarget>,
         to_topic: String,
-        from_core_node: Option<String>,
-        from_instance_id: Option<String>,
+        from_producer: Option<PyProducerRef>,
         qos: PyQoSProfile,
         is_from_any: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
         crate::py_future::future_into_py(py, async move {
-            let filter = match from_instance_id {
-                Some(id) => peppylib::messaging::ConsumerFilter::Pin(id),
+            let filter = match from_producer {
+                Some(producer) => peppylib::messaging::ConsumerFilter::Pin(producer.into_inner()),
                 None => peppylib::messaging::ConsumerFilter::Any,
             };
             let subscription = TopicMessenger::subscribe(
@@ -107,7 +116,6 @@ impl PyTopicMessenger {
                 from_target,
                 is_from_any,
                 &to_topic,
-                from_core_node.as_deref(),
                 &filter,
                 qos.into(),
             )

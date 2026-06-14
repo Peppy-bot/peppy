@@ -11,7 +11,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::PySenderTarget;
+use super::iface::{PyProducerRef, PySenderTarget};
 use super::services::PyServiceEndpoint;
 use super::{
     PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, future_into_py_unit, to_py_err,
@@ -51,7 +51,10 @@ impl PyActionFeedbackPublisher {
     }
 
     /// Publish the end-of-stream sentinel. Subscribers' next
-    /// `on_next_feedback` call resolves with `ActionFeedbackChannelClosed`.
+    /// `on_next_feedback` call resolves with `ActionFeedbackChannelClosed`
+    /// (a `RuntimeError` in Python). A producer that dies without sending
+    /// the sentinel is detected via its liveliness token instead, surfacing
+    /// as `ActionFeedbackProducerGone` (a `ConnectionError` in Python).
     fn publish_end<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let publisher = self.inner.clone();
         future_into_py_unit(py, async move {
@@ -211,6 +214,12 @@ impl PyActionGoalHandle {
     }
 
     /// Wait for the next feedback message from the action server.
+    ///
+    /// Raises `RuntimeError` when the stream ends cleanly (the server
+    /// published the end-of-stream sentinel) and `ConnectionError` when the
+    /// pinned producer instance disappeared without closing the stream
+    /// (`ActionFeedbackProducerGone`); `request_result` then resolves with
+    /// status 2 (Abandoned).
     fn on_next_feedback<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
@@ -232,6 +241,10 @@ pub struct PyActionCreation {
     cancel_service: Arc<Mutex<ServiceEndpoint>>,
     feedback_publisher_factory: ActionFeedbackPublisherFactory,
     result_service: Arc<Mutex<ServiceEndpoint>>,
+    /// Producer-instance liveliness advertisement. Held (not Python-visible)
+    /// so the producer stays observable as alive for exactly as long as this
+    /// creation — and with it the action endpoint — exists.
+    _liveliness_token: peppylib::messaging::ActionLivelinessToken,
 }
 
 #[pymethods]
@@ -307,6 +320,7 @@ impl PyActionMessenger {
                 cancel_service: Arc::new(Mutex::new(creation.cancel_service)),
                 feedback_publisher_factory: creation.feedback_publisher_factory,
                 result_service: Arc::new(Mutex::new(creation.result_service)),
+                _liveliness_token: creation.liveliness_token,
             })
         })
     }
@@ -317,8 +331,12 @@ impl PyActionMessenger {
     ///
     /// Pass `SenderTarget.node(name, tag)` for nodes or
     /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
+    /// `target` is the producer's full `(core_node, instance_id)` pair —
+    /// `Some` pins it (no discovery), `None` is a genuine wildcard
+    /// (discover-then-pin). Generated code splices
+    /// `node_runner.pinned_producer_for(link_id)` here.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target_core_node=None, target_instance_id=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -327,8 +345,7 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        target: Option<PyProducerRef>,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -337,14 +354,14 @@ impl PyActionMessenger {
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         crate::py_future::future_into_py(py, async move {
+            let target = target.map(PyProducerRef::into_inner);
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 to_target,
                 &to_action_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                target.as_ref(),
                 Payload::from(user_payload),
                 feedback_qos.into(),
                 goal_timeout,
@@ -438,10 +455,11 @@ impl PyActionMessenger {
         })
     }
 
-    /// Check whether an action server is reachable.
+    /// Check whether an action server is reachable. `target` is the
+    /// producer's full `(core_node, instance_id)` pair (`None` probes any
+    /// matching producer).
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, target_core_node=None, target_instance_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, target=None))]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -449,20 +467,19 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        target_core_node: Option<String>,
-        target_instance_id: Option<String>,
+        target: Option<PyProducerRef>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
+            let target = target.map(PyProducerRef::into_inner);
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
                 &to_action_name,
-                target_core_node.as_deref(),
-                target_instance_id.as_deref(),
+                target.as_ref(),
             )
             .await
             .map_err(to_py_err)?;

@@ -193,6 +193,16 @@ impl Processor {
         std::time::Duration::from_secs(self.runtime_config.lifecycle.daemon_grace_secs)
     }
 
+    /// Cooperative-shutdown grace window. The daemon waits this long for a
+    /// stopping node to exit before force-killing it, and the node runtime
+    /// bounds its registered shutdown hooks
+    /// ([`crate::runtime::NodeRunner::on_shutdown`]) by the same window.
+    /// Resolved by the daemon from `peppy_config.json5` and shipped in the
+    /// runtime config; standalone nodes use the built-in default.
+    pub fn shutdown_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.runtime_config.lifecycle.shutdown_grace_secs)
+    }
+
     /// Daemon-resolved framework `use_sim_time` flag for this instance.
     /// Read by [`crate::core_node::clock::clock_for_node`] to pick between
     /// the wall-time and sim-time `PeppyClock` implementations.
@@ -216,16 +226,18 @@ impl Processor {
     }
 
     /// Convenience for service / action call sites: returns the single
-    /// producer `instance_id` this slot pins (`ConsumerFilter::Pin`)
-    /// as an owned `String`, or `None` for every other variant. The
-    /// owned form crosses the PyO3 boundary cleanly; native Rust call
-    /// sites can either use this or
+    /// producer this slot pins (`ConsumerFilter::Pin`) as an owned
+    /// [`crate::messaging::ProducerRef`], or `None` for every other
+    /// variant. The owned form crosses the PyO3 boundary cleanly; native
+    /// Rust call sites can either use this or
     /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
     /// from the cached filter).
-    pub fn pinned_target_for(&self, link_id: &str) -> Option<String> {
-        self.consumer_filter(link_id)
-            .pinned_target()
-            .map(str::to_owned)
+    ///
+    /// Deliberately renamed from the pre-`ProducerRef` `pinned_target_for`
+    /// so generated Python built against the instance_id-only shape fails
+    /// loudly with `AttributeError` instead of silently misaddressing.
+    pub fn pinned_producer_for(&self, link_id: &str) -> Option<crate::messaging::ProducerRef> {
+        self.consumer_filter(link_id).pinned_target().cloned()
     }
 }
 

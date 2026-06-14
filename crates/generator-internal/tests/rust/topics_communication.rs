@@ -130,10 +130,10 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let (instance_id, frame) = on_next_message_received(&node_runner, None).await?;
+        let (producer, frame) = on_next_message_received(&node_runner).await?;
         println!(
-            "got {}x{} frame encoded as {} from {}",
-            frame.width, frame.height, frame.encoding, &instance_id
+            "got {}x{} frame encoded as {} from {}/{}",
+            frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
         );
         Ok(())
     })
@@ -262,7 +262,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -288,7 +288,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         RECEIVER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         receiver_instance_id,
         Duration::from_secs(5),
     )
@@ -298,7 +298,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         emitter_instance_id,
         Duration::from_secs(5),
     )
@@ -326,8 +326,10 @@ fn main() -> Result<()> {
         receiver_stderr
     );
     assert!(
-        receiver_stdout.contains("got 640x480 frame encoded as rgb8"),
-        "receiver did not receive emitter frame.\nstdout:\n{}\nstderr:\n{}",
+        receiver_stdout.contains(&format!(
+            "got 640x480 frame encoded as rgb8 from {TEST_CORE_NODE}/{EMITTER_INSTANCE_ID}"
+        )),
+        "receiver did not receive emitter frame with full producer identity.\nstdout:\n{}\nstderr:\n{}",
         receiver_stdout,
         receiver_stderr
     );

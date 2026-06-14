@@ -36,6 +36,9 @@ fn spawn_daemon(home: &std::path::Path) -> (DaemonGuard, Arc<Mutex<String>>) {
     let state_file = home.join("daemon_state.json5");
     let mut child = Command::new(env!("CARGO_BIN_EXE_peppy"))
         .args(["service", "serve", "--messaging-engine", "mock"])
+        // Pin the child's data root to this per-test home explicitly, so it stays
+        // isolated even when the CI job exports its own per-run PEPPY_HOME.
+        .env(config::consts::PEPPY_HOME_ENV, home)
         .env("TMPDIR", home)
         .env("PEPPY_DAEMON_STATE_FILE", &state_file)
         .stdout(Stdio::piped())

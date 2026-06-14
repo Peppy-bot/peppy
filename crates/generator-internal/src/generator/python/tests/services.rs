@@ -390,10 +390,12 @@ fn consumed_service() {
 
     // Poll function signature with typed params and return type. The
     // fixture's `DependencyContext::native` defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the binding
-    // lookup splices `None` and the user-facing `target_instance_id`
-    // parameter is gone. `target_core_node` is never exposed in the
-    // user-facing generated API.
+    // `WireLinkId::wildcard()` (no manifest link_id), so the poll call
+    // splices `None` at the single target slot and the user-facing
+    // `target_instance_id` parameter is gone. `target_core_node` is never
+    // exposed in the user-facing generated API, and the renamed
+    // `pinned_target_for` accessor must never be emitted (the runtime
+    // helper is `pinned_producer_for`).
     assert_contains_all(
         &rendered,
         &[
@@ -412,12 +414,23 @@ fn consumed_service() {
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
+    assert!(
+        !rendered.contains("pinned_target_for"),
+        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; got:\n{rendered}"
+    );
 
     // Request serialization
     assert_contains_all(&rendered, &["request_payload = capnp_msg.to_bytes()"]);
 
-    // Messenger integration
-    assert_contains_all(&rendered, &["peppylib.ServiceMessenger.poll("]);
+    // Messenger integration, including the `None` spliced at the poll
+    // call's single target slot.
+    assert_contains_all(
+        &rendered,
+        &[
+            "peppylib.ServiceMessenger.poll(",
+            "SERVICE_NAME,\n        None,\n        request_payload,",
+        ],
+    );
 
     // Response deserialization in poll body
     assert_contains_all(

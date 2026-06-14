@@ -10,8 +10,8 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, ConsumerFilter, MessengerHandle, ResultStatus, SenderTarget, ServiceMessenger,
-    TopicMessenger,
+    ActionMessenger, ConsumerFilter, MessengerHandle, ProducerRef, ResultStatus, SenderTarget,
+    ServiceMessenger, ServiceTarget, TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
@@ -205,7 +205,6 @@ async fn topic_publish_subscribe_no_from_instance_id() {
         Some(test_node_target(node_name)),
         true, // from_any pattern
         topic,
-        None, // Accepts any core node that emits
         &ConsumerFilter::Any,
         qos.clone(),
     )
@@ -274,7 +273,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_instance_id1 = "subscriber_instance1";
-    let filter1 = ConsumerFilter::Pin(emitter_instance_id1.to_string());
+    let filter1 = ConsumerFilter::Pin(ProducerRef::new(emitter_core_node, emitter_instance_id1));
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node,
@@ -282,7 +281,6 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         Some(test_node_target(node_name)),
         false,
         topic,
-        Some(emitter_core_node),
         &filter1,
         qos.clone(),
     )
@@ -291,7 +289,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
 
     // Only this subscriber will receive a message
     let subscriber_instance_id2 = "subscriber_instance2";
-    let filter2 = ConsumerFilter::Pin(emitter_instance_id2.to_string());
+    let filter2 = ConsumerFilter::Pin(ProducerRef::new(emitter_core_node, emitter_instance_id2));
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node,
@@ -299,7 +297,6 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         Some(test_node_target(node_name)),
         false,
         topic,
-        Some(emitter_core_node),
         &filter2,
         qos.clone(),
     )
@@ -374,7 +371,8 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_core_node1 = "core_node_subscribe1";
-    let filter_core1 = ConsumerFilter::Pin(emitter_instance_id.to_string());
+    let filter_core1 =
+        ConsumerFilter::Pin(ProducerRef::new(emitter_core_node1, emitter_instance_id));
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node1,
@@ -382,7 +380,6 @@ async fn topic_publish_subscribe_with_from_core_node() {
         Some(test_node_target(node_name)),
         false,
         topic,
-        Some(emitter_core_node1),
         &filter_core1,
         qos.clone(),
     )
@@ -391,7 +388,8 @@ async fn topic_publish_subscribe_with_from_core_node() {
 
     // Only this subscriber will receive a message
     let subscriber_core_node2 = "core_node_subscribe2";
-    let filter_core2 = ConsumerFilter::Pin(emitter_instance_id.to_string());
+    let filter_core2 =
+        ConsumerFilter::Pin(ProducerRef::new(emitter_core_node2, emitter_instance_id));
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node2,
@@ -399,7 +397,6 @@ async fn topic_publish_subscribe_with_from_core_node() {
         Some(test_node_target(node_name)),
         false,
         topic,
-        Some(emitter_core_node2),
         &filter_core2,
         qos.clone(),
     )
@@ -476,7 +473,8 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
     let p3 = "cam_p3";
 
     let subscriber_handle = router.messenger().await;
-    let filter = ConsumerFilter::OnlyFrom(vec![p1.to_string(), p2.to_string()]);
+    let filter =
+        ConsumerFilter::OnlyFrom(vec![ProducerRef::new(core, p1), ProducerRef::new(core, p2)]);
     let mut sub = TopicMessenger::subscribe(
         &subscriber_handle,
         core,
@@ -484,7 +482,6 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
         Some(test_node_target(node_name)),
         true,
         topic,
-        Some(core),
         &filter,
         qos.clone(),
     )
@@ -581,7 +578,7 @@ async fn consumer_filter_any_except_drops_excluded_and_admits_rest() {
     let unclaimed = "cam_unclaimed";
 
     let subscriber_handle = router.messenger().await;
-    let filter = ConsumerFilter::AnyExcept(vec![claimed.to_string()]);
+    let filter = ConsumerFilter::AnyExcept(vec![ProducerRef::new(core, claimed)]);
     let mut sub = TopicMessenger::subscribe(
         &subscriber_handle,
         core,
@@ -589,7 +586,6 @@ async fn consumer_filter_any_except_drops_excluded_and_admits_rest() {
         Some(test_node_target(node_name)),
         true,
         topic,
-        Some(core),
         &filter,
         qos.clone(),
     )
@@ -666,7 +662,6 @@ async fn topic_publish_reliable_5000hz_messages() {
         Some(test_node_target(node_name)),
         true,
         topic,
-        None,
         &ConsumerFilter::Any,
         qos.clone(),
     )
@@ -898,8 +893,7 @@ async fn service_communication_poll_no_instance_id_target() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None, // Here we don't specify any node
-            None, // We don't specify any instance_id target either
+            ServiceTarget::Any, // Fully wildcard: we don't pin any target producer
             request_payload.clone(),
             Duration::from_secs(2),
         )
@@ -1081,8 +1075,11 @@ async fn service_communication_poll_specific_instance_id() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,                        // Here we don't specify any target core node
-            Some(listener_instance_id2), // We specify listener_instance_id2 as the target
+            // We pin listener 2's producer as the target
+            ServiceTarget::Producer(&ProducerRef::new(
+                listener_core_node2,
+                listener_instance_id2,
+            )),
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -1206,8 +1203,8 @@ async fn service_communication_poll_wrong_node() {
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
                 listener_service_name,
-                None,               // target_core_node
-                Some("wrong_node"), // Use a wrong instance_id here
+                // Use a wrong instance_id here (the core_node is the real one)
+                ServiceTarget::Producer(&ProducerRef::new(listener_core_node, "wrong_node")),
                 request_payload.clone(),
                 Duration::from_secs(1),
             )
@@ -1348,8 +1345,8 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            Some("wrong_core_node"), // target_core_node - wrong one!
-            None,                    // no specific target_instance_id
+            // Pin a producer on the wrong core_node (the instance_id is the real one)
+            ServiceTarget::Producer(&ProducerRef::new("wrong_core_node", listener_instance_id)),
             request_payload.clone(),
             Duration::from_millis(200),
         )
@@ -1373,7 +1370,8 @@ async fn service_communication_poll_wrong_core_node() {
         );
     };
 
-    assert_eq!(err_instance_id.as_deref(), None); // No instance_id was targeted
+    // The pinned target's instance_id travels in the error
+    assert_eq!(err_instance_id.as_deref(), Some(listener_instance_id));
     assert_eq!(err_service_name.as_str(), listener_service_name);
 
     tokio::time::timeout(service_task_timeout, service_task)
@@ -1392,6 +1390,116 @@ async fn service_communication_poll_wrong_core_node() {
     );
 
     tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
+
+/// `ServiceTarget::CoreNode` scopes discovery to one core node: with two
+/// listeners exposing the SAME service shape (same node name + tag + service)
+/// on DIFFERENT core nodes, a core-node-scoped poll must always be answered
+/// by the listener on that core node — the foreign one can never win the
+/// discovery probe because the scoped selector never matches its queryable.
+/// With `ServiceTarget::Any` this would be a wire-level race either listener
+/// could win (see `service_communication_poll_no_instance_id_target`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_communication_poll_core_node_scoped() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_CORE_NODE: &str = "caller_core_node";
+
+    let request_payload = Payload::from_static(b"enable=true");
+    let foreign_call_count = Arc::new(AtomicUsize::new(0));
+
+    // The foreign listener is registered FIRST so that, without scoping, it
+    // would be at least as likely to win the discovery race as the scoped one.
+    let foreign_core_node = "foreign_core_node";
+    let foreign_instance_id = "foreign_instance";
+    let foreign_task = {
+        let service_expose_handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            foreign_core_node,
+            foreign_instance_id,
+            test_node_target(listener_node_name),
+            listener_service_name,
+        )
+        .await
+        .expect("foreign service should start");
+
+        let foreign_call_count = Arc::clone(&foreign_call_count);
+        tokio::spawn(async move {
+            service
+                .handle_requests(|_request| {
+                    foreign_call_count.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(Payload::from_static(b"foreign")) }
+                })
+                .await
+        })
+    };
+
+    let scoped_core_node = "scoped_core_node";
+    let scoped_instance_id = "scoped_instance";
+    let scoped_task = {
+        let service_expose_handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            scoped_core_node,
+            scoped_instance_id,
+            test_node_target(listener_node_name),
+            listener_service_name,
+        )
+        .await
+        .expect("scoped service should start");
+
+        tokio::spawn(async move {
+            service
+                .handle_requests(|_request| async move { Ok(Payload::from_static(b"scoped")) })
+                .await
+        })
+    };
+
+    // Allow both services to fully establish their listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Each iteration runs a fresh discover-then-pin sequence; without the
+    // core-node scope the foreign listener would win some of these races.
+    let caller_handle = router.messenger().await;
+    for i in 0..10 {
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            test_node_target(listener_node_name),
+            listener_service_name,
+            ServiceTarget::CoreNode(scoped_core_node),
+            request_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("scoped poll should receive a response");
+
+        assert_eq!(
+            response.core_node(),
+            scoped_core_node,
+            "scoped poll #{i} was answered by a foreign core node"
+        );
+        assert_eq!(response.instance_id(), scoped_instance_id);
+        assert_eq!(response.payload(), &Payload::from_static(b"scoped"));
+    }
+
+    assert_eq!(
+        foreign_call_count.load(Ordering::SeqCst),
+        0,
+        "the foreign core node's handler must never see a scoped request"
+    );
+
+    foreign_task.abort();
+    scoped_task.abort();
+    tokio::time::timeout(Duration::from_secs(2), router.shutdown())
         .await
         .expect("router shutdown timed out");
 }
@@ -1418,8 +1526,7 @@ async fn service_communication_fails_service_not_started() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
-            None,
+            ServiceTarget::Any,
             Payload::from_static(b"enable=true"),
             Duration::from_secs(1),
         )
@@ -1509,8 +1616,7 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
-            None,
+            ServiceTarget::Any,
             Duration::from_secs(5),
             128, // request_size
             256, // response_size
@@ -1665,8 +1771,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
-            None,
+            ServiceTarget::Any,
             request_payload.clone(),
             caller_success_timeout,
         )
@@ -1685,8 +1790,7 @@ async fn service_communication_fails_service_timeouts() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,
-            None,
+            ServiceTarget::Any,
             request_payload,
             caller_failure_timeout,
         )
@@ -1810,8 +1914,10 @@ async fn service_handle_request_processes_multiple_messages() {
                 CALLER_INSTANCE_ID,
                 test_node_target(listener_node_name),
                 listener_service_name,
-                None,
-                Some(listener_instance_id),
+                ServiceTarget::Producer(&ProducerRef::new(
+                    listener_core_node,
+                    listener_instance_id,
+                )),
                 request_payload.clone(),
                 Duration::from_secs(5),
             )
@@ -1956,8 +2062,10 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         &caller_id,
                         test_node_target(listener_node_name),
                         listener_service_name,
-                        None,
-                        Some(listener_instance_id),
+                        ServiceTarget::Producer(&ProducerRef::new(
+                            listener_core_node,
+                            listener_instance_id,
+                        )),
                         request_payload.clone(),
                         Duration::from_secs(5),
                     )
@@ -2163,8 +2271,7 @@ async fn action_communication_no_instance_id_target() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_action_name,
-            None, // No target core_id
-            None, // No target instance_id
+            None, // No target producer
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -2407,8 +2514,10 @@ async fn action_communication_with_instance_id_target() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_action_name,
-            Some(LISTENER_CORE_NODE2),
-            Some(LISTENER_INSTANCE_ID2),
+            Some(&ProducerRef::new(
+                LISTENER_CORE_NODE2,
+                LISTENER_INSTANCE_ID2,
+            )),
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -2627,8 +2736,7 @@ async fn action_communication_goal_cancelled() {
         CALLER_INSTANCE_ID,
         test_node_target(listener_node_name),
         listener_action_name,
-        Some(LISTENER_CORE_NODE),
-        Some(LISTENER_INSTANCE_ID),
+        Some(&ProducerRef::new(LISTENER_CORE_NODE, LISTENER_INSTANCE_ID)),
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_millis(1000),
@@ -2768,6 +2876,7 @@ async fn single_action_communication_multiple_polls() {
                 cancel_service: _,
                 feedback_publisher_factory,
                 mut result_service,
+                liveliness_token: _liveliness_token,
             } = action;
             let feedback_publisher_factory = Arc::new(feedback_publisher_factory);
 
@@ -2905,7 +3014,6 @@ async fn single_action_communication_multiple_polls() {
                 test_node_target(listener_node_name),
                 listener_action_name,
                 None,
-                None,
                 case.goal.clone(),
                 QoSProfile::Reliable,
                 Duration::from_millis(1000),
@@ -3000,7 +3108,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
         Some(target()),
         true,
         "frames",
-        None,
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
@@ -3014,7 +3121,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
         Some(target()),
         true,
         "frames",
-        None,
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
@@ -3028,7 +3134,7 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
 
     // A pinned subscription on the same (name, tag) is unaffected — only
     // from_any subs take the slot.
-    let pinned_filter = ConsumerFilter::Pin("left_emitter".to_string());
+    let pinned_filter = ConsumerFilter::Pin(ProducerRef::new("pub_core", "left_emitter"));
     let _sub_pinned = TopicMessenger::subscribe(
         &subscriber_handle,
         "sub_core",
@@ -3036,7 +3142,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
         Some(target()),
         false,
         "frames",
-        None,
         &pinned_filter,
         QoSProfile::Reliable,
     )
@@ -3054,7 +3159,6 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
         Some(target()),
         true,
         "frames",
-        None,
         &ConsumerFilter::Any,
         QoSProfile::Reliable,
     )
@@ -3238,8 +3342,7 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         "caller_inst",
         action_target,
         action_name,
-        None, // wildcard target_core_node
-        None, // wildcard target_instance_id
+        None, // wildcard target producer
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -3301,24 +3404,22 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
     router.shutdown().await;
 }
 
-/// Regression: when only `target_core_node` is missing (caller pins
-/// `target_instance_id` but leaves the core_node slot wildcard), `poll`
-/// must still run discover-then-pin. Before the fix in `services::poll`,
-/// the gating condition was `target_instance_id.is_none()`, so this
-/// shape skipped discovery and emitted a partial-wildcard query
-/// (`*/.../inst_id/...`) that Zenoh delivered to every listener sharing
-/// `inst_id`, regardless of core_node — running side effects on more
-/// than one producer.
+/// A FULL-wildcard `poll` (`target: None`) issued against two producers
+/// that share an `instance_id` but live on different `core_node`s must
+/// run discover-then-pin so exactly ONE handler runs. The pre-`ProducerRef`
+/// half-pinned shape (core_node wildcard + instance_id pin) is
+/// unrepresentable now that producer identity travels as a full
+/// `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
+async fn service_communication_poll_full_wildcard_discovers() {
     let router = TestRouterContext::start().await;
 
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
 
     // Both listeners share the SAME instance_id but differ on core_node.
-    // Without discovery, the OLD wire selector `*/.../shared_inst/...`
-    // would match both and both handlers would run.
+    // Without discovery, a full-wildcard query would match both and both
+    // handlers would run.
     let shared_instance_id = "shared_inst";
     let listener_core_node1 = "listener_core_node_a";
     let listener_core_node2 = "listener_core_node_b";
@@ -3406,8 +3507,7 @@ async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            None,                     // wildcard target_core_node — must trigger discovery
-            Some(shared_instance_id), // pinned target_instance_id
+            ServiceTarget::Any, // full-wildcard target — must trigger discovery
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -3439,7 +3539,7 @@ async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
         call_count.load(Ordering::SeqCst),
         1,
         "exactly one listener handler must run — discover-then-pin must \
-         pin to one producer even when only target_core_node is wildcard",
+         pin to one producer for a full-wildcard call",
     );
 
     tokio::time::timeout(service_task_timeout, router.shutdown())
@@ -3447,13 +3547,16 @@ async fn service_communication_poll_wildcard_core_pinned_instance_discovers() {
         .expect("router shutdown timed out");
 }
 
-/// Regression mirror for actions: when only `target_core_node` is
-/// missing on `send_goal`, discover-then-pin must still run. Two
-/// producers sharing the same `instance_id` (differing on `core_node`)
-/// would both execute the goal handler under a partial-wildcard send,
-/// which violates the safety contract for actions with side effects.
+/// Action mirror of [`service_communication_poll_full_wildcard_discovers`]:
+/// a FULL-wildcard `send_goal` (`target: None`) against two producers
+/// sharing an `instance_id` on different `core_node`s must run
+/// discover-then-pin so exactly ONE goal handler runs — both executing
+/// would violate the safety contract for actions with side effects. The
+/// pre-`ProducerRef` half-pinned shape (core_node wildcard + instance_id
+/// pin) is unrepresentable now that producer identity travels as a full
+/// `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
+async fn action_send_goal_full_wildcard_discovers() {
     let router = TestRouterContext::start().await;
 
     let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
@@ -3548,8 +3651,7 @@ async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
         "caller_inst",
         action_target,
         action_name,
-        None,              // wildcard target_core_node — must trigger discovery
-        Some(shared_inst), // pinned target_instance_id
+        None, // full-wildcard target — must trigger discovery
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
@@ -3572,11 +3674,1074 @@ async fn action_send_goal_wildcard_core_pinned_instance_discovers() {
         total,
         1,
         "exactly one producer must run its goal handler — discover-then-pin \
-         must pin to one producer even when only target_core_node is wildcard \
+         must pin to one producer for a full-wildcard call \
          (a={}, b={})",
         goal_a.load(Ordering::SeqCst),
         goal_b.load(Ordering::SeqCst),
     );
+
+    router.shutdown().await;
+}
+
+/// Matrix corner from the bimanual field failure: same core_node, two
+/// instances of one node (same `(name, tag)`), distinct instance_ids,
+/// caller pinned to each instance in turn. Both producers idle: each
+/// pinned poll must reach exactly the pinned listener and never its
+/// sibling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_poll_same_core_distinct_instances_pinned_routes_to_pinned() {
+    let router = TestRouterContext::start().await;
+
+    let node_name = "openarm_mujoco";
+    let service_name = "set_arm_mode";
+    let shared_core = "core_same";
+    let left_inst = "left_arm_inst";
+    let right_inst = "right_arm_inst";
+
+    const CALLER_CORE_NODE: &str = "caller_core_node";
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+
+    let spawn_listener = |handle: MessengerHandle,
+                          inst: &'static str,
+                          ready_tx: oneshot::Sender<()>,
+                          call_count: Arc<AtomicUsize>| {
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &handle,
+                shared_core,
+                inst,
+                test_node_target(node_name),
+                service_name,
+            )
+            .await
+            .expect("service should start");
+
+            let handler = service.handle_next_request(|_request| {
+                let call_count = Arc::clone(&call_count);
+                async move {
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from(inst.as_bytes().to_vec()))
+                }
+            });
+
+            ready_tx.send(()).unwrap();
+            // The sibling of the pinned listener must never see a request
+            // and simply times out here without running its handler.
+            let _ = tokio::time::timeout(Duration::from_secs(5), handler).await;
+            Ok::<(), Error>(())
+        })
+    };
+
+    let left_count = Arc::new(AtomicUsize::new(0));
+    let right_count = Arc::new(AtomicUsize::new(0));
+    let (ready_left_tx, ready_left_rx) = oneshot::channel();
+    let (ready_right_tx, ready_right_rx) = oneshot::channel();
+
+    let left_task = spawn_listener(
+        router.messenger().await,
+        left_inst,
+        ready_left_tx,
+        Arc::clone(&left_count),
+    );
+    let right_task = spawn_listener(
+        router.messenger().await,
+        right_inst,
+        ready_right_tx,
+        Arc::clone(&right_count),
+    );
+
+    ready_left_rx.await.expect("left listener ready");
+    ready_right_rx.await.expect("right listener ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    for pinned_inst in [left_inst, right_inst] {
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            test_node_target(node_name),
+            service_name,
+            // fully pinned: no discovery probe is issued
+            ServiceTarget::Producer(&ProducerRef::new(shared_core, pinned_inst)),
+            Payload::from_static(b"mode=position"),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("pinned poll to {pinned_inst} should succeed: {e}"));
+
+        assert_eq!(response.instance_id(), pinned_inst);
+        assert_eq!(response.core_node(), shared_core);
+        assert_eq!(response.payload().as_ref(), pinned_inst.as_bytes());
+    }
+
+    left_task
+        .await
+        .expect("left task panicked")
+        .expect("left task errored");
+    right_task
+        .await
+        .expect("right task panicked")
+        .expect("right task errored");
+
+    assert_eq!(
+        left_count.load(Ordering::SeqCst),
+        1,
+        "left handler runs once"
+    );
+    assert_eq!(
+        right_count.load(Ordering::SeqCst),
+        1,
+        "right handler runs once"
+    );
+
+    router.shutdown().await;
+}
+
+/// Busy-producer variant of the matrix corner (the field failure's
+/// mechanism): the pinned producer exists and is alive, but its task is
+/// not parked in the service recv loop for a window longer than
+/// `DISCOVERY_TIMEOUT` (exactly like a generated node whose accept-loop
+/// is executing user work between `recv` parks). A pinned poll with a
+/// caller budget much larger than the busy window must still succeed —
+/// the call may not die at a discovery cliff the caller never asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
+    let router = TestRouterContext::start().await;
+
+    let node_name = "openarm_mujoco";
+    let service_name = "set_arm_mode";
+    let shared_core = "core_same";
+    let left_inst = "left_arm_inst";
+
+    // Busy window > DISCOVERY_TIMEOUT (2s), caller budget >> busy window.
+    let busy_window = Duration::from_secs(4);
+    let caller_budget = Duration::from_secs(10);
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    let producer_task = {
+        let handle = router.messenger().await;
+        let call_count = Arc::clone(&call_count);
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &handle,
+                shared_core,
+                left_inst,
+                test_node_target(node_name),
+                service_name,
+            )
+            .await
+            .expect("service should start");
+
+            ready_tx.send(()).unwrap();
+            // Busy: queryable is declared, but nobody is parked in the
+            // recv loop, so nothing answers wire traffic in-process.
+            tokio::time::sleep(busy_window).await;
+
+            let handler = service.handle_next_request(|_request| {
+                let call_count = Arc::clone(&call_count);
+                async move {
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from_static(b"ack"))
+                }
+            });
+            let _ = tokio::time::timeout(Duration::from_secs(8), handler).await;
+            Ok::<(), Error>(())
+        })
+    };
+
+    ready_rx.await.expect("listener ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let started = std::time::Instant::now();
+    let result = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        service_name,
+        // fully pinned: no discovery probe is issued
+        ServiceTarget::Producer(&ProducerRef::new(shared_core, left_inst)),
+        Payload::from_static(b"mode=position"),
+        caller_budget,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let response = result.unwrap_or_else(|e| {
+        panic!(
+            "pinned poll must survive a busy producer and use the caller's \
+             own budget; failed after {elapsed:?}: {e}"
+        )
+    });
+    assert_eq!(response.instance_id(), left_inst);
+    assert_eq!(call_count.load(Ordering::SeqCst), 1, "handler runs once");
+
+    producer_task
+        .await
+        .expect("producer task panicked")
+        .expect("producer task errored");
+
+    router.shutdown().await;
+}
+
+/// Action mirror of
+/// [`service_poll_same_core_distinct_instances_pinned_routes_to_pinned`]:
+/// two idle instances of one node on one core_node; a pinned `send_goal`
+/// to each must run exactly that instance's goal handler.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned() {
+    let router = TestRouterContext::start().await;
+
+    let node_name = "openarm_mujoco";
+    let action_name = "move_arm_joints";
+    let shared_core = "core_same";
+    let left_inst = "left_arm_inst";
+    let right_inst = "right_arm_inst";
+
+    async fn spawn_arm(
+        router: &TestRouterContext,
+        inst: &'static str,
+        target: SenderTarget,
+        action_name: &'static str,
+        goal_count: Arc<AtomicUsize>,
+        ready: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = router.messenger().await;
+        tokio::spawn(async move {
+            let action = ActionMessenger::expose(&handle, "core_same", inst, target, action_name)
+                .await
+                .expect("expose should succeed");
+            let mut goal_service = action.goal_service;
+            ready.send(()).expect("ready");
+
+            // The sibling of the pinned instance must never receive a goal;
+            // it just times out here.
+            if let Ok(Ok(Some((_ctx, goal_responder)))) =
+                tokio::time::timeout(Duration::from_secs(5), goal_service.recv_next_request()).await
+            {
+                goal_count.fetch_add(1, Ordering::SeqCst);
+                goal_responder
+                    .respond(Payload::from(inst.as_bytes().to_vec()))
+                    .await
+                    .expect("goal respond");
+            }
+        })
+    }
+
+    let left_count = Arc::new(AtomicUsize::new(0));
+    let right_count = Arc::new(AtomicUsize::new(0));
+    let (ready_left_tx, ready_left_rx) = oneshot::channel();
+    let (ready_right_tx, ready_right_rx) = oneshot::channel();
+
+    let left_task = spawn_arm(
+        &router,
+        left_inst,
+        test_node_target(node_name),
+        action_name,
+        Arc::clone(&left_count),
+        ready_left_tx,
+    )
+    .await;
+    let right_task = spawn_arm(
+        &router,
+        right_inst,
+        test_node_target(node_name),
+        action_name,
+        Arc::clone(&right_count),
+        ready_right_tx,
+    )
+    .await;
+
+    ready_left_rx.await.expect("left arm ready");
+    ready_right_rx.await.expect("right arm ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    for pinned_inst in [left_inst, right_inst] {
+        let goal_handle = ActionMessenger::send_goal(
+            &caller_handle,
+            "caller_core",
+            "caller_inst",
+            test_node_target(node_name),
+            action_name,
+            // fully pinned: no discovery probe is issued
+            Some(&ProducerRef::new(shared_core, pinned_inst)),
+            Payload::from_static(b"go"),
+            QoSProfile::Reliable,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("pinned send_goal to {pinned_inst} should succeed: {e}"));
+
+        assert_eq!(goal_handle.goal_response().instance_id(), pinned_inst);
+        assert_eq!(goal_handle.goal_response().core_node(), shared_core);
+    }
+
+    left_task.await.expect("left arm task panicked");
+    right_task.await.expect("right arm task panicked");
+
+    assert_eq!(
+        left_count.load(Ordering::SeqCst),
+        1,
+        "left goal handler runs once"
+    );
+    assert_eq!(
+        right_count.load(Ordering::SeqCst),
+        1,
+        "right goal handler runs once"
+    );
+
+    router.shutdown().await;
+}
+
+/// Action mirror of
+/// [`service_poll_same_core_pinned_producer_busy_waits_caller_budget`] —
+/// this is the exact shape of the bimanual `fire_goal` timeout from the
+/// field: the pinned arm is alive but mid-work (not parked in
+/// `recv_next_goal`), and the pinned goal must wait out the caller's own
+/// `goal_timeout` rather than failing at a 2s discovery cliff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
+    let router = TestRouterContext::start().await;
+
+    let node_name = "openarm_mujoco";
+    let action_name = "move_arm_joints";
+    let shared_core = "core_same";
+    let left_inst = "left_arm_inst";
+
+    let busy_window = Duration::from_secs(4);
+    let caller_budget = Duration::from_secs(10);
+
+    let goal_count = Arc::new(AtomicUsize::new(0));
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    let producer_task = {
+        let handle = router.messenger().await;
+        let goal_count = Arc::clone(&goal_count);
+        tokio::spawn(async move {
+            let action = ActionMessenger::expose(
+                &handle,
+                shared_core,
+                left_inst,
+                test_node_target(node_name),
+                action_name,
+            )
+            .await
+            .expect("expose should succeed");
+            let mut goal_service = action.goal_service;
+            ready_tx.send(()).unwrap();
+
+            // Busy: exactly what a generated accept-loop looks like while
+            // user code executes a goal — the queryable exists, but nothing
+            // is parked in the goal recv loop.
+            tokio::time::sleep(busy_window).await;
+
+            if let Ok(Ok(Some((_ctx, goal_responder)))) =
+                tokio::time::timeout(Duration::from_secs(8), goal_service.recv_next_request()).await
+            {
+                goal_count.fetch_add(1, Ordering::SeqCst);
+                goal_responder
+                    .respond(Payload::from_static(b"done"))
+                    .await
+                    .expect("goal respond");
+            }
+        })
+    };
+
+    ready_rx.await.expect("arm ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caller_handle = router.messenger().await;
+    let started = std::time::Instant::now();
+    let result = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core",
+        "caller_inst",
+        test_node_target(node_name),
+        action_name,
+        // fully pinned: no discovery probe is issued
+        Some(&ProducerRef::new(shared_core, left_inst)),
+        Payload::from_static(b"go"),
+        QoSProfile::Reliable,
+        caller_budget,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let goal_handle = result.unwrap_or_else(|e| {
+        panic!(
+            "pinned send_goal must survive a busy producer and use the \
+             caller's own goal budget; failed after {elapsed:?}: {e}"
+        )
+    });
+    assert_eq!(goal_handle.goal_response().instance_id(), left_inst);
+    assert_eq!(
+        goal_count.load(Ordering::SeqCst),
+        1,
+        "goal handler runs once"
+    );
+
+    producer_task.await.expect("producer task panicked");
+
+    router.shutdown().await;
+}
+
+/// Acceptance criterion 1, observed on the wire rather than by reading
+/// code: a fully pinned `ServiceMessenger::poll` and
+/// `ActionMessenger::send_goal` issue ZERO discovery probes, while a
+/// `None`-target call issues at least one.
+///
+/// Mechanism: a raw zenoh client session declares a `**` queryable that
+/// never replies. Every peppy service query is sent with
+/// `QueryTarget::All` + `ConsolidationMode::None`, so each query is
+/// delivered to every matching queryable — replying or not — and the
+/// watcher observes exactly the queries the caller puts on the wire.
+/// Dropping the query without replying finalizes it for the watcher, so
+/// the watched calls are not delayed. The mandatory query attachment is
+/// `[0x03 magic, kind]` with kind `0x00` = UserRequest, `0x01` = Probe
+/// (see `pmi::wire::zenoh_format::ServiceQueryAttachment`), which is what
+/// lets the watcher discriminate probes wire-level.
+///
+/// The watcher seeing the pinned calls' UserRequests (asserted `>= 1`
+/// each) is what makes the zero-probe assertion meaningful: it proves the
+/// watcher observes this traffic at all. The control listener under a
+/// different unique name proves the same watcher counts discovery probes
+/// when a wildcard call does issue them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn pinned_calls_issue_zero_probes() {
+    let router = TestRouterContext::start().await;
+
+    // Unique names so the watcher's substring match can never collide with
+    // traffic from another endpoint in this test (or stray keyexprs).
+    let node_name = "probefree_node";
+    let pinned_service_name = "probefree_svc";
+    let pinned_action_name = "probefree_act";
+    let control_service_name = "probefree_ctrl";
+
+    let producer_core = "watch_core";
+    let producer_inst = "watch_inst";
+
+    // Per-name wire counters, bumped by the watcher queryable. Probe and
+    // user-request kinds are tracked separately per unique name so the
+    // control call's probes cannot pollute the pinned-call assertions.
+    let svc_probes = Arc::new(AtomicUsize::new(0));
+    let svc_user_requests = Arc::new(AtomicUsize::new(0));
+    let act_probes = Arc::new(AtomicUsize::new(0));
+    let act_user_requests = Arc::new(AtomicUsize::new(0));
+    let ctrl_probes = Arc::new(AtomicUsize::new(0));
+    let ctrl_user_requests = Arc::new(AtomicUsize::new(0));
+    // Any matching query with a missing/short/unknown attachment lands
+    // here; asserted 0 so a wire-format drift can't silently turn the
+    // probe counters into undercounts.
+    let malformed_attachments = Arc::new(AtomicUsize::new(0));
+
+    // Producers first (each in its own scope, like the same_core tests),
+    // so the pinned calls have someone to answer them.
+    let svc_call_count = Arc::new(AtomicUsize::new(0));
+    let (svc_ready_tx, svc_ready_rx) = oneshot::channel();
+    let service_task = {
+        let handle = router.messenger().await;
+        let svc_call_count = Arc::clone(&svc_call_count);
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &handle,
+                producer_core,
+                producer_inst,
+                test_node_target(node_name),
+                pinned_service_name,
+            )
+            .await
+            .expect("pinned service should start");
+
+            let handler = service.handle_next_request(|_request| {
+                let svc_call_count = Arc::clone(&svc_call_count);
+                async move {
+                    svc_call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from_static(b"ack"))
+                }
+            });
+
+            svc_ready_tx.send(()).unwrap();
+            let handled = tokio::time::timeout(Duration::from_secs(10), handler)
+                .await
+                .expect("pinned service should receive the pinned request")
+                .expect("pinned service request errored");
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
+            Ok::<(), Error>(())
+        })
+    };
+
+    let act_goal_count = Arc::new(AtomicUsize::new(0));
+    let (act_ready_tx, act_ready_rx) = oneshot::channel();
+    let action_task = {
+        let handle = router.messenger().await;
+        let act_goal_count = Arc::clone(&act_goal_count);
+        tokio::spawn(async move {
+            let action = ActionMessenger::expose(
+                &handle,
+                producer_core,
+                producer_inst,
+                test_node_target(node_name),
+                pinned_action_name,
+            )
+            .await
+            .expect("expose should succeed");
+            let mut goal_service = action.goal_service;
+            act_ready_tx.send(()).expect("ready");
+
+            let (_ctx, goal_responder) =
+                tokio::time::timeout(Duration::from_secs(10), goal_service.recv_next_request())
+                    .await
+                    .expect("timed out waiting for the pinned goal")
+                    .expect("goal recv errored")
+                    .expect("goal subscription closed before the pinned goal");
+            act_goal_count.fetch_add(1, Ordering::SeqCst);
+            goal_responder
+                .respond(Payload::from_static(b"accepted"))
+                .await
+                .expect("goal respond");
+        })
+    };
+
+    svc_ready_rx.await.expect("pinned service ready");
+    act_ready_rx.await.expect("pinned action ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Raw zenoh watcher session: a plain client against the test router,
+    // mirroring pmi's discovery model (multicast scouting off) so it can
+    // never scout a stray zenoh process outside this test.
+    let mut config = zenoh::Config::default();
+    config
+        .insert_json5("mode", "\"client\"")
+        .expect("set watcher mode");
+    config
+        .insert_json5(
+            "connect/endpoints",
+            &format!("[\"tcp/{}:{}\"]", router.host(), router.port()),
+        )
+        .expect("set watcher endpoints");
+    config
+        .insert_json5("scouting/multicast/enabled", "false")
+        .expect("disable watcher multicast scouting");
+    let watcher_session = zenoh::open(config).await.expect("watcher session");
+
+    let watcher_queryable = {
+        let svc_probes = Arc::clone(&svc_probes);
+        let svc_user_requests = Arc::clone(&svc_user_requests);
+        let act_probes = Arc::clone(&act_probes);
+        let act_user_requests = Arc::clone(&act_user_requests);
+        let ctrl_probes = Arc::clone(&ctrl_probes);
+        let ctrl_user_requests = Arc::clone(&ctrl_user_requests);
+        let malformed_attachments = Arc::clone(&malformed_attachments);
+        watcher_session
+            .declare_queryable("**")
+            .callback(move |query| {
+                let key = query.key_expr().as_str();
+                let counters = if key.contains(pinned_service_name) {
+                    Some((&svc_probes, &svc_user_requests))
+                } else if key.contains(pinned_action_name) {
+                    Some((&act_probes, &act_user_requests))
+                } else if key.contains(control_service_name) {
+                    Some((&ctrl_probes, &ctrl_user_requests))
+                } else {
+                    None
+                };
+                let Some((probes, user_requests)) = counters else {
+                    return;
+                };
+                // `[0x03 magic, kind]`: 0x00 = UserRequest, 0x01 = Probe
+                // (crates/pmi-internal/src/wire/zenoh_format.rs).
+                match query.attachment().map(|a| a.to_bytes()).as_deref() {
+                    Some([0x03, 0x00]) => {
+                        user_requests.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Some([0x03, 0x01]) => {
+                        probes.fetch_add(1, Ordering::SeqCst);
+                    }
+                    _ => {
+                        malformed_attachments.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                // Never reply: dropping the query finalizes it for the
+                // watcher without contributing a response.
+            })
+            .await
+            .expect("watcher queryable")
+    };
+
+    // Open the caller before the settle so the fresh peer has time to learn
+    // both the producers' queryables and the watcher's `**` interest —
+    // otherwise its first queries would not be routed to the watcher and
+    // the meaningfulness guard below would fail.
+    let caller_handle = router.messenger().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let pinned = ProducerRef::new(producer_core, producer_inst);
+
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        pinned_service_name,
+        // fully pinned: must issue zero discovery probes
+        ServiceTarget::Producer(&pinned),
+        Payload::from_static(b"enable=true"),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("pinned poll should succeed");
+    assert_eq!(response.core_node(), producer_core);
+    assert_eq!(response.instance_id(), producer_inst);
+
+    let goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        pinned_action_name,
+        // fully pinned: must issue zero discovery probes
+        Some(&pinned),
+        Payload::from_static(b"go"),
+        QoSProfile::Reliable,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("pinned send_goal should succeed");
+    assert_eq!(goal_handle.goal_response().core_node(), producer_core);
+    assert_eq!(goal_handle.goal_response().instance_id(), producer_inst);
+
+    // Wire delivery to the watcher is asynchronous; give it a moment
+    // before reading the counters.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Meaningfulness guard first: the watcher must have observed the real
+    // (UserRequest) queries of both pinned calls, otherwise "zero probes"
+    // would be vacuously true of a blind watcher.
+    assert!(
+        svc_user_requests.load(Ordering::SeqCst) >= 1,
+        "watcher must observe the pinned service query on the wire",
+    );
+    assert!(
+        act_user_requests.load(Ordering::SeqCst) >= 1,
+        "watcher must observe the pinned goal query on the wire",
+    );
+    assert_eq!(
+        svc_probes.load(Ordering::SeqCst),
+        0,
+        "a fully pinned poll must not issue a discovery probe",
+    );
+    assert_eq!(
+        act_probes.load(Ordering::SeqCst),
+        0,
+        "a fully pinned send_goal must not issue a discovery probe",
+    );
+
+    // Control: the same watcher must count discovery probes when a
+    // `None`-target call does issue them, proving the zero-probe counters
+    // above would have caught a probe had one been sent.
+    let (ctrl_ready_tx, ctrl_ready_rx) = oneshot::channel();
+    let control_task = {
+        let handle = router.messenger().await;
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &handle,
+                "ctrl_core",
+                "ctrl_inst",
+                test_node_target(node_name),
+                control_service_name,
+            )
+            .await
+            .expect("control service should start");
+
+            let handler = service
+                .handle_next_request(|_request| async move { Ok(Payload::from_static(b"ack")) });
+
+            ctrl_ready_tx.send(()).unwrap();
+            let handled = tokio::time::timeout(Duration::from_secs(10), handler)
+                .await
+                .expect("control service should receive the discovered request")
+                .expect("control service request errored");
+            assert!(
+                handled,
+                "control subscription closed before handling request"
+            );
+            Ok::<(), Error>(())
+        })
+    };
+
+    ctrl_ready_rx.await.expect("control service ready");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let control_response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        control_service_name,
+        ServiceTarget::Any, // full wildcard: discover-then-pin must probe
+        Payload::from_static(b"enable=true"),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("control wildcard poll should succeed");
+    assert_eq!(control_response.core_node(), "ctrl_core");
+    assert_eq!(control_response.instance_id(), "ctrl_inst");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        ctrl_probes.load(Ordering::SeqCst) >= 1,
+        "a None-target poll must issue at least one discovery probe \
+         (got {} probes / {} user requests)",
+        ctrl_probes.load(Ordering::SeqCst),
+        ctrl_user_requests.load(Ordering::SeqCst),
+    );
+    assert_eq!(
+        malformed_attachments.load(Ordering::SeqCst),
+        0,
+        "every observed service query must carry a well-formed attachment",
+    );
+
+    service_task
+        .await
+        .expect("service task panicked")
+        .expect("service task errored");
+    action_task.await.expect("action task panicked");
+    control_task
+        .await
+        .expect("control task panicked")
+        .expect("control task errored");
+
+    assert_eq!(
+        svc_call_count.load(Ordering::SeqCst),
+        1,
+        "pinned service handler runs once"
+    );
+    assert_eq!(
+        act_goal_count.load(Ordering::SeqCst),
+        1,
+        "pinned goal handler runs once"
+    );
+
+    drop(watcher_queryable);
+    watcher_session
+        .close()
+        .await
+        .expect("watcher session close");
+
+    router.shutdown().await;
+}
+
+/// Acceptance criterion 2 — the cross-core same-`instance_id` leak is
+/// closed: topic subscriptions pin and filter on the full
+/// `(core_node, instance_id)` pair, never on `instance_id` alone. Two
+/// producers share `instance_id` "inst1" on different core_nodes:
+///
+/// - `Pin` pins both wire slots, so the same-instance_id producer on the
+///   other core never matches on the wire;
+/// - a multi-producer `OnlyFrom` rides a wire wildcard plus an in-process
+///   allow set that must compare full pairs;
+/// - `AnyExcept` rides a wire wildcard plus an in-process deny set that
+///   must reject only the listed pair — pre-fix, comparing `instance_id`
+///   alone also dropped the same-instance_id producer on the other core.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
+    let router = TestRouterContext::start().await;
+
+    let qos = QoSProfile::Reliable;
+    let node_name = "pair_node";
+    let topic = "pair_topic";
+    let shared_inst = "inst1";
+    let core_a = "core_a";
+    let core_b = "core_b";
+    let payload_a = Payload::from_static(b"from_core_a");
+    let payload_b = Payload::from_static(b"from_core_b");
+
+    // Subscribers first so the emit loops publish into live subscriptions.
+    // Each subscriber gets its own messenger handle: the wildcard filters
+    // are from_any slots, and one messenger allows at most one live
+    // from_any subscription per producer pin and `(name, tag)`.
+    let pin_handle = router.messenger().await;
+    let mut pin_sub = TopicMessenger::subscribe(
+        &pin_handle,
+        "sub_pin_core",
+        "sub_pin_inst",
+        Some(test_node_target(node_name)),
+        false,
+        topic,
+        &ConsumerFilter::Pin(ProducerRef::new(core_a, shared_inst)),
+        qos.clone(),
+    )
+    .await
+    .expect("pin subscribe should succeed");
+
+    // Two-entry set forces the wire-wildcard + in-process allow-set path
+    // (a single-entry set would collapse to a wire pin); the second entry
+    // names a producer that never publishes.
+    let only_from_handle = router.messenger().await;
+    let only_from_filter = ConsumerFilter::OnlyFrom(vec![
+        ProducerRef::new(core_a, shared_inst),
+        ProducerRef::new(core_a, "inst2"),
+    ]);
+    let mut only_from_sub = TopicMessenger::subscribe(
+        &only_from_handle,
+        "sub_only_core",
+        "sub_only_inst",
+        Some(test_node_target(node_name)),
+        true,
+        topic,
+        &only_from_filter,
+        qos.clone(),
+    )
+    .await
+    .expect("only_from subscribe should succeed");
+
+    let any_except_handle = router.messenger().await;
+    let any_except_filter = ConsumerFilter::AnyExcept(vec![ProducerRef::new(core_a, shared_inst)]);
+    let mut any_except_sub = TopicMessenger::subscribe(
+        &any_except_handle,
+        "sub_except_core",
+        "sub_except_inst",
+        Some(test_node_target(node_name)),
+        true,
+        topic,
+        &any_except_filter,
+        qos.clone(),
+    )
+    .await
+    .expect("any_except subscribe should succeed");
+
+    // Emit loops: each producer publishes every 50ms until stopped, so the
+    // assertions below never depend on a single publish surviving
+    // peer-mode discovery propagation.
+    let stop_emitters = Arc::new(tokio::sync::Notify::new());
+    let spawn_emitter = |handle: MessengerHandle, core: &'static str, payload: Payload| {
+        let stop = Arc::clone(&stop_emitters);
+        let qos = qos.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(50));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let stop_notified = stop.notified();
+            tokio::pin!(stop_notified);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = stop_notified.as_mut() => break,
+                    _ = ticker.tick() => {
+                        TopicMessenger::emit(
+                            &handle,
+                            core,
+                            shared_inst,
+                            test_node_target(node_name),
+                            topic,
+                            qos.clone(),
+                            payload.clone(),
+                        )
+                        .await
+                        .expect("emit should succeed");
+                    }
+                }
+            }
+        })
+    };
+    let emitter_a = spawn_emitter(router.messenger().await, core_a, payload_a.clone());
+    let emitter_b = spawn_emitter(router.messenger().await, core_b, payload_b.clone());
+
+    // Pin: both wire slots are pinned to (core_a, inst1) — every delivered
+    // message must carry that pair even though core_b publishes the same
+    // instance_id on the same topic throughout.
+    for _ in 0..3 {
+        let msg = tokio::time::timeout(Duration::from_secs(5), pin_sub.on_next_message())
+            .await
+            .expect("pinned subscriber timed out waiting for a message")
+            .expect("pinned subscription closed");
+        assert_eq!(
+            msg.core_node(),
+            core_a,
+            "Pin must reject the same-instance_id producer on another core",
+        );
+        assert_eq!(msg.instance_id(), shared_inst);
+        assert_eq!(msg.payload(), &payload_a);
+    }
+
+    // OnlyFrom: the wire wildcard receives both producers; the in-process
+    // allow set must admit only the listed (core_a, inst1) pair.
+    for _ in 0..3 {
+        let msg = tokio::time::timeout(Duration::from_secs(5), only_from_sub.on_next_message())
+            .await
+            .expect("only_from subscriber timed out waiting for a message")
+            .expect("only_from subscription closed");
+        assert_eq!(
+            msg.core_node(),
+            core_a,
+            "OnlyFrom must compare full pairs, not instance_id alone",
+        );
+        assert_eq!(msg.instance_id(), shared_inst);
+        assert_eq!(msg.payload(), &payload_a);
+    }
+
+    // AnyExcept: the deny set lists (core_a, inst1); the same-instance_id
+    // producer on core_b must NOT be rejected, while core_a's must be.
+    for _ in 0..3 {
+        let msg = tokio::time::timeout(Duration::from_secs(5), any_except_sub.on_next_message())
+            .await
+            .expect("any_except subscriber timed out waiting for a message")
+            .expect("any_except subscription closed");
+        assert_eq!(
+            msg.core_node(),
+            core_b,
+            "AnyExcept must reject only the listed pair — a shared \
+             instance_id on another core must pass",
+        );
+        assert_eq!(msg.instance_id(), shared_inst);
+        assert_eq!(msg.payload(), &payload_b);
+    }
+
+    // Stop the emit loops before tearing the router down so no emit races
+    // the shutdown.
+    stop_emitters.notify_waiters();
+    emitter_a.await.expect("emitter A panicked");
+    emitter_b.await.expect("emitter B panicked");
+
+    router.shutdown().await;
+}
+
+/// Discovery-hardening at the peppylib level: a producer that is alive but
+/// NOT parked in its service recv loop (busy in user code, exactly like a
+/// generated accept-loop between `recv` parks) must still answer probes
+/// within the probe budget, because the pmi transport adapter answers
+/// `ServiceQueryKind::Probe` queries in its dispatch callback — never the
+/// endpoint recv loop. The busy window (3s) exceeds both `PROBE_TIMEOUT`
+/// (500ms) and `DISCOVERY_TIMEOUT` (2s): if probes were answered by the
+/// recv loop, both probe calls below would starve inside the window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn probes_answered_while_pinned_producer_is_busy() {
+    let router = TestRouterContext::start().await;
+
+    let node_name = "busy_probe_node";
+    let service_name = "busy_probe_svc";
+    let busy_core = "busy_core";
+    let busy_inst = "busy_inst";
+
+    let busy_window = Duration::from_secs(3);
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    let producer_task = {
+        let handle = router.messenger().await;
+        let call_count = Arc::clone(&call_count);
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &handle,
+                busy_core,
+                busy_inst,
+                test_node_target(node_name),
+                service_name,
+            )
+            .await
+            .expect("service should start");
+
+            ready_tx.send(()).unwrap();
+            // Busy: the queryable is declared, but nobody is parked in the
+            // recv loop — only the adapter can answer wire traffic.
+            tokio::time::sleep(busy_window).await;
+
+            let handler = service.handle_next_request(|_request| {
+                let call_count = Arc::clone(&call_count);
+                async move {
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(Payload::from_static(b"ack"))
+                }
+            });
+            let handled = tokio::time::timeout(Duration::from_secs(8), handler)
+                .await
+                .expect("producer should receive the pinned request after waking")
+                .expect("producer request errored");
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
+            Ok::<(), Error>(())
+        })
+    };
+
+    ready_rx.await.expect("producer ready");
+    // Open the caller before the probe delay so the fresh peer has the
+    // window to learn the producer's queryable; then probe ~200ms into the
+    // busy window so the producer is provably parked in user code.
+    let caller_handle = router.messenger().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let started = std::time::Instant::now();
+    let reachable = ServiceMessenger::is_reachable(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        service_name,
+        ServiceTarget::Any,
+    )
+    .await
+    .expect("is_reachable should not error");
+    let elapsed = started.elapsed();
+    assert!(
+        reachable,
+        "adapter must answer the probe while the producer is busy",
+    );
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "probe must resolve within the probe budget, not the busy window; \
+         took {elapsed:?}",
+    );
+
+    let (_latency, response_bytes) = ServiceMessenger::probe_latency(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        service_name,
+        ServiceTarget::Any,
+        Duration::from_secs(2),
+        64,   // request_size
+        4096, // response_size
+    )
+    .await
+    .expect("sized probe should round-trip while the producer is busy");
+    assert_eq!(
+        response_bytes, 4096,
+        "adapter must serve the benchmark-sized probe while the producer is busy",
+    );
+
+    // The pinned user request still reaches the handler once the producer
+    // wakes — the adapter's probe path and the user path stay independent.
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        "caller_core_node",
+        "caller_instance",
+        test_node_target(node_name),
+        service_name,
+        ServiceTarget::Producer(&ProducerRef::new(busy_core, busy_inst)),
+        Payload::from_static(b"enable=true"),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("pinned poll should succeed once the producer wakes");
+    assert_eq!(response.core_node(), busy_core);
+    assert_eq!(response.instance_id(), busy_inst);
+    assert_eq!(call_count.load(Ordering::SeqCst), 1, "handler runs once");
+
+    producer_task
+        .await
+        .expect("producer task panicked")
+        .expect("producer task errored");
 
     router.shutdown().await;
 }

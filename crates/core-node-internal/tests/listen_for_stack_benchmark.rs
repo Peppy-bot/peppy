@@ -26,7 +26,6 @@ async fn run_benchmark_goal(
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         names::STACK_BENCHMARK_ACTION,
-        Some(&started.core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),

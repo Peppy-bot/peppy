@@ -1,6 +1,5 @@
 #[cfg(feature = "zenoh")]
 mod zenoh_build {
-    use std::collections::HashMap;
     use std::env;
     use std::path::{Path, PathBuf};
 
@@ -138,148 +137,46 @@ mod zenoh_build {
         })
     }
 
-    /// Parses `zenoh-checksums.toml` and returns (version, target→hash map).
-    fn parse_checksums(content: &str) -> (String, HashMap<String, String>) {
-        let mut version = String::new();
-        let mut checksums = HashMap::new();
-        let mut in_checksums = false;
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if trimmed == "[checksums]" {
-                in_checksums = true;
-                continue;
-            }
-            if let Some((key, value)) = trimmed.split_once('=') {
-                let key = key.trim();
-                if let Some(parsed) = parse_version_value(value) {
-                    if in_checksums {
-                        checksums.insert(key.to_string(), parsed);
-                    } else if key == "version" {
-                        version = parsed;
-                    }
-                }
-            }
-        }
-
-        (version, checksums)
-    }
-
     pub fn build_zenoh(release_tag: &str) {
-        // Download pre-built zenoh router binary when the build_zenoh feature is enabled
+        // Compile the zenoh router from source when the build_zenoh feature is
+        // enabled. Building the pinned version with `cargo install` keeps the
+        // router in lockstep with the `zenoh` library version resolved for this
+        // workspace, cached per machine/version/target like the other build
+        // tools, instead of fetching a separate prebuilt binary.
         if env::var("CARGO_FEATURE_BUILD_ZENOH").is_ok() {
-            let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-
             println!("cargo:rerun-if-changed=build.rs");
             println!("cargo:rerun-if-changed=Cargo.toml");
-            println!("cargo:rerun-if-changed=zenoh-checksums.toml");
 
-            // Load and validate checksums
-            let checksums_path = PathBuf::from(&manifest_dir).join("zenoh-checksums.toml");
-            let checksums_content = std::fs::read_to_string(&checksums_path)
-                .unwrap_or_else(|e| panic!("Failed to read {}: {}", checksums_path.display(), e));
-            let (checksums_version, checksums) = parse_checksums(&checksums_content);
-
-            assert_eq!(
-                checksums_version, release_tag,
-                "zenoh-checksums.toml version ({}) does not match detected zenoh version ({}). \
-                 Update zenoh-checksums.toml with hashes for the new version.",
-                checksums_version, release_tag
-            );
+            // The pinned zenoh version is read from the resolved workspace
+            // lockfile, so rebuild zenohd when that lockfile changes too, not only
+            // when build.rs or Cargo.toml change.
+            let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+            if let Some(lockfile_path) = find_cargo_lock(Path::new(&manifest_dir)) {
+                println!("cargo:rerun-if-changed={}", lockfile_path.display());
+            }
 
             let target = env::var("TARGET").expect("TARGET not set");
-
             let cache_dir = build_helpers::cache_dir("zenoh");
-            let cached_zenoh_path = cache_dir.join(format!("zenohd-{}-{}", release_tag, target));
 
             let out_dir = env::var("OUT_DIR").unwrap();
             let zenoh_binary_path = format!("{}/zenohd", out_dir);
 
-            if cached_zenoh_path.exists() {
-                println!(
-                    "cargo:warning=Using cached zenohd binary from {:?}",
-                    cached_zenoh_path
-                );
-                build_helpers::copy_if_changed(&cached_zenoh_path, zenoh_binary_path.as_ref());
-            } else if let Some(expected_hash) = checksums.get(&target) {
-                // Download pre-built binary (checksum available for this target)
-                let url = format!(
-                    "https://github.com/eclipse-zenoh/zenoh/releases/download/{version}/zenoh-{version}-{target}-standalone.zip",
-                    version = release_tag,
-                    target = target,
-                );
-                println!("cargo:warning=Downloading zenohd from {}", url);
-
-                let zip_path = cache_dir.join(format!("zenoh-{}-{}.zip", release_tag, target));
-
-                // Download (build_helpers::download_file removes the partial
-                // file on failure so a retry starts clean).
-                if !build_helpers::download_file(&url, &zip_path) {
-                    panic!(
-                        "Failed to download zenohd from {}. \
-                         Install zenohd manually and set PEPPY_ZENOHD_PATH instead.",
-                        url
-                    );
+            match build_helpers::cargo_install_binary("zenohd", release_tag, &target, &cache_dir) {
+                Some(compiled) => {
+                    build_helpers::copy_if_changed(&compiled, zenoh_binary_path.as_ref());
                 }
-
-                // Verify SHA256
-                if !build_helpers::verify_sha256(&zip_path, expected_hash, "zenohd zip") {
-                    std::fs::remove_file(&zip_path).ok();
-                    panic!(
-                        "SHA256 checksum mismatch for {}! \
-                         The downloaded file has been deleted. This may indicate a corrupted download or a tampered release.",
-                        zip_path.display(),
-                    );
-                }
-
-                // Extract only zenohd from the zip
-                let extract_dir = cache_dir.join("zenoh-extract");
-                std::fs::create_dir_all(&extract_dir).ok();
-
-                let extracted_binary = extract_dir.join("zenohd");
-                build_helpers::extract_zip_entry(&zip_path, "zenohd", &extracted_binary)
-                    .expect("Failed to extract zenohd from zip");
-
-                // Cache the binary
-                std::fs::copy(&extracted_binary, &cached_zenoh_path)
-                    .expect("Failed to cache zenohd binary");
-
-                // Copy to OUT_DIR
-                std::fs::copy(&cached_zenoh_path, &zenoh_binary_path)
-                    .expect("Failed to copy zenohd binary to OUT_DIR");
-
-                // Clean up
-                std::fs::remove_file(&zip_path).ok();
-                std::fs::remove_dir_all(&extract_dir).ok();
-            } else {
-                // No pre-built binary available — compile from source
-                println!(
-                    "cargo:warning=No pre-built zenohd binary for target '{}', compiling from source...",
-                    target
-                );
-                match build_helpers::cargo_install_binary(
-                    "zenohd",
-                    release_tag,
-                    &target,
-                    &cache_dir,
-                ) {
-                    Some(compiled) => {
-                        std::fs::copy(&compiled, &zenoh_binary_path)
-                            .expect("Failed to copy zenohd binary to OUT_DIR");
-                    }
-                    None => panic!(
-                        "Failed to download or compile zenohd {} for target '{}'. \
-                         Ensure a Rust toolchain with the {} target is installed.",
-                        release_tag, target, target
-                    ),
-                }
+                None => panic!(
+                    "Failed to compile zenohd {} for target '{}'. \
+                     Build zenohd from source with \
+                     `cargo build --release --target {}` \
+                     from the zenoh {} source tree, then place the built binary next to peppy \
+                     or point PEPPY_ZENOHD_PATH to it.",
+                    release_tag, target, target, release_tag
+                ),
             }
 
-            // Ensure the binary is executable (std::fs::write / std::fs::copy do not
-            // preserve the execute bit from the zip archive).
+            // Ensure the binary is executable (std::fs::copy preserves the
+            // source's mode, but the cache may predate the executable bit).
             build_helpers::set_executable(Path::new(&zenoh_binary_path));
 
             println!("cargo:rustc-env=ZENOHD_BINARY_PATH={}", zenoh_binary_path);

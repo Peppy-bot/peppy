@@ -18,21 +18,9 @@ cd crates/peppylib-py
 pixi install
 ```
 
-### Build and run examples
+### Build
 
-Build the native extension and run an example with a single command:
-
-```bash
-# Run the topic publisher example
-pixi run run-topics-exposes
-
-# Run the topic subscriber example
-pixi run run-topics-subscribes
-```
-
-### Build only
-
-To build the native extension without running an example:
+To build the native extension:
 
 ```bash
 pixi run dev

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import SenderTarget, ServiceMessenger
+from peppylib import ProducerRef, SenderTarget, ServiceMessenger
 
 TEST_NODE_NAME = "test_node"
 TEST_NODE_TAG = "v1"
@@ -102,13 +102,16 @@ async def wait_for_service(
     bound_core_node: str,
     as_instance_id: str,
     target_node_name: str,
-    target_core_node: str,
-    target_instance_id: str,
+    target: "ProducerRef | None",
     runner_thread: threading.Thread,
     error_queue: queue.Queue,
     timeout_secs: float = 10.0,
 ):
-    """Poll until a service becomes reachable, or fail."""
+    """Poll until a service becomes reachable, or fail.
+
+    `target` is the producer's full `(core_node, instance_id)` pair, or
+    `None` to probe any matching producer.
+    """
     deadline = asyncio.get_event_loop().time() + timeout_secs
     while True:
         if not runner_thread.is_alive():
@@ -121,8 +124,7 @@ async def wait_for_service(
             as_instance_id,
             SenderTarget.node(target_node_name, TEST_NODE_TAG),
             service_name,
-            target_core_node,
-            target_instance_id,):
+            target,):
             return
 
         if asyncio.get_event_loop().time() >= deadline:

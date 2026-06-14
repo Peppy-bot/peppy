@@ -255,6 +255,10 @@ pub enum MeasurementKind {
     ServiceProbe,
     ActionProbe,
     TopicDelivery,
+    /// Synthetic round-trip for a topic edge: a `Probe` to the producer node's
+    /// always-on framework service, reply sized from the topic's message
+    /// schema. The real topic is never published and no handler runs.
+    NodeProbe,
 }
 
 impl MeasurementKind {
@@ -263,6 +267,17 @@ impl MeasurementKind {
             Self::ServiceProbe => "service-probe",
             Self::ActionProbe => "action-probe",
             Self::TopicDelivery => "topic-delivery",
+            Self::NodeProbe => "node-probe",
+        }
+    }
+
+    /// Whether this is a synthetic, handler-free round-trip probe (as opposed
+    /// to an observe-only measurement of real traffic). Drives which report
+    /// table a row lands in.
+    pub fn is_synthetic_probe(self) -> bool {
+        match self {
+            Self::ServiceProbe | Self::ActionProbe | Self::NodeProbe => true,
+            Self::TopicDelivery => false,
         }
     }
 
@@ -272,6 +287,7 @@ impl MeasurementKind {
             Self::ServiceProbe => W::ServiceProbe,
             Self::ActionProbe => W::ActionProbe,
             Self::TopicDelivery => W::TopicDelivery,
+            Self::NodeProbe => W::NodeProbe,
         }
     }
 
@@ -281,6 +297,7 @@ impl MeasurementKind {
             W::ServiceProbe => Self::ServiceProbe,
             W::ActionProbe => Self::ActionProbe,
             W::TopicDelivery => Self::TopicDelivery,
+            W::NodeProbe => Self::NodeProbe,
         }
     }
 }
@@ -569,12 +586,25 @@ mod tests {
                 note: None,
                 ..sample_row()
             },
+            InterfaceLatency {
+                measurement: MeasurementKind::NodeProbe,
+                clock_confidence: ClockConfidence::NotApplicable,
+                ..sample_row()
+            },
         ]);
         let bytes = result.encode().expect("encode");
         assert_eq!(
             StackBenchmarkResult::decode(&bytes).expect("decode"),
             result
         );
+    }
+
+    #[test]
+    fn synthetic_probe_classification_drives_table_split() {
+        assert!(MeasurementKind::ServiceProbe.is_synthetic_probe());
+        assert!(MeasurementKind::ActionProbe.is_synthetic_probe());
+        assert!(MeasurementKind::NodeProbe.is_synthetic_probe());
+        assert!(!MeasurementKind::TopicDelivery.is_synthetic_probe());
     }
 
     #[test]

@@ -47,9 +47,9 @@ pub mod consts {
         ALLOWED_CONFIG_CHARS, AppEnv, CORE_NODE_TOPIC_NAME, DAEMON_STATE_FILE_ENV,
         DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST,
         DEFAULT_MESSAGING_PORT, DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE,
-        NODE_CONFIG_FILE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
-        PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
-        RUNTIME_CONFIG_VAR_NAME, app_env, set_app_env,
+        NODE_CONFIG_FILE, PEPPY_HOME_ENV, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
+        PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
+        PeppyDirs, RUNTIME_CONFIG_VAR_NAME, app_env, peppy_root_dir, set_app_env,
     };
 }
 
@@ -99,7 +99,7 @@ pub mod node {
 pub mod runtime {
     pub use crate::internal::runtime::{
         DiscoveryConfig, LauncherRuntimeConfig, LifecycleRuntimeConfig, NodeInstanceConfig,
-        ResolvedFramework, RuntimeConfig, SlotBinding,
+        ProducerRef, ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
 

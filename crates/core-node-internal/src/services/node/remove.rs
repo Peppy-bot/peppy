@@ -4,7 +4,9 @@ use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
+use peppylib::messaging::{
+    SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
+};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
@@ -168,15 +170,19 @@ async fn handle_node_remove_request_inner(
     // slowest probe rather than the sum.
     let reachability: Vec<std::result::Result<bool, PeppyError>> =
         futures::future::join_all(targets.iter().map(|target| {
-            ServiceMessenger::is_reachable(
-                messenger,
-                core_node_node,
-                core_instance_id,
-                SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
-                SHUTDOWN_SERVICE,
-                Some(core_node_node),
-                Some(target.instance_id.as_str()),
-            )
+            let producer =
+                peppylib::messaging::ProducerRef::new(core_node_node, target.instance_id.as_str());
+            async move {
+                ServiceMessenger::is_reachable(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
+                    SHUTDOWN_SERVICE,
+                    ServiceTarget::Producer(&producer),
+                )
+                .await
+            }
         }))
         .await;
 
@@ -212,7 +218,7 @@ async fn handle_node_remove_request_inner(
             .or_else(|| unreachable_targets.first())
             .expect("one of the lists is non-empty");
         return NodeRemoveResponse::failure(format!(
-            "Node '{}' has running instances (e.g. '{}'); set stop_instances=true to stop them before removing",
+            "Node '{}' has tracked instances (reachable or unreachable, e.g. '{}'); set stop_instances=true to stop them before removing",
             request.node_name,
             example.instance_id.as_str(),
         ))
@@ -246,17 +252,21 @@ async fn handle_node_remove_request_inner(
         // bounded by the slowest shutdown (up to SHUTDOWN_TIMEOUT) rather
         // than the sum.
         let shutdown_results = futures::future::join_all(running_targets.iter().map(|target| {
-            ServiceMessenger::poll(
-                messenger,
-                core_node_node,
-                core_instance_id,
-                SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
-                SHUTDOWN_SERVICE,
-                Some(core_node_node),
-                Some(target.instance_id.as_str()),
-                Payload::from_static(b"shutdown"),
-                SHUTDOWN_TIMEOUT,
-            )
+            let producer =
+                peppylib::messaging::ProducerRef::new(core_node_node, target.instance_id.as_str());
+            async move {
+                ServiceMessenger::poll(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
+                    SHUTDOWN_SERVICE,
+                    ServiceTarget::Producer(&producer),
+                    Payload::from_static(b"shutdown"),
+                    SHUTDOWN_TIMEOUT,
+                )
+                .await
+            }
         }))
         .await;
         for (target, res) in running_targets.iter().zip(shutdown_results) {

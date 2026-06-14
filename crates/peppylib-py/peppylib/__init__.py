@@ -37,7 +37,7 @@ sys.modules["peppylib._peppylib.core_node"] = _peppylib.core_node
 messaging = _peppylib.messaging
 
 # Re-export the Rust-implemented functions/types from the native module
-from ._peppylib.messaging import SenderTarget, MessengerHandle, TopicMessenger, ZenohdInstance  # noqa: E402  # type: ignore[import-not-found]
+from ._peppylib.messaging import SenderTarget, ProducerRef, MessengerHandle, TopicMessenger, ZenohdInstance  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.services import ServiceMessenger  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.actions import (  # noqa: E402  # type: ignore[import-not-found]
@@ -68,6 +68,7 @@ from . import datastore, clock, stack  # noqa: E402
 
 __all__ = [
     "SenderTarget",
+    "ProducerRef",
     "MessengerHandle",
     "TopicMessenger",
     "ZenohdInstance",

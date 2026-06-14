@@ -11,11 +11,10 @@ async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Ta
 
 async def receive_messages(node_runner: NodeRunner):
     while True:
-        (
-            instance_id,
-            message,
-        ) = await hello_world_param_message_stream.on_next_message_received(node_runner)
-        print(f"Received from {instance_id}: {message.message}")
+        producer, message = await hello_world_param_message_stream.on_next_message_received(
+            node_runner,
+        )
+        print(f"Received from {producer.instance_id}: {message.message}")
 
 
 def main():

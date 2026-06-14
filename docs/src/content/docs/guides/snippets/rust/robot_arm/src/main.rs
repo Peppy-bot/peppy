@@ -6,19 +6,23 @@ use peppygen::{NodeBuilder, Parameters, Result};
 // `joint_states` by conforming to `joint_state_source`, and consumes
 // `joint_commands` from any conforming controller through a `from_any`
 // interface slot. With no binding required it boots with zero controllers
-// and picks up whichever ones publish, identified per message by instance_id.
+// and picks up whichever ones publish, identified per message by the
+// producer's full (core_node, instance_id).
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
             loop {
-                let (instance_id, command) =
-                    controller_joint_commands::on_next_message_received(&node_runner, None)
+                let (producer, command) =
+                    controller_joint_commands::on_next_message_received(&node_runner)
                         .await
                         .expect("failed to receive joint command");
 
                 println!(
-                    "received from {instance_id}: target={:?} max_vel={}",
-                    command.target_positions, command.max_velocity
+                    "received from {}/{}: target={:?} max_vel={}",
+                    producer.core_node,
+                    producer.instance_id,
+                    command.target_positions,
+                    command.max_velocity
                 );
 
                 // Drive the joints, then report the resulting state.

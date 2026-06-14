@@ -426,6 +426,35 @@ fn emit_topic_with_dynamic_object_array() {
     );
 }
 
+/// A real manifest dep (link_id present) splices the runtime binding
+/// lookup as the `from_producer` argument of the generated subscribe:
+/// `node_runner.pinned_producer_for(<link_id>)` resolves at runtime to
+/// the bound producer's full `(core_node, instance_id)` tuple, so a
+/// pinned topic slot sets both wire slots and can never receive from a
+/// same-instance_id producer on another core node.
+#[test]
+fn consumed_topic_with_link_id_splices_runtime_binding_target() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::native("uvc_camera", "v1")
+                .with_link_id(crate::WireLinkId::from_link_id("cam_left", false)),
+        )
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &["node_runner.pinned_producer_for(\"cam_left\"),"],
+    );
+}
+
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
@@ -514,31 +543,36 @@ fn consumed_topic() {
         ],
     );
 
-    // Subscriber function signature — `from_instance_id` is no longer a
-    // parameter; the consumer pins via `node_runner.binding_for(<link_id>)`
-    // looked up at runtime from the bindings map.
+    // Subscriber function signature — the producer identity is returned with
+    // every message as a structured `peppylib.ProducerRef` (its full
+    // `(core_node, instance_id)` pair); it never appears as a user-facing
+    // core_node (or instance_id) parameter.
     assert_contains_all(
         &rendered,
         &[
-            "async def on_next_message_received(",
-            "node_runner: peppylib.NodeRunner",
-            "from_core_node: Optional[str] = None",
-            ") -> Tuple[str, Message]:",
+            "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[peppylib.ProducerRef, Message]:",
         ],
+    );
+    assert!(
+        !rendered.contains("from_core_node"),
+        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("from_instance_id: Optional[str] = None"),
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Topic metadata and subscribe call.
+    // Topic metadata and subscribe call. The fixture's
+    // `DependencyContext::native` defaults to `WireLinkId::wildcard()` (no
+    // manifest link_id), so the subscribe call splices `None` at the
+    // from_producer slot.
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
-            "from_core_node,",
+            "topic_name,\n        None,\n        peppylib.QoSProfile.Standard,",
         ],
     );
 
@@ -548,9 +582,9 @@ fn consumed_topic() {
         &[
             "raw_message = await subscription.on_next_message()",
             "payload = raw_message.payload",
-            "instance_id = raw_message.instance_id",
+            "producer = raw_message.producer",
             "message = _deserialize_payload(payload)",
-            "return instance_id, message",
+            "return producer, message",
         ],
     );
 }
@@ -670,12 +704,14 @@ fn consumed_two_topics_same_node() {
     );
 }
 
-/// Regression guard: consumer-side topic subscribers emit `from_*` filter params
-/// (messages flow publisher → subscriber), while service/action callers emit
-/// `to_*` filter params (request flows caller → server). This test fails loudly
-/// if any generator drifts away from the directional naming.
+/// Regression guard: generated consumer entry points (topic subscribers,
+/// service pollers, action callers) expose no user-facing producer-identity
+/// parameters. Producer identity travels only as the full
+/// `(core_node, instance_id)` resolved at runtime from the bindings map.
+/// This test fails loudly if any generator drifts back to exposing a
+/// `from_*` / `target_*` core_node or instance_id parameter.
 #[test]
-fn consumer_filter_params_use_directional_prefix() {
+fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -729,15 +765,13 @@ fn consumer_filter_params_use_directional_prefix() {
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Topic subscriber: `from_core_node` stays exposed for cross-core-node
-    // pinning; `from_instance_id` is no longer a parameter — the consumer
-    // pins via `node_runner.binding_for(<link_id>)` at runtime.
-    assert_eq!(
-        rendered
-            .matches("from_core_node: Optional[str] = None")
-            .count(),
-        1,
-        "expected `from_core_node` once on the topic subscriber; rendered:\n{rendered}"
+    // Topic subscriber: producer identity travels only as the full
+    // `(core_node, instance_id)` resolved at runtime from the bindings map;
+    // there is no user-facing core_node parameter, and `from_instance_id`
+    // is no longer a parameter either.
+    assert!(
+        !rendered.contains("from_core_node"),
+        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("from_instance_id: Optional[str] = None"),
@@ -745,9 +779,12 @@ fn consumer_filter_params_use_directional_prefix() {
     );
 
     // The fixture's `DependencyContext::native` defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the binding lookup
-    // splices `None` and the user-facing `target_instance_id` parameter is
-    // gone. `target_core_node` is never exposed in the generated API.
+    // `WireLinkId::wildcard()` (no manifest link_id), so the consumed call
+    // sites splice `None` at the single target slot and the user-facing
+    // `target_instance_id` parameter is gone. `target_core_node` is never
+    // exposed in the generated API, and the renamed `pinned_target_for`
+    // accessor must never be emitted (the runtime helper is
+    // `pinned_producer_for`).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -755,5 +792,9 @@ fn consumer_filter_params_use_directional_prefix() {
     assert!(
         !rendered.contains("target_instance_id: Optional[str] = None"),
         "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("pinned_target_for"),
+        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; rendered:\n{rendered}"
     );
 }

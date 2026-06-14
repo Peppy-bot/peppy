@@ -25,7 +25,6 @@ async fn daemon_publishes_liveness_heartbeats() {
         Some(core_node_target(&started.core_node_name)),
         false,
         names::DAEMON_HEARTBEAT,
-        Some(&started.core_node_name),
         &ConsumerFilter::Any,
         QoSProfile::SensorData,
     )

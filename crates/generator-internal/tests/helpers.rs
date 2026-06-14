@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION,
+    PYTHON_MIN_VERSION, PeppyDirs,
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
@@ -25,63 +27,14 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
-/// Root for per-test scratch directories, placed under `$HOME` rather than the
-/// system temp dir because `/tmp` is frequently a size-quota'd `tmpfs` on Linux
-/// dev/CI machines. Each Python node materialises a venv plus several copies of
-/// the (large) compiled `peppylib` shared object during `uv sync`; at full test
-/// parallelism that transient peak trips the per-user tmpfs quota. `$HOME` lives
-/// on the roomy backing disk instead.
-///
-/// Hand out scratch from here via [`TempDir::new_in`] so it is removed when the
-/// guard drops — normal completion and panics both clean up and nothing is
-/// carried between runs. As a backstop for runs hard-killed before their guards
-/// could run, the first call per test binary reclaims leftovers older than
-/// [`STALE_TEST_TMP_AGE`]; that age floor keeps concurrently-running test
-/// binaries from deleting each other's live dirs.
+/// Root for per-test scratch directories. Thin re-export of the shared
+/// [`config::test_helpers::test_tmp_root`] so the many generator test files can
+/// keep calling `crate::helpers::test_tmp_root()`.
 ///
 /// Note: the shared `peppylib` `.so` cache itself still lives under
 /// [`test_peppy_dirs`] (the global `.peppy`); only the per-test copies move here.
 pub fn test_tmp_root() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let root = PathBuf::from(home).join(".peppy/test-tmp");
-    fs::create_dir_all(&root).expect("create ~/.peppy/test-tmp/");
-
-    static RECLAIM: std::sync::Once = std::sync::Once::new();
-    RECLAIM.call_once(|| reclaim_stale_test_tmp(&root));
-
-    root
-}
-
-/// Scratch older than this is treated as abandoned by an earlier run and is
-/// safe to delete. Far longer than any real test run (which finishes in
-/// minutes), so an in-flight run is never affected.
-const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
-
-/// Best-effort removal of stale leftovers directly under `root`. Errors are
-/// ignored on purpose: reclaiming scratch must never fail a test.
-fn reclaim_stale_test_tmp(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    let now = std::time::SystemTime::now();
-    for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let too_old = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age >= STALE_TEST_TMP_AGE);
-        if !too_old {
-            continue;
-        }
-        if metadata.is_dir() {
-            let _ = fs::remove_dir_all(entry.path());
-        } else {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
+    config::test_helpers::test_tmp_root()
 }
 
 pub const TEST_NODE_TAG: &str = "v1";
@@ -589,12 +542,15 @@ pub fn run_generate_peppygen_lib_test(
     (temp_dir, peppygen_dir)
 }
 
-/// Context for waiting on service reachability in tests.
+/// Context for waiting on service reachability in tests. The harness
+/// always knows the generated project's core node (`target_core_node`),
+/// so reachability probes for a known instance carry the full
+/// `(core_node, instance_id)` wire address.
 pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
     pub bound_core_node: &'a str,
     pub caller_instance_id: &'a str,
-    pub target_core_node: Option<&'a str>,
+    pub target_core_node: &'a str,
 }
 
 /// Default deadline for the wait-family helpers. Long enough for slow CI
@@ -645,16 +601,18 @@ pub async fn wait_for_service_reachable_or_exit(
             );
         }
 
+        let target = target_instance_id
+            .map(|inst| peppylib::messaging::ProducerRef::new(ctx.target_core_node, inst));
         let reachable = ServiceMessenger::is_reachable(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
             test_node_target(to_node_name),
             to_service_name,
-            ctx.target_core_node,
-            target_instance_id,
+            target
+                .as_ref()
+                .map_or(ServiceTarget::Any, ServiceTarget::Producer),
         )
-
         .await
         .unwrap_or_else(|err| {
             panic!(
@@ -714,16 +672,16 @@ pub async fn wait_for_action_service_reachable_or_exit(
             );
         }
 
+        let target = target_instance_id
+            .map(|inst| peppylib::messaging::ProducerRef::new(ctx.target_core_node, inst));
         let reachable = ActionMessenger::is_reachable(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
             test_node_target(to_node_name),
             to_action_name,
-            ctx.target_core_node,
-            target_instance_id,
+            target.as_ref(),
         )
-
         .await
         .unwrap_or_else(|err| {
             panic!(
@@ -789,7 +747,7 @@ pub async fn send_shutdown(
     bound_core_node: &str,
     sender_instance_id: &str,
     to_node_name: &str,
-    target_core_node: Option<&str>,
+    target_core_node: &str,
     target_instance_id: &str,
     timeout: Duration,
 ) {
@@ -800,8 +758,10 @@ pub async fn send_shutdown(
         sender_instance_id,
         test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
+        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+            target_core_node,
+            target_instance_id,
+        )),
         payload,
         timeout,
     )
@@ -821,7 +781,7 @@ pub async fn try_send_shutdown(
     bound_core_node: &str,
     sender_instance_id: &str,
     to_node_name: &str,
-    target_core_node: Option<&str>,
+    target_core_node: &str,
     target_instance_id: &str,
     timeout: Duration,
 ) {
@@ -832,8 +792,10 @@ pub async fn try_send_shutdown(
         sender_instance_id,
         test_node_target(to_node_name),
         SHUTDOWN_SERVICE,
-        target_core_node,
-        Some(target_instance_id),
+        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+            target_core_node,
+            target_instance_id,
+        )),
         payload,
         timeout,
     )
@@ -857,7 +819,8 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
 /// Initialises a Python user-node project at `to_dir`.
 ///
 /// Creates a minimal `pyproject.toml` that depends on the generated `peppygen`
-/// package (located at [`PEPPYGEN_OUTPUT_PATH`] relative to the project root).
+/// and `peppylib` packages (located at [`PEPPYGEN_OUTPUT_PATH`] and
+/// [`PEPPYLIB_OUTPUT_PATH`] relative to the project root).
 pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
     let project_dir = to_dir.as_ref();
     fs::create_dir_all(project_dir).expect("failed to create Python user node directory");
@@ -867,12 +830,12 @@ pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
 name = "user_node"
 version = "0.1.0"
 requires-python = ">={PYTHON_MIN_VERSION},<{PYTHON_MAX_VERSION}"
-dependencies = ["peppygen"]
+dependencies = ["peppygen", "peppylib"]
 
 [tool.uv.sources]
-peppygen = {{ path = "{}" }}
-"#,
-        PEPPYGEN_OUTPUT_PATH
+peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
+peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
+"#
     );
     fs::write(project_dir.join("pyproject.toml"), pyproject)
         .expect("failed to write Python user node pyproject.toml");

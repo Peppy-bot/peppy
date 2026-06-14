@@ -708,6 +708,190 @@ mod zenoh_tests {
         assert_eq!(received.payload(), &new_body);
     }
 
+    /// Action-producer liveliness over real zenoh: a token declared by the
+    /// producer session replays as an initial `Alive` to a late watch
+    /// (history), a one-shot probe sees it, and closing the producer session
+    /// — the in-process stand-in for hard producer death, since tokens are
+    /// removed identically on close and on transport loss — surfaces as a
+    /// `Gone` event and an absent probe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn action_liveliness_token_observed_across_sessions() {
+        use pmi::{ActionLivelinessEvent, ActionWireReceiver, ActionWireSender, SenderTarget};
+
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let mut producer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("producer adapter");
+        producer
+            .start_session()
+            .await
+            .expect("producer start_session");
+        let mut consumer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("consumer adapter");
+        consumer
+            .start_session()
+            .await
+            .expect("consumer start_session");
+
+        let target = SenderTarget::node("arm", "v1").expect("node target");
+        let receiver =
+            ActionWireReceiver::new("server_core", "server_inst", target.clone(), "move")
+                .expect("valid receiver");
+        let sender = ActionWireSender::new(
+            "caller_core",
+            "caller_inst",
+            Some(&pmi::ProducerRef::new("server_core", "server_inst")),
+            target,
+            "move",
+        )
+        .expect("valid sender");
+
+        let _token = producer
+            .declare_action_liveliness(&receiver)
+            .await
+            .expect("token should declare");
+        wait_for_subscriber_discovery().await;
+
+        // Late watch: the pre-existing token must replay as an initial Alive.
+        let watch = consumer
+            .watch_action_producer(&sender)
+            .await
+            .expect("watch should declare");
+        let initial = tokio::time::timeout(RECV_TIMEOUT, watch.rx.recv_async())
+            .await
+            .expect("timed out waiting for the initial liveliness event")
+            .expect("liveliness watch closed unexpectedly");
+        assert_eq!(initial, ActionLivelinessEvent::Alive);
+
+        let probe = consumer
+            .probe_action_producer(&sender, Duration::from_secs(2))
+            .await
+            .expect("probe should issue");
+        assert!(probe.resolve().await, "token should be observed alive");
+
+        // Producer death: closing the session removes the token.
+        producer
+            .stop_session()
+            .await
+            .expect("producer stop_session");
+        let gone = tokio::time::timeout(RECV_TIMEOUT, watch.rx.recv_async())
+            .await
+            .expect("timed out waiting for the Gone liveliness event")
+            .expect("liveliness watch closed unexpectedly");
+        assert_eq!(gone, ActionLivelinessEvent::Gone);
+
+        let probe = consumer
+            .probe_action_producer(&sender, Duration::from_secs(2))
+            .await
+            .expect("probe should issue");
+        assert!(!probe.resolve().await, "token should be observed gone");
+    }
+
+    /// Probe hardening over real zenoh: `ServiceQueryKind::Probe` queries
+    /// are answered by the adapter's query dispatch (one Response-kind
+    /// reply; sized probes get the requested byte count) and never reach
+    /// the producer's endpoint channel — so a producer whose task is busy
+    /// in user code (nobody draining the channel) still answers discovery
+    /// and liveness probes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probes_are_answered_in_dispatch_and_never_enqueued() {
+        use pmi::{
+            SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+            ServiceWireSender,
+        };
+
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let mut producer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("producer adapter");
+        producer
+            .start_session()
+            .await
+            .expect("producer start_session");
+        let mut consumer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("consumer adapter");
+        consumer
+            .start_session()
+            .await
+            .expect("consumer start_session");
+
+        let target = SenderTarget::node("camera", "v1").expect("node target");
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            target.clone(),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+        let sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_inst",
+            None, // wildcard target: the discovery probe shape
+            target,
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid sender");
+
+        let queryable = producer
+            .listen_service(&receiver)
+            .await
+            .expect("queryable declare should succeed");
+        // Nobody drains `queryable.rx` — the producer is "busy" in user code.
+        wait_for_subscriber_discovery().await;
+
+        // Plain (empty-body) probe: one empty Response-kind reply.
+        let mut reply_stream = consumer
+            .call_service(
+                &sender,
+                Payload::from_bytes(Bytes::new()),
+                ServiceQueryKind::Probe,
+                Some(RECV_TIMEOUT),
+            )
+            .await
+            .expect("probe call should succeed");
+        let reply = tokio::time::timeout(RECV_TIMEOUT, reply_stream.rx.recv())
+            .await
+            .expect("probe must be answered while the endpoint loop is busy")
+            .expect("probe reply stream closed unexpectedly");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert!(reply.message().payload().is_empty());
+
+        // Benchmark sized probe: the reply carries the requested size.
+        let mut reply_stream = consumer
+            .call_service(
+                &sender,
+                Payload::from_bytes(pmi::build_sized_probe_request(64, 4096)),
+                ServiceQueryKind::Probe,
+                Some(RECV_TIMEOUT),
+            )
+            .await
+            .expect("sized probe call should succeed");
+        let reply = tokio::time::timeout(RECV_TIMEOUT, reply_stream.rx.recv())
+            .await
+            .expect("sized probe must be answered while the endpoint loop is busy")
+            .expect("sized probe reply stream closed unexpectedly");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert_eq!(reply.message().payload().len(), 4096);
+
+        // Neither probe leaked into the endpoint channel.
+        assert!(
+            queryable.rx.try_recv().is_err(),
+            "probes must never reach the endpoint channel"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_with_router_creates_adapter_with_router() {
         let _lock = ZENOH_SERIAL.lock().await;

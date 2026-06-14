@@ -4,6 +4,7 @@
 //! is peppy-specific. The zenoh-shaped wire format that encodes it lives in
 //! `wire::zenoh_format`.
 
+use config::runtime::ProducerRef;
 use std::fmt;
 
 /// A validated keyexpr segment. The wire format builds keyexprs by joining
@@ -451,8 +452,13 @@ impl TopicWireReceiver {
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-/// Caller-side addressing for a service. `target_core_node` / `target_instance_id`
-/// are `None` for broadcast (translated to the protocol's `_any_` marker).
+/// Caller-side addressing for a service. `target` is the producer's full
+/// `(core_node, instance_id)` wire address; `None` is a genuine wildcard
+/// on both slots (the discovery probe shape). The one representable
+/// half-address is core-without-instance via [`Self::scoped_to_core_node`]
+/// — for callers that know which core node must answer but cannot know
+/// the producer's per-boot instance_id. Instance-without-core stays
+/// unrepresentable at this boundary.
 /// The link_id wire slot is always emitted as `*` — producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,8 +476,7 @@ impl ServiceWireSender {
     pub fn new(
         bound_core_node: &str,
         as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
         to_target: SenderTarget,
         to_service_name: &str,
         kind: ServiceKind,
@@ -479,12 +484,26 @@ impl ServiceWireSender {
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            target_core_node: target_core_node.map(Segment::try_from).transpose()?,
-            target_instance_id: target_instance_id.map(Segment::try_from).transpose()?,
+            target_core_node: target
+                .map(|t| Segment::try_from(t.core_node.as_str()))
+                .transpose()?,
+            target_instance_id: target
+                .map(|t| Segment::try_from(t.instance_id.as_str()))
+                .transpose()?,
             to_target,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
         })
+    }
+
+    /// Scopes the selector's target core_node slot to `target_core_node`
+    /// while leaving the instance slot wildcarded — the core-without-instance
+    /// half-address. The selector then matches only producers hosted by that
+    /// core node, regardless of their per-boot instance_id.
+    pub fn scoped_to_core_node(mut self, target_core_node: &str) -> crate::error::Result<Self> {
+        self.target_core_node = Some(Segment::try_from(target_core_node)?);
+        self.target_instance_id = None;
+        Ok(self)
     }
 
     pub fn to_service_name(&self) -> &str {
@@ -547,6 +566,8 @@ impl ServiceWireReceiver {
 /// Caller-side addressing for an action. Goal / cancel / result are exposed
 /// as derived [`ServiceWireSender`]s with the appropriate [`ServiceKind`].
 /// Feedback subscription is built per `goal_id` by the transport adapter.
+/// `target` is the producer's full `(core_node, instance_id)` wire address;
+/// `None` is a genuine wildcard on both slots (the discovery probe shape).
 /// The link_id wire slot is always `*` — producers advertise under the
 /// reserved `_` segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -563,16 +584,19 @@ impl ActionWireSender {
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
+        target: Option<&ProducerRef>,
         to_target: SenderTarget,
         to_action_name: &str,
     ) -> crate::error::Result<Self> {
         Ok(Self {
             as_core_node: Segment::try_from(as_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
-            target_core_node: target_core_node.map(Segment::try_from).transpose()?,
-            target_instance_id: target_instance_id.map(Segment::try_from).transpose()?,
+            target_core_node: target
+                .map(|t| Segment::try_from(t.core_node.as_str()))
+                .transpose()?,
+            target_instance_id: target
+                .map(|t| Segment::try_from(t.instance_id.as_str()))
+                .transpose()?,
             to_target,
             to_action_name: Segment::try_from(to_action_name)?,
         })

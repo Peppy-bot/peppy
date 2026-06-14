@@ -385,7 +385,7 @@ if __name__ == "__main__":
             messenger: &messenger,
             bound_core_node: TEST_CORE_NODE,
             caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-            target_core_node: None,
+            target_core_node: TEST_CORE_NODE,
         },
         PRODUCER_NODE_NAME,
         ACTION_NAME,
@@ -405,7 +405,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -445,7 +445,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         CONSUMER_INSTANCE_ID,
         Duration::from_secs(5),
     )
@@ -455,7 +455,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         PRODUCER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         PRODUCER_INSTANCE_ID,
         Duration::from_secs(5),
     )
@@ -743,7 +743,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_service_reachable_or_exit(
         &ctx,
@@ -799,7 +799,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         CONSUMER_INSTANCE_ID,
         Duration::from_secs(5),
     )
@@ -809,7 +809,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         PRODUCER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         PRODUCER_INSTANCE_ID,
         Duration::from_secs(5),
     )
@@ -1048,10 +1048,10 @@ from peppygen.consumed_topics import producer_telemetry_feed
 
 async def receive_one(node_runner, msg_received):
     try:
-        instance_id, msg = await producer_telemetry_feed.on_next_message_received(node_runner)
+        producer, msg = await producer_telemetry_feed.on_next_message_received(node_runner)
         print(
             f"received message status={msg.status} readings={list(msg.readings)} "
-            f"sequence={msg.sequence} timestamp={msg.timestamp} from {instance_id}",
+            f"sequence={msg.sequence} timestamp={msg.timestamp} from {producer.core_node}/{producer.instance_id}",
             flush=True,
         )
         msg_received.set()
@@ -1101,7 +1101,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -1141,7 +1141,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         CONSUMER_INSTANCE_ID,
         Duration::from_secs(5),
     )
@@ -1151,7 +1151,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         PRODUCER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         PRODUCER_INSTANCE_ID,
         Duration::from_secs(5),
     )
@@ -1179,9 +1179,9 @@ if __name__ == "__main__":
         consumer_stderr
     );
     assert!(
-        consumer_stdout.contains(
-            "received message status=nominal readings=[1.0, 2.0, 3.0] sequence=1 timestamp=12345.6"
-        ),
+        consumer_stdout.contains(&format!(
+            "received message status=nominal readings=[1.0, 2.0, 3.0] sequence=1 timestamp=12345.6 from {TEST_CORE_NODE}/{PRODUCER_INSTANCE_ID}"
+        )),
         "consumer did not decode the topic message correctly.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr

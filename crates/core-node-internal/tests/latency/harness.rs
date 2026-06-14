@@ -31,7 +31,7 @@ use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use generator::LanguageGenerator;
 use peppylib::MessengerHandle;
-use peppylib::messaging::{SenderTarget, ServiceMessenger};
+use peppylib::messaging::{SenderTarget, ServiceMessenger, ServiceTarget};
 use peppylib::types::Payload;
 use tempfile::TempDir;
 
@@ -442,7 +442,7 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
             messenger: &control,
             bound_core_node: CORE,
             caller_instance_id: HARNESS_INST,
-            target_core_node: Some(CORE),
+            target_core_node: CORE,
         };
 
         helpers::wait_for_health_service_reachable_or_exit(
@@ -515,8 +515,7 @@ impl Scenario {
             HARNESS_INST,
             SenderTarget::node(DRIVER_NODE, TAG).expect("driver target"),
             BENCH_CONTROL_SERVICE,
-            Some(CORE),
-            Some(DRIVER_INST),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(CORE, DRIVER_INST)),
             Payload::from(request),
             CONTROL_TIMEOUT,
         )
@@ -542,7 +541,7 @@ impl Scenario {
             CORE,
             HARNESS_INST,
             DRIVER_NODE,
-            Some(CORE),
+            CORE,
             DRIVER_INST,
             Duration::from_secs(5),
         )
@@ -552,7 +551,7 @@ impl Scenario {
             CORE,
             HARNESS_INST,
             RESPONDER_NODE,
-            Some(CORE),
+            CORE,
             RESPONDER_INST,
             Duration::from_secs(5),
         )
@@ -605,7 +604,7 @@ pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64)
 const DRIVER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{ConsumerFilter, SenderTarget, ServiceMessenger, Subscription, TopicMessenger};
+use peppylib::messaging::{ConsumerFilter, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicMessenger};
 use peppylib::types::Payload;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -617,6 +616,19 @@ const RESPONDER_NODE: &str = "responder";
 const RESPONDER_INST: &str = "responder_inst";
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const PONG_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Make a panic in any spawned task fatal. Tokio swallows task panics, which
+/// would leave this node alive with a dead handler and stall the driver's
+/// roundtrip loop until the harness control timeout. Aborting after the default
+/// hook prints the panic lets the harness startup probe see the exit and
+/// surface the cause immediately instead of waiting out the timeout.
+fn abort_on_spawned_panic() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        std::process::abort();
+    }));
+}
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
@@ -658,8 +670,7 @@ async fn run_service(
             inst,
             SenderTarget::node(RESPONDER_NODE, TAG)?,
             "echo",
-            Some(CORE),
-            Some(RESPONDER_INST),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(CORE, RESPONDER_INST)),
             payload,
             RPC_TIMEOUT,
         )
@@ -727,6 +738,7 @@ async fn run_topic(
 }
 
 fn main() -> Result<()> {
+    abort_on_spawned_panic();
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let core = node_runner.processor().bound_core_node().to_string();
         let inst = node_runner.processor().bound_instance_id().to_string();
@@ -741,7 +753,6 @@ fn main() -> Result<()> {
             Some(SenderTarget::node(RESPONDER_NODE, TAG)?),
             false,
             "pong",
-            Some(CORE),
             &ConsumerFilter::Any,
             QoSProfile::Reliable,
         )
@@ -807,7 +818,21 @@ const CORE: &str = "bench_core";
 const DRIVER_NODE: &str = "driver";
 const RESPONDER_NODE: &str = "responder";
 
+/// Make a panic in any spawned task fatal. Tokio swallows task panics, which
+/// would leave this node alive with a dead handler so the driver's roundtrip
+/// loop stalls until the harness control timeout. Aborting after the default
+/// hook prints the panic lets the harness startup probe see the exit and
+/// surface the cause immediately instead of waiting out the timeout.
+fn abort_on_spawned_panic() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        std::process::abort();
+    }));
+}
+
 fn main() -> Result<()> {
+    abort_on_spawned_panic();
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let core = node_runner.processor().bound_core_node().to_string();
         let inst = node_runner.processor().bound_instance_id().to_string();
@@ -846,7 +871,6 @@ fn main() -> Result<()> {
                     Some(SenderTarget::node(DRIVER_NODE, TAG).expect("driver target")),
                     false,
                     "ping",
-                    Some(CORE),
                     &ConsumerFilter::Any,
                     QoSProfile::Reliable,
                 )
@@ -874,12 +898,14 @@ fn main() -> Result<()> {
 
 const RESPONDER_MAIN_PY: &str = r####"
 import asyncio
+import os
+import sys
+import traceback
 
 from peppygen import NodeBuilder
 from peppylib import QoSProfile, SenderTarget, ServiceMessenger, TopicMessenger
 
 TAG = "v1"
-CORE = "bench_core"
 DRIVER_NODE = "driver"
 RESPONDER_NODE = "responder"
 
@@ -907,7 +933,6 @@ async def echo_topic(node_runner):
         inst,
         SenderTarget.node(DRIVER_NODE, TAG),
         "ping",
-        CORE,
         None,
         QoSProfile.Reliable,
     )
@@ -926,11 +951,31 @@ async def echo_topic(node_runner):
         )
 
 
+def abort_on_task_failure(task):
+    # A background handler that dies (e.g. a messaging-binding mismatch raising
+    # at subscribe time) would otherwise leave the node alive with a dead
+    # handler, so the driver's roundtrip loop stalls until the harness control
+    # timeout. Make such a failure fatal and visible: print the traceback and
+    # exit, so the harness startup probe sees the dead child and surfaces the
+    # cause in seconds instead of after a multi-minute timeout.
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is None:
+        return
+    traceback.print_exception(type(error), error, error.__traceback__)
+    sys.stderr.flush()
+    os._exit(1)
+
+
 async def setup(parameters, node_runner):
-    return [
+    tasks = [
         asyncio.create_task(serve_echo(node_runner)),
         asyncio.create_task(echo_topic(node_runner)),
     ]
+    for task in tasks:
+        task.add_done_callback(abort_on_task_failure)
+    return tasks
 
 
 def main():

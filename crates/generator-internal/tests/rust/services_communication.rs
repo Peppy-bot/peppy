@@ -245,7 +245,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -316,7 +316,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -326,7 +326,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -539,7 +539,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -605,7 +605,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -615,7 +615,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -900,7 +900,7 @@ fn main() -> Result<()> {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
 
     // Spawn both exposers first so they're ready to handle requests
@@ -983,7 +983,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         CONSUMER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         consumer_instance_id,
         Duration::from_secs(5),
     )
@@ -993,7 +993,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer1_instance_id,
         Duration::from_secs(5),
     )
@@ -1003,7 +1003,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         exposer2_instance_id,
         Duration::from_secs(5),
     )

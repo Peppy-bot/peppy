@@ -7,7 +7,7 @@ name = "{{ node_name }}"
 version = "0.1.0"
 description = "{{ node_name }} peppy node"
 requires-python = ">={{ python_min_version }},<{{ python_max_version }}"
-dependencies = ["peppygen"]
+dependencies = ["peppygen", "peppylib"]
 
 [project.scripts]
 {{ node_name }} = "{{ node_name }}.__main__:main"
@@ -20,3 +20,4 @@ dev = []
 
 [tool.uv.sources]
 peppygen = { path = "{{ pepygen_path }}" }
+peppylib = { path = "{{ pepylib_path }}" }

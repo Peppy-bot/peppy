@@ -941,10 +941,10 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::SlotBinding::Pinned {
-            producer_instance_id: producer_instance_id.to_string(),
+            producer: config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
         }),
         "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
-         consumer's runtime config as a Pinned slot binding",
+         consumer's runtime config as a Pinned slot binding stamped with the daemon's core_node",
     );
 }
 
@@ -1344,9 +1344,10 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::SlotBinding::Pinned {
-            producer_instance_id: producer_instance_id.to_string(),
+            producer: config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
         }),
-        "interface dep `{link_id}` should resolve to the conforming producer's instance",
+        "interface dep `{link_id}` should resolve to the conforming producer's instance \
+         stamped with the daemon's core_node",
     );
 }
 

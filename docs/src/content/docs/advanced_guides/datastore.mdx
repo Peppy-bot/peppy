@@ -151,7 +151,7 @@ The second argument is the same response timeout as above.
 
 ## `list`
 
-`list` returns the metadata of **every** key currently in the store: one entry per key carrying the `key`, its `encoding` tag, and `last_modified_by` (the `instance_id` of the node that last wrote it). The value bytes are deliberately **not** included — a list stays cheap no matter how large your values are; fetch the bytes for a specific key with `get`. The order is unspecified, and the result is a point-in-time snapshot (another node may store or remove keys immediately after).
+`list` returns the metadata of **every** key currently in the store: one entry per key carrying the `key`, its `encoding` tag, and `last_modified_by` (the `instance_id` of the node that last wrote it). The value bytes are deliberately **not** included. A list stays cheap no matter how large your values are; fetch the bytes for a specific key with `get`. The order is unspecified, and the result is a point-in-time snapshot (another node may store or remove keys immediately after).
 
 The only argument is the same response timeout as above.
 
@@ -201,7 +201,7 @@ The only argument is the same response timeout as above.
 
 ## `remove`
 
-`remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent — so removing a missing key is a no-op, not an error.
+`remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent, so removing a missing key is a no-op, not an error.
 
 The second argument is the same response timeout as above.
 

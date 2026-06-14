@@ -603,7 +603,9 @@ fn consumed_action() {
         &["pub struct FeedbackMessage", "pub new_position: [i32; 3]"],
     );
 
-    // fire_goal method (constructor)
+    // fire_goal method (constructor). The fixture's `DependencyContext::native`
+    // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
+    // send_goal call splices a typed `None` at its single target slot.
     assert_contains_all(
         &rendered,
         &[
@@ -612,6 +614,7 @@ fn consumed_action() {
             "feedback_qos: peppylib::config::QoSProfile",
             "-> crate::Result<Self>",
             "peppylib::ActionMessenger::send_goal",
+            "Option::<&peppylib::messaging::ProducerRef>::None,",
             "node_runner.messenger().clone()",
         ],
     );
@@ -820,6 +823,53 @@ fn consumed_two_actions_same_node() {
             r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
+    );
+}
+
+/// A real manifest dep (link_id present) splices the runtime binding
+/// lookup as the single `target` argument of the generated `send_goal`:
+/// `consumer_filter(<link_id>).pinned_target()` resolves at runtime to
+/// the bound producer's full `(core_node, instance_id)`, so a pinned
+/// slot addresses exactly one producer with no discovery probe.
+#[test]
+fn consumed_action_with_link_id_splices_runtime_binding_target() {
+    let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    // Production derives the wire link_id and the manifest link_id from the
+    // same `depends_on` entry (see core-node `sync`); keep them identical
+    // here so the fixture models a reachable input.
+    action.link_id = "left_arm".to_owned();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
+    let format = ConsumedActionMessage {
+        goal_request: Some(goal_request_format),
+        goal_response: Some(goal_response_format),
+        feedback: None,
+        result_request: None,
+        result_response: None,
+    };
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_consumed_action(
+            &action,
+            &format,
+            &crate::DependencyContext::native("brain", "v1")
+                .with_link_id(crate::WireLinkId::from_link_id("left_arm", false)),
+        )
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[".consumer_filter(\"left_arm\")", ".pinned_target()"],
+    );
+    assert_rendered!(
+        !rendered.contains("Option::<&peppylib::messaging::ProducerRef>::None"),
+        rendered,
+        "a linked dep must resolve its target from the bindings map, not emit a wildcard",
     );
 }
 

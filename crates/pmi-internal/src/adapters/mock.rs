@@ -1,6 +1,7 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    AbortOnDrop, IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend,
+    AbortOnDrop, ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken,
+    ActionLivelinessWatch, IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend,
     MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
     ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
     TopicMessage,
@@ -87,12 +88,28 @@ pub(crate) struct MockQuery {
 /// onto each.
 type QueryableMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<MockQuery>>>>>;
 
+/// In-process stand-in for Zenoh's liveliness space. `tokens` counts the
+/// live tokens per declared keyexpr (a count, not a set, so two declares
+/// on the same keyexpr need two drops to go Gone — mirroring Zenoh, where
+/// each token is independent). `watchers` holds the event channels of
+/// active [`ActionLivelinessWatch`]es keyed by their watch pattern; a
+/// declare/drop notifies every watcher whose pattern intersects the
+/// token's keyexpr.
+#[derive(Default)]
+struct MockLivelinessState {
+    tokens: HashMap<String, usize>,
+    watchers: HashMap<String, Vec<flume::Sender<ActionLivelinessEvent>>>,
+}
+
+type LivelinessState = Arc<Mutex<MockLivelinessState>>;
+
 pub struct MockAdapter {
     pub is_session_connected: bool,
     pub is_router_started: bool,
     pub messages: MessageLog,
     pub subscriptions: SubscriptionMap,
     pub(crate) queryables: QueryableMap,
+    liveliness: LivelinessState,
 }
 
 impl Default for MockAdapter {
@@ -103,6 +120,7 @@ impl Default for MockAdapter {
             messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
             queryables: Arc::new(Mutex::new(HashMap::new())),
+            liveliness: Arc::new(Mutex::new(MockLivelinessState::default())),
         }
     }
 }
@@ -124,6 +142,21 @@ impl MessengerBackend for MockAdapter {
         self.messages.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
         self.queryables.lock().unwrap().clear();
+
+        // Mirror Zenoh: closing the session removes every liveliness token
+        // it declared, and watchers observe the removals as Gone events.
+        {
+            let mut liveliness = self.liveliness.lock().unwrap();
+            let keyexprs: Vec<String> = liveliness.tokens.keys().cloned().collect();
+            liveliness.tokens.clear();
+            for keyexpr in keyexprs {
+                Self::notify_liveliness_watchers(
+                    &liveliness,
+                    &keyexpr,
+                    ActionLivelinessEvent::Gone,
+                );
+            }
+        }
 
         Ok(())
     }
@@ -267,6 +300,84 @@ impl MessengerBackend for MockAdapter {
         .await
     }
 
+    async fn declare_action_liveliness(
+        &self,
+        recv: &ActionWireReceiver,
+    ) -> Result<ActionLivelinessToken> {
+        if !self.is_session_connected {
+            return Err(Error::MessagingSessionError(
+                "Session not initialized".to_string(),
+            ));
+        }
+        let keyexpr = ZenohWireFormat::action_liveliness_token(recv);
+        {
+            let mut liveliness = self.liveliness.lock().unwrap();
+            *liveliness.tokens.entry(keyexpr.clone()).or_insert(0) += 1;
+            Self::notify_liveliness_watchers(&liveliness, &keyexpr, ActionLivelinessEvent::Alive);
+        }
+        Ok(ActionLivelinessToken::new(Box::new(MockLivelinessGuard {
+            keyexpr,
+            state: Arc::clone(&self.liveliness),
+        })))
+    }
+
+    async fn watch_action_producer(
+        &self,
+        sender: &ActionWireSender,
+    ) -> Result<ActionLivelinessWatch> {
+        if !self.is_session_connected {
+            return Err(Error::MessagingSessionError(
+                "Session not initialized".to_string(),
+            ));
+        }
+        let pattern = ZenohWireFormat::action_liveliness_watch(sender);
+        let (tx, rx) = flume::unbounded::<ActionLivelinessEvent>();
+        {
+            let mut liveliness = self.liveliness.lock().unwrap();
+            // History emulation: a token that already exists is replayed as
+            // an initial Alive, matching the Zenoh watch's `history(true)`.
+            let alive = liveliness
+                .tokens
+                .iter()
+                .any(|(keyexpr, count)| *count > 0 && Self::key_exprs_intersect(keyexpr, &pattern));
+            if alive {
+                let _ = tx.send(ActionLivelinessEvent::Alive);
+            }
+            liveliness.watchers.entry(pattern).or_default().push(tx);
+        }
+        // Stale watcher senders in the map are benign (notify ignores send
+        // errors), mirroring the topic SubscriptionMap convention.
+        Ok(ActionLivelinessWatch::new(rx, Box::new(())))
+    }
+
+    async fn probe_action_producer(
+        &self,
+        sender: &ActionWireSender,
+        _timeout: std::time::Duration,
+    ) -> Result<ActionLivelinessProbe> {
+        if !self.is_session_connected {
+            return Err(Error::MessagingSessionError(
+                "Session not initialized".to_string(),
+            ));
+        }
+        let pattern = ZenohWireFormat::action_liveliness_watch(sender);
+        let alive = {
+            let liveliness = self.liveliness.lock().unwrap();
+            liveliness
+                .tokens
+                .iter()
+                .any(|(keyexpr, count)| *count > 0 && Self::key_exprs_intersect(keyexpr, &pattern))
+        };
+        // The mock answers instantly: send the alive marker (or don't) and
+        // drop the sender so `resolve` returns without waiting.
+        let (tx, rx) = flume::bounded::<()>(1);
+        if alive {
+            let _ = tx.try_send(());
+        }
+        drop(tx);
+        Ok(ActionLivelinessProbe::new(rx))
+    }
+
     async fn start_router(&mut self) -> Result<()> {
         self.is_router_started = true;
         Ok(())
@@ -282,7 +393,57 @@ impl MessengerBackend for MockAdapter {
     }
 }
 
+/// Drop-guard backing the mock's [`ActionLivelinessToken`]. Removing the
+/// last token on a keyexpr notifies intersecting watchers with a Gone
+/// event, mirroring Zenoh's token undeclaration.
+struct MockLivelinessGuard {
+    keyexpr: String,
+    state: LivelinessState,
+}
+
+impl Drop for MockLivelinessGuard {
+    fn drop(&mut self) {
+        let Ok(mut liveliness) = self.state.lock() else {
+            return;
+        };
+        let remaining = match liveliness.tokens.get_mut(&self.keyexpr) {
+            Some(count) => {
+                *count = count.saturating_sub(1);
+                *count
+            }
+            // Already cleared by `stop_session` (which notified watchers).
+            None => return,
+        };
+        if remaining == 0 {
+            liveliness.tokens.remove(&self.keyexpr);
+            MockAdapter::notify_liveliness_watchers(
+                &liveliness,
+                &self.keyexpr,
+                ActionLivelinessEvent::Gone,
+            );
+        }
+    }
+}
+
 impl MockAdapter {
+    /// Fan a liveliness event out to every watcher whose pattern intersects
+    /// `keyexpr`. Send errors (dropped watches) are ignored, mirroring the
+    /// topic `SubscriptionMap` convention.
+    fn notify_liveliness_watchers(
+        liveliness: &MockLivelinessState,
+        keyexpr: &str,
+        event: ActionLivelinessEvent,
+    ) {
+        for (pattern, watchers) in liveliness.watchers.iter() {
+            if !Self::key_exprs_intersect(pattern, keyexpr) {
+                continue;
+            }
+            for watcher in watchers {
+                let _ = watcher.send(event);
+            }
+        }
+    }
+
     /// Creates a new MockAdapter, wraps it in a Messenger, starts the router,
     /// and returns a `MockInstance` for managing the lifecycle.
     ///
@@ -543,6 +704,20 @@ async fn handle_mock_queryable(
         );
 
         let token = ResponseToken::Mock(MockResponseToken::new(mock_query.reply_tx, reply_keyexpr));
+
+        // Mirrors the zenoh adapter: probes (liveness, discovery, benchmark
+        // sized-probes) are answered in the dispatch path — Response-kind,
+        // never Ack — and never reach the endpoint channel, so a producer
+        // busy in user code still answers them.
+        if parsed.kind == ServiceQueryKind::Probe {
+            let response =
+                crate::probe::probe_response_body(mock_query.payload.as_bytes().as_ref());
+            if let Err(err) = token.respond_response(Payload::from_bytes(response)).await {
+                tracing::warn!(%err, "mock queryable: failed to publish probe response");
+            }
+            continue;
+        }
+
         let request = IncomingRequest {
             payload: mock_query.payload,
             kind: parsed.kind,
@@ -719,8 +894,10 @@ mod tests {
         let sender = ServiceWireSender::new(
             "caller_core",
             "caller_inst",
-            Some("server_core"),
-            Some("server_inst"),
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
             SenderTarget::interface("depth_camera", "v1").expect("iface target"),
             "ping",
             ServiceKind::Service,
@@ -766,6 +943,201 @@ mod tests {
             .expect("caller should receive the reply");
         assert_eq!(reply.kind(), ServiceReplyKind::Response);
         assert_eq!(reply.message().payload().to_bytes().as_ref(), b"pong");
+    }
+
+    /// Probes are answered by the adapter's dispatch path — one
+    /// Response-kind reply — and never reach the producer's endpoint
+    /// channel, so a producer busy in user code (not parked in its recv
+    /// loop) still answers liveness/discovery/benchmark probes. Sized
+    /// probes get a response of the requested size; plain probes get an
+    /// empty one.
+    #[tokio::test]
+    async fn mock_queryable_answers_probes_in_dispatch_without_enqueueing() {
+        use crate::wire::{
+            SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+            ServiceWireSender,
+        };
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let receiver = ServiceWireReceiver::new(
+            "server_core",
+            "server_inst",
+            SenderTarget::node("camera", "v1").expect("node target"),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid receiver");
+        let sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_inst",
+            None, // wildcard target: the discovery probe shape
+            SenderTarget::node("camera", "v1").expect("node target"),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid sender");
+
+        let queryable = adapter
+            .listen_service(&receiver)
+            .await
+            .expect("queryable declare should succeed");
+        // Nobody drains `queryable.rx` — the producer is "busy".
+
+        // Plain (empty-body) probe: empty Response-kind reply.
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(bytes::Bytes::new()),
+                ServiceQueryKind::Probe,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .await
+            .expect("probe call should succeed");
+        let reply = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("probe must be answered without the endpoint loop");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert!(reply.message().payload().is_empty());
+
+        // Benchmark sized probe: response carries the requested size.
+        let mut reply_stream = adapter
+            .call_service(
+                &sender,
+                Payload::from_bytes(crate::probe::build_sized_probe_request(64, 4096)),
+                ServiceQueryKind::Probe,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .await
+            .expect("sized probe call should succeed");
+        let reply = reply_stream
+            .rx
+            .recv()
+            .await
+            .expect("sized probe must be answered without the endpoint loop");
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        assert_eq!(reply.message().payload().len(), 4096);
+
+        // Neither probe leaked into the endpoint channel.
+        assert!(
+            queryable.rx.try_recv().is_err(),
+            "probes must never reach the endpoint channel"
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_liveliness_token_lifecycle_drives_watch_and_probe() {
+        // The mock must mirror Zenoh's liveliness semantics: a watch created
+        // after the token exists replays an initial Alive (history), dropping
+        // the token emits Gone, and the one-shot probe answers presence.
+        use crate::wire::{ActionWireReceiver, ActionWireSender, SenderTarget};
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let target = SenderTarget::node("arm", "v1").expect("node target");
+        let receiver =
+            ActionWireReceiver::new("server_core", "server_inst", target.clone(), "move")
+                .expect("valid receiver");
+        let sender = ActionWireSender::new(
+            "caller_core",
+            "caller_inst",
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
+            target.clone(),
+            "move",
+        )
+        .expect("valid sender");
+
+        // Probe before any token: absent.
+        let probe = adapter
+            .probe_action_producer(&sender, std::time::Duration::from_secs(1))
+            .await
+            .expect("probe should issue");
+        assert!(!probe.resolve().await, "no token declared yet");
+
+        let token = adapter
+            .declare_action_liveliness(&receiver)
+            .await
+            .expect("token should declare");
+
+        // History: a watch declared after the token sees an initial Alive.
+        let watch = adapter
+            .watch_action_producer(&sender)
+            .await
+            .expect("watch should declare");
+        assert_eq!(
+            watch.rx.recv_async().await.expect("initial event"),
+            ActionLivelinessEvent::Alive
+        );
+
+        let probe = adapter
+            .probe_action_producer(&sender, std::time::Duration::from_secs(1))
+            .await
+            .expect("probe should issue");
+        assert!(probe.resolve().await, "token is alive");
+
+        // Dropping the token is the producer-death signal.
+        drop(token);
+        assert_eq!(
+            watch.rx.recv_async().await.expect("gone event"),
+            ActionLivelinessEvent::Gone
+        );
+        let probe = adapter
+            .probe_action_producer(&sender, std::time::Duration::from_secs(1))
+            .await
+            .expect("probe should issue");
+        assert!(!probe.resolve().await, "token is gone");
+    }
+
+    #[tokio::test]
+    async fn mock_stop_session_reports_tokens_gone() {
+        // Closing the session removes its tokens and watchers observe Gone —
+        // the in-process stand-in for hard producer death.
+        use crate::wire::{ActionWireReceiver, ActionWireSender, SenderTarget};
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+
+        let target = SenderTarget::node("arm", "v1").expect("node target");
+        let receiver =
+            ActionWireReceiver::new("server_core", "server_inst", target.clone(), "move")
+                .expect("valid receiver");
+        let sender = ActionWireSender::new(
+            "caller_core",
+            "caller_inst",
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
+            target,
+            "move",
+        )
+        .expect("valid sender");
+
+        let _token = adapter
+            .declare_action_liveliness(&receiver)
+            .await
+            .expect("token should declare");
+        let watch = adapter
+            .watch_action_producer(&sender)
+            .await
+            .expect("watch should declare");
+        assert_eq!(
+            watch.rx.recv_async().await.expect("initial event"),
+            ActionLivelinessEvent::Alive
+        );
+
+        adapter.stop_session().await.expect("session should stop");
+        assert_eq!(
+            watch.rx.recv_async().await.expect("gone event"),
+            ActionLivelinessEvent::Gone
+        );
     }
 
     #[tokio::test]

@@ -93,7 +93,6 @@ async fn send_refresh_inner(
         caller_instance_id,
         common::core_node_target(&started.core_node_name),
         names::REPO_REFRESH_ACTION,
-        Some(&started.core_node_name),
         None,
         goal_payload,
         QoSProfile::default(),

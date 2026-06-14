@@ -46,6 +46,10 @@ regex = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 ctor = "1.0"
+# Raw zenoh session for wire-level observation in messaging tests (probe
+# accounting). Pinned to the exact version pmi pins so the test binary
+# shares pmi's zenoh build instead of compiling a second one.
+zenoh = "=1.9.0"
 
 [features]
 default = ["zenoh"]

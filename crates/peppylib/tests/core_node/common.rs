@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::{MessengerHandle, ProducerRef, ServiceMessenger, ServiceTarget};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use pmi::{ZenohAdapter, ZenohdInstance};
 use tempfile::TempDir;
@@ -52,8 +52,7 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
             CLIENT_INSTANCE,
             test_node_target(CORE_NODE),
             service_name,
-            Some(CORE_NODE),
-            None,
+            ServiceTarget::Producer(&ProducerRef::new(CORE_NODE, SERVER_INSTANCE)),
         )
         .await
         .expect("reachability check should succeed")

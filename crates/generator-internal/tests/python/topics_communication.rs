@@ -141,9 +141,9 @@ from peppygen.consumed_topics import uvc_camera_video_stream
 
 async def receive_frames(node_runner, frame_received):
     print("receiver: about to subscribe", flush=True)
-    instance_id, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
+    producer, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
     print(
-        f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}",
+        f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {producer.core_node}/{producer.instance_id}",
         flush=True,
     )
     frame_received.set()
@@ -295,7 +295,7 @@ if __name__ == "__main__":
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: Some(TEST_CORE_NODE),
+        target_core_node: TEST_CORE_NODE,
     };
 
     // Wait for both nodes to expose health/ready endpoints.
@@ -334,7 +334,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         RECEIVER_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         receiver_instance_id,
         Duration::from_secs(5),
     )
@@ -344,7 +344,7 @@ if __name__ == "__main__":
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_CORE_NODE),
+        TEST_CORE_NODE,
         emitter_instance_id,
         Duration::from_secs(5),
     )
@@ -370,8 +370,10 @@ if __name__ == "__main__":
         receiver_stderr
     );
     assert!(
-        receiver_stdout.contains("got 640x480 frame encoded as rgb8"),
-        "receiver did not receive emitter frame.\nstdout:\n{}\nstderr:\n{}",
+        receiver_stdout.contains(&format!(
+            "got 640x480 frame encoded as rgb8 from {TEST_CORE_NODE}/{EMITTER_INSTANCE_ID}"
+        )),
+        "receiver did not receive emitter frame with full producer identity.\nstdout:\n{}\nstderr:\n{}",
         receiver_stdout,
         receiver_stderr
     );

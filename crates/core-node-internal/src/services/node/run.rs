@@ -16,7 +16,8 @@ use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ConcurrentAction, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, PendingGoal,
+    ActionFeedbackPublisher, ConcurrentAction, NODE_HEALTH_SERVICE, NODE_READY_SERVICE,
+    PendingGoal, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -70,6 +71,10 @@ pub struct DaemonDefaults {
     /// Daemon-liveness grace period (seconds), injected into every spawned node
     /// so its watchdog knows how long to tolerate a silent daemon.
     pub daemon_grace_secs: u64,
+    /// Cooperative-shutdown grace period (seconds), injected into every spawned
+    /// node so its runtime bounds registered shutdown hooks by the same window
+    /// the daemon waits before force-killing a stopping node.
+    pub shutdown_grace_secs: u64,
 }
 
 impl DaemonDefaults {
@@ -81,6 +86,7 @@ impl DaemonDefaults {
             messaging_mode: config.mode,
             peer_buffer: config.peer,
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
+            shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
         }
     }
 }
@@ -125,6 +131,7 @@ fn apply_daemon_defaults(
     cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
     cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
+    cfg.lifecycle.shutdown_grace_secs = defaults.shutdown_grace_secs;
 }
 
 struct ProcessNodeRunContext {
@@ -1142,8 +1149,10 @@ async fn perform_health_check(
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_HEALTH_SERVICE,
-            Some(target.target_core_node),
-            Some(target.target_instance_id),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+                target.target_core_node,
+                target.target_instance_id,
+            )),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1208,8 +1217,10 @@ async fn wait_for_ready_signal(
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
             NODE_READY_SERVICE,
-            Some(target.target_core_node),
-            Some(target.target_instance_id),
+            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+                target.target_core_node,
+                target.target_instance_id,
+            )),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1292,8 +1303,10 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 &p.caller_instance_id,
                 SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
                 NODE_HEALTH_SERVICE,
-                Some(&p.target_core_node),
-                Some(p.target_instance_id.as_str()),
+                ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+                    p.target_core_node.as_str(),
+                    p.target_instance_id.as_str(),
+                )),
                 request_payload.clone(),
                 p.timeout,
             )
@@ -1384,13 +1397,14 @@ mod tests {
         .expect("valid test runtime config")
     }
 
-    /// `DaemonDefaults` with the given mode/buffers and an arbitrary
-    /// recognizable grace period.
+    /// `DaemonDefaults` with the given mode/buffers and arbitrary
+    /// recognizable grace periods.
     fn daemon_defaults(mode: Mode, peer: PeerConfig) -> DaemonDefaults {
         DaemonDefaults {
             messaging_mode: mode,
             peer_buffer: peer,
             daemon_grace_secs: 123,
+            shutdown_grace_secs: 17,
         }
     }
 
@@ -1437,8 +1451,8 @@ mod tests {
         );
     }
 
-    /// Buffer sizes and the daemon-liveness grace period are applied regardless
-    /// of mode or container placement.
+    /// Buffer sizes and both grace periods are applied regardless of mode or
+    /// container placement.
     #[test]
     fn apply_daemon_defaults_always_applies_buffers_and_grace() {
         let peer = PeerConfig {
@@ -1455,6 +1469,7 @@ mod tests {
             assert_eq!(cfg.discovery.standard_buffer_size, 64);
             assert_eq!(cfg.discovery.high_throughput_buffer_size, 4096);
             assert_eq!(cfg.lifecycle.daemon_grace_secs, 123);
+            assert_eq!(cfg.lifecycle.shutdown_grace_secs, 17);
         }
     }
 
