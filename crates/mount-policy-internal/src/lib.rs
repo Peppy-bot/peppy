@@ -26,11 +26,16 @@ pub fn blocked_mount_paths_display() -> String {
 /// allowed. Also handles macOS `/private/X` equivalents (e.g., `/private/tmp` maps
 /// to `/tmp`).
 pub fn is_blocked_mount_source(path: &str) -> bool {
-    if BLOCKED_MOUNT_PATHS.contains(&path) {
+    // Normalize trailing slashes so `/tmp/` matches `/tmp`. An all-slash input
+    // (e.g. `/` or `//`) normalizes back to the root `/`.
+    let trimmed = path.trim_end_matches('/');
+    let normalized = if trimmed.is_empty() { "/" } else { trimmed };
+
+    if BLOCKED_MOUNT_PATHS.contains(&normalized) {
         return true;
     }
     // macOS: /private/tmp -> /tmp, /private/var -> /var
-    if let Some(stripped) = path.strip_prefix("/private") {
+    if let Some(stripped) = normalized.strip_prefix("/private") {
         return BLOCKED_MOUNT_PATHS.contains(&stripped);
     }
     false
@@ -72,11 +77,21 @@ mod tests {
     #[test]
     fn display_lists_the_blocked_paths() {
         let display = blocked_mount_paths_display();
-        for path in BLOCKED_MOUNT_PATHS {
-            assert!(
-                display.contains(path),
-                "display string should list {path}, got: {display}"
-            );
-        }
+        let entries: Vec<&str> = display.split(", ").collect();
+        assert_eq!(
+            entries,
+            BLOCKED_MOUNT_PATHS.to_vec(),
+            "display should list every blocked path as an exact, comma-separated entry, got: {display}"
+        );
+    }
+
+    #[test]
+    fn rejects_trailing_slash_variants() {
+        assert!(is_blocked_mount_source("/tmp/"));
+        assert!(is_blocked_mount_source("/var//"));
+        assert!(is_blocked_mount_source("//"));
+        assert!(is_blocked_mount_source("/private/tmp/"));
+        // Trailing slash on an allowed subdirectory stays allowed.
+        assert!(!is_blocked_mount_source("/tmp/my_app/"));
     }
 }
