@@ -280,9 +280,10 @@ pub fn lookup<'a>(
 /// Returns the entry whose `(name, tag, sha256)` triple matches
 /// exactly. Use this when the caller wants a specific manifest content
 /// rather than the first-in-priority-order pick. Returns `None` when no
-/// entry matches.
-#[allow(dead_code)] // public API for future content-pinned lookups
-pub fn lookup_by_sha256<'a>(
+/// entry matches. Test-only: kept to document/verify the content-pinned
+/// lookup, but not yet wired into a production flow.
+#[cfg(test)]
+fn lookup_by_sha256<'a>(
     entries: &'a [NodeCacheEntry],
     name: &str,
     tag: &str,
@@ -303,19 +304,6 @@ pub fn lookup_launcher<'a>(
         .iter()
         .filter(|e| e.launcher_name == name)
         .min_by_key(|e| e.repo_id)
-}
-
-/// Returns the launcher entry whose `(name, sha256)` pair matches
-/// exactly. Returns `None` when no entry matches.
-#[allow(dead_code)] // public API for future content-pinned lookups
-pub fn lookup_launcher_by_sha256<'a>(
-    entries: &'a [LauncherCacheEntry],
-    name: &str,
-    sha256: &str,
-) -> Option<&'a LauncherCacheEntry> {
-    entries
-        .iter()
-        .find(|e| e.launcher_name == name && e.sha256 == sha256)
 }
 
 /// Returns the highest-priority (lowest `repo_id`) interface entry
@@ -347,7 +335,7 @@ pub fn lookup_interface_by_sha256<'a>(
 /// Reads `launchers.json5` and tags each entry with the `repo_id` of its
 /// originating repository entry. Skips memoization (launches are rare
 /// events; the cost of re-parsing is negligible compared to a launch).
-pub fn load_launcher_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<LauncherCacheEntry>> {
+fn load_launcher_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<LauncherCacheEntry>> {
     let path = launchers_repo_cache_path(peppy_dirs);
     if !path.exists() {
         return Ok(Vec::new());
@@ -401,7 +389,6 @@ pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 /// Reads `interfaces.json5` and tags each entry with the `repo_id` of
 /// its originating repository entry. Returns an empty vec when the file
 /// is missing.
-#[allow(dead_code)] // public API consumed by upcoming interface resolution flows
 pub fn load_interface_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<InterfaceCacheEntry>> {
     let path = interfaces_repo_cache_path(peppy_dirs);
     if !path.exists() {

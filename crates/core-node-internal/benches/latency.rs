@@ -111,7 +111,12 @@ fn main() {
     }
 
     print_table(&rows);
-    baseline::save(&baseline_path, &current);
+    if let Err(err) = baseline::save(&baseline_path, &current) {
+        eprintln!(
+            "warning: failed to save latency baseline to {}: {err}",
+            baseline_path.display()
+        );
+    }
 }
 
 /// Print the CPU/scheduling environment that governs run-to-run variance, so a

@@ -191,15 +191,18 @@ mod tests {
         std::fs::create_dir_all(&conf_dir).unwrap();
         let repos_path = conf_dir.join("repositories.json5");
         std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE).unwrap();
-        let mtime_before = std::fs::metadata(&repos_path).unwrap().modified().unwrap();
+        let content_before = std::fs::read_to_string(&repos_path).unwrap();
 
-        // Sleep briefly so a write would change mtime.
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        ensure_default_repos(&peppy_dirs).unwrap();
+        let outcome = ensure_default_repos(&peppy_dirs).unwrap();
 
-        let mtime_after = std::fs::metadata(&repos_path).unwrap().modified().unwrap();
+        // Nothing needs adding when the file already holds every default, and
+        // the file is left byte-for-byte unchanged. Asserted directly on the
+        // outcome + content (deterministic) rather than via filesystem mtime +
+        // a sleep, which depended on wall-clock granularity.
+        assert_eq!(outcome, InitOutcome::Updated { added: 0 });
+        let content_after = std::fs::read_to_string(&repos_path).unwrap();
         assert_eq!(
-            mtime_before, mtime_after,
+            content_before, content_after,
             "file should not be rewritten when nothing changes"
         );
     }

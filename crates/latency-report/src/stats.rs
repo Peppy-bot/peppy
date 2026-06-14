@@ -13,8 +13,9 @@ pub struct Summary {
 /// Nearest-rank percentile over an already-sorted ascending slice.
 ///
 /// `p` is a fraction in `[0.0, 1.0]` (e.g. `0.5` for the median). Returns `0`
-/// for an empty slice.
-pub fn percentile(sorted: &[u64], p: f64) -> u64 {
+/// for an empty slice. Internal to [`summarize`]; consumers read percentiles off
+/// the [`Summary`] it returns.
+fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
     }
@@ -66,6 +67,15 @@ mod tests {
         let sorted = [1, 2, 3];
         assert_eq!(percentile(&sorted, -1.0), 1);
         assert_eq!(percentile(&sorted, 2.0), 3);
+    }
+
+    #[test]
+    fn percentile_rounds_fractional_rank_to_nearest() {
+        // 9 elements, indices 0..=8. The nearest-rank index is rounded:
+        // 0.9 -> (8 * 0.9) = 7.2 -> 7, and 0.95 -> 7.6 -> 8.
+        let sorted: Vec<u64> = (0..9).collect();
+        assert_eq!(percentile(&sorted, 0.9), 7);
+        assert_eq!(percentile(&sorted, 0.95), 8);
     }
 
     #[test]

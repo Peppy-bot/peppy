@@ -4,12 +4,13 @@ use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{
     process_refresh, read_or_create_repos, write_cache, write_interface_cache, write_launcher_cache,
 };
+use crate::services::response::into_service_response;
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -43,12 +44,10 @@ async fn handle_repo_remove_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    let (payload, needs_refresh) = handle_repo_remove_request_inner(&context, &peppy_dirs)
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        })?;
+    let (payload, needs_refresh) = into_service_response(
+        &context,
+        handle_repo_remove_request_inner(&context, &peppy_dirs),
+    )?;
 
     if needs_refresh {
         let dirs = peppy_dirs.clone();

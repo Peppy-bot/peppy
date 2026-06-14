@@ -56,8 +56,9 @@ fn visible_len(value: &str) -> usize {
 
 /// Pad `value` on the right to `width`, counting the wide `µ`/`Δ`/`✓` glyphs as
 /// one column each and ANSI color escapes as zero (so columns stay aligned in a
-/// monospace terminal whether or not the cell is colored).
-pub fn pad(value: &str, width: usize) -> String {
+/// monospace terminal whether or not the cell is colored). Internal helper for
+/// [`render_table`].
+fn pad(value: &str, width: usize) -> String {
     let len = visible_len(value);
     if len >= width {
         value.to_string()
@@ -119,6 +120,15 @@ mod tests {
     }
 
     #[test]
+    fn fmt_duration_unit_boundaries() {
+        // The branch cutoffs are `< 1_000` (ns) and `< 1_000_000` (µs).
+        assert_eq!(fmt_duration(Duration::from_nanos(999)), "999ns");
+        assert_eq!(fmt_duration(Duration::from_nanos(1_000)), "1µs");
+        assert_eq!(fmt_duration(Duration::from_nanos(999_999)), "1000µs");
+        assert_eq!(fmt_duration(Duration::from_nanos(1_000_000)), "1.00ms");
+    }
+
+    #[test]
     fn fmt_delta_handles_zero_baseline() {
         assert_eq!(fmt_delta(100, 0), "—");
         assert_eq!(fmt_delta(110, 100), "+10.0%");
@@ -148,6 +158,40 @@ mod tests {
         let colored = "\x1b[36ma\x1b[0m";
         assert_eq!(pad(colored, 4), format!("{colored}   "));
         assert_eq!(visible_len(colored), 1);
+    }
+
+    #[test]
+    fn visible_len_tolerates_truncated_and_bare_escapes() {
+        // A complete CSI color sequence is zero-width: only "a" is a column.
+        assert_eq!(visible_len("\x1b[36ma"), 1);
+        // An escape whose final byte never arrives before end-of-string is
+        // consumed without panicking and contributes no columns.
+        assert_eq!(visible_len("a\x1b[36"), 1);
+        // An escape not followed by `[` still skips up to its final byte (here
+        // `m`), so only "a" and "b" count.
+        assert_eq!(visible_len("a\x1bmb"), 2);
+    }
+
+    #[test]
+    fn render_table_pads_short_rows_and_ignores_extra_cells() {
+        let headers = ["a", "b", "c"];
+        let rows = vec![
+            // One cell short: the missing third column renders as empty.
+            vec!["x".to_string(), "y".to_string()],
+            // One cell long: the fourth ("extra") is dropped.
+            vec![
+                "1".to_string(),
+                "2".to_string(),
+                "3".to_string(),
+                "extra".to_string(),
+            ],
+        ];
+        let table = render_table(&headers, &rows);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines[0], "a  b  c");
+        assert_eq!(lines[2], "x  y   ");
+        assert_eq!(lines[3], "1  2  3");
+        assert!(!table.contains("extra"), "the extra cell must be dropped");
     }
 
     #[test]

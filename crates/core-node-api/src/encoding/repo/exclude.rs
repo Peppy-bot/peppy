@@ -119,3 +119,93 @@ impl RepoExcludeResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exclude_request_new_fs_round_trips() {
+        let request = RepoExcludeRequest::new_fs("/abs/repo");
+        assert_eq!(request.source, RepoSource::Fs(PathBuf::from("/abs/repo")));
+        let payload = request.encode().expect("encode");
+        let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn exclude_request_new_git_round_trips_with_ref() {
+        let request =
+            RepoExcludeRequest::new_git("https://github.com/org/repo", Some("main".to_owned()));
+        assert_eq!(
+            request.source,
+            RepoSource::Git {
+                repo_url: "https://github.com/org/repo".to_owned(),
+                repo_ref: Some("main".to_owned()),
+            }
+        );
+        let payload = request.encode().expect("encode");
+        let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn exclude_request_new_git_round_trips_without_ref() {
+        // An absent ref encodes as the empty string and decodes back to `None`.
+        let request = RepoExcludeRequest::new_git("https://github.com/org/repo", None);
+        let payload = request.encode().expect("encode");
+        let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert_eq!(
+            decoded.source,
+            RepoSource::Git {
+                repo_url: "https://github.com/org/repo".to_owned(),
+                repo_ref: None,
+            }
+        );
+    }
+
+    #[test]
+    fn exclude_request_new_url_round_trips() {
+        let request = RepoExcludeRequest::new_url("https://example.com/packages");
+        assert_eq!(
+            request.source,
+            RepoSource::Url("https://example.com/packages".to_owned())
+        );
+        let payload = request.encode().expect("encode");
+        let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn exclude_response_success_round_trips() {
+        let response = RepoExcludeResponse::success();
+        let payload = response.encode().expect("encode");
+        let decoded = RepoExcludeResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(decoded.success);
+        assert!(decoded.error_message.is_empty());
+    }
+
+    #[test]
+    fn exclude_response_failure_round_trips() {
+        let response = RepoExcludeResponse::failure("not found");
+        let payload = response.encode().expect("encode");
+        let decoded = RepoExcludeResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message, "not found");
+    }
+
+    #[test]
+    fn exclude_request_decode_rejects_malformed_bytes() {
+        RepoExcludeRequest::decode(&[0xFF, 0xFF, 0xFF, 0xFF])
+            .expect_err("malformed bytes must be rejected");
+    }
+
+    #[test]
+    fn exclude_response_decode_rejects_malformed_bytes() {
+        RepoExcludeResponse::decode(&[0xFF, 0xFF, 0xFF, 0xFF])
+            .expect_err("malformed bytes must be rejected");
+    }
+}

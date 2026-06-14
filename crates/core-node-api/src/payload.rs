@@ -122,3 +122,67 @@ impl TryFrom<Payload> for NonEmptyPayload {
         Self::try_new(payload)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_and_default_are_empty() {
+        assert!(Payload::new().is_empty());
+        assert!(Payload::default().is_empty());
+        assert_eq!(Payload::new(), Payload::default());
+    }
+
+    #[test]
+    fn from_static_preserves_bytes() {
+        let payload = Payload::from_static(b"abc");
+        assert_eq!(payload.as_ref(), b"abc");
+        // Deref gives slice access too.
+        assert_eq!(&*payload, b"abc");
+        assert_eq!(payload.len(), 3);
+    }
+
+    #[test]
+    fn from_vec_and_from_bytes_agree_and_round_trip() {
+        let from_vec = Payload::from(vec![1u8, 2, 3]);
+        let from_bytes = Payload::from(Bytes::from_static(&[1u8, 2, 3]));
+        assert_eq!(from_vec, from_bytes);
+        // into_inner returns the underlying bytes unchanged.
+        assert_eq!(from_vec.into_inner(), Bytes::from_static(&[1, 2, 3]));
+    }
+
+    // The `&`s are the whole point here — this exercises the two by-reference
+    // `PartialEq` impls, so clippy's "drop the reference" suggestion is wrong.
+    #[allow(clippy::op_ref)]
+    #[test]
+    fn partial_eq_by_reference_both_directions() {
+        let owned = Payload::from(vec![9u8, 8, 7]);
+        let borrowed = Payload::from(vec![9u8, 8, 7]);
+        // `Payload == &Payload` and `&Payload == Payload` (the two helper impls).
+        assert!(owned == &borrowed);
+        assert!(&borrowed == owned);
+    }
+
+    #[test]
+    fn non_empty_payload_rejects_empty() {
+        // `NonEmptyPayload` is intentionally not `Debug`, so match rather than
+        // `expect_err` to inspect the error.
+        match NonEmptyPayload::try_new(Payload::new()) {
+            Ok(_) => panic!("empty payload must be rejected"),
+            Err(err) => assert!(err.to_string().contains("empty"), "got: {err}"),
+        }
+        // The `TryFrom` impl mirrors `try_new`.
+        assert!(NonEmptyPayload::try_from(Payload::new()).is_err());
+    }
+
+    #[test]
+    fn non_empty_payload_accepts_non_empty_and_round_trips() {
+        let payload = Payload::from_static(b"\x00"); // a single NUL byte is non-empty
+        let wrapped = NonEmptyPayload::try_new(payload.clone()).expect("non-empty must pass");
+        assert_eq!(wrapped.into_inner(), payload);
+        // `TryFrom` agrees.
+        let via_try_from = NonEmptyPayload::try_from(payload.clone()).expect("try_from non-empty");
+        assert_eq!(via_try_from.into_inner(), payload);
+    }
+}

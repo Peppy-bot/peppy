@@ -68,14 +68,44 @@ impl CpuEnvironment {
 mod tests {
     use super::*;
 
+    fn env(cores: usize, governor: &str, turbo: &str, loadavg: &str) -> CpuEnvironment {
+        CpuEnvironment {
+            cores,
+            governor: governor.to_string(),
+            turbo: turbo.to_string(),
+            loadavg: loadavg.to_string(),
+        }
+    }
+
     #[test]
-    fn detect_and_summarize() {
-        let env = CpuEnvironment::detect();
-        let line = env.summary_line();
+    fn detect_does_not_panic_on_this_host() {
+        // Smoke test: detect() reads live sysfs, so its values are host-specific;
+        // we only assert it produces the expected shape without panicking. The
+        // behavior of summary_line()/is_noisy() is pinned by the fixture tests
+        // below, independent of the host.
+        let line = CpuEnvironment::detect().summary_line();
         assert!(line.contains("cores"));
         assert!(line.contains("governor="));
         assert!(line.contains("turbo="));
-        // is_noisy must not panic and is deterministic for a given snapshot.
-        let _ = env.is_noisy();
+    }
+
+    #[test]
+    fn summary_line_formats_all_fields() {
+        assert_eq!(
+            env(4, "performance", "off", "0.30").summary_line(),
+            "4 cores, governor=performance, turbo=off, loadavg=0.30"
+        );
+    }
+
+    #[test]
+    fn is_noisy_unless_turbo_off_and_governor_performance() {
+        // Quiet only when turbo is explicitly off AND the governor is performance.
+        assert!(!env(4, "performance", "off", "0.10").is_noisy());
+        // Turbo on (or unknown) is noisy regardless of governor.
+        assert!(env(4, "performance", "on", "0.10").is_noisy());
+        assert!(env(4, "performance", "?", "0.10").is_noisy());
+        // A non-performance (or unknown) governor is noisy even with turbo off.
+        assert!(env(4, "powersave", "off", "0.10").is_noisy());
+        assert!(env(4, "?", "off", "0.10").is_noisy());
     }
 }

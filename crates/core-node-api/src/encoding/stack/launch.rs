@@ -15,23 +15,6 @@ use crate::encoding::{
 /// received on the wire — Cap'n Proto defaults unset `UInt64` to 0).
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
-/// Resolves a user-supplied launcher path, treating a bare name as shorthand for the `.json5`
-/// file. If the path does not have a `.json5` extension and a sibling `<path>.json5` exists as
-/// a file, that is returned; otherwise the original path is returned unchanged so the caller's
-/// existing not-found error path fires.
-///
-/// Lives here so every endpoint that constructs a `LaunchGoal` (CLI, peppylib, future SDKs)
-/// can call it — keeping the bare-name shorthand consistent regardless of entry point.
-pub fn resolve_launcher_path(path: PathBuf) -> PathBuf {
-    if path.extension().is_some_and(|ext| ext == "json5") {
-        return path;
-    }
-    let mut with_ext = path.clone().into_os_string();
-    with_ext.push(".json5");
-    let candidate = PathBuf::from(with_ext);
-    if candidate.is_file() { candidate } else { path }
-}
-
 /// Applies a default value when a timeout field is 0 (Cap'n Proto defaults unset UInt64 to 0).
 fn with_timeout_default(value: u64, default: u64) -> u64 {
     if value == 0 { default } else { value }
@@ -495,42 +478,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_launcher_path_appends_json5_when_sibling_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("openarm01_sim_teleop");
-        let with_ext = tmp.path().join("openarm01_sim_teleop.json5");
-        std::fs::write(&with_ext, "{}").unwrap();
-
-        assert_eq!(resolve_launcher_path(bare), with_ext);
-    }
-
-    #[test]
-    fn resolve_launcher_path_keeps_explicit_json5_extension() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("foo.json5");
-        std::fs::write(&p, "{}").unwrap();
-
-        assert_eq!(resolve_launcher_path(p.clone()), p);
-    }
-
-    #[test]
-    fn resolve_launcher_path_returns_original_when_no_sibling_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("does_not_exist");
-
-        assert_eq!(resolve_launcher_path(bare.clone()), bare);
-    }
-
-    #[test]
-    fn resolve_launcher_path_ignores_directory_at_sibling_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("name");
-        std::fs::create_dir(tmp.path().join("name.json5")).unwrap();
-
-        assert_eq!(resolve_launcher_path(bare.clone()), bare);
-    }
-
-    #[test]
     fn launch_goal_roundtrips_fs_origin() {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs(PathBuf::from("/tmp/launcher.json5")),
@@ -598,5 +545,132 @@ mod tests {
         let bytes = goal.encode().expect("encode");
         let err = LaunchGoal::decode(&bytes).expect_err("empty name should fail");
         assert!(matches!(err, crate::Error::Decoding(_)));
+    }
+
+    #[test]
+    fn launch_feedback_step_phase_labels() {
+        assert_eq!(LaunchFeedbackStep::LauncherStep.phase_label(), "launch");
+        assert_eq!(LaunchFeedbackStep::AddingNode.phase_label(), "add");
+        assert_eq!(LaunchFeedbackStep::BuildingNode.phase_label(), "build");
+        assert_eq!(LaunchFeedbackStep::RunningNode.phase_label(), "run");
+    }
+
+    #[test]
+    fn launch_feedback_stdout_roundtrips_all_steps() {
+        for step in [
+            LaunchFeedbackStep::LauncherStep,
+            LaunchFeedbackStep::AddingNode,
+            LaunchFeedbackStep::BuildingNode,
+            LaunchFeedbackStep::RunningNode,
+        ] {
+            let fb = LaunchFeedback::stdout("a line of output", step);
+            assert!(fb.is_stdout());
+            assert!(!fb.is_stderr());
+            assert_eq!(fb.step, step);
+            let bytes = fb.encode().expect("encode").into_inner();
+            let decoded = LaunchFeedback::decode(bytes.as_ref()).expect("decode");
+            assert_eq!(decoded, fb);
+            assert!(decoded.is_stdout());
+        }
+    }
+
+    #[test]
+    fn launch_feedback_stderr_roundtrips() {
+        let fb = LaunchFeedback::stderr("something failed", LaunchFeedbackStep::BuildingNode);
+        assert!(fb.is_stderr());
+        assert!(!fb.is_stdout());
+        let bytes = fb.encode().expect("encode").into_inner();
+        let decoded = LaunchFeedback::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, fb);
+        assert!(decoded.is_stderr());
+        assert_eq!(decoded.line, "something failed");
+    }
+
+    #[test]
+    fn launch_feedback_decode_rejects_malformed() {
+        assert!(LaunchFeedback::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn launch_result_new_roundtrips() {
+        let result = LaunchResult::new(true, "/var/log/launch.log", None);
+        assert!(result.success);
+        assert!(result.node_add_logs.is_empty());
+        assert!(result.node_build_logs.is_empty());
+        assert!(result.node_run_logs.is_empty());
+        let bytes = result.encode().expect("encode");
+        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn launch_result_success_constructor_roundtrips() {
+        let result = LaunchResult::success("/var/log/launch.log");
+        assert!(result.success);
+        assert_eq!(result.error_message, None);
+        let bytes = result.encode().expect("encode");
+        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn launch_result_failure_constructor_roundtrips() {
+        let result = LaunchResult::failure("/var/log/launch.log", "node build failed");
+        assert!(!result.success);
+        assert_eq!(result.error_message.as_deref(), Some("node build failed"));
+        let bytes = result.encode().expect("encode");
+        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn launch_result_with_empty_node_logs_roundtrips() {
+        let result = LaunchResult::success("/var/log/launch.log").with_node_logs(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let bytes = result.encode().expect("encode");
+        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, result);
+        assert!(decoded.node_add_logs.is_empty());
+        assert!(decoded.node_build_logs.is_empty());
+        assert!(decoded.node_run_logs.is_empty());
+    }
+
+    #[test]
+    fn launch_result_with_populated_node_logs_roundtrips() {
+        let result = LaunchResult::failure("/var/log/launch.log", "one node failed")
+            .with_node_logs(
+                vec![NodeAddLogEntry {
+                    node_label: "camera:v1".to_string(),
+                    log_path: PathBuf::from("/var/log/add/camera.log"),
+                    failed: false,
+                }],
+                vec![NodeBuildLogEntry {
+                    node_label: "planner:v2".to_string(),
+                    log_path: PathBuf::from("/var/log/build/planner.log"),
+                    failed: true,
+                }],
+                vec![NodeRunLogEntry {
+                    instance_id: "inst-001".to_string(),
+                    node_label: "driver:v3".to_string(),
+                    log_path: PathBuf::from("/var/log/run/driver.log"),
+                    failed: false,
+                }],
+            );
+        let bytes = result.encode().expect("encode");
+        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, result);
+        assert_eq!(decoded.node_add_logs.len(), 1);
+        assert_eq!(decoded.node_build_logs.len(), 1);
+        assert_eq!(decoded.node_run_logs.len(), 1);
+        assert!(decoded.node_build_logs[0].failed);
+        assert_eq!(decoded.node_run_logs[0].instance_id, "inst-001");
+    }
+
+    #[test]
+    fn launch_result_decode_rejects_malformed() {
+        assert!(LaunchResult::decode(b"not capnp").is_err());
     }
 }

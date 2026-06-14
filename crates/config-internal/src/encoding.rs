@@ -45,6 +45,15 @@ impl MessageFormatMapper {
         }
     }
 
+    /// Render this message format to a Cap'n Proto schema and resolve the
+    /// matching Rust type for each field.
+    ///
+    /// Despite the `map_` name this is **not** a pure transform: resolving the
+    /// Rust type mapping shells out to the Cap'n Proto compiler. The call
+    /// creates a temporary directory, writes the generated schema into it,
+    /// invokes the bundled `capnp` binary (locating/extracting it on first
+    /// use), and reads back the code-generator request. Expect filesystem I/O
+    /// and a subprocess, not just in-memory work.
     pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
         let mut generator = CapnpSchemaGenerator::default();
         let mut schema = String::new();
@@ -66,8 +75,6 @@ impl MessageFormatMapper {
         }
 
         let type_mapping = self.compute_rust_type_mapping(&schema)?;
-        //let params = build_function_params(&self.message_format, &type_mapping)?;
-        //Ok((schema, params))
         Ok(CapnpSchemaArtifacts::new(
             self.message_format.clone(),
             schema,

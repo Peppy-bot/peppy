@@ -5,7 +5,7 @@ use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::repo::cache::{InterfaceCacheEntry, LauncherCacheEntry};
 use crate::services::repo::exclude::ExclusionSet;
-use crate::services::repo::normalize_repo_entries;
+use crate::services::repo::{normalize_repo_entries, source_identity};
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::interface::PeppyInterfaceParser;
@@ -340,7 +340,7 @@ pub(crate) fn process_refresh(
             continue;
         };
 
-        let identity = source.identity();
+        let identity = source_identity(&source);
 
         if exclusions.is_excluded(&identity) {
             debug!("Excluding {} repository: {}", source.kind(), identity);

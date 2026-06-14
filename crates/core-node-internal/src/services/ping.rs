@@ -1,10 +1,11 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use core_node_api::encoding::{PingRequest, PingResponse};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -34,11 +35,7 @@ pub async fn listen_for_ping(
 }
 
 async fn handle_ping_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
-    let instance_id = context.message().instance_id();
-    handle_ping_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: instance_id.to_string(),
-        reason: e.to_string(),
-    })
+    into_service_response(&context, handle_ping_request_inner(&context))
 }
 
 fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Payload> {

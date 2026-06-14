@@ -10,7 +10,7 @@ use serde::{
 };
 use std::{
     convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Formatter},
     str::FromStr,
 };
 
@@ -138,33 +138,6 @@ impl From<Name> for String {
         v.0
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallbackNameError {
-    Empty,
-    InvalidStart(char),
-    InvalidChar(char),
-}
-
-impl Display for CallbackNameError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            CallbackNameError::Empty => write!(f, "callback name cannot be empty"),
-            CallbackNameError::InvalidStart(ch) => write!(
-                f,
-                "callback name must start with an ASCII letter or '_' but found `{}`",
-                ch.escape_default()
-            ),
-            CallbackNameError::InvalidChar(ch) => write!(
-                f,
-                "callback name may only contain ASCII letters, digits, or '_' but found `{}`",
-                ch.escape_default()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CallbackNameError {}
 
 // NodeInfo is not part of the new schema; manifest/config/instances carry this information.
 
@@ -676,39 +649,11 @@ pub struct Manifest {
     pub depends_on: Option<DependsOn>,
 }
 
-/// Top-level system directories that cannot be used as mount sources.
-///
-/// These paths are rejected by Lima 2.0+ as guest mountPoints, and using them
-/// as bind-mount sources in Apptainer is almost always a mistake (mounting an
-/// entire system directory into a container). Users should use subdirectories
-/// instead (e.g., `/tmp/my_app` rather than `/tmp`).
-///
-/// NOTE: This list is duplicated in `containers-internal/src/apptainer/lima.rs`
-/// (which cannot depend on this crate). Keep both in sync.
-const BLOCKED_MOUNT_PATHS: &[&str] = &[
-    "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
-];
-
-/// Format the blocked mount paths as a comma-separated display string.
-fn blocked_mount_paths_display() -> String {
-    BLOCKED_MOUNT_PATHS.join(", ")
-}
-
-/// Check whether a path is a blocked top-level system mount.
-///
-/// Only exact top-level matches are blocked — subdirectories like `/tmp/my_app`
-/// are allowed. Also handles macOS `/private/X` equivalents (e.g., `/private/tmp`
-/// maps to `/tmp`).
-pub fn is_blocked_mount_source(path: &str) -> bool {
-    if BLOCKED_MOUNT_PATHS.contains(&path) {
-        return true;
-    }
-    // macOS: /private/tmp -> /tmp, /private/var -> /var
-    if let Some(stripped) = path.strip_prefix("/private") {
-        return BLOCKED_MOUNT_PATHS.contains(&stripped);
-    }
-    false
-}
+// The blocked-mount-path list and predicate live in the sibling `mount_policy`
+// module so this crate (config-parse-time validation) and `containers` (Lima YAML
+// mutation) share one source of truth. Re-exported so
+// `config::node::is_blocked_mount_source` stays part of this crate's public API.
+pub use super::mount_policy::is_blocked_mount_source;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -763,7 +708,10 @@ impl ContainerConfig {
                 continue;
             }
             if is_blocked_mount_source(src) {
-                return Err((mount.clone(), blocked_mount_paths_display()));
+                return Err((
+                    mount.clone(),
+                    super::mount_policy::blocked_mount_paths_display(),
+                ));
             }
         }
         Ok(())
@@ -1043,6 +991,44 @@ mod tests {
         assert!(Name::new("Node").is_ok()); // capital letters allowed
         assert!(Name::new("node/").is_err()); // slash not allowed
         assert!(Name::new("node@!").is_err()); // specials not allowed
+    }
+
+    #[test]
+    fn blocked_mount_source_matches_top_level_and_private_aliases() {
+        // Exact top-level system mounts are blocked.
+        assert!(is_blocked_mount_source("/"));
+        assert!(is_blocked_mount_source("/etc"));
+        assert!(is_blocked_mount_source("/usr"));
+        // macOS `/private/X` aliases map back onto the blocked root.
+        assert!(is_blocked_mount_source("/private/tmp"));
+        assert!(is_blocked_mount_source("/private/var"));
+        // Subdirectories of a blocked root are allowed.
+        assert!(!is_blocked_mount_source("/tmp/my_app"));
+        assert!(!is_blocked_mount_source("/etc/myconf"));
+        assert!(!is_blocked_mount_source("/home/user/project"));
+        // Unrelated roots and non-root `/private` subpaths are fine.
+        assert!(!is_blocked_mount_source("/data"));
+        assert!(!is_blocked_mount_source("/private/tmp/sub"));
+    }
+
+    #[test]
+    fn extract_parameter_refs_pulls_each_dot_path() {
+        // No references -> empty.
+        assert!(extract_parameter_refs("/data/output").is_empty());
+        // A single bare reference.
+        assert_eq!(
+            extract_parameter_refs("${parameters:device_path}"),
+            vec!["device_path"]
+        );
+        // Multiple references (one nested dot-path) embedded between literals.
+        assert_eq!(
+            extract_parameter_refs(
+                "/mnt/${parameters:video.device_path}:/in/${parameters:out_dir}"
+            ),
+            vec!["video.device_path", "out_dir"]
+        );
+        // An unterminated reference (no closing brace) is ignored, not partial.
+        assert!(extract_parameter_refs("${parameters:oops").is_empty());
     }
 
     #[test]

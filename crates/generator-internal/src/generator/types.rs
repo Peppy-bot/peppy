@@ -20,12 +20,14 @@ pub enum InterfaceKind {
     ConsumedAction,
 }
 
+/// The message formats a consumer needs to talk to a producer's action: the goal request, the
+/// feedback topic format, and the result response. The goal acknowledgement is framework-owned
+/// (see [`goal_action_response_format`]) and there is no result-request wire message, so neither
+/// is carried here.
 #[derive(Debug, Clone)]
 pub struct ConsumedActionMessage {
     pub goal_request: Option<MessageFormat>,
-    pub goal_response: Option<MessageFormat>,
     pub feedback: Option<MessageFormat>,
-    pub result_request: Option<MessageFormat>,
     pub result_response: Option<MessageFormat>,
 }
 
@@ -213,6 +215,12 @@ impl DependencyContext {
 }
 
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
+///
+/// Construct values through the [`DeploymentInterface`] constructors
+/// (`consumed_service`, `emitted_topic`, …) rather than naming these fields directly — that keeps
+/// callers decoupled from the variant layout. The variants stay public so consumers can read them
+/// back via [`DeploymentInterface::interface`] in an exhaustive `match`; that read shape is the
+/// deliberate, semver-relevant contract.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
     EmittedTopic {
@@ -256,12 +264,64 @@ impl DeploymentInterface {
         Self { interface }
     }
 
-    pub fn interface(&self) -> &InterfaceVariant {
-        &self.interface
+    /// A natively emitted (or `conforms_to`-contributed) topic.
+    pub fn emitted_topic(topic: EmittedTopic, origin: Option<InterfaceOrigin>) -> Self {
+        Self::new(InterfaceVariant::EmittedTopic { topic, origin })
     }
 
-    pub fn into_interface(self) -> InterfaceVariant {
-        self.interface
+    /// A natively exposed (or `conforms_to`-contributed) service.
+    pub fn exposed_service(service: ExposedService, origin: Option<InterfaceOrigin>) -> Self {
+        Self::new(InterfaceVariant::ExposedService { service, origin })
+    }
+
+    /// A natively exposed (or `conforms_to`-contributed) action.
+    pub fn exposed_action(action: ExposedAction, origin: Option<InterfaceOrigin>) -> Self {
+        Self::new(InterfaceVariant::ExposedAction { action, origin })
+    }
+
+    /// A consumed topic, with its resolved message format and dependency context.
+    pub fn consumed_topic(
+        topic: ConsumedTopic,
+        message_format: MessageFormat,
+        dependency: DependencyContext,
+    ) -> Self {
+        Self::new(InterfaceVariant::ConsumedTopic {
+            topic,
+            message_format,
+            dependency,
+        })
+    }
+
+    /// A consumed service, with its resolved request/response formats and dependency.
+    pub fn consumed_service(
+        service: ConsumedService,
+        request_format: MessageFormat,
+        response_format: MessageFormat,
+        dependency: DependencyContext,
+    ) -> Self {
+        Self::new(InterfaceVariant::ConsumedService {
+            service,
+            request_format,
+            response_format,
+            dependency,
+        })
+    }
+
+    /// A consumed action, with its resolved message formats and dependency.
+    pub fn consumed_action(
+        action: ConsumedAction,
+        messages: ConsumedActionMessage,
+        dependency: DependencyContext,
+    ) -> Self {
+        Self::new(InterfaceVariant::ConsumedAction {
+            action,
+            messages,
+            dependency,
+        })
+    }
+
+    pub fn interface(&self) -> &InterfaceVariant {
+        &self.interface
     }
 }
 
@@ -278,33 +338,6 @@ pub struct InterfaceArtifact {
 }
 
 impl InterfaceArtifact {
-    pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
-        Self {
-            module_path: vec![node_name.to_string()],
-            kind,
-            code_output,
-        }
-    }
-
-    /// Creates an artifact whose generated module nests under
-    /// `{iface_name}/{iface_tag}/{leaf_name}` — used for symbols pulled in via
-    /// `interfaces.conforms_to`.
-    pub fn from_kind_nested(
-        module_path: Vec<String>,
-        kind: InterfaceKind,
-        code_output: String,
-    ) -> Self {
-        debug_assert!(
-            !module_path.is_empty(),
-            "from_kind_nested called with empty module_path; leaf_name() would panic",
-        );
-        Self {
-            module_path,
-            kind,
-            code_output,
-        }
-    }
-
     /// Builds an artifact for `leaf_name`, nesting under
     /// `{iface_name}/{iface_tag}/{leaf_name}` when contributed via
     /// `interfaces.conforms_to`, or a single-segment `[leaf_name]` for the
@@ -337,6 +370,18 @@ impl InterfaceArtifact {
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
+///
+/// # Lifecycle
+/// Construct a backend via `new()` / `Default`, optionally call its setters
+/// (`set_parameters`, and `set_container` on Python) in **any order**, register interfaces by
+/// calling the `add_*` methods (usually via [`DeploymentInterface::register_with`]), then call
+/// [`build`](LanguageGenerator::build), which consumes the generator and reads the
+/// previously-set configuration. There is no "must call X before Y" hazard among the setters and
+/// `add_*` methods; only `build` must come last.
+///
+/// The `add_*` methods are the internal incremental-build seam shared by both backends; external
+/// callers normally drive them indirectly through `register_with` rather than calling them
+/// directly.
 pub trait LanguageGenerator {
     /// `origin` is `Some` when the topic was contributed via a
     /// `conforms_to` interface (nests the artifact under
@@ -634,6 +679,58 @@ fn validate_sibling_type_name_collisions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_link_id_state_machine() {
+        // Pinned: `from_any == false`.
+        let pinned = WireLinkId::from_link_id("cam_left", false);
+        assert!(matches!(pinned, WireLinkId::Pinned(ref s) if s == "cam_left"));
+        assert_eq!(pinned.link_id(), Some("cam_left"));
+
+        // Wildcard carrying a manifest link_id: `from_any == true`.
+        let from_any = WireLinkId::from_link_id("cam_left", true);
+        assert!(matches!(
+            from_any,
+            WireLinkId::Wildcard { link_id: Some(ref s) } if s == "cam_left"
+        ));
+        assert_eq!(from_any.link_id(), Some("cam_left"));
+
+        // Pure wildcard sentinel (test fixtures / no manifest dep).
+        let wildcard = WireLinkId::wildcard();
+        assert!(matches!(wildcard, WireLinkId::Wildcard { link_id: None }));
+        assert_eq!(wildcard.link_id(), None);
+    }
+
+    #[test]
+    fn dependency_context_constructors_set_origin_and_defaults() {
+        // native: no origin, defaults to a pure wildcard link_id.
+        let native = DependencyContext::native("uvc_camera", "v1");
+        assert_eq!(native.producer_name, "uvc_camera");
+        assert_eq!(native.producer_tag, "v1");
+        assert!(native.origin.is_none());
+        assert_eq!(native.wire_link_id(), None);
+
+        // conformed: producer node identity plus an interface origin.
+        let origin = InterfaceOrigin {
+            iface_name: "camera_iface".to_string(),
+            iface_tag: "v2".to_string(),
+        };
+        let conformed = DependencyContext::conformed("uvc_camera", "v1", origin.clone());
+        assert_eq!(conformed.producer_name, "uvc_camera");
+        assert_eq!(conformed.producer_tag, "v1");
+        assert_eq!(conformed.origin, Some(origin.clone()));
+
+        // interface: no producer node — (name, tag) double as producer identity and origin.
+        let iface = DependencyContext::interface("camera_iface", "v2");
+        assert_eq!(iface.producer_name, "camera_iface");
+        assert_eq!(iface.producer_tag, "v2");
+        assert_eq!(iface.origin, Some(origin));
+
+        // with_link_id overrides the default wildcard.
+        let pinned = DependencyContext::native("uvc_camera", "v1")
+            .with_link_id(WireLinkId::from_link_id("cam_left", false));
+        assert_eq!(pinned.wire_link_id(), Some("cam_left"));
+    }
 
     #[test]
     fn reject_reserved_message_field_name() {

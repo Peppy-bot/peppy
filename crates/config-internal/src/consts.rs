@@ -1,4 +1,3 @@
-pub const CORE_NODE_TOPIC_NAME: &str = "command";
 pub const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
 /// The peppy output directory relative to node_dir (contains generated libraries).
@@ -59,12 +58,28 @@ use std::sync::OnceLock;
 
 static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 
-/// Sets the application environment once. Subsequent calls are ignored.
+/// Records the process-wide application environment (dev vs prod).
+///
+/// This is the crate's only mutable global state. It is **set-once**: the
+/// first call wins and every later call is silently ignored (so a binary can
+/// pin the environment at startup without callers downstream being able to
+/// flip it). It is also **optional** — if never called, the environment
+/// defaults to [`AppEnv::Dev`].
+///
+/// The only thing it influences is the *default* peppy data root: it shifts
+/// [`peppy_root_dir`] (and therefore [`PeppyDirs::default`]) between
+/// `~/.peppy` (prod) and `/tmp/.peppy` (dev). It has no effect on parsing,
+/// validation, or any [`PeppyDirs`] constructed explicitly via
+/// [`PeppyDirs::new`]. Code that wants a deterministic root — including tests —
+/// should construct [`PeppyDirs::new`] directly rather than rely on this
+/// global; that keeps it independent of call ordering across threads.
 pub fn set_app_env(env: AppEnv) {
     APP_ENV.set(env).ok();
 }
 
-/// Returns the current application environment, defaulting to Dev.
+/// Returns the process-wide application environment, defaulting to
+/// [`AppEnv::Dev`] if [`set_app_env`] was never called. Reads only; see
+/// [`set_app_env`] for the set-once contract and what it affects.
 pub fn app_env() -> AppEnv {
     *APP_ENV.get_or_init(|| AppEnv::Dev)
 }

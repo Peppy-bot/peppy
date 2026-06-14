@@ -7,8 +7,11 @@ use crate::generator::common::{
 use crate::{
     error::{Error, Result},
     generator::{
-        naming::{sanitize_component, unique_module_name},
-        scaffold_tree::{ModuleTree, build_module_tree},
+        naming::sanitize_component,
+        scaffold_tree::{
+            ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category,
+            write_module_tree,
+        },
         types::{CapnpSchema, InterfaceArtifact, ModuleCategory},
     },
 };
@@ -18,7 +21,7 @@ use rust_embed::Embed;
 use std::io;
 use std::io::ErrorKind;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -62,7 +65,11 @@ pub fn add_artifacts_to_lib(
         let category_file = category_module_path(&src_dir, category);
         let entries = grouped.remove(&category).unwrap_or_default();
         let tree = build_module_tree(entries);
-        write_module_tree(&category_dir, &category_file, &tree, category)?;
+        let mut writer = RustTreeWriter {
+            category,
+            category_file: &category_file,
+        };
+        write_module_tree(&category_dir, &tree, &mut writer)?;
     }
 
     Ok(())
@@ -209,8 +216,9 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
-/// Deploys the five vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api, build-helpers-internal)
-/// to a shared cache directory, then links or copies them into `node_libs_dir`.
+/// Deploys the vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api,
+/// build-helpers-internal) to a shared cache directory, then links or
+/// copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
 /// to the shared cache. This avoids duplicating source files across nodes.
@@ -267,12 +275,12 @@ fn deploy_rust_crates_to_shared_cache(
     }
     drop(lock_file);
 
-    // Link or copy all five crates (peppylib, pmi-internal, config-internal,
+    // Link or copy all vendored crates (peppylib, pmi-internal, config-internal,
     // core-node-api, build-helpers-internal) into node_libs_dir.
-    // All five are needed because the crates reference each other via relative
-    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`
-    // and `build-helpers = { path = "../build-helpers-internal" }` in build-dependencies),
-    // and Cargo resolves these paths relative to the symlink location, not the target.
+    // All are needed because the crates reference each other via relative sibling
+    // paths (e.g., peppylib has `config = { path = "../config-internal" }` and
+    // build-dependencies), and Cargo resolves these paths relative to the symlink
+    // location, not the target.
     for crate_name in &[
         "peppylib",
         "pmi-internal",
@@ -340,19 +348,6 @@ fn generate_lib_structure(to_path: impl AsRef<Path>, peppylib_path: &str) -> Res
     crate::generator::common::copy_embedded_templates("peppygen/rust", to_path, peppylib_path)
 }
 
-fn group_artifacts_by_category(
-    artifacts: Vec<InterfaceArtifact>,
-) -> BTreeMap<ModuleCategory, Vec<InterfaceArtifact>> {
-    let mut grouped: BTreeMap<ModuleCategory, Vec<InterfaceArtifact>> = BTreeMap::new();
-
-    for artifact in artifacts {
-        let category = ModuleCategory::from_kind(artifact.kind);
-        grouped.entry(category).or_default().push(artifact);
-    }
-
-    grouped
-}
-
 fn prepare_category_dir(src_dir: &Path, category: ModuleCategory) -> Result<PathBuf> {
     let category_dir = src_dir.join(category.dir_name());
     if category_dir.exists() {
@@ -379,49 +374,53 @@ fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
 /// (e.g. `src/emitted_topics`). `category_file` is its companion sibling
 /// `src/emitted_topics.rs` that declares `pub mod <subdir>;` for each top
 /// child.
-fn write_module_tree(
-    category_dir: &Path,
-    category_file: &Path,
-    tree: &ModuleTree,
+/// [`TreeWriter`] that renders Rust modules: one `.rs` file per leaf and a
+/// `pub mod ...;` listing per directory, written to `mod.rs` (or, at the root,
+/// to the category's sibling `.rs` companion file). A renamed leaf keeps a
+/// `// <raw>` provenance comment. The traversal and sibling de-duplication live
+/// in the shared [`write_module_tree`] walker.
+struct RustTreeWriter<'a> {
     category: ModuleCategory,
-) -> Result<()> {
-    let listing = write_tree_node(category_dir, tree, category)?;
-    fs::write(category_file, listing)?;
-    Ok(())
+    category_file: &'a Path,
 }
 
-/// Recursive worker. Returns the rendered `pub mod ...;` listing for the
-/// current directory; the caller writes it as `mod.rs` (or as the category
-/// `.rs` companion file at the root). Dedupes sibling segments via
-/// [`unique_module_name`] independently at each level so a leaf `video_stream`
-/// can coexist with a child directory of the same name (e.g. when a native
-/// topic shares its name with a conformed-interface tag — extremely unlikely,
-/// but cheap to handle).
-fn write_tree_node(dir: &Path, tree: &ModuleTree, category: ModuleCategory) -> Result<String> {
-    fs::create_dir_all(dir)?;
-    let mut listing = String::new();
-    let mut counts: HashMap<String, usize> = HashMap::new();
+impl TreeWriter for RustTreeWriter<'_> {
+    fn sanitize_module_name(raw: &str) -> String {
+        sanitize_rust_module_name(raw)
+    }
 
-    // Order: leaves first, then sub-directories. `BTreeMap` already gives us
-    // deterministic alphabetical ordering inside each bucket.
-    for (raw_leaf, artifacts) in &tree.leaves {
-        let module_name = unique_module_name(raw_leaf, &mut counts, sanitize_rust_module_name);
-        write_leaf_module(dir, &module_name, raw_leaf, artifacts.clone(), category)?;
-        if !raw_leaf.is_empty() && raw_leaf != &module_name {
-            listing.push_str(&format!("// {raw_leaf}\n"));
+    fn write_leaf(
+        &mut self,
+        dir: &Path,
+        module_name: &str,
+        raw_name: &str,
+        artifacts: &[InterfaceArtifact],
+    ) -> Result<()> {
+        write_leaf_module(
+            dir,
+            module_name,
+            raw_name,
+            artifacts.to_vec(),
+            self.category,
+        )
+    }
+
+    fn write_index(&mut self, dir: &Path, entries: &[ModuleEntry], is_root: bool) -> Result<()> {
+        let mut listing = String::new();
+        for entry in entries {
+            if entry.is_leaf && !entry.raw_name.is_empty() && entry.raw_name != entry.module_name {
+                listing.push_str(&format!("// {}\n", entry.raw_name));
+            }
+            listing.push_str(&format!("pub mod {};\n", entry.module_name));
         }
-        listing.push_str(&format!("pub mod {module_name};\n"));
+        let target = if is_root {
+            self.category_file.to_path_buf()
+        } else {
+            dir.join("mod.rs")
+        };
+        fs::write(target, listing)?;
+        Ok(())
     }
-
-    for (raw_segment, child) in &tree.children {
-        let module_name = unique_module_name(raw_segment, &mut counts, sanitize_rust_module_name);
-        let child_dir = dir.join(&module_name);
-        let child_listing = write_tree_node(&child_dir, child, category)?;
-        fs::write(child_dir.join("mod.rs"), child_listing)?;
-        listing.push_str(&format!("pub mod {module_name};\n"));
-    }
-
-    Ok(listing)
 }
 
 fn write_leaf_module(

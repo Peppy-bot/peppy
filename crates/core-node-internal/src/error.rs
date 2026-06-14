@@ -45,4 +45,11 @@ pub enum Error {
     // -- node operations
     #[error("failed to shutdown node instance '{instance_id}': {reason}")]
     ShutdownInstanceFailed { instance_id: String, reason: String },
+
+    // -- lifecycle
+    #[error("Apptainer pre-flight check failed:\n\n{0}")]
+    RuntimeCheck(String),
+
+    #[error("core node already started")]
+    AlreadyStarted,
 }

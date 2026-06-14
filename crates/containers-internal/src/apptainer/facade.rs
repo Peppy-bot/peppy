@@ -1,7 +1,7 @@
 use super::super::error::{Error, Result};
 use super::lima;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -288,13 +288,26 @@ impl Apptainer {
     /// 1. `PEPPY_APPTAINER_DIR` environment variable
     /// 2. `apptainer/` relative to the current executable (installed layout)
     /// 3. Compile-time `APPTAINER_INSTALL_DIR` set by build.rs
+    ///
+    /// # Blocking
+    ///
+    /// Construction runs [`ensure_ready`](Self::ensure_ready), so it is not free.
+    /// On Linux it only checks user namespace prerequisites. On macOS it boots the
+    /// Lima VM and syncs the apptainer install into the guest, which can take
+    /// minutes on first run, so call it from a blocking context (e.g.
+    /// `tokio::task::spawn_blocking`). Use [`is_lima_ready`](Self::is_lima_ready)
+    /// to preflight without triggering a boot.
     pub fn new() -> Result<Self> {
         let apptainer_dir = Self::resolve_apptainer_dir()?;
         Self::from_dir(apptainer_dir)
     }
 
     /// Creates a new `Apptainer` from an explicit installation directory.
-    pub fn from_dir(apptainer_dir: PathBuf) -> Result<Self> {
+    ///
+    /// Crate-internal: production callers use [`new`](Self::new); this is the
+    /// explicit-dir seam it delegates to (and the entry point the construction
+    /// tests drive). Blocks during construction the same way `new` does.
+    pub(crate) fn from_dir(apptainer_dir: PathBuf) -> Result<Self> {
         let apptainer_bin = apptainer_dir.join("bin/apptainer");
 
         if !apptainer_bin.exists() {
@@ -368,10 +381,6 @@ impl Apptainer {
                 Ok(())
             }
         }
-    }
-
-    pub fn install_dir(&self) -> &Path {
-        &self.apptainer_dir
     }
 
     /// Returns the hostname that resolves to the host machine from inside
@@ -460,18 +469,6 @@ impl Apptainer {
         }
     }
 
-    /// Returns the path to the apptainer binary used for invocation.
-    ///
-    /// On Linux this is the host-side binary. On macOS (Lima) this is the
-    /// guest-side path inside the VM.
-    pub fn binary_path(&self) -> &Path {
-        match &self.backend {
-            Backend::Native { apptainer_bin } | Backend::Lima { apptainer_bin, .. } => {
-                apptainer_bin
-            }
-        }
-    }
-
     pub fn version(&self) -> Result<String> {
         let mut cmd = self.command(&["--version"], &[], None)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -528,39 +525,22 @@ impl Apptainer {
     fn kill_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
         /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
         const KILL_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
+        /// Poll cadence while waiting for the `limactl` child to exit.
+        const KILL_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
 
         let guest_pgid = lima::guest_pgid_path(key);
-        let mut child = Command::new(limactl_path)
-            .env("LIMA_HOME", lima_home)
-            .arg("shell")
-            .arg(lima::LIMA_INSTANCE)
-            .arg("--")
+        let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
             .args(lima::lima_kill_pgid_argv(&guest_pgid))
             .spawn()
             .map_err(Error::from)?;
-        let deadline = Instant::now() + KILL_GUEST_PGID_TIMEOUT;
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(Error::from)? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Error::LimaInstanceError(format!(
-                    "timed out after {KILL_GUEST_PGID_TIMEOUT:?} killing guest process group (pgid file {})",
-                    guest_pgid.display()
-                )));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        if !status.success() {
-            return Err(Error::LimaInstanceError(format!(
-                "failed to kill guest process group (pgid file {}): limactl exited with {}",
-                guest_pgid.display(),
-                status
-            )));
-        }
-        Ok(())
+        await_guest_kill(
+            &mut child,
+            &guest_pgid,
+            KILL_GUEST_PGID_TIMEOUT,
+            KILL_GUEST_PGID_POLL,
+            Instant::now,
+            std::thread::sleep,
+        )
     }
 
     /// Best-effort batch form of
@@ -617,11 +597,7 @@ impl Apptainer {
                 limactl_path,
                 lima_home,
                 ..
-            } => Command::new(limactl_path)
-                .env("LIMA_HOME", lima_home)
-                .arg("shell")
-                .arg(lima::LIMA_INSTANCE)
-                .arg("--")
+            } => lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
                 .args(args)
                 .output()
                 .map_err(Error::from),
@@ -730,11 +706,7 @@ impl Apptainer {
         // Resolve relative paths to absolute using the host CWD. This is critical
         // for Lima: `limactl shell` runs in the guest's home directory, so a
         // relative path would silently resolve to the wrong location in the guest.
-        let absolute_path = if host_path.is_relative() {
-            std::env::current_dir()?.join(host_path)
-        } else {
-            host_path.to_path_buf()
-        };
+        let absolute_path = to_absolute(host_path)?;
 
         match &self.backend {
             Backend::Native { .. } => Ok(absolute_path),
@@ -791,9 +763,7 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
-                let mut cmd = Command::new(limactl_path);
-                cmd.env("LIMA_HOME", lima_home);
-                cmd.arg("shell").arg(lima::LIMA_INSTANCE);
+                let mut cmd = lima::lima_shell_base(limactl_path, lima_home, lima::LIMA_INSTANCE);
                 for arg in lima_shell_extra_args {
                     cmd.arg(arg);
                 }
@@ -832,16 +802,85 @@ impl Apptainer {
     }
 }
 
+/// Resolve a relative path to absolute by joining it onto the current working
+/// directory; absolute paths are returned unchanged. Shared by [`translate_path`]
+/// (which propagates a `current_dir()` failure) and [`resolve_absolute`] (which
+/// falls back to the original path), so both normalize identically. That shared
+/// normalization is load-bearing: `ensure_host_mounts` registers extra mounts via
+/// `resolve_absolute` and `translate_path` later matches against them with
+/// `starts_with`, so a divergence here would silently break mount matching.
+fn to_absolute(path: &Path) -> std::io::Result<PathBuf> {
+    if path.is_relative() {
+        Ok(std::env::current_dir()?.join(path))
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
 /// Resolve a potentially relative path to an absolute one.
 ///
 /// Falls back to the original path if `current_dir()` fails.
 fn resolve_absolute(path: &str) -> PathBuf {
-    if Path::new(path).is_relative() {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| PathBuf::from(path))
-    } else {
-        PathBuf::from(path)
+    to_absolute(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+/// The subset of [`std::process::Child`] that [`await_guest_kill`] needs, behind a
+/// trait so the bounded-wait decision logic can be unit-tested with a fake child
+/// instead of a real `limactl` subprocess (mirroring the injected-closure pattern
+/// of [`lima::stop_instance_inner`]).
+pub(crate) trait GuestKillChild {
+    /// Non-blocking check for the child's exit status.
+    fn poll_exit(&mut self) -> Result<Option<ExitStatus>>;
+    /// Kill the child and reap it (best effort), used when the wait times out.
+    fn kill_and_reap(&mut self);
+}
+
+impl GuestKillChild for Child {
+    fn poll_exit(&mut self) -> Result<Option<ExitStatus>> {
+        self.try_wait().map_err(Error::from)
+    }
+
+    fn kill_and_reap(&mut self) {
+        let _ = self.kill();
+        let _ = self.wait();
+    }
+}
+
+/// Wait for the guest-kill `limactl` child to exit, bounded by `timeout`.
+///
+/// Polls `child` every `poll_interval` until it exits or `clock` passes the
+/// deadline. A clean exit returns `Ok(())`; a non-zero exit returns the
+/// limactl-failure error; a timeout kills and reaps the child and returns the
+/// timeout error. `clock` and `sleep` are injected so tests drive a virtual clock
+/// with no real sleeping (production passes `Instant::now` and `thread::sleep`).
+pub(crate) fn await_guest_kill(
+    child: &mut impl GuestKillChild,
+    guest_pgid: &Path,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut clock: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Result<()> {
+    let deadline = clock() + timeout;
+    loop {
+        if let Some(status) = child.poll_exit()? {
+            if status.success() {
+                return Ok(());
+            }
+            return Err(Error::LimaInstanceError(format!(
+                "failed to kill guest process group (pgid file {}): limactl exited with {}",
+                guest_pgid.display(),
+                status
+            )));
+        }
+        if clock() >= deadline {
+            child.kill_and_reap();
+            return Err(Error::LimaInstanceError(format!(
+                "timed out after {timeout:?} killing guest process group (pgid file {})",
+                guest_pgid.display()
+            )));
+        }
+        sleep(poll_interval);
     }
 }
 
@@ -931,43 +970,10 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
-    /// Add multiple `--bind` mounts at once.
-    ///
-    /// Convenience method for mounting a variable number of devices at runtime.
-    /// Each entry is bound with the same path inside the container.
-    pub fn binds(mut self, sources: &[&str]) -> Self {
-        for src in sources {
-            self.bind_mounts.push(BindMount {
-                src: src.to_string(),
-                dest: None,
-                opts: None,
-            });
-        }
-        self
-    }
-
     /// Add a `--env VAR=VALUE` environment variable.
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.flags.push("--env".to_string());
         self.flags.push(format!("{key}={value}"));
-        self
-    }
-
-    /// Add the `--writable-tmpfs` flag.
-    pub fn writable_tmpfs(mut self) -> Self {
-        self.flags.push("--writable-tmpfs".to_string());
-        self
-    }
-
-    /// Add the `--no-home` flag (do not mount `$HOME` in the container).
-    pub fn no_home(mut self) -> Self {
-        self.flags.push("--no-home".to_string());
-        self
-    }
-
-    /// Add the `--contain` flag (minimal `/dev` and empty home/tmp).
-    pub fn contain(mut self) -> Self {
-        self.flags.push("--contain".to_string());
         self
     }
 
