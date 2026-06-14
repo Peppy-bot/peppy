@@ -18,7 +18,6 @@ chrono = "0.4"
 hostname = "0.4"
 machine-uid = "0.6"
 futures = "0.3"
-libc = "0.2"
 names-generator2 = "0.2.1"
 rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
@@ -49,6 +48,9 @@ sha2 = "0.11"
 parking_lot = { workspace = true }
 dirs = "6"
 ignore = "0.4"
+# Safe wrapper for the process-group SIGKILL in node teardown (replaces a raw
+# `libc::kill` FFI call), letting the crate adopt `#![forbid(unsafe_code)]`.
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

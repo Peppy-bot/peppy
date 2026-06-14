@@ -6,12 +6,13 @@ use crate::services::repo::refresh::{
 use crate::services::repo::{
     json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
 };
+use crate::services::response::into_service_response;
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -50,12 +51,10 @@ async fn handle_repo_exclude_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    let (payload, needs_refresh) = handle_repo_exclude_request_inner(&context, &peppy_dirs)
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        })?;
+    let (payload, needs_refresh) = into_service_response(
+        &context,
+        handle_repo_exclude_request_inner(&context, &peppy_dirs),
+    )?;
 
     if needs_refresh {
         let dirs = peppy_dirs.clone();

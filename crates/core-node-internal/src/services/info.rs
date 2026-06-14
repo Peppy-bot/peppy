@@ -1,11 +1,12 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -66,19 +67,17 @@ async fn handle_info_request(
     node_stack: &NodeStack,
     messaging_port: u16,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_info_request_inner(
+    into_service_response(
         &context,
-        core_node_name,
-        instance_id,
-        start_time,
-        node_stack,
-        messaging_port,
+        handle_info_request_inner(
+            &context,
+            core_node_name,
+            instance_id,
+            start_time,
+            node_stack,
+            messaging_port,
+        ),
     )
-    .map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
-    })
 }
 
 fn handle_info_request_inner(

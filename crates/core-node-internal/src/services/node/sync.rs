@@ -2,6 +2,7 @@ use crate::Result;
 use crate::names;
 use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
+use crate::services::response::into_service_response;
 use config::ParsingError;
 use config::consts::PeppyDirs;
 use config::node::{NodeConfigParser, validate_dependency_specs};
@@ -11,7 +12,7 @@ use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -167,13 +168,10 @@ async fn handle_node_sync_request(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_sync_request_inner(&context, &node_stack, peppy_dirs)
-        .await
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        })
+    into_service_response(
+        &context,
+        handle_node_sync_request_inner(&context, &node_stack, peppy_dirs).await,
+    )
 }
 
 async fn handle_node_sync_request_inner(

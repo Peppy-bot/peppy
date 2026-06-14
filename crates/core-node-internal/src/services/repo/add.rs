@@ -3,12 +3,13 @@ use crate::names;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{json_entry_identity, repo_source_to_json, source_identity};
+use crate::services::response::into_service_response;
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -42,13 +43,10 @@ async fn handle_repo_add_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_repo_add_request_inner(&context, &peppy_dirs).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        }
-    })
+    into_service_response(
+        &context,
+        handle_repo_add_request_inner(&context, &peppy_dirs),
+    )
 }
 
 fn handle_repo_add_request_inner(
