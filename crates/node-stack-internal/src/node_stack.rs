@@ -54,31 +54,26 @@ fn key_from_entity(entity: &NodeEntity) -> NodeKey {
     )
 }
 
-/// Identifies the slot that [`NodeStack::restore_snapshot_if_matches`]
-/// should roll back, together with the handle+generation the caller captured
-/// before the failed rebuild.
-pub struct RestoreTarget<'a> {
-    pub name: &'a str,
-    pub tag: &'a str,
-    pub expected_handle: &'a Arc<RwLock<NodeEntity>>,
-    pub expected_generation: u64,
-}
-
-/// Previously-captured entity state used by
-/// [`NodeStack::restore_snapshot_if_matches`] to rematerialize a `Ready` /
-/// `Added` entity in place of a failed rebuild. Instances are intentionally
-/// omitted — any prior instances are shut down before the rebuild begins.
-pub struct EntitySnapshot {
-    pub config: NodeConfig,
-    pub config_path: PathBuf,
-    pub artifact_path: Option<PathBuf>,
-}
-
 fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
     collect_dependency_specs(node)
         .into_iter()
         .map(|spec| NodeKey::new(&spec.node_name, &spec.node_tag))
         .collect()
+}
+
+/// Whether `inst` is the instance addressed by `instance_id`. When
+/// `require_running` is set, only `Running` instances match; otherwise an
+/// instance in any state (e.g. `Starting`) matches.
+fn instance_matches(inst: &TrackedNodeInstance, instance_id: &Name, require_running: bool) -> bool {
+    inst.instance_id() == instance_id
+        && (!require_running || inst.state() == InstanceState::Running)
+}
+
+/// Builds the trimmed `(name, tag)` key used by the `add_log_paths` cache.
+/// Trimming matches [`NodeKey::new`] so a log path stored under one spelling
+/// of the key is found again regardless of incidental surrounding whitespace.
+fn add_log_key(name: &str, tag: &str) -> (String, String) {
+    (name.trim().to_owned(), tag.trim().to_owned())
 }
 
 struct NodeStackInner {
@@ -303,6 +298,27 @@ impl NodeStackInner {
             .cloned()
     }
 
+    /// Shared entity scan for the instance-lookup methods. Visits every entity
+    /// in graph order, holding each entity's read guard while `project`
+    /// inspects it, and returns the first `Some` projection. When `skip_root`
+    /// is set the synthetic root entity is not visited. Holding the guard
+    /// across the projection keeps each lookup atomic with respect to a
+    /// concurrent `prepare_and_spawn` / `stop_instance` mutating that entity's
+    /// instances list.
+    fn find_map_entity<T>(
+        &self,
+        skip_root: bool,
+        mut project: impl FnMut(&EntityHandle, &NodeEntity) -> Option<T>,
+    ) -> Option<T> {
+        self.graph.node_weights().find_map(|handle| {
+            let guard = handle.read();
+            if skip_root && self.is_root(&key_from_entity(&guard)) {
+                return None;
+            }
+            project(handle, &guard)
+        })
+    }
+
     /// Looks up a tracked instance by id across all entities. **Only matches
     /// `Running` instances** — `Starting` instances are skipped because they
     /// haven't subscribed to messenger services yet, so a handle to one would
@@ -310,20 +326,13 @@ impl NodeStackInner {
     /// to clean up an in-flight start should use `NodeEntity::abort_started`
     /// instead.
     fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
-        for handle in self.graph.node_weights() {
-            let guard = handle.read();
-            if let Some(found) = guard
+        self.find_map_entity(false, |_, entity| {
+            entity
                 .instances()
                 .iter()
-                .find(|inst| {
-                    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
-                })
+                .find(|inst| instance_matches(inst, instance_id, true))
                 .cloned()
-            {
-                return Some(found);
-            }
-        }
-        None
+        })
     }
 
     /// Find the `(node_name, node_tag)` of any entity in the stack that
@@ -340,40 +349,30 @@ impl NodeStackInner {
         &self,
         instance_id: &Name,
     ) -> Option<(String, String)> {
-        for handle in self.graph.node_weights() {
-            let guard = handle.read();
-            if self.is_root(&key_from_entity(&guard)) {
-                continue;
-            }
-            let owns_it = guard
+        self.find_map_entity(true, |_, entity| {
+            entity
                 .instances()
                 .iter()
-                .any(|inst| inst.instance_id() == instance_id);
-            if owns_it {
-                return Some((
-                    guard.config().manifest.name.as_str().to_owned(),
-                    guard.config().manifest.tag.clone(),
-                ));
-            }
-        }
-        None
+                .any(|inst| instance_matches(inst, instance_id, false))
+                .then(|| {
+                    (
+                        entity.config().manifest.name.as_str().to_owned(),
+                        entity.config().manifest.tag.clone(),
+                    )
+                })
+        })
     }
 
     /// Same filtering rule as [`find_by_instance_id`]: only entities
     /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
-        for handle in self.graph.node_weights() {
-            let has_instance = {
-                let guard = handle.read();
-                guard.instances().iter().any(|inst| {
-                    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
-                })
-            };
-            if has_instance {
-                return Some(handle.clone());
-            }
-        }
-        None
+        self.find_map_entity(false, |handle, entity| {
+            entity
+                .instances()
+                .iter()
+                .any(|inst| instance_matches(inst, instance_id, true))
+                .then(|| handle.clone())
+        })
     }
 
     fn root(&self) -> EntityHandle {
@@ -387,32 +386,6 @@ impl NodeStackInner {
 
     fn entities_snapshot(&self) -> Vec<EntityHandle> {
         self.graph.node_weights().cloned().collect()
-    }
-
-    fn dependencies_of(&self, key: &NodeKey) -> Vec<EntityHandle> {
-        self.key_to_index
-            .get(key)
-            .map(|index| {
-                self.graph
-                    .neighbors_directed(*index, Direction::Outgoing)
-                    .filter_map(|dep_index| self.graph.node_weight(dep_index))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn dependents_of(&self, key: &NodeKey) -> Vec<EntityHandle> {
-        self.key_to_index
-            .get(key)
-            .map(|index| {
-                self.graph
-                    .neighbors_directed(*index, Direction::Incoming)
-                    .filter_map(|dep_index| self.graph.node_weight(dep_index))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Adds a config to the stack or updates an existing one. The resulting
@@ -439,7 +412,7 @@ impl NodeStackInner {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-    ) -> Result<Option<EntitySnapshot>> {
+    ) -> Result<()> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
         let config_path = config_path.into();
 
@@ -457,10 +430,10 @@ impl NodeStackInner {
             // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
             // `Starting` instance that the replacement would silently orphan.
             let Some(handle) = self.graph.node_weight(index).cloned() else {
-                return Ok(None);
+                return Ok(());
             };
 
-            let (previous_snapshot, interfaces_changed, dependencies_changed) = {
+            let (interfaces_changed, dependencies_changed) = {
                 let mut guard = handle.write();
 
                 if !guard.instances().is_empty() {
@@ -512,31 +485,19 @@ impl NodeStackInner {
                     }
                 }
 
-                // Capture the entity state we are about to replace, while
-                // still holding the write lock. The caller uses this snapshot
-                // for rollback if a subsequent build fails. Capturing here
-                // (instead of via a separate read lock before push_config)
-                // closes a race window where a concurrent push_config could
-                // make the pre-captured snapshot stale.
-                let previous_snapshot = EntitySnapshot {
-                    config: guard.config().clone(),
-                    config_path: guard.config_path().to_path_buf(),
-                    artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
-                };
-
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
                 // readers see the new state.
                 *guard = NodeEntity::new(config, config_path);
 
-                (previous_snapshot, interfaces_changed, dependencies_changed)
+                (interfaces_changed, dependencies_changed)
             };
 
             if interfaces_changed || dependencies_changed {
                 self.rewire_dependencies(index);
             }
 
-            Ok(Some(previous_snapshot))
+            Ok(())
         } else {
             // Entity doesn't exist, create new one in the Added stage.
             let entity = NodeEntity::new(config, config_path);
@@ -548,7 +509,7 @@ impl NodeStackInner {
                 self.validate_no_service_action_cycle(&entity)?;
             }
             self.insert_entity(entity, !allow_missing_dependencies)?;
-            Ok(None)
+            Ok(())
         }
     }
 
@@ -630,15 +591,21 @@ impl NodeStackInner {
     /// Returns a serializable representation of the graph.
     fn to_serialized_graph(&self) -> SerializedNodeGraph {
         // The node list and the edge endpoints must serialize each entity
-        // identically. Both passes go through this closure so the two views
-        // cannot drift apart.
+        // identically. Both go through this closure so the two views cannot
+        // drift apart.
         let serialize_entity = |entity: &NodeEntity| SerializedNode::from(entity);
 
-        let nodes: Vec<SerializedNode> = self
+        // One read-lock per entity yields both its serialized node and a clone
+        // of its config; the configs feed the interface-conformance edges
+        // below, so collecting them here avoids a second locking pass.
+        let (nodes, configs): (Vec<SerializedNode>, Vec<NodeConfig>) = self
             .graph
             .node_weights()
-            .map(|handle| serialize_entity(&handle.read()))
-            .collect();
+            .map(|handle| {
+                let guard = handle.read();
+                (serialize_entity(&guard), guard.config().clone())
+            })
+            .unzip();
 
         // Direct `depends_on.nodes` edges, taken straight from the DAG.
         let mut edges: Vec<SerializedEdge> = self
@@ -660,11 +627,6 @@ impl NodeStackInner {
         // provider) are deliberately kept out of the DAG so they never constrain
         // launch ordering, but they are real dependencies — surface them in the
         // display graph, annotated with the interface they route through.
-        let configs: Vec<NodeConfig> = self
-            .graph
-            .node_weights()
-            .map(|handle| handle.read().config().clone())
-            .collect();
         let config_refs: Vec<&NodeConfig> = configs.iter().collect();
         let node_by_key: HashMap<(&str, &str), &SerializedNode> = nodes
             .iter()
@@ -765,14 +727,14 @@ impl NodeStack {
     pub fn set_add_log_path(&self, name: &str, tag: &str, path: PathBuf) {
         self.add_log_paths
             .lock()
-            .insert((name.trim().to_owned(), tag.trim().to_owned()), path);
+            .insert(add_log_key(name, tag), path);
     }
 
     /// Returns the most-recent add-log path for `(name, tag)`, if any.
     pub fn add_log_path(&self, name: &str, tag: &str) -> Option<PathBuf> {
         self.add_log_paths
             .lock()
-            .get(&(name.trim().to_owned(), tag.trim().to_owned()))
+            .get(&add_log_key(name, tag))
             .cloned()
     }
 
@@ -840,33 +802,12 @@ impl NodeStack {
     /// If `allow_missing_dependencies` is true, missing dependencies are
     /// tracked as pending requirements and will be wired once the dependency
     /// nodes are added to the stack.
-    ///
-    /// Callers that need to roll back to the previous entity state on a
-    /// later build failure should use [`Self::push_config_capturing_previous`]
-    /// instead so the snapshot is captured atomically with the replacement.
     pub fn push_config<P: Into<PathBuf>>(
         &self,
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
-        self.push_config_capturing_previous(config, allow_missing_dependencies, config_path)
-            .map(|_| ())
-    }
-
-    /// Like [`Self::push_config`] but additionally returns the snapshot of
-    /// the entity that was just replaced (if any), captured under the same
-    /// write lock that performed the in-place replacement. The snapshot is
-    /// suitable for [`Self::restore_snapshot_if_matches`] rollback after a
-    /// failed rebuild — capturing it here closes the race window where a
-    /// concurrent `push_config` could otherwise make a pre-captured snapshot
-    /// stale.
-    pub fn push_config_capturing_previous<P: Into<PathBuf>>(
-        &self,
-        config: NodeConfig,
-        allow_missing_dependencies: bool,
-        config_path: P,
-    ) -> Result<Option<EntitySnapshot>> {
         let mut guard = self.shared.write();
         guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
@@ -874,16 +815,6 @@ impl NodeStack {
     pub fn snapshot(&self) -> Vec<EntityHandle> {
         let guard = self.shared.read();
         guard.entities_snapshot()
-    }
-
-    pub fn dependencies_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
-        let guard = self.shared.read();
-        guard.dependencies_of(&NodeKey::new(name, tag))
-    }
-
-    pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
-        let guard = self.shared.read();
-        guard.dependents_of(&NodeKey::new(name, tag))
     }
 
     /// Removes a node configuration if it has no instances.
@@ -920,9 +851,7 @@ impl NodeStack {
             });
         }
         guard.remove_entity(&key);
-        self.add_log_paths
-            .lock()
-            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
+        self.add_log_paths.lock().remove(&add_log_key(name, tag));
         // Keep `entity_guard` alive until *after* the unlink so an outside
         // thread holding a clone of the handle still cannot mutate the
         // entity between the check and the removal.
@@ -966,9 +895,7 @@ impl NodeStack {
         }
 
         guard.remove_entity(&key);
-        self.add_log_paths
-            .lock()
-            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
+        self.add_log_paths.lock().remove(&add_log_key(name, tag));
         true
     }
 
@@ -1011,64 +938,6 @@ impl NodeStack {
             return false;
         }
         entity.rollback_building_to_added(working_dir);
-        true
-    }
-
-    /// Slot identity for [`NodeStack::restore_snapshot_if_matches`]: the
-    /// name/tag key plus the handle+generation the caller captured before
-    /// starting the rebuild. Bundled so callers can express the rollback
-    /// target as a single value.
-    ///
-    /// See the free-standing [`RestoreTarget`] and [`EntitySnapshot`] structs
-    /// defined below — they are intentionally kept as plain data so the
-    /// call-site reads as `stack.restore_snapshot_if_matches(target, snap)`.
-    ///
-    /// Atomically restore an entity to a previously captured snapshot, if the
-    /// slot still holds the expected handle+generation. Used by the node-add
-    /// rebuild path to roll back to the prior `Ready` state when a rebuild
-    /// fails after `push_config` has already replaced the entity in-place.
-    ///
-    /// Returns `true` if the slot matched and was restored. Returns `false`
-    /// (without mutating) if the handle was replaced concurrently, the
-    /// generation drifted, or the entity is no longer in `Building`.
-    pub fn restore_snapshot_if_matches(
-        &self,
-        target: RestoreTarget<'_>,
-        snapshot: EntitySnapshot,
-    ) -> bool {
-        let mut guard = self.shared.write();
-        let key = NodeKey::new(target.name, target.tag);
-
-        let Some((index, current)) = guard.resolve_matching_slot(&key, target.expected_handle)
-        else {
-            return false;
-        };
-        {
-            let entity = current.read();
-            if entity.generation() != target.expected_generation
-                || !matches!(entity.stage(), NodeStage::Building { .. })
-            {
-                return false;
-            }
-        }
-
-        // Rebuild a fresh `Ready`/`Added` entity from the captured snapshot
-        // and swap it into place under the same handle. Instances are
-        // intentionally empty — any prior instances were shut down before the
-        // rebuild began (see `shutdown_existing_instances` in the add path).
-        let restored = NodeEntity::from_snapshot(
-            snapshot.config,
-            snapshot.config_path,
-            snapshot.artifact_path,
-            Vec::new(),
-        );
-        *current.write() = restored;
-
-        // The failed rebuild may have rewired outgoing edges to match the new
-        // config's dependencies. Now that the snapshot's config is back in
-        // place, the edges must match the snapshot's dependency list too —
-        // otherwise `dependencies_of()` would report a stale view.
-        guard.rewire_dependencies(index);
         true
     }
 

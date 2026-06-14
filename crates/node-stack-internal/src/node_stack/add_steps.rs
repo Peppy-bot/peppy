@@ -73,7 +73,7 @@ fn is_excluded_dir(name: &std::ffi::OsStr) -> bool {
 ///
 /// Returns the names of top-level excluded directories that were present
 /// directly under `src`. Nested skips are not recorded.
-pub fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<Vec<String>> {
+pub(crate) fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<Vec<String>> {
     std::fs::create_dir_all(dest)?;
 
     let mut excluded = Vec::new();

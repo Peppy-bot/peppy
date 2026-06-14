@@ -32,7 +32,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 /// edges. Borrowed so callers can build the slice from whatever store they own
 /// (a transient batch, the persistent node stack) without cloning configs into
 /// the helper.
-pub struct CycleCheckNode<'a> {
+pub(crate) struct CycleCheckNode<'a> {
     pub name: &'a str,
     pub tag: &'a str,
     pub config: &'a NodeConfig,
@@ -40,7 +40,7 @@ pub struct CycleCheckNode<'a> {
 
 /// A detected caller-driven dependency cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceActionCycle {
+pub(crate) struct ServiceActionCycle {
     /// `name:tag` labels of the nodes on the cycle, sorted for deterministic
     /// reporting.
     pub nodes: Vec<String>,
@@ -74,7 +74,9 @@ struct Edge {
 ///   interface case).
 /// - Links consumed only as topics add no edge, so bidirectional topics stay
 ///   acyclic by construction.
-pub fn find_service_action_cycle(nodes: &[CycleCheckNode<'_>]) -> Option<ServiceActionCycle> {
+pub(crate) fn find_service_action_cycle(
+    nodes: &[CycleCheckNode<'_>],
+) -> Option<ServiceActionCycle> {
     let identity_to_index: HashMap<(&str, &str), usize> = nodes
         .iter()
         .enumerate()

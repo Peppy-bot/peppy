@@ -11,7 +11,7 @@ use core_node_api::{
     InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
 };
 use tokio::process::Child;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -286,21 +286,61 @@ pub struct NodeEntity {
     /// `take_pending_working_dir` clears the entity-side slot. Never
     /// persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
+    /// Broadcasts this entity's stage label on every stage transition
+    /// (`Added`/`Building`/`Ready`/`Root`). Observers obtain a receiver via
+    /// [`NodeEntity::subscribe_stage`] and react to transitions without
+    /// polling. Only the stage *label* is published; per-instance changes that
+    /// keep the entity in `Ready` (e.g. `Starting` to `Running`) are not stage
+    /// transitions and are not signalled. A wholesale entity replacement
+    /// (`push_config`) drops this sender, closing existing receivers.
+    stage_tx: watch::Sender<SerializedNodeStage>,
 }
 
 impl NodeEntity {
+    /// Shared constructor: assigns a fresh generation token and opens the
+    /// stage-broadcast channel seeded with `stage`'s label. All three public
+    /// constructors (`new`, `root`, `from_snapshot`) route through here so the
+    /// generation bump and the watch initialization cannot drift apart.
+    fn with_stage(config: NodeConfig, stage: NodeStage) -> Self {
+        let (stage_tx, _) = watch::channel(stage.to_serialized());
+        Self {
+            config,
+            stage,
+            generation: next_entity_generation(),
+            pending_working_dir: None,
+            stage_tx,
+        }
+    }
+
+    /// Publishes the current stage label to [`subscribe_stage`] receivers.
+    /// Call immediately after every `self.stage = ...` assignment so a stage
+    /// transition is never silently dropped. Send errors (no live receivers)
+    /// are ignored, matching the fire-and-forget nature of the signal.
+    ///
+    /// [`subscribe_stage`]: Self::subscribe_stage
+    fn broadcast_stage(&self) {
+        let _ = self.stage_tx.send(self.stage.to_serialized());
+    }
+
     /// Creates a new `NodeEntity` in the [`NodeStage::Added`] stage. The
     /// `config_path` should point at the `peppy.json5` file that supplied
     /// `config`.
     pub fn new<P: Into<PathBuf>>(config: NodeConfig, config_path: P) -> Self {
-        Self {
+        Self::with_stage(
             config,
-            stage: NodeStage::Added {
+            NodeStage::Added {
                 config_path: config_path.into(),
             },
-            generation: next_entity_generation(),
-            pending_working_dir: None,
-        }
+        )
+    }
+
+    /// Subscribes to this entity's stage-transition broadcasts. The returned
+    /// receiver starts at the current stage label, so a caller that subscribes
+    /// after a transition still observes the present stage. Used by observers
+    /// (and tests) that need to react to `Added`/`Building`/`Ready`
+    /// transitions without polling the entity under a lock.
+    pub fn subscribe_stage(&self) -> watch::Receiver<SerializedNodeStage> {
+        self.stage_tx.subscribe()
     }
 
     /// Returns the in-memory working directory guard staged by `node add`
@@ -367,6 +407,7 @@ impl NodeEntity {
         self.stage = NodeStage::Added {
             config_path: config_path.clone(),
         };
+        self.broadcast_stage();
         self.pending_working_dir = Some(working_dir);
     }
 
@@ -449,6 +490,7 @@ impl NodeEntity {
             // Atomic transition Added → Building under the same write lock as
             // the validation. Any second concurrent call now sees Building.
             guard.stage = NodeStage::Building { config_path };
+            guard.broadcast_stage();
             snapshot
         };
 
@@ -589,6 +631,7 @@ impl NodeEntity {
                     artifact_path: artifact_path.clone(),
                     instances: Vec::new(),
                 };
+                guard.broadcast_stage();
                 Ok(artifact_path)
             }
             Err(e) => {
@@ -1052,15 +1095,13 @@ impl NodeEntity {
         root_path: PathBuf,
         instance: TrackedNodeInstance,
     ) -> Self {
-        Self {
+        Self::with_stage(
             config,
-            stage: NodeStage::Root {
+            NodeStage::Root {
                 config_path: root_path,
                 instance,
             },
-            generation: next_entity_generation(),
-            pending_working_dir: None,
-        }
+        )
     }
 
     /// Reconstructs an entity from a previously-captured snapshot during stack
@@ -1096,12 +1137,7 @@ impl NodeEntity {
                 instances,
             },
         };
-        Self {
-            config,
-            stage,
-            generation: next_entity_generation(),
-            pending_working_dir: None,
-        }
+        Self::with_stage(config, stage)
     }
 
     /// Removes a `Running` instance from a `Ready` entity. The entity stays
