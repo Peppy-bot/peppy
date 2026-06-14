@@ -748,11 +748,11 @@ pub fn collect_consumed_interfaces(
             ) else {
                 continue;
             };
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
-                topic: consumed_topic.clone(),
+            interfaces.push(DeploymentInterface::consumed_topic(
+                consumed_topic.clone(),
                 message_format,
                 dependency,
-            }));
+            ));
         }
     }
 
@@ -786,13 +786,11 @@ pub fn collect_consumed_interfaces(
             ) else {
                 continue;
             };
-            interfaces.push(DeploymentInterface::new(
-                InterfaceVariant::ConsumedService {
-                    service: consumed_service.clone(),
-                    request_format,
-                    response_format,
-                    dependency,
-                },
+            interfaces.push(DeploymentInterface::consumed_service(
+                consumed_service.clone(),
+                request_format,
+                response_format,
+                dependency,
             ));
         }
     }
@@ -824,11 +822,11 @@ pub fn collect_consumed_interfaces(
             ) else {
                 continue;
             };
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
-                action: consumed_action.clone(),
-                messages: action_message,
+            interfaces.push(DeploymentInterface::consumed_action(
+                consumed_action.clone(),
+                action_message,
                 dependency,
-            }));
+            ));
         }
     }
 
@@ -1045,18 +1043,10 @@ fn action_message_from_exposed(
             .goal_service
             .as_ref()
             .and_then(|s| s.request_message_format.clone()),
-        goal_response: exposed_action
-            .goal_service
-            .as_ref()
-            .and_then(|s| s.response_message_format.clone()),
         feedback: exposed_action
             .feedback_topic
             .as_ref()
             .and_then(|t| t.message_format.clone()),
-        result_request: exposed_action
-            .result_service
-            .as_ref()
-            .and_then(|s| s.request_message_format.clone()),
         result_response: exposed_action
             .result_service
             .as_ref()
@@ -1198,22 +1188,22 @@ pub fn resolve_conforms_to(
         };
 
         for topic in parsed.interfaces.topics {
-            out.push(DeploymentInterface::new(InterfaceVariant::EmittedTopic {
+            out.push(DeploymentInterface::emitted_topic(
                 topic,
-                origin: Some(origin.clone()),
-            }));
+                Some(origin.clone()),
+            ));
         }
         for service in parsed.interfaces.services {
-            out.push(DeploymentInterface::new(InterfaceVariant::ExposedService {
+            out.push(DeploymentInterface::exposed_service(
                 service,
-                origin: Some(origin.clone()),
-            }));
+                Some(origin.clone()),
+            ));
         }
         for action in parsed.interfaces.actions {
-            out.push(DeploymentInterface::new(InterfaceVariant::ExposedAction {
+            out.push(DeploymentInterface::exposed_action(
                 action,
-                origin: Some(origin.clone()),
-            }));
+                Some(origin.clone()),
+            ));
         }
     }
 

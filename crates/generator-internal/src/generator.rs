@@ -38,6 +38,21 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 ///   so the caller must ensure it is already resolved. When `None`, the function
 ///   falls back to reading `node_dir/peppy.json5`.
 ///
+/// # Filesystem effects
+/// Beyond writing the library at `node_dir/.peppy/libs/peppygen`, this function:
+/// - creates `node_dir/.peppy/` and the `peppygen` output directory;
+/// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
+///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
+/// - deploys five vendored crates (`peppylib`, `pmi-internal`, `config-internal`, `core-node-api`,
+///   `build-helpers-internal`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
+///   symlinks into a host-wide shared cache or as physical copies, per `deploy_mode`;
+/// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
+///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not
+///   pruned;
+/// - writes `node_dir/.peppy/git.hash` and the config fingerprint
+///   `…/peppygen/peppy.json5.sha256` — but **only after** generation succeeds, so a failed run
+///   leaves neither behind.
+///
 /// # Errors
 /// Returns an error if:
 /// - The configuration file (either `config_path` or the default

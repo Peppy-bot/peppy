@@ -15,19 +15,9 @@ pub enum Error {
     #[error("unknown template `{0}`")]
     UnknownTemplate(String),
 
-    // -- Subscriber errors
-    #[error("missing topic message format for subscriber `{0}`")]
-    SubscriberTopicMessageFormatMissing(String),
-    #[error("consumed topic `{0}` must specify a node")]
-    SubscriberTopicNodeMissing(String),
-    #[error("missing service message format for subscriber `{0}`")]
-    SubscriberServiceMessageFormatMissing(String),
-
     // -- nodes errors
     #[error("Cannot find the node in `{0}`")]
     NodeNotFound(String),
-    #[error("The node name `{0}` or tag `{1}` could not be found")]
-    NoMatchingNode(String, String),
     #[error("failed to parse generated node module for `{node}`")]
     NodeModuleParseError {
         node: String,
