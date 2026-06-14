@@ -663,13 +663,22 @@ fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
     // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
-    // the process group whose PGID == `pid`. An already-dead group yields ESRCH,
-    // which we ignore (matching the previous raw-`libc::kill` behavior). Using
-    // nix's safe wrapper keeps the crate free of `unsafe`.
-    let _ = nix::sys::signal::killpg(
+    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
+    // crate free of `unsafe`.
+    match nix::sys::signal::killpg(
         nix::unistd::Pid::from_raw(pid as i32),
         nix::sys::signal::Signal::SIGKILL,
-    );
+    ) {
+        // An already-dead group yields ESRCH; the group is already gone, which
+        // is exactly the state we wanted, so treat it as success.
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        // Any other errno (e.g. EPERM) means the SIGKILL did not land and the
+        // node's process group may still be alive, so surface it.
+        Err(err) => warn!(
+            "Failed to SIGKILL node process group (pid {}): {}",
+            pid, err
+        ),
+    }
 }
 
 #[cfg(not(unix))]
