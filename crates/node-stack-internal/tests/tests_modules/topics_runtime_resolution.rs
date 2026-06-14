@@ -4,6 +4,7 @@ use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
+use crate::helpers::graph_query;
 
 #[test]
 fn topic_dependency_resolved_when_dependency_added_first() {
@@ -93,22 +94,14 @@ fn topic_dependency_resolved_when_dependency_added_first() {
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
-    let dependencies = stack.dependencies_of("brain", "v1");
-    let dependency_names: Vec<_> = dependencies
-        .iter()
-        .map(|node| node.read().config().manifest.name.as_str().to_owned())
-        .collect();
+    let dependency_names = graph_query::dependency_names(&stack, "brain", "v1");
     assert_eq!(
         dependency_names,
         vec!["lidar".to_string()],
         "dependency edge should be wired"
     );
 
-    let dependants = stack
-        .dependents_of("lidar", "v1")
-        .into_iter()
-        .map(|node| node.read().config().manifest.name.as_str().to_owned())
-        .collect::<Vec<_>>();
+    let dependants = graph_query::dependent_names(&stack, "lidar", "v1");
     assert_eq!(
         dependants,
         vec!["brain"],

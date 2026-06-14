@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use config::consts::PeppyDirs;
 use config::node::{Name, NodeConfig};
+use core_node_api::NodeStage as SerializedNodeStage;
 use node_stack::{
-    BuildContext, EntityHandle, NodeEntity, NodeStack, NodeStage, OutputSinks, StartContext,
+    BuildContext, EntityHandle, NodeEntity, NodeStack, OutputSinks, StartContext,
     build_io::{FeedbackLine, OutputReaderHooks},
 };
 use tokio::sync::mpsc;
@@ -207,19 +208,16 @@ pub async fn spawn_running_instance(
     }
 }
 
-/// Polls `handle` until its entity is observably in `Building`, panicking if
-/// that does not happen within 10s. Used by lifecycle tests that drive a real
-/// `NodeEntity::build` into `Building` (via a blocking build_cmd) before
-/// exercising the rollback / restore paths.
+/// Waits until `handle`'s entity is in `Building`, driven by the entity's
+/// stage-change broadcast rather than wall-clock polling. Used by lifecycle
+/// tests that drive a real `NodeEntity::build` into `Building` (via a blocking
+/// build_cmd) before exercising the rollback path. `wait_for` inspects the
+/// current stage first, so a transition that already happened is still
+/// observed; otherwise it parks until the entity broadcasts its next stage.
 pub async fn wait_for_building(handle: &EntityHandle) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if matches!(handle.read().stage(), NodeStage::Building { .. }) {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("entity did not enter Building within 10s");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let mut stages = handle.read().subscribe_stage();
+    stages
+        .wait_for(|stage| matches!(stage, SerializedNodeStage::Building))
+        .await
+        .expect("entity stage channel closed before reaching Building");
 }

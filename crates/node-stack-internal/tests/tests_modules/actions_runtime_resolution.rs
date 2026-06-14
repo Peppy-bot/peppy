@@ -4,6 +4,7 @@ use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
+use crate::helpers::graph_query;
 
 #[test]
 fn action_dependency_resolved_when_dependency_added_first() {
@@ -111,28 +112,14 @@ fn action_dependency_resolved_when_dependency_added_first() {
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
-    let deps = stack
-        .dependencies_of("brain", "v1")
-        .into_iter()
-        .map(|node| {
-            let guard = node.read();
-            (
-                guard.config().manifest.name.as_str().to_owned(),
-                guard.config().manifest.tag.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let deps = graph_query::dependency_name_tags(&stack, "brain", "v1");
     assert_eq!(
         deps,
         vec![("controller".to_string(), "v1".to_string())],
         "dependency edge should be wired for actions"
     );
 
-    let dependants = stack
-        .dependents_of("controller", "v1")
-        .into_iter()
-        .map(|node| node.read().config().manifest.name.as_str().to_owned())
-        .collect::<Vec<_>>();
+    let dependants = graph_query::dependent_names(&stack, "controller", "v1");
     assert_eq!(
         dependants,
         vec!["brain"],
