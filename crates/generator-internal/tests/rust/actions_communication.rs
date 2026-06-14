@@ -110,12 +110,6 @@ const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
-const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
-{
-  accepted: "bool"
-}
-"#;
-
 /// Consumer node config for the bimanual capstone: unlike
 /// [`STUB_NODE_CONFIG`], the manifest declares a pinned `depends_on`
 /// slot (`link_id: "brain"`), which is what makes the runtime processor
@@ -165,9 +159,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
-        result_request: None,
         result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
@@ -519,17 +511,13 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
@@ -852,17 +840,13 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
@@ -1192,17 +1176,13 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
@@ -1578,17 +1558,13 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
@@ -1948,17 +1924,13 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
@@ -2336,17 +2308,13 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =

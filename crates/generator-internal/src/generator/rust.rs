@@ -5,7 +5,7 @@ mod actions;
 mod context;
 mod deserialization;
 mod identifiers;
-pub mod parameters;
+mod parameters;
 mod scaffold;
 mod serialization;
 mod services;
@@ -21,7 +21,8 @@ use super::types::{
 };
 use crate::error::Result;
 use crate::generator::naming::{
-    non_empty_str, resolve_schema_file_stem, sanitize_component, to_camel_case,
+    module_name_from_components, non_empty_str, raw_module_label, resolve_schema_file_stem,
+    sanitize_component, sanitize_node_display_name, to_camel_case,
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
@@ -1550,5 +1551,3 @@ fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Iden
     let name = identifiers::prefixed_name(prefix, candidate, fallback);
     Ident::new(&name, Span::call_site())
 }
-
-use super::naming::{module_name_from_components, raw_module_label, sanitize_node_display_name};

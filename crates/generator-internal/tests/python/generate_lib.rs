@@ -683,8 +683,6 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
 
     let goal_request_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse goal request format");
-    let goal_response_format: MessageFormat = serde_json5::from_str(r#"{ accepted: "bool" }"#)
-        .expect("failed to parse goal response format");
     let feedback_format: MessageFormat =
         serde_json5::from_str(r#"{ progress: "u8" }"#).expect("failed to parse feedback format");
     let result_response_format: MessageFormat = serde_json5::from_str(r#"{ success: "bool" }"#)
@@ -692,9 +690,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
 
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
 
