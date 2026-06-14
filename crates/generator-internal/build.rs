@@ -384,6 +384,22 @@ mod peppylib_build {
                 so_path, native_so_path
             )
         });
+
+        // Strip debug info from the embedded native extension. This `.so` is a
+        // pure runtime artifact — it is baked into the generator binary and
+        // vendored into every generated node's `.peppy/libs/peppylib`, where uv
+        // then caches one wheel per node build. Under the `dev` profile the
+        // unstripped debug `.so` is ~457 MB (vs ~104 MB after `-S`), which
+        // dominated both the generator binary and the uv cache. `-S` drops the
+        // DWARF debuginfo (the bulk) while keeping the symbol table — so native
+        // backtraces still resolve and the exported `PyInit__peppylib` symbol is
+        // untouched. Best-effort: a missing `strip` just leaves the larger `.so`.
+        // Release builds are already stripped via `[profile.release] strip` in
+        // the workspace Cargo.toml, so this mainly bites `cargo test` (debug).
+        let _ = Command::new("strip")
+            .arg("-S")
+            .arg(&native_so_path)
+            .status();
     }
 
     /// Cross-compiles a Linux `.so` via maturin + zig for the given target.
