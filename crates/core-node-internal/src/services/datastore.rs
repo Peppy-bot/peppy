@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreListEntry, DatastoreListRequest,
     DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse, DatastoreStoreRequest,
@@ -8,7 +9,7 @@ use core_node_api::encoding::{
 use parking_lot::RwLock;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext};
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -190,18 +191,6 @@ pub async fn listen_for_datastore_remove(
         handle_remove_request,
     )
     .await
-}
-
-/// Wraps a handler's `Result` into the wire-level `PeppyResult`, tagging any
-/// failure as an `InvalidServiceRequest` from the sending instance.
-fn into_service_response(
-    context: &ServiceRequestContext,
-    result: Result<Payload>,
-) -> PeppyResult<Payload> {
-    result.map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: e.to_string(),
-    })
 }
 
 fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {

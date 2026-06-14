@@ -1,7 +1,7 @@
 use crate::daemon_state::DaemonState;
 use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::NodeConfigParser;
-use core_node::{CoreNode, CoreNodeArguments};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -173,10 +173,10 @@ impl ServeCommandEmulation {
         let repos_path = conf_dir.join("repositories.json5");
         std::fs::write(&repos_path, "[]").expect("failed to write repositories.json5");
 
-        let core_node = CoreNode::new(
-            Arc::clone(&shared_messenger),
-            Some("test-core-node"),
-            CoreNodeArguments {
+        let core_node = CoreNode::new(CoreNodeConfig {
+            messenger: Arc::clone(&shared_messenger),
+            node_name: Some("test-core-node".to_string()),
+            arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
                 health_monitor_interval: Duration::from_secs(5),
@@ -185,10 +185,10 @@ impl ServeCommandEmulation {
                 heartbeat_interval: Duration::from_secs(5),
                 daemon_use_sim_time: false,
             },
-            temp_dir.path().to_path_buf(),
+            root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
-            config::peppy_config::PeppyConfig::default(),
-        );
+            peppy_config: config::peppy_config::PeppyConfig::default(),
+        });
         let core_node_name = core_node.node_name().to_string();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

@@ -994,20 +994,6 @@ impl std::fmt::Display for NodeArgumentsError {
 
 impl std::error::Error for NodeArgumentsError {}
 
-/// Deserializes a JSON5 string into node arguments and validates them against a
-/// [`ParameterSchema`], producing a [`NodeArguments`] value.
-///
-/// This is the public entry point for parsing and validating node arguments from
-/// a raw string. The intermediate [`RawNodeArguments`] type is not exposed.
-pub fn parse_node_arguments(
-    content: &str,
-    schema: &ParameterSchema,
-) -> Result<NodeArguments, NodeArgumentsError> {
-    let raw: RawNodeArguments = serde_json5::from_str(content)
-        .map_err(|e| NodeArgumentsError::Deserialization(e.to_string()))?;
-    raw.into_resolved(schema)
-}
-
 /// Validates a `BTreeMap<String, AnyType>` against a [`ParameterSchema`] and
 /// produces a [`NodeArguments`] value.
 ///
@@ -1082,7 +1068,7 @@ pub fn resolve_parameter_path<'a>(
 /// Resolve a dot-path against a tree of runtime parameter VALUES (a
 /// `BTreeMap<String, AnyType>`), descending into [`AnyType::Object`] groups.
 ///
-/// This is the value-side counterpart to [`resolve_parameter_path`]: that one
+/// This is the value-side counterpart to `resolve_parameter_path`: that one
 /// walks the schema and returns a [`ParameterSpec`]; this one walks resolved
 /// arguments and returns the concrete [`AnyType`] value at the leaf.
 pub fn resolve_argument_path<'a>(
@@ -1871,21 +1857,76 @@ mod tests {
         assert!(resolve_parameter_path(&params, "device_path.nested").is_none());
     }
 
-    // ---- parse_node_arguments end-to-end ----
+    // ---- resolve_argument_path ----
 
     #[test]
-    fn parse_node_arguments_with_defaults() {
-        let s = schema(
-            r#"{
-                name: { $type: "string", $default: "world" },
-                count: "u16"
-            }"#,
-        );
-        let args = parse_node_arguments(r#"{ count: 5 }"#, &s).unwrap();
+    fn resolve_argument_path_descends_into_object_groups() {
+        let args: BTreeMap<String, AnyType> = BTreeMap::from([(
+            "video".to_string(),
+            AnyType::Object(BTreeMap::from([(
+                "device_path".to_string(),
+                AnyType::String("/dev/video0".to_string()),
+            )])),
+        )]);
         assert_eq!(
-            args.0.get("name"),
-            Some(&AnyType::String("world".to_string()))
+            resolve_argument_path(&args, "video.device_path"),
+            Some(&AnyType::String("/dev/video0".to_string()))
         );
+        // A top-level leaf resolves without descending.
+        let flat: BTreeMap<String, AnyType> =
+            BTreeMap::from([("fps".to_string(), AnyType::UInt(30))]);
+        assert_eq!(
+            resolve_argument_path(&flat, "fps"),
+            Some(&AnyType::UInt(30))
+        );
+    }
+
+    #[test]
+    fn resolve_argument_path_returns_none_for_missing_or_non_group() {
+        let args: BTreeMap<String, AnyType> = BTreeMap::from([(
+            "video".to_string(),
+            AnyType::String("not-an-object".to_string()),
+        )]);
+        // Missing top-level key.
+        assert!(resolve_argument_path(&args, "missing").is_none());
+        // Descending past a non-Object leaf yields None rather than panicking.
+        assert!(resolve_argument_path(&args, "video.device_path").is_none());
+    }
+
+    // ---- validate_node_arguments (programmatic map entry point) ----
+
+    #[test]
+    fn validate_node_arguments_accepts_well_typed_map() {
+        let s = schema(r#"{ count: "u16" }"#);
+        let args =
+            validate_node_arguments(BTreeMap::from([("count".to_string(), AnyType::Int(5))]), &s)
+                .expect("valid args should resolve");
+        assert!(args.0.contains_key("count"));
+    }
+
+    #[test]
+    fn validate_node_arguments_rejects_type_mismatch() {
+        let s = schema(r#"{ count: "u16" }"#);
+        let err = validate_node_arguments(
+            BTreeMap::from([("count".to_string(), AnyType::String("nope".to_string()))]),
+            &s,
+        )
+        .expect_err("string for u16 should fail");
+        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+    }
+
+    #[test]
+    fn validate_node_arguments_rejects_unknown_key() {
+        let s = schema(r#"{ count: "u16" }"#);
+        let err = validate_node_arguments(
+            BTreeMap::from([
+                ("count".to_string(), AnyType::Int(1)),
+                ("bogus".to_string(), AnyType::Int(2)),
+            ]),
+            &s,
+        )
+        .expect_err("unknown key should fail");
+        assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
     }
 
     #[test]

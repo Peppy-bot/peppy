@@ -1,13 +1,15 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
 use crate::generator::common::{cache_sibling_path, copy_dir_recursive};
-use crate::generator::naming::{sanitize_component, unique_module_name};
-use crate::generator::scaffold_tree::{ModuleTree, build_module_tree};
-#[cfg(test)]
-use crate::generator::types::InterfaceKind;
+use crate::generator::naming::sanitize_component;
+use crate::generator::scaffold_tree::{
+    ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category, write_module_tree,
+};
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, ModuleCategory};
+#[cfg(test)]
+use crate::generator::types::{InterfaceKind, InterfaceOrigin};
 use rust_embed::Embed;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -214,11 +216,7 @@ pub fn add_parameters_to_lib(parameters: &config::ParameterSchema, to_path: &Pat
 pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -> Result<()> {
     let peppygen_dir = to_path.join("peppygen");
 
-    let mut grouped: BTreeMap<ModuleCategory, Vec<InterfaceArtifact>> = BTreeMap::new();
-    for artifact in artifacts {
-        let category = ModuleCategory::from_kind(artifact.kind);
-        grouped.entry(category).or_default().push(artifact);
-    }
+    let mut grouped = group_artifacts_by_category(artifacts);
 
     for category in ModuleCategory::ALL {
         let category_dir = peppygen_dir.join(category.dir_name());
@@ -229,23 +227,32 @@ pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -
 
         let artifacts = grouped.remove(&category).unwrap_or_default();
         let tree = build_module_tree(artifacts);
-        write_tree_node(&category_dir, &tree)?;
+        let mut writer = PythonTreeWriter;
+        write_module_tree(&category_dir, &tree, &mut writer)?;
     }
 
     Ok(())
 }
 
-/// Recursive worker mirroring the Rust scaffold layout. Writes one `.py` per
-/// leaf and an `__init__.py` per directory that imports every sub-module so
+/// [`TreeWriter`] mirroring the Rust scaffold layout: one `.py` file per leaf
+/// and an `__init__.py` per directory that imports every sub-module so
 /// `from peppygen.emitted_topics.depth_camera.v1 import video_stream` resolves.
-fn write_tree_node(dir: &Path, tree: &ModuleTree) -> Result<()> {
-    fs::create_dir_all(dir)?;
+/// Traversal and sibling de-duplication live in the shared [`write_module_tree`]
+/// walker.
+struct PythonTreeWriter;
 
-    let mut init_imports: Vec<String> = Vec::new();
-    let mut counts: HashMap<String, usize> = HashMap::new();
+impl TreeWriter for PythonTreeWriter {
+    fn sanitize_module_name(raw: &str) -> String {
+        sanitize_python_module_name(raw)
+    }
 
-    for (raw_leaf, artifacts) in &tree.leaves {
-        let module_name = unique_module_name(raw_leaf, &mut counts, sanitize_python_module_name);
+    fn write_leaf(
+        &mut self,
+        dir: &Path,
+        module_name: &str,
+        _raw_name: &str,
+        artifacts: &[InterfaceArtifact],
+    ) -> Result<()> {
         let module_file = dir.join(format!("{module_name}.py"));
         let mut code = String::new();
         for artifact in artifacts {
@@ -258,23 +265,17 @@ fn write_tree_node(dir: &Path, tree: &ModuleTree) -> Result<()> {
             code.push('\n');
         }
         fs::write(&module_file, code)?;
-        init_imports.push(module_name);
+        Ok(())
     }
 
-    for (raw_segment, child) in &tree.children {
-        let module_name = unique_module_name(raw_segment, &mut counts, sanitize_python_module_name);
-        let child_dir = dir.join(&module_name);
-        write_tree_node(&child_dir, child)?;
-        init_imports.push(module_name);
+    fn write_index(&mut self, dir: &Path, entries: &[ModuleEntry], _is_root: bool) -> Result<()> {
+        let mut init_content = String::new();
+        for entry in entries {
+            init_content.push_str(&format!("from . import {}\n", entry.module_name));
+        }
+        fs::write(dir.join("__init__.py"), init_content)?;
+        Ok(())
     }
-
-    let mut init_content = String::new();
-    for name in &init_imports {
-        init_content.push_str(&format!("from . import {name}\n"));
-    }
-    fs::write(dir.join("__init__.py"), init_content)?;
-
-    Ok(())
 }
 
 fn sanitize_python_module_name(raw: &str) -> String {
@@ -303,14 +304,16 @@ mod tests {
     #[test]
     fn write_tree_node_escapes_keyword_module_in_init_import() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
-        let artifact = InterfaceArtifact::from_kind(
+        let artifact = InterfaceArtifact::for_leaf(
+            None,
             "class",
             InterfaceKind::EmittedTopic,
             String::from("x = 1\n"),
         );
 
         let tree = build_module_tree(vec![artifact]);
-        write_tree_node(temp_dir.path(), &tree).expect("tree should be written");
+        write_module_tree(temp_dir.path(), &tree, &mut PythonTreeWriter)
+            .expect("tree should be written");
 
         let module_file = temp_dir.path().join("class_.py");
         assert!(module_file.exists(), "expected escaped module filename");
@@ -323,23 +326,28 @@ mod tests {
     #[test]
     fn write_tree_node_nests_conformed_artifacts() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
-        let native = InterfaceArtifact::from_kind(
+        let native = InterfaceArtifact::for_leaf(
+            None,
             "video_stream",
             InterfaceKind::EmittedTopic,
             String::from("NATIVE = True\n"),
         );
-        let conformed = InterfaceArtifact::from_kind_nested(
-            vec![
-                "depth_camera".to_string(),
-                "v1".to_string(),
-                "video_stream".to_string(),
-            ],
+        // A conformed origin nests the leaf under `{iface_name}/{iface_tag}/`,
+        // i.e. module_path == ["depth_camera", "v1", "video_stream"].
+        let conformed_origin = InterfaceOrigin {
+            iface_name: "depth_camera".to_string(),
+            iface_tag: "v1".to_string(),
+        };
+        let conformed = InterfaceArtifact::for_leaf(
+            Some(&conformed_origin),
+            "video_stream",
             InterfaceKind::EmittedTopic,
             String::from("CONFORMED = True\n"),
         );
 
         let tree = build_module_tree(vec![native, conformed]);
-        write_tree_node(temp_dir.path(), &tree).expect("tree should be written");
+        write_module_tree(temp_dir.path(), &tree, &mut PythonTreeWriter)
+            .expect("tree should be written");
 
         assert!(temp_dir.path().join("video_stream.py").exists());
         assert!(

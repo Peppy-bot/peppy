@@ -6,17 +6,17 @@ use config::consts::{
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::names;
 use core_node::nodes_repo_cache_path;
-use core_node::{CoreNode, CoreNodeArguments};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use core_node_api::encoding::{
     ClockRequest, ClockResponse, ClockTick, DatastoreGetRequest, DatastoreGetResponse,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse, NodeAddFeedback, NodeAddGoal,
     NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
     NodeBuildResult, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource,
-    wall_now_ns,
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
+use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
     ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, ServiceTarget, TopicMessenger,
 };
@@ -1758,14 +1758,14 @@ async fn start_core_node_with_messenger(
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");
-    let core_node = CoreNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_core_node"),
-        node_arguments,
+    let core_node = CoreNode::new(CoreNodeConfig {
+        messenger: Arc::clone(&shared_messenger),
+        node_name: Some("test_core_node".to_string()),
+        arguments: node_arguments,
         root_dir,
-        peppy_dirs.clone(),
+        peppy_dirs: peppy_dirs.clone(),
         peppy_config,
-    );
+    });
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();

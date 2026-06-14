@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
@@ -61,19 +62,17 @@ async fn handle_node_remove_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_remove_request_inner(
+    into_service_response(
         &context,
-        &messenger,
-        &core_node_node,
-        &core_instance_id,
-        node_stack,
+        handle_node_remove_request_inner(
+            &context,
+            &messenger,
+            &core_node_node,
+            &core_instance_id,
+            node_stack,
+        )
+        .await,
     )
-    .await
-    .map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
-    })
 }
 
 async fn handle_node_remove_request_inner(

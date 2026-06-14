@@ -208,7 +208,12 @@ impl NodeAddGoal {
                     repo_ref,
                 } => {
                     let mut git = source.init_git();
-                    git.set_repo_url(repo_url.to_bstring().to_string());
+                    // Borrow the canonicalized URL bytes as text instead of
+                    // allocating a second `String`: `from_utf8_lossy` returns a
+                    // borrowed `Cow` for the valid-UTF-8 case (every real git
+                    // URL), matching the lossy decoding `BString`'s `Display`
+                    // already used.
+                    git.set_repo_url(String::from_utf8_lossy(&repo_url.to_bstring()).as_ref());
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
@@ -409,6 +414,156 @@ mod tests {
                 "tag `{tag}` should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn node_add_goal_with_env_vars_and_force_roundtrips() {
+        let goal = NodeAddGoal::new("/some/node", "git-hash", 42)
+            .with_env_vars(vec![
+                ("KEY1".to_owned(), "VAL1".to_owned()),
+                ("KEY2".to_owned(), "VAL2".to_owned()),
+            ])
+            .with_force(true);
+        assert!(goal.force);
+        let encoded = goal.encode().expect("encoding should succeed");
+        let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+
+        assert_eq!(decoded.source, NodeSource::Fs(PathBuf::from("/some/node")));
+        assert_eq!(decoded.git_hash, "git-hash");
+        assert_eq!(decoded.timeout_secs, 42);
+        assert!(decoded.force);
+        assert_eq!(
+            decoded.env_vars,
+            vec![
+                ("KEY1".to_owned(), "VAL1".to_owned()),
+                ("KEY2".to_owned(), "VAL2".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn node_add_goal_fs_path_accessor() {
+        let goal = NodeAddGoal::new("/some/node", "git-hash", 30);
+        assert_eq!(goal.fs_path(), Some(&PathBuf::from("/some/node")));
+
+        let repo_goal = NodeAddGoal::new_repo_node("camera", "v1", "hash", 30)
+            .expect("repo_node constructor should accept valid inputs");
+        assert_eq!(repo_goal.fs_path(), None);
+    }
+
+    // --- NodeAddGoalResponse ---
+
+    #[test]
+    fn node_add_goal_response_accepted_roundtrip() {
+        let response = NodeAddGoalResponse::accepted("/var/log/add.log");
+        assert!(response.accepted);
+        assert_eq!(response.log_path, PathBuf::from("/var/log/add.log"));
+        assert_eq!(response.rejection_reason, None);
+        let encoded = response.encode().expect("encode");
+        let decoded = NodeAddGoalResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn node_add_goal_response_rejected_roundtrip() {
+        let response = NodeAddGoalResponse::rejected("busy");
+        assert!(!response.accepted);
+        assert_eq!(response.log_path, PathBuf::new());
+        assert_eq!(response.rejection_reason, Some("busy".to_owned()));
+        let encoded = response.encode().expect("encode");
+        let decoded = NodeAddGoalResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn node_add_goal_response_decode_rejects_malformed_bytes() {
+        assert!(NodeAddGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    // --- NodeAddFeedback ---
+
+    #[test]
+    fn node_add_feedback_from_stream_roundtrip() {
+        let feedback = NodeAddFeedback::from_stream(FeedbackStream::Stdout, "line");
+        assert_eq!(feedback.stream, FeedbackStream::Stdout);
+        assert_eq!(feedback.line, "line");
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+    }
+
+    #[test]
+    fn node_add_feedback_stdout_predicates() {
+        let feedback = NodeAddFeedback::stdout("out");
+        assert!(feedback.is_stdout());
+        assert!(!feedback.is_stderr());
+        assert!(!feedback.is_warning());
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+        assert!(decoded.is_stdout());
+    }
+
+    #[test]
+    fn node_add_feedback_stderr_predicates() {
+        let feedback = NodeAddFeedback::stderr("err");
+        assert!(!feedback.is_stdout());
+        assert!(feedback.is_stderr());
+        assert!(!feedback.is_warning());
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+        assert!(decoded.is_stderr());
+    }
+
+    #[test]
+    fn node_add_feedback_warning_predicates() {
+        let feedback = NodeAddFeedback::warning("warn");
+        assert!(!feedback.is_stdout());
+        assert!(!feedback.is_stderr());
+        assert!(feedback.is_warning());
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+        assert!(decoded.is_warning());
+    }
+
+    #[test]
+    fn node_add_feedback_decode_rejects_malformed_bytes() {
+        assert!(NodeAddFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    // --- NodeAddResult ---
+
+    #[test]
+    fn node_add_result_success_roundtrip() {
+        let result = NodeAddResult::success("/var/log/add.log", "sensor_node", "v1");
+        assert!(result.success);
+        assert_eq!(result.log_path, PathBuf::from("/var/log/add.log"));
+        assert_eq!(result.error_message, None);
+        assert_eq!(result.node_name, Some("sensor_node".to_owned()));
+        assert_eq!(result.node_tag, Some("v1".to_owned()));
+        let encoded = result.encode().expect("encode");
+        let decoded = NodeAddResult::decode(&encoded).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn node_add_result_failure_roundtrip() {
+        let result = NodeAddResult::failure("/var/log/add.log", "boom");
+        assert!(!result.success);
+        assert_eq!(result.log_path, PathBuf::from("/var/log/add.log"));
+        assert_eq!(result.error_message, Some("boom".to_owned()));
+        assert_eq!(result.node_name, None);
+        assert_eq!(result.node_tag, None);
+        let encoded = result.encode().expect("encode");
+        let decoded = NodeAddResult::decode(&encoded).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn node_add_result_decode_rejects_malformed_bytes() {
+        assert!(NodeAddResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
     }
 }
 

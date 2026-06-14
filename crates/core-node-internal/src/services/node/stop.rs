@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use config::node::Name;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use node_stack::NodeStack;
@@ -8,7 +9,7 @@ use peppylib::messaging::{
     SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
 };
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult};
+use peppylib::{MessengerHandle, PeppyResult};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -62,19 +63,17 @@ async fn handle_node_stop_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_stop_request_inner(
+    into_service_response(
         &context,
-        &messenger,
-        &core_node_node,
-        &core_instance_id,
-        node_stack,
+        handle_node_stop_request_inner(
+            &context,
+            &messenger,
+            &core_node_node,
+            &core_instance_id,
+            node_stack,
+        )
+        .await,
     )
-    .await
-    .map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
-    })
 }
 
 async fn handle_node_stop_request_inner(
@@ -663,11 +662,22 @@ fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
 /// `setpgid`/`killpg` semantics are identical on Linux and macOS.
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
-    // SAFETY: a plain `kill(2)` syscall with no memory effects. A negative pid
-    // targets the process group `pid`. An already-dead group yields ESRCH,
-    // which we ignore.
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
+    // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
+    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
+    // crate free of `unsafe`.
+    match nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    ) {
+        // An already-dead group yields ESRCH; the group is already gone, which
+        // is exactly the state we wanted, so treat it as success.
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        // Any other errno (e.g. EPERM) means the SIGKILL did not land and the
+        // node's process group may still be alive, so surface it.
+        Err(err) => warn!(
+            "Failed to SIGKILL node process group (pid {}): {}",
+            pid, err
+        ),
     }
 }
 

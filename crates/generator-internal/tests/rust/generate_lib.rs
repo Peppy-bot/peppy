@@ -89,6 +89,61 @@ fn generate_peppygen_lib_minimal_config() {
     assert!(peppygen_dir.exists(), "peppygen directory should exist");
 }
 
+/// `CrateDeployMode::Copy` (used for container builds, where symlinks to host
+/// paths break) must deploy the vendored crates as **real directories**, not
+/// symlinks into the shared cache — the property container builds rely on.
+/// Complements `generate_peppygen_lib_cargo`, which asserts the default
+/// `Symlink` mode produces symlinks.
+#[test]
+fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
+    let temp_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let node_dir = temp_dir.path();
+
+    let minimal_config = r#"{
+      peppy_schema: "node_v1",
+      manifest: {
+        name: "copy_node",
+        tag: "v1"
+      },
+      execution: {
+        language: "rust",
+        run_cmd: ["./target/debug/copy_node"]
+      }
+    }"#;
+    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
+
+    generate_peppygen_lib(
+        PeppygenLanguage::Rust,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &helpers::test_peppy_dirs(),
+        generator::CrateDeployMode::Copy,
+        None,
+    )
+    .expect("failed to generate library in Copy mode");
+
+    let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
+        .parent()
+        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
+    for crate_name in ["peppylib", "pmi-internal", "config-internal"] {
+        let dest = node_dir.join(libs_dir).join(crate_name);
+        let meta = dest.symlink_metadata().unwrap_or_else(|e| {
+            panic!("{crate_name} should be deployed at {}: {e}", dest.display())
+        });
+        assert!(
+            !meta.file_type().is_symlink(),
+            "{crate_name} should be a real directory in Copy mode, not a symlink"
+        );
+        assert!(
+            dest.join("Cargo.toml").is_file(),
+            "{crate_name} should contain copied sources (Cargo.toml) in Copy mode"
+        );
+    }
+}
+
 #[test]
 fn generate_peppygen_lib_cargo() {
     let (temp_dir, peppygen_dir) =
@@ -612,8 +667,6 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let goal_request_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse goal request format");
-    let goal_response_format: MessageFormat = serde_json5::from_str(r#"{ accepted: "bool" }"#)
-        .expect("failed to parse goal response format");
     let feedback_format: MessageFormat =
         serde_json5::from_str(r#"{ progress: "u8" }"#).expect("failed to parse feedback format");
     let result_response_format: MessageFormat = serde_json5::from_str(r#"{ success: "bool" }"#)
@@ -621,9 +674,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
 

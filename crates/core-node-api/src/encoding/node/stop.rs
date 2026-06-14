@@ -96,3 +96,94 @@ impl NodeStopResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_request_round_trips() {
+        let request = NodeStopRequest::new("instance-42");
+        let payload = request.encode().expect("encode");
+        let decoded = NodeStopRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded.instance_id, "instance-42");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn stop_request_decode_rejects_malformed_bytes() {
+        NodeStopRequest::decode(b"not a capnp message")
+            .expect_err("malformed bytes should be rejected");
+    }
+
+    #[test]
+    fn stop_response_round_trips_success() {
+        let response = NodeStopResponse::success();
+        assert!(response.success);
+        assert_eq!(response.error_message, None);
+        assert!(!response.force_killed);
+        let payload = response.encode().expect("encode");
+        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
+        assert!(decoded.success);
+        assert_eq!(decoded.error_message, None);
+        assert!(!decoded.force_killed);
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn stop_response_round_trips_success_force_killed() {
+        let response = NodeStopResponse::success_force_killed();
+        assert!(response.success);
+        assert_eq!(response.error_message, None);
+        assert!(response.force_killed);
+        let payload = response.encode().expect("encode");
+        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
+        assert!(decoded.success);
+        assert_eq!(decoded.error_message, None);
+        // The force-killed flag must survive the wire round-trip distinctly
+        // from a plain graceful success.
+        assert!(decoded.force_killed);
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn stop_response_force_killed_flag_is_distinct_from_plain_success() {
+        let plain = NodeStopResponse::success().encode().expect("encode plain");
+        let forced = NodeStopResponse::success_force_killed()
+            .encode()
+            .expect("encode forced");
+        let plain_decoded = NodeStopResponse::decode(plain.as_ref()).expect("decode plain");
+        let forced_decoded = NodeStopResponse::decode(forced.as_ref()).expect("decode forced");
+        assert!(!plain_decoded.force_killed);
+        assert!(forced_decoded.force_killed);
+        assert_ne!(plain_decoded, forced_decoded);
+    }
+
+    #[test]
+    fn stop_response_round_trips_failure() {
+        let response = NodeStopResponse::failure("could not stop");
+        assert!(!response.success);
+        assert_eq!(response.error_message, Some("could not stop".to_owned()));
+        assert!(!response.force_killed);
+        let payload = response.encode().expect("encode");
+        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message, Some("could not stop".to_owned()));
+        assert!(!decoded.force_killed);
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn stop_response_new_round_trips() {
+        let response = NodeStopResponse::new(false, Some("oops".to_owned()));
+        let payload = response.encode().expect("encode");
+        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn stop_response_decode_rejects_malformed_bytes() {
+        NodeStopResponse::decode(b"not a capnp message")
+            .expect_err("malformed bytes should be rejected");
+    }
+}

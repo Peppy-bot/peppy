@@ -3,13 +3,14 @@ mod templates;
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use config::consts::PeppyDirs;
 use config::node::Toolchain;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -43,13 +44,10 @@ async fn handle_node_init_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_init_request_inner(&context, &peppy_dirs).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        }
-    })
+    into_service_response(
+        &context,
+        handle_node_init_request_inner(&context, &peppy_dirs),
+    )
 }
 
 fn handle_node_init_request_inner(

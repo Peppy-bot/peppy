@@ -284,3 +284,194 @@ impl NodeBuildResult {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- FeedbackStream ---
+
+    #[test]
+    fn feedback_stream_as_str() {
+        assert_eq!(FeedbackStream::Stdout.as_str(), "stdout");
+        assert_eq!(FeedbackStream::Stderr.as_str(), "stderr");
+        assert_eq!(FeedbackStream::Warning.as_str(), "warning");
+    }
+
+    // --- NodeBuildGoal ---
+
+    #[test]
+    fn node_build_goal_new_defaults() {
+        let goal = NodeBuildGoal::new("node", "tag", 30);
+        assert_eq!(goal.node_name, "node");
+        assert_eq!(goal.node_tag, "tag");
+        assert!(goal.env_vars.is_empty());
+        assert_eq!(goal.timeout_secs, 30);
+        assert!(!goal.force);
+    }
+
+    #[test]
+    fn node_build_goal_roundtrip_empty_env_vars() {
+        let goal = NodeBuildGoal::new("node", "tag", 30);
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeBuildGoal::decode(&encoded).expect("decode");
+        assert_eq!(decoded, goal);
+        assert!(decoded.env_vars.is_empty());
+    }
+
+    #[test]
+    fn node_build_goal_roundtrip_populated_env_vars() {
+        let goal = NodeBuildGoal::new("node", "tag", 42).with_env_vars(vec![
+            ("KEY1".to_owned(), "VAL1".to_owned()),
+            ("KEY2".to_owned(), "VAL2".to_owned()),
+        ]);
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeBuildGoal::decode(&encoded).expect("decode");
+        assert_eq!(decoded, goal);
+        assert_eq!(
+            decoded.env_vars,
+            vec![
+                ("KEY1".to_owned(), "VAL1".to_owned()),
+                ("KEY2".to_owned(), "VAL2".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn node_build_goal_with_force_true_roundtrip() {
+        let goal = NodeBuildGoal::new("node", "tag", 30).with_force(true);
+        assert!(goal.force);
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeBuildGoal::decode(&encoded).expect("decode");
+        assert!(decoded.force);
+        assert_eq!(decoded, goal);
+    }
+
+    #[test]
+    fn node_build_goal_with_force_false_roundtrip() {
+        let goal = NodeBuildGoal::new("node", "tag", 30).with_force(false);
+        assert!(!goal.force);
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeBuildGoal::decode(&encoded).expect("decode");
+        assert!(!decoded.force);
+        assert_eq!(decoded, goal);
+    }
+
+    #[test]
+    fn node_build_goal_decode_rejects_malformed_bytes() {
+        assert!(NodeBuildGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    // --- NodeBuildGoalResponse ---
+
+    #[test]
+    fn node_build_goal_response_accepted_roundtrip() {
+        let response = NodeBuildGoalResponse::accepted("/var/log/build.log");
+        assert!(response.accepted);
+        assert_eq!(response.log_path, PathBuf::from("/var/log/build.log"));
+        assert_eq!(response.rejection_reason, None);
+        let encoded = response.encode().expect("encode");
+        let decoded = NodeBuildGoalResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn node_build_goal_response_rejected_roundtrip() {
+        let response = NodeBuildGoalResponse::rejected("busy");
+        assert!(!response.accepted);
+        assert_eq!(response.log_path, PathBuf::new());
+        assert_eq!(response.rejection_reason, Some("busy".to_owned()));
+        let encoded = response.encode().expect("encode");
+        let decoded = NodeBuildGoalResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn node_build_goal_response_decode_rejects_malformed_bytes() {
+        assert!(NodeBuildGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    // --- NodeBuildFeedback ---
+
+    #[test]
+    fn node_build_feedback_from_stream_roundtrip() {
+        let feedback = NodeBuildFeedback::from_stream(FeedbackStream::Stdout, "line");
+        assert_eq!(feedback.stream, FeedbackStream::Stdout);
+        assert_eq!(feedback.line, "line");
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+    }
+
+    #[test]
+    fn node_build_feedback_stdout_predicates() {
+        let feedback = NodeBuildFeedback::stdout("out");
+        assert!(feedback.is_stdout());
+        assert!(!feedback.is_stderr());
+        assert!(!feedback.is_warning());
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+        assert!(decoded.is_stdout());
+    }
+
+    #[test]
+    fn node_build_feedback_stderr_predicates() {
+        let feedback = NodeBuildFeedback::stderr("err");
+        assert!(!feedback.is_stdout());
+        assert!(feedback.is_stderr());
+        assert!(!feedback.is_warning());
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+        assert!(decoded.is_stderr());
+    }
+
+    #[test]
+    fn node_build_feedback_warning_predicates() {
+        let feedback = NodeBuildFeedback::warning("warn");
+        assert!(!feedback.is_stdout());
+        assert!(!feedback.is_stderr());
+        assert!(feedback.is_warning());
+        let encoded = feedback.encode().expect("encode");
+        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
+        assert_eq!(decoded, feedback);
+        assert!(decoded.is_warning());
+    }
+
+    #[test]
+    fn node_build_feedback_decode_rejects_malformed_bytes() {
+        assert!(NodeBuildFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    // --- NodeBuildResult ---
+
+    #[test]
+    fn node_build_result_success_roundtrip() {
+        let result = NodeBuildResult::success("/artifacts/node.bin", "/var/log/build.log");
+        assert!(result.success);
+        assert_eq!(result.artifact_path, PathBuf::from("/artifacts/node.bin"));
+        assert_eq!(result.log_path, PathBuf::from("/var/log/build.log"));
+        assert_eq!(result.error_message, None);
+        let encoded = result.encode().expect("encode");
+        let decoded = NodeBuildResult::decode(&encoded).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn node_build_result_failure_roundtrip() {
+        let result = NodeBuildResult::failure("/var/log/build.log", "boom");
+        assert!(!result.success);
+        assert_eq!(result.artifact_path, PathBuf::new());
+        assert_eq!(result.log_path, PathBuf::from("/var/log/build.log"));
+        assert_eq!(result.error_message, Some("boom".to_owned()));
+        let encoded = result.encode().expect("encode");
+        let decoded = NodeBuildResult::decode(&encoded).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn node_build_result_decode_rejects_malformed_bytes() {
+        assert!(NodeBuildResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+}

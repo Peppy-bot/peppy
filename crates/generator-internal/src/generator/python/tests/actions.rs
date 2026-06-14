@@ -113,12 +113,6 @@ pub(super) const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 }
 "#;
 
-pub(super) const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1: &str = r#"
-{
-  accepted: "bool"
-}
-"#;
-
 pub(super) const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 {
   new_position: {
@@ -141,12 +135,6 @@ pub(super) const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
     $items: "i32",
     $length: 3
   }
-}
-"#;
-
-const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2: &str = r#"
-{
-  accepted: "bool"
 }
 "#;
 
@@ -465,13 +453,9 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
     action.link_id = "left_arm".to_owned();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: None,
-        result_request: None,
         result_response: None,
     };
 
@@ -498,17 +482,13 @@ fn consumed_action() {
     let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let goal_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: Some(result_response_format),
     };
 
@@ -712,34 +692,26 @@ fn consumed_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let move_arm_goal_request: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let move_arm_goal_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
     let move_arm_feedback: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let move_arm_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let move_arm_messages = ConsumedActionMessage {
         goal_request: Some(move_arm_goal_request),
-        goal_response: Some(move_arm_goal_response),
         feedback: Some(move_arm_feedback),
-        result_request: None,
         result_response: Some(move_arm_result_response),
     };
 
     // Both actions target the same source node ("brain"), so link_id must match.
     let rotate_action: ConsumedAction =
         serde_json5::from_str(r#"{ link_id: "brain", name: "rotate_servo_clockwise" }"#).unwrap();
-    let rotate_goal_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
     let rotate_feedback: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
     let rotate_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
     let rotate_messages = ConsumedActionMessage {
         goal_request: None,
-        goal_response: Some(rotate_goal_response),
         feedback: Some(rotate_feedback),
-        result_request: None,
         result_response: Some(rotate_result_response),
     };
 
@@ -868,9 +840,7 @@ fn consumed_action_without_response_payload() {
 
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: None,
         feedback: Some(feedback_format),
-        result_request: None,
         result_response: None,
     };
 
@@ -957,9 +927,7 @@ fn consumed_action_without_feedback() {
 
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: None,
         feedback: None,
-        result_request: None,
         result_response: None,
     };
 

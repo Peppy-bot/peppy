@@ -43,7 +43,7 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
 /// conversion; the rest of [`sanitize_component`]'s heuristics would lose
 /// information (e.g. case) without buying us anything, since interface tags
 /// are already constrained to letters/digits/underscores/hyphens.
-pub fn sanitize_iface_tag(raw: &str) -> String {
+pub(crate) fn sanitize_iface_tag(raw: &str) -> String {
     raw.replace('-', "_")
 }
 
@@ -111,7 +111,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
 /// Builds a sanitized module name from node and name components.
 ///
 /// Returns a combined `node_name` string, or the non-empty component if the other is empty.
-pub fn module_name_from_components(node: &str, name: &str) -> String {
+pub(crate) fn module_name_from_components(node: &str, name: &str) -> String {
     let node_component = sanitize_component(node);
     let name_component = sanitize_component(name);
 
@@ -128,7 +128,7 @@ pub fn module_name_from_components(node: &str, name: &str) -> String {
 /// Unlike [`module_name_from_components`], this preserves the original characters
 /// so that names which differ only in separator style (e.g. `foo-bar` vs `foo_bar`)
 /// remain distinct.  Used as the grouping key for artifacts before sanitization.
-pub fn raw_module_label(node: &str, name: &str) -> String {
+pub(crate) fn raw_module_label(node: &str, name: &str) -> String {
     let node = node.trim();
     let name = name.trim();
 
@@ -202,7 +202,7 @@ pub(crate) fn to_camel_case(raw: &str) -> String {
 ///
 /// Splits on non-alphanumeric characters, builds PascalCase, then lowercases
 /// the first character. E.g., `frame_id` -> `frameId`, `sample_rate` -> `sampleRate`.
-pub fn sanitize_capnp_field_name(input: &str) -> String {
+pub(crate) fn sanitize_capnp_field_name(input: &str) -> String {
     let mut pascal = String::new();
     for segment in input
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -370,7 +370,7 @@ pub(crate) fn consumed_action_schema_keys(
 ///
 /// `sanitize_fn` converts the raw name into a valid module name for the target language.
 /// On the first occurrence the name is used as-is; subsequent duplicates get `_1`, `_2`, etc.
-pub fn unique_module_name(
+pub(crate) fn unique_module_name(
     original: &str,
     counts: &mut std::collections::HashMap<String, usize>,
     sanitize_fn: fn(&str) -> String,
