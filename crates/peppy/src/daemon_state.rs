@@ -31,6 +31,15 @@ pub(crate) struct DaemonState {
     /// by a daemon predating this field still parses.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
+    /// Wall-clock time (epoch milliseconds) captured when this state was built,
+    /// which the daemon does immediately before writing it. Used to pick the
+    /// freshest file when several exist and none has a live pid: it reflects
+    /// logical write order more faithfully than filesystem mtime (which is
+    /// coarse and can be rewritten by a copy or `touch`) and, living in the
+    /// value, makes the selection deterministic and unit-testable. Defaulted on
+    /// read so a state file written before this field still parses.
+    #[serde(default)]
+    pub written_at_ms: u64,
 }
 
 fn default_messaging_port() -> u16 {
@@ -39,6 +48,15 @@ fn default_messaging_port() -> u16 {
 
 fn default_shutdown_grace_secs() -> u64 {
     config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+}
+
+/// Current wall-clock time as epoch milliseconds, or 0 if the clock is set
+/// before the Unix epoch (which the ranking treats as the oldest possible).
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl DaemonState {
@@ -54,6 +72,7 @@ impl DaemonState {
             messaging_port,
             git_hash: git_hash.into(),
             shutdown_grace_secs,
+            written_at_ms: now_epoch_ms(),
         }
     }
 
@@ -152,13 +171,26 @@ impl DaemonState {
     fn select_best_state(
         states: Vec<(PathBuf, DaemonState)>,
     ) -> Result<Option<(PathBuf, DaemonState)>, io::Error> {
-        if states.is_empty() {
-            return Ok(None);
-        }
+        Self::rank_states(states, Self::pid_looks_alive)
+    }
 
+    /// Picks the state file that best represents the live daemon, given a
+    /// liveness predicate (injected so tests can stub it without spawning real
+    /// processes):
+    /// - if exactly one candidate has a live pid, it wins;
+    /// - if several do, the situation is ambiguous and an error;
+    /// - otherwise the most recently written candidate wins, ranked on the
+    ///   serialized `written_at_ms` with the path as a deterministic tie-break.
+    ///
+    /// Pure: it reads no filesystem metadata and no clock, so the same inputs
+    /// always select the same state.
+    fn rank_states(
+        states: Vec<(PathBuf, DaemonState)>,
+        is_alive: impl Fn(u32) -> bool,
+    ) -> Result<Option<(PathBuf, DaemonState)>, io::Error> {
         let mut running: Vec<(PathBuf, DaemonState)> = states
             .iter()
-            .filter(|(_, state)| state.daemon_pid.is_some_and(Self::pid_looks_alive))
+            .filter(|(_, state)| state.daemon_pid.is_some_and(&is_alive))
             .cloned()
             .collect();
 
@@ -173,40 +205,162 @@ impl DaemonState {
             }
         }
 
-        let mut best: Option<(std::time::SystemTime, PathBuf, DaemonState)> = None;
-        for (path, state) in states {
-            let modified = fs::metadata(&path)
-                .and_then(|meta| meta.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            match &best {
-                Some((best_modified, _, _)) if modified <= *best_modified => {}
-                _ => best = Some((modified, path, state)),
-            }
-        }
-
-        Ok(best.map(|(_, path, state)| (path, state)))
+        Ok(states.into_iter().max_by(|(a_path, a), (b_path, b)| {
+            a.written_at_ms
+                .cmp(&b.written_at_ms)
+                .then_with(|| a_path.cmp(b_path))
+        }))
     }
 
     #[cfg(unix)]
     fn pid_looks_alive(pid: u32) -> bool {
-        let pid = pid as libc::pid_t;
-        unsafe {
-            if libc::kill(pid, 0) == 0 {
-                return true;
-            }
-        }
+        use rustix::io::Errno;
+        use rustix::process::{Pid, test_kill_process};
 
-        let err = io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(code) if code == libc::ESRCH => false,
-            // EPERM implies the process exists, but we don't have permission to signal it.
-            Some(code) if code == libc::EPERM => true,
-            _ => true,
+        // A daemon pid is always a positive, in-range process id; anything that
+        // cannot be one names no live process we could probe.
+        let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+            return false;
+        };
+
+        // `test_kill_process` is `kill(pid, 0)`: it sends no signal, just probes
+        // existence and signalling permission.
+        match test_kill_process(pid) {
+            Ok(()) => true,
+            // No such process.
+            Err(Errno::SRCH) => false,
+            // EPERM means the process exists but we may not signal it; any other
+            // probe error is treated as alive so a transient failure never
+            // discards a state file that may belong to a running daemon.
+            Err(_) => true,
         }
     }
 
     #[cfg(not(unix))]
     fn pid_looks_alive(_pid: u32) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a state with a given pid and write time; the other fields are
+    /// irrelevant to selection, so they get fixed placeholders.
+    fn state(pid: Option<u32>, written_at_ms: u64) -> DaemonState {
+        DaemonState {
+            core_node_name: format!("node-{}", pid.unwrap_or(0)),
+            daemon_pid: pid,
+            messaging_port: 7447,
+            git_hash: "test".to_string(),
+            shutdown_grace_secs: 5,
+            written_at_ms,
+        }
+    }
+
+    fn path(name: &str) -> PathBuf {
+        PathBuf::from(name)
+    }
+
+    #[test]
+    fn live_pid_wins_over_a_newer_but_dead_state() {
+        let states = vec![
+            (path("a.json5"), state(Some(10), 100)), // alive, older write
+            (path("b.json5"), state(Some(20), 999)), // dead, newer write
+        ];
+        // Only pid 10 is alive.
+        let chosen = DaemonState::rank_states(states, |pid| pid == 10)
+            .expect("ranking succeeds")
+            .expect("a candidate is chosen");
+        assert_eq!(chosen.0, path("a.json5"));
+    }
+
+    #[test]
+    fn single_running_daemon_is_chosen() {
+        let states = vec![
+            (path("a.json5"), state(Some(10), 100)),
+            (path("b.json5"), state(Some(20), 200)),
+        ];
+        let chosen = DaemonState::rank_states(states, |pid| pid == 20)
+            .expect("ranking succeeds")
+            .expect("a candidate is chosen");
+        assert_eq!(chosen.0, path("b.json5"));
+    }
+
+    #[test]
+    fn multiple_running_daemons_is_an_error() {
+        let states = vec![
+            (path("a.json5"), state(Some(10), 100)),
+            (path("b.json5"), state(Some(20), 200)),
+        ];
+        // Both pids report alive.
+        let err = DaemonState::rank_states(states, |_| true).unwrap_err();
+        assert!(
+            err.to_string().contains("Multiple running peppy daemons"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn with_no_live_daemon_the_freshest_write_wins() {
+        let states = vec![
+            (path("a.json5"), state(Some(10), 100)),
+            (path("b.json5"), state(Some(20), 300)),
+            (path("c.json5"), state(None, 200)),
+        ];
+        let chosen = DaemonState::rank_states(states, |_| false)
+            .expect("ranking succeeds")
+            .expect("a candidate is chosen");
+        assert_eq!(chosen.0, path("b.json5"), "highest written_at_ms wins");
+    }
+
+    #[test]
+    fn equal_write_times_break_ties_by_path_deterministically() {
+        let states = vec![
+            (path("z.json5"), state(None, 500)),
+            (path("a.json5"), state(None, 500)),
+        ];
+        let chosen = DaemonState::rank_states(states, |_| false)
+            .expect("ranking succeeds")
+            .expect("a candidate is chosen");
+        // Tie on write time falls back to the greatest path, deterministically.
+        assert_eq!(chosen.0, path("z.json5"));
+    }
+
+    #[test]
+    fn empty_candidate_set_selects_nothing() {
+        let chosen = DaemonState::rank_states(Vec::new(), |_| true).expect("ranking succeeds");
+        assert!(chosen.is_none());
+    }
+
+    #[test]
+    fn write_then_read_preserves_written_at_ms() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon_state.json5");
+        let mut original = state(Some(42), 0);
+        original.written_at_ms = 1_234_567;
+        DaemonState::write_to(&path, &original).expect("write");
+
+        let read = DaemonState::read_from(&path).expect("read");
+        assert_eq!(read.written_at_ms, 1_234_567);
+    }
+
+    #[test]
+    fn state_file_without_written_at_ms_defaults_to_zero() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon_state.json5");
+        // A file written before the field existed.
+        std::fs::write(&path, r#"{ "core_node_name": "old", "daemon_pid": null }"#)
+            .expect("write legacy file");
+
+        let read = DaemonState::read_from(&path).expect("read");
+        assert_eq!(read.written_at_ms, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_looks_alive_for_the_current_process() {
+        assert!(DaemonState::pid_looks_alive(std::process::id()));
     }
 }

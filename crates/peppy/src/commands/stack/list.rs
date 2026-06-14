@@ -7,9 +7,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use config::runtime::{ProducerRef, SlotBinding};
 use core_node_api::encoding::StackListRequest;
-use core_node_api::{
-    InstanceState, SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph,
-};
+use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
 
 use peppylib::core_node::transport::poll_stack_list;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,8 +41,7 @@ pub async fn list_nodes_collecting(
     )
     .await?;
 
-    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+    let graph = crate::commands::parse_stack_graph(&response.graph_json)?;
 
     // Sort nodes by label for consistent output, with the daemon root first.
     let mut nodes = graph.nodes;

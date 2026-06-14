@@ -30,3 +30,42 @@ pub(crate) fn format_instance_ids(instance_ids: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn answer(input: &str) -> bool {
+        let mut reader = Cursor::new(input.as_bytes().to_vec());
+        confirm_prompt("Proceed? ", Some(&mut reader)).expect("reading from a cursor never fails")
+    }
+
+    #[test]
+    fn affirmative_answers_confirm() {
+        assert!(answer("y\n"));
+        assert!(answer("yes\n"));
+        assert!(answer("Y\n"), "matching is case-insensitive");
+        assert!(answer("YES\n"));
+        assert!(answer("  yes  \n"), "surrounding whitespace is trimmed");
+    }
+
+    #[test]
+    fn anything_else_declines() {
+        assert!(!answer("n\n"));
+        assert!(!answer("no\n"));
+        assert!(!answer("\n"), "a bare newline declines");
+        assert!(!answer(""), "EOF declines");
+        assert!(!answer("yep\n"), "only y/yes count as yes");
+    }
+
+    #[test]
+    fn format_instance_ids_quotes_and_joins() {
+        assert_eq!(format_instance_ids(&[]), "");
+        assert_eq!(format_instance_ids(&["a".to_string()]), "\"a\"");
+        assert_eq!(
+            format_instance_ids(&["a".to_string(), "b".to_string()]),
+            "\"a\", \"b\""
+        );
+    }
+}

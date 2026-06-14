@@ -21,6 +21,17 @@ impl AppContext {
         }
     }
 
+    /// Builds a context rooted at the process's current working directory.
+    ///
+    /// Fallible because reading the cwd is a syscall that can fail (a deleted or
+    /// unreadable directory, some sandboxes). The failure flows through the
+    /// crate error type so the CLI reports it and exits cleanly, rather than
+    /// panicking from a `Default` impl.
+    pub fn from_current_dir() -> crate::error::Result<Self> {
+        let root_dir = std::env::current_dir()?;
+        Ok(Self::new(root_dir))
+    }
+
     /// Overrides the daemon state file path for this context.
     ///
     /// This avoids relying on the process-wide `PEPPY_DAEMON_STATE_FILE` env var, which is not
@@ -50,12 +61,16 @@ impl AppContext {
 
     /// Creates an AppContext with a pre-initialized messenger handle.
     /// This is useful for testing with a shared mock messenger.
+    ///
+    /// The cell is built already populated, so injecting the handle cannot fail
+    /// and there is no post-construction `set` whose error would have to be
+    /// discarded.
     pub fn with_messenger(root_dir: impl AsRef<Path>, messenger: Arc<Mutex<Messenger>>) -> Self {
-        let ctx = Self::new(root_dir);
-        let _ = ctx
-            .messenger_handle
-            .set(MessengerHandle::from_shared(messenger));
-        ctx
+        Self {
+            root_dir: PathBuf::from(root_dir.as_ref()),
+            daemon_state_path: None,
+            messenger_handle: OnceCell::new_with(Some(MessengerHandle::from_shared(messenger))),
+        }
     }
 
     async fn connect_with_port(&self, messaging_port: u16) -> crate::error::Result<()> {
@@ -99,12 +114,5 @@ impl AppContext {
             git_hash: daemon_state.git_hash,
             shutdown_grace_secs: daemon_state.shutdown_grace_secs,
         })
-    }
-}
-
-impl Default for AppContext {
-    fn default() -> Self {
-        let root_dir = std::env::current_dir().expect("Failed to get current directory");
-        Self::new(root_dir)
     }
 }

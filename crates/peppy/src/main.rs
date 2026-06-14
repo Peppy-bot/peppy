@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -76,7 +78,13 @@ fn main() {
     };
     init_tracing(log_style);
 
-    let app_ctx = Arc::new(AppContext::default());
+    let app_ctx = match AppContext::from_current_dir() {
+        Ok(ctx) => Arc::new(ctx),
+        Err(e) => {
+            error!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let result = match cli.command {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),

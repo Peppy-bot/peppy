@@ -5,7 +5,7 @@ use core_node_api::encoding::InfoRequest;
 
 use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll_info;
 
 #[cfg(target_os = "linux")]
@@ -86,8 +86,9 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
             println!("Lima version: {}", response.container_info.lima_version);
         }
         Err(e) => {
-            eprintln!();
-            eprintln!("Failed to get daemon info: {}", e);
+            return Err(Error::ExecutionFailed(format!(
+                "Failed to get daemon info: {e}"
+            )));
         }
     }
 

@@ -10,18 +10,18 @@ use super::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-pub use super::builder::ServeCommandBuilder;
+use super::builder::ServeCommandBuilder;
 pub use tokio_util::sync::CancellationToken;
 
-pub type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
+pub(crate) type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
-pub struct ServeAsyncHandle {
+pub(crate) struct ServeAsyncHandle {
     future: ServeFuture,
     ready: Option<oneshot::Receiver<()>>,
 }
 
 impl ServeAsyncHandle {
-    pub fn new(future: ServeFuture, ready: Option<oneshot::Receiver<()>>) -> Self {
+    pub(crate) fn new(future: ServeFuture, ready: Option<oneshot::Receiver<()>>) -> Self {
         Self { future, ready }
     }
 
@@ -30,22 +30,22 @@ impl ServeAsyncHandle {
     }
 }
 
-pub trait ServeAsyncCommand: Send + Sync {
+pub(crate) trait ServeAsyncCommand: Send + Sync {
     fn run(self: Box<Self>) -> ServeAsyncHandle;
 }
 
 #[derive(Default)]
-pub struct CompositeCommand {
+pub(crate) struct CompositeCommand {
     async_commands: Vec<Box<dyn ServeAsyncCommand>>,
 }
 
 impl CompositeCommand {
-    pub fn add_async_command(mut self, command: Box<dyn ServeAsyncCommand>) -> Self {
+    pub(crate) fn add_async_command(mut self, command: Box<dyn ServeAsyncCommand>) -> Self {
         self.async_commands.push(command);
         self
     }
 
-    pub fn execute(self) -> Result<Vec<ServeAsyncHandle>> {
+    pub(crate) fn execute(self) -> Result<Vec<ServeAsyncHandle>> {
         let mut futures: Vec<ServeAsyncHandle> = Vec::new();
         for async_command in self.async_commands {
             futures.push(async_command.run());
@@ -55,7 +55,7 @@ impl CompositeCommand {
     }
 }
 
-pub struct Serve {
+pub(crate) struct Serve {
     composite_command: CompositeCommand,
     shutdown_token: Option<CancellationToken>,
 }
@@ -75,19 +75,19 @@ impl Serve {
         }
     }
 
-    pub fn new(composite_command: CompositeCommand) -> Self {
+    pub(crate) fn new(composite_command: CompositeCommand) -> Self {
         Self {
             composite_command,
             shutdown_token: None,
         }
     }
 
-    pub fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
+    pub(crate) fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
         self.shutdown_token = Some(token);
         self
     }
 
-    pub fn execute(self) -> Result<()> {
+    pub(crate) fn execute(self) -> Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
