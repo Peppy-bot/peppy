@@ -40,3 +40,46 @@ pub const REPO_EXCLUDE: &str = "repo_exclude";
 pub const REPO_LIST: &str = "repo_list";
 pub const REPO_REMOVE: &str = "repo_remove";
 pub const REPO_REFRESH_ACTION: &str = "repo_refresh";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// These strings are the wire contract between the daemon and every client:
+    /// publish and subscribe sides must agree byte-for-byte. Pin them so an
+    /// accidental rename is caught here rather than as a silent runtime
+    /// "service unreachable" against an older/newer peer.
+    #[test]
+    fn service_names_match_the_wire_contract() {
+        assert_eq!(CORE_NODE_TAG, "core");
+        assert_eq!(CLOCK, "clock");
+        assert_eq!(DAEMON_HEARTBEAT, "daemon_heartbeat");
+        assert_eq!(INFO, "info");
+        assert_eq!(PING, "ping");
+
+        assert_eq!(DATASTORE_STORE, "datastore_store");
+        assert_eq!(DATASTORE_GET, "datastore_get");
+        assert_eq!(DATASTORE_LIST, "datastore_list");
+        assert_eq!(DATASTORE_REMOVE, "datastore_remove");
+
+        assert_eq!(STACK_LAUNCH_ACTION, "stack_launch");
+        assert_eq!(STACK_RESET, "stack_reset");
+        assert_eq!(STACK_LIST, "stack_list");
+        assert_eq!(STACK_BENCHMARK_ACTION, "stack_benchmark");
+
+        assert_eq!(NODE_ADD_ACTION, "node_add");
+        assert_eq!(NODE_BUILD_ACTION, "node_build");
+        assert_eq!(NODE_RUN_ACTION, "node_run");
+        assert_eq!(NODE_REMOVE, "node_remove");
+        assert_eq!(NODE_INIT, "node_init");
+        assert_eq!(NODE_INFO, "node_info");
+        assert_eq!(NODE_STOP, "node_stop");
+        assert_eq!(NODE_SYNC, "node_sync");
+
+        assert_eq!(REPO_ADD, "repo_add");
+        assert_eq!(REPO_EXCLUDE, "repo_exclude");
+        assert_eq!(REPO_LIST, "repo_list");
+        assert_eq!(REPO_REMOVE, "repo_remove");
+        assert_eq!(REPO_REFRESH_ACTION, "repo_refresh");
+    }
+}

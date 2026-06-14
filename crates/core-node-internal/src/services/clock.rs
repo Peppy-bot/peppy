@@ -1,7 +1,8 @@
 use crate::Result;
 use crate::names;
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
+use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext, Subscription, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};

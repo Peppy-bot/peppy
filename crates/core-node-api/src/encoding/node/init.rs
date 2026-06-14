@@ -102,3 +102,82 @@ impl NodeInitResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_request_round_trips_with_container() {
+        let request = NodeInitRequest::new(
+            "/var/lib/node-root",
+            "my_node",
+            "deadbeef",
+            true,
+            Toolchain::Cargo,
+        );
+        let payload = request.encode().expect("encode");
+        let decoded = NodeInitRequest::decode(payload.as_ref()).expect("decode");
+        assert!(decoded.with_container);
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn init_request_round_trips_without_container() {
+        let request = NodeInitRequest::new(
+            "/var/lib/node-root",
+            "my_node",
+            "abc123",
+            false,
+            Toolchain::Uv,
+        );
+        let payload = request.encode().expect("encode");
+        let decoded = NodeInitRequest::decode(payload.as_ref()).expect("decode");
+        assert!(!decoded.with_container);
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn init_request_decode_rejects_malformed_bytes() {
+        NodeInitRequest::decode(b"not a capnp message")
+            .expect_err("malformed bytes should be rejected");
+    }
+
+    #[test]
+    fn init_response_round_trips_success() {
+        let response = NodeInitResponse::success();
+        assert!(response.success);
+        assert_eq!(response.error_message, "");
+        let payload = response.encode().expect("encode");
+        let decoded = NodeInitResponse::decode(payload.as_ref()).expect("decode");
+        assert!(decoded.success);
+        assert!(decoded.error_message.is_empty());
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn init_response_round_trips_failure() {
+        let response = NodeInitResponse::failure("boom");
+        assert!(!response.success);
+        assert_eq!(response.error_message, "boom");
+        let payload = response.encode().expect("encode");
+        let decoded = NodeInitResponse::decode(payload.as_ref()).expect("decode");
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message, "boom");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn init_response_new_round_trips() {
+        let response = NodeInitResponse::new(true, "partial");
+        let payload = response.encode().expect("encode");
+        let decoded = NodeInitResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn init_response_decode_rejects_malformed_bytes() {
+        NodeInitResponse::decode(b"not a capnp message")
+            .expect_err("malformed bytes should be rejected");
+    }
+}

@@ -145,13 +145,13 @@ impl NodeInfoResponse {
                             entry.set_slot_bindings_json(&slot_bindings_json);
                         }
                     }
-                    found.set_add_log_path(
-                        info.add_log_path
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                            .as_str(),
-                    );
+                    // Only set the field when present; leaving it unset writes
+                    // capnp's empty-text default, which `optional_text` decodes
+                    // back to `None`. Borrows via `to_string_lossy` (no owning
+                    // allocation) like the `run_log_paths` loop below.
+                    if let Some(path) = &info.add_log_path {
+                        found.set_add_log_path(path.to_string_lossy().as_ref());
+                    }
                     {
                         let run_log_path_count =
                             capnp_list_len(info.run_log_paths.len(), "NodeInfo.run_log_paths")?;
@@ -352,5 +352,23 @@ mod tests {
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }
+    }
+
+    #[test]
+    fn node_info_response_not_in_stack_roundtrips() {
+        let encoded = NodeInfoResponse::NotInStack
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoResponse::decode(&encoded).expect("decoding should succeed");
+
+        match decoded {
+            NodeInfoResponse::NotInStack => {}
+            NodeInfoResponse::Found(_) => panic!("expected NotInStack"),
+        }
+    }
+
+    #[test]
+    fn node_info_response_decode_rejects_malformed_bytes() {
+        assert!(NodeInfoResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
     }
 }

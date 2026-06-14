@@ -77,6 +77,10 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    // -- system clock (set before the Unix epoch); produced by `clock::wall_now_ns`
+    #[error("system clock unavailable: {0}")]
+    SystemTime(#[from] std::time::SystemTimeError),
+
     // -- config
     #[error(transparent)]
     Config(#[from] config::ConfigError),

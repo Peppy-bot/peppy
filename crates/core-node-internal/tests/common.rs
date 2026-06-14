@@ -13,10 +13,10 @@ use core_node_api::encoding::{
     DatastoreStoreRequest, DatastoreStoreResponse, NodeAddFeedback, NodeAddGoal,
     NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
     NodeBuildResult, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource,
-    wall_now_ns,
 };
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
+use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
     ActionGoalHandle, MessengerHandle, ResultStatus, SenderTarget, ServiceTarget, TopicMessenger,
 };

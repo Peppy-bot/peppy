@@ -13,9 +13,7 @@ mod stack;
 // Note: there used to be a top-level `builder` module here. Build encoding
 // now lives at `node::builder` alongside `node::add`.
 
-pub use clock::{
-    ClockOffsetRequest, ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick, wall_now_ns,
-};
+pub use clock::{ClockOffsetRequest, ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick};
 pub use datastore::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
@@ -47,7 +45,7 @@ pub use stack::benchmark::{
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
 pub use stack::list::{StackListRequest, StackListResponse};
 pub use stack::reset::{NodeResetRequest, NodeResetResponse};
@@ -158,5 +156,43 @@ mod tests {
     fn decode_absolute_fs_path_accepts_absolute() {
         let buf = decode_absolute_fs_path("/abs/path", "TestLabel").expect("absolute must pass");
         assert_eq!(buf, PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn optional_text_maps_empty_to_none() {
+        assert_eq!(optional_text(""), None);
+        assert_eq!(optional_text("value"), Some("value".to_owned()));
+    }
+
+    #[test]
+    fn capnp_list_len_accepts_in_range() {
+        assert_eq!(capnp_list_len(0, "f").expect("zero fits"), 0);
+        let max = u32::MAX as usize;
+        assert_eq!(capnp_list_len(max, "f").expect("u32::MAX fits"), u32::MAX);
+    }
+
+    // `u32::MAX + 1` only overflows the cast on 64-bit `usize`; skip where a
+    // `usize` cannot represent it so the test stays meaningful, not vacuous.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn capnp_list_len_rejects_overflow() {
+        let too_big = u32::MAX as usize + 1;
+        let err = capnp_list_len(too_big, "MyField").expect_err("over-u32 must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("MyField"), "got: {msg}");
+        assert!(msg.contains("exceeds"), "got: {msg}");
+    }
+
+    #[test]
+    fn encode_message_non_empty_yields_decodable_non_empty_payload() {
+        // Any builder serializes to at least the capnp segment-table header, so
+        // the non-empty wrapper construction is infallible and the bytes decode.
+        let mut builder = Builder::new_default();
+        builder.init_root::<crate::clock_capnp::clock_request::Builder>();
+        let payload = encode_message_non_empty(&builder)
+            .expect("non-empty wrap")
+            .into_inner();
+        assert!(!payload.is_empty());
+        decode_message(&payload).expect("framed bytes decode");
     }
 }
