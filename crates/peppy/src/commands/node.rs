@@ -22,10 +22,14 @@ use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
-pub use builder::{BuildNodeParams, build_node, build_node_async};
-pub use env::caller_env_overrides;
+pub use builder::build_node_async;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
+// Internal helper: `launch` reaches it through the `node::` path; no test or
+// `main.rs` consumer, so it stays off the public surface. (`BuildNodeParams`
+// and `build_node` are used only here via the `builder::` path, so they need no
+// re-export at all.)
+pub(crate) use env::caller_env_overrides;
 
 /// Default idle timeout in seconds (resets on output).
 pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;

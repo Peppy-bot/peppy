@@ -121,6 +121,11 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
     );
 }
 
+// Held only to keep the messaging router (a child process or in-process task)
+// alive for the emulation's lifetime: the variants are constructed and stored in
+// `_instance`, then dropped with the emulation, but never read. The dead-code
+// lint is allowed here deliberately because the value is a lifetime guard, not
+// data anyone inspects.
 #[allow(dead_code)]
 enum MessengerInstance {
     Mock(MockInstance),
@@ -134,7 +139,6 @@ pub struct ServeCommandEmulation {
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
     core_node_name: String,
-    messaging_port: u16,
 }
 
 impl ServeCommandEmulation {
@@ -221,7 +225,6 @@ impl ServeCommandEmulation {
             shared_messenger,
             daemon_state_path,
             core_node_name,
-            messaging_port: port,
         })
     }
 
@@ -239,9 +242,5 @@ impl ServeCommandEmulation {
 
     pub fn core_node_name(&self) -> &str {
         &self.core_node_name
-    }
-
-    pub fn messaging_port(&self) -> u16 {
-        self.messaging_port
     }
 }

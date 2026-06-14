@@ -134,7 +134,7 @@ async fn benchmark_async(
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
                 if let Ok(feedback) = StackBenchmarkFeedback::decode(&msg.payload()) {
-                    scrolling.add_line(&feedback.line, feedback.is_stderr());
+                    scrolling.add_line(&feedback.line);
                 }
             }
             Ok(Err(_)) => break, // end-of-stream: the goal has completed

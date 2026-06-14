@@ -3,7 +3,6 @@ use config::launcher::{BindingValidationItem, DeploymentInstance, Name, validate
 use config::node::ConformsToItem;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
-use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, StackListRequest,
@@ -338,8 +337,7 @@ async fn validate_binds_against_stack(
     .await
     .map_err(|e| Error::ExecutionFailed(format!("failed to list stack: {e}")))?;
 
-    let graph: SerializedNodeGraph = serde_json::from_str(&stack_response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+    let graph = crate::commands::parse_stack_graph(&stack_response.graph_json)?;
 
     /// Inert snapshot entry for an already-running `(name, tag)` group.
     /// Note the missing `depends_on` field: by construction these items
@@ -584,13 +582,8 @@ pub async fn run_instance_async(
         arguments.len()
     );
 
-    let (messaging_host, messaging_port) = match messenger_handle.messaging_endpoint().await {
-        Some((host, port)) => (host, port),
-        None => (
-            config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-            messenger_handle.messaging_port().await,
-        ),
-    };
+    let (messaging_host, messaging_port) =
+        crate::commands::resolve_messaging_endpoint(messenger_handle).await;
 
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),

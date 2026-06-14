@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{NodeRemoveRequest, StackListRequest};
 use tracing::info;
 
@@ -102,8 +101,7 @@ async fn fetch_instance_ids(
     )
     .await?;
 
-    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+    let graph = crate::commands::parse_stack_graph(&response.graph_json)?;
 
     Ok(graph
         .nodes

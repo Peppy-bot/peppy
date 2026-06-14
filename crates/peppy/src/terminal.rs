@@ -24,7 +24,14 @@ pub fn colors_enabled() -> bool {
 /// a non-empty value. An empty `NO_COLOR` is treated as unset, per the
 /// convention at https://no-color.org.
 fn no_color_requested() -> bool {
-    std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
+    no_color_from_env(std::env::var("NO_COLOR").ok())
+}
+
+/// Pure decision behind [`no_color_requested`]: `NO_COLOR` asks for plain output
+/// only when it is present and non-empty. Split out so the convention can be
+/// tested without mutating the process environment.
+fn no_color_from_env(value: Option<String>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
 }
 
 /// A fixed-height scrolling output region for the terminal.
@@ -69,9 +76,7 @@ impl ScrollingOutput {
     ///
     /// # Arguments
     /// * `line` - The line to add.
-    /// * `is_stderr` - Whether this line came from stderr (currently unused,
-    ///   but available for future styling differences).
-    pub fn add_line(&mut self, line: &str, _is_stderr: bool) {
+    pub fn add_line(&mut self, line: &str) {
         // Trim the line and add it to the buffer
         let line = line.trim_end().to_string();
 
@@ -132,24 +137,27 @@ impl ScrollingOutput {
         }
     }
 
-    /// Truncates a line to fit the terminal width.
+    /// Truncates a line to fit the terminal width, leaving a small margin.
     fn truncate_line(line: &str) -> &str {
         let term_width = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(80);
         // Leave some margin
-        let max_width = term_width.saturating_sub(2);
+        Self::truncate_to_width(line, term_width.saturating_sub(2))
+    }
 
-        if line.len() > max_width {
-            // Find a safe UTF-8 boundary
-            let mut end = max_width;
-            while end > 0 && !line.is_char_boundary(end) {
-                end -= 1;
-            }
-            &line[..end]
-        } else {
-            line
+    /// Truncates `line` to at most `max_width` bytes, never splitting a UTF-8
+    /// character (it backs up to the nearest char boundary). Pure in its inputs
+    /// so the boundary math can be tested without a real terminal.
+    fn truncate_to_width(line: &str, max_width: usize) -> &str {
+        if line.len() <= max_width {
+            return line;
         }
+        let mut end = max_width;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        &line[..end]
     }
 
     /// Clears the scrolling output region and moves the cursor back up.
@@ -187,5 +195,57 @@ impl Drop for ScrollingOutput {
             let _ = self.stdout.execute(SetAttribute(Attribute::Reset));
             let _ = self.stdout.flush();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_color_decision_follows_the_convention() {
+        assert!(!no_color_from_env(None), "unset means colors allowed");
+        assert!(
+            !no_color_from_env(Some(String::new())),
+            "empty is treated as unset"
+        );
+        assert!(
+            no_color_from_env(Some("1".to_string())),
+            "any non-empty value disables color"
+        );
+        assert!(no_color_from_env(Some("anything".to_string())));
+    }
+
+    #[test]
+    fn truncate_keeps_short_lines_intact() {
+        assert_eq!(ScrollingOutput::truncate_to_width("hello", 80), "hello");
+        assert_eq!(ScrollingOutput::truncate_to_width("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_never_splits_a_multibyte_char() {
+        // "é" is 2 bytes (0xC3 0xA9). Cutting at an odd byte must back up to the
+        // char boundary rather than slice mid-character (which would panic).
+        let line = "aéb"; // bytes: a(1) é(2) b(1) = 4 bytes
+        // max_width 2 lands inside "é"; result must be just "a".
+        assert_eq!(ScrollingOutput::truncate_to_width(line, 2), "a");
+        // max_width 3 covers "a" + full "é".
+        assert_eq!(ScrollingOutput::truncate_to_width(line, 3), "aé");
+    }
+
+    #[test]
+    fn truncate_to_zero_width_is_empty() {
+        assert_eq!(ScrollingOutput::truncate_to_width("abc", 0), "");
+    }
+
+    #[test]
+    fn add_line_evicts_oldest_beyond_max() {
+        let mut output = ScrollingOutput::new(3);
+        for i in 0..5 {
+            output.add_line(&format!("line {i}"));
+        }
+        assert_eq!(output.lines.len(), 3, "buffer holds at most max_lines");
+        assert_eq!(output.lines.front().map(String::as_str), Some("line 2"));
+        assert_eq!(output.lines.back().map(String::as_str), Some("line 4"));
     }
 }

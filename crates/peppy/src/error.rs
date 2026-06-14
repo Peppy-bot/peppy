@@ -61,3 +61,52 @@ impl Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_failed_unescapes_newlines() {
+        // A payload carrying the two characters `\` and `n` must render as a
+        // real line break, since callers embed escaped newlines in messages.
+        let err = Error::ExecutionFailed("line1\\nline2".to_string());
+        assert_eq!(err.to_string(), "line1\nline2");
+    }
+
+    #[test]
+    fn execution_failed_passes_plain_text_through() {
+        let err = Error::ExecutionFailed("just text".to_string());
+        assert_eq!(err.to_string(), "just text");
+    }
+
+    #[test]
+    fn variant_prefixes_are_stable() {
+        assert_eq!(
+            Error::Io(std::io::Error::other("boom")).to_string(),
+            "IO error: boom"
+        );
+        assert_eq!(Error::UnsupportedEngine.to_string(), "Unsupported engine");
+        assert_eq!(
+            Error::MissingEngineConfig.to_string(),
+            "Missing engine config"
+        );
+        assert_eq!(
+            Error::MissingMessagingRouter.to_string(),
+            "Missing messaging router"
+        );
+        assert_eq!(
+            Error::Zenohd("x".to_string()).to_string(),
+            "Zenohd error: x"
+        );
+        assert_eq!(Error::Sync("x".to_string()).to_string(), "Sync error: x");
+        assert_eq!(
+            Error::InvalidNodeName("bad name".to_string()).to_string(),
+            "Invalid node name: bad name"
+        );
+        assert_eq!(
+            Error::NodeWatcher("x".to_string()).to_string(),
+            "Node watcher error: x"
+        );
+    }
+}
