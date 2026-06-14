@@ -123,7 +123,7 @@ fn handle_feedback(
         | LaunchFeedbackStep::RunningNode => {
             let output = scrolling_output
                 .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
-            output.add_line(&feedback.line, feedback.is_stderr());
+            output.add_line(&feedback.line);
         }
     }
 }

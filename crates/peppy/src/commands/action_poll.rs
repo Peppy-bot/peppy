@@ -24,7 +24,6 @@ pub(crate) trait ActionGoalResponseLike: Sized {
 pub(crate) trait ActionFeedbackLike: Sized {
     fn decode_payload(data: &[u8]) -> std::result::Result<Self, String>;
     fn line(&self) -> &str;
-    fn is_stderr(&self) -> bool;
 }
 
 /// Minimal shape of an action result used by [`run_action_with_feedback`].
@@ -74,7 +73,7 @@ where
         &mut scrolling_output,
         |payload, output| {
             if let Ok(feedback) = Fb::decode_payload(payload) {
-                output.add_line(feedback.line(), feedback.is_stderr());
+                output.add_line(feedback.line());
             }
         },
         |payload| {
@@ -125,8 +124,14 @@ pub(crate) async fn poll_action_to_completion<R>(
     // Drain feedback until the server closes the stream on completion. The
     // idle / max-timeout budgets bound a goal that goes silent or runs away.
     loop {
-        check_timeouts(last_activity, idle_timeout, absolute_deadline, timeouts)
-            .inspect_err(|_| scrolling_output.clear())?;
+        check_timeouts(
+            tokio::time::Instant::now(),
+            last_activity,
+            idle_timeout,
+            absolute_deadline,
+            timeouts,
+        )
+        .inspect_err(|_| scrolling_output.clear())?;
 
         match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
@@ -217,9 +222,6 @@ mod impls {
                 fn line(&self) -> &str {
                     &self.line
                 }
-                fn is_stderr(&self) -> bool {
-                    Self::is_stderr(self)
-                }
             }
         };
     }
@@ -247,13 +249,19 @@ mod impls {
     impl_result!(NodeRunResult);
 }
 
+/// Decides whether an action poll loop has exceeded its idle or absolute-max
+/// budget. Pure in `now` (the caller passes `tokio::time::Instant::now()`) so
+/// the boundary semantics and the exact user-facing messages can be unit-tested
+/// with synthetic instants instead of a real clock. The max budget is checked
+/// before the idle budget, so a goal that blows both is reported as a max
+/// timeout.
 fn check_timeouts(
+    now: tokio::time::Instant,
     last_activity: tokio::time::Instant,
     idle_timeout: Duration,
     absolute_deadline: tokio::time::Instant,
     timeouts: &TimeoutConfig,
 ) -> Result<()> {
-    let now = tokio::time::Instant::now();
     if now >= absolute_deadline {
         return Err(Error::ExecutionFailed(format!(
             "Timeout: max timeout of {}s exceeded. \
@@ -269,4 +277,111 @@ fn check_timeouts(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timeouts(idle_secs: u64, max_secs: u64) -> TimeoutConfig {
+        TimeoutConfig {
+            idle_secs,
+            max_secs,
+        }
+    }
+
+    #[test]
+    fn within_both_budgets_is_ok() {
+        let base = tokio::time::Instant::now();
+        let deadline = base + Duration::from_secs(100);
+        let now = base + Duration::from_secs(1);
+        assert!(
+            check_timeouts(
+                now,
+                base,
+                Duration::from_secs(5),
+                deadline,
+                &timeouts(5, 100)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn just_under_idle_budget_is_ok() {
+        let base = tokio::time::Instant::now();
+        let deadline = base + Duration::from_secs(100);
+        let now = base + Duration::from_millis(4_999);
+        assert!(
+            check_timeouts(
+                now,
+                base,
+                Duration::from_secs(5),
+                deadline,
+                &timeouts(5, 100)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn reaching_idle_budget_reports_no_output() {
+        let base = tokio::time::Instant::now();
+        let deadline = base + Duration::from_secs(100);
+        // No activity since `base`; `now` is exactly one idle budget later.
+        let now = base + Duration::from_secs(5);
+        let err = check_timeouts(
+            now,
+            base,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("no output received for 5s"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn reaching_max_deadline_reports_max_exceeded() {
+        let base = tokio::time::Instant::now();
+        let deadline = base + Duration::from_secs(100);
+        // Activity is current, only the absolute deadline is hit.
+        let now = base + Duration::from_secs(100);
+        let err = check_timeouts(
+            now,
+            now,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("max timeout of 100s exceeded"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn max_budget_is_checked_before_idle() {
+        let base = tokio::time::Instant::now();
+        let deadline = base + Duration::from_secs(100);
+        // Both budgets are blown (idle since `base`, past the deadline): the max
+        // timeout must be the one reported.
+        let now = base + Duration::from_secs(100);
+        let err = check_timeouts(
+            now,
+            base,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("max timeout"),
+            "max must be reported before idle; got: {err}"
+        );
+    }
 }

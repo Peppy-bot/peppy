@@ -257,23 +257,34 @@ fn preferred_service_level(kind: ServiceManagerKind) -> ServiceLevel {
 
 fn is_root() -> bool {
     #[cfg(unix)]
-    unsafe {
-        libc::geteuid() == 0
+    {
+        rustix::process::geteuid().is_root()
     }
 
     #[cfg(not(unix))]
-    false
+    {
+        false
+    }
 }
 
 /// Ensures the environment variables needed by `systemctl --user` are present.
 /// On SSH sessions and minimal installs, `XDG_RUNTIME_DIR` and
 /// `DBUS_SESSION_BUS_ADDRESS` may be missing, causing
 /// "Failed to connect to bus: No medium found".
+// This is the one function in the crate that keeps `unsafe`: `env::set_var` has
+// no safe equivalent in edition 2024, and `service-manager` shells out to
+// `systemctl --user` with the inherited environment, giving no hook to pass
+// these values to the child explicitly. The mutation is sound here because it
+// runs during synchronous, single-threaded CLI startup, before any tokio
+// runtime or other thread exists (see the SAFETY notes on each call). The rest
+// of the crate is `#![deny(unsafe_code)]`; this function carries the only
+// allowance, scoped and documented.
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
 fn ensure_systemd_user_env() -> Result<()> {
     use std::env;
 
-    let uid = unsafe { libc::getuid() };
+    let uid = rustix::process::getuid().as_raw();
     let runtime_dir = format!("/run/user/{uid}");
 
     if env::var("XDG_RUNTIME_DIR").is_err() {
@@ -301,6 +312,7 @@ fn ensure_systemd_user_env() -> Result<()> {
                  Then log out and back in, or reboot."
             )));
         }
+        // SAFETY: called during single-threaded CLI startup, before tokio runtime.
         unsafe {
             env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={bus_path}"));
         }

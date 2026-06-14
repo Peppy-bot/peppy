@@ -34,7 +34,11 @@ fn info_command_fails_without_daemon() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let nonexistent_state = temp_dir.path().join("nonexistent_state.json");
 
-    let ctx = Arc::new(AppContext::default().with_daemon_state_file(&nonexistent_state));
+    let ctx = Arc::new(
+        AppContext::from_current_dir()
+            .expect("current dir is readable")
+            .with_daemon_state_file(&nonexistent_state),
+    );
 
     let result = InfoCommand.execute(&ctx);
 
