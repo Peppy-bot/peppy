@@ -100,13 +100,6 @@ fn make_install_context(
     working_dir: PathBuf,
     autostart: bool,
 ) -> Result<ServiceInstallCtx> {
-    let mut environment = vec![("PEPPY_ENV".to_string(), "PROD".to_string())];
-
-    // Include the user's PATH so that build_cmd/run_cmd can find tools like cargo, python, etc.
-    if let Ok(path) = std::env::var("PATH") {
-        environment.push(("PATH".to_string(), path));
-    }
-
     Ok(ServiceInstallCtx {
         label,
         program,
@@ -114,7 +107,10 @@ fn make_install_context(
         contents: None,
         username: None,
         working_directory: Some(working_dir),
-        environment: Some(environment),
+        environment: Some(service_environment(
+            std::env::var("PATH").ok(),
+            std::env::var_os(config::consts::PEPPY_HOME_ENV),
+        )),
         autostart,
         restart_policy: RestartPolicy::OnFailure {
             delay_secs: Some(5),
@@ -122,6 +118,39 @@ fn make_install_context(
             reset_after_secs: None,
         },
     })
+}
+
+/// Builds the environment the installed service runs under.
+///
+/// Kept pure (inputs passed in rather than read from the process env) so the
+/// `PEPPY_HOME` precedence can be unit-tested without mutating global state,
+/// mirroring `config::consts::resolve_root`.
+fn service_environment(
+    path: Option<String>,
+    peppy_home: Option<OsString>,
+) -> Vec<(String, String)> {
+    let mut environment = vec![("PEPPY_ENV".to_string(), "PROD".to_string())];
+
+    // Include the user's PATH so that build_cmd/run_cmd can find tools like cargo, python, etc.
+    if let Some(path) = path {
+        environment.push(("PATH".to_string(), path));
+    }
+
+    // Propagate PEPPY_HOME so the daemon resolves the same data root as the CLI
+    // that installed it. systemd/launchd start the service with a clean
+    // environment, so without this the daemon falls back to the default
+    // `~/.peppy` while a caller that set PEPPY_HOME (CI per-run isolation or a
+    // custom install prefix) reads daemon state from the override path — the two
+    // never find each other and the install's readiness probe times out. Empty
+    // is treated as unset, matching `config::consts::peppy_root_dir`.
+    if let Some(home) = peppy_home.filter(|value| !value.is_empty()) {
+        environment.push((
+            config::consts::PEPPY_HOME_ENV.to_string(),
+            home.to_string_lossy().into_owned(),
+        ));
+    }
+
+    environment
 }
 
 fn write_service_definition(
@@ -426,4 +455,44 @@ fn command_parts(ctx: &ServiceInstallCtx) -> Vec<String> {
 
 fn systemd_unit_dir() -> PathBuf {
     PathBuf::from("/etc/systemd/system")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peppy_home_value(env: &[(String, String)]) -> Option<&str> {
+        env.iter()
+            .find(|(key, _)| key == config::consts::PEPPY_HOME_ENV)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn service_environment_propagates_peppy_home_override() {
+        let env = service_environment(
+            Some("/usr/bin:/bin".to_string()),
+            Some(OsString::from("/var/tmp/run-home")),
+        );
+        assert_eq!(
+            peppy_home_value(&env),
+            Some("/var/tmp/run-home"),
+            "service env must carry the PEPPY_HOME override so the daemon shares \
+             the CLI's data root: {env:?}"
+        );
+    }
+
+    #[test]
+    fn service_environment_omits_unset_peppy_home() {
+        // No override: daemon and CLI both fall back to the default root.
+        let env = service_environment(Some("/usr/bin".to_string()), None);
+        assert_eq!(peppy_home_value(&env), None, "{env:?}");
+    }
+
+    #[test]
+    fn service_environment_treats_empty_peppy_home_as_unset() {
+        // Matches `peppy_root_dir`'s empty-string guard: `PEPPY_HOME=` must not
+        // root the daemon at the empty path.
+        let env = service_environment(None, Some(OsString::new()));
+        assert_eq!(peppy_home_value(&env), None, "{env:?}");
+    }
 }
