@@ -1,4 +1,11 @@
-// Mock backend is always available as a fallback when zenoh is not enabled
+// The MockAdapter in-process backend is compiled into every build alongside the
+// zenoh transport, but it is not a standalone zenoh-less build target: the mock
+// uses tokio's `time` and multi-thread runtime, which this crate only obtains
+// transitively through the `zenoh` dependency. A `--no-default-features` build
+// (no zenoh) therefore does not compile. Every supported configuration enables
+// `zenoh` (the default). See the `tokio` note in Cargo.toml.
+
+#![forbid(unsafe_code)]
 
 mod adapters;
 mod error;
@@ -16,14 +23,15 @@ mod zenohd;
 pub use config::runtime::ProducerRef;
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
-#[cfg(feature = "zenoh")]
-pub use types::ZenohResponseToken;
+// `ZenohResponseToken` / `MockResponseToken` are intentionally NOT re-exported:
+// they are opaque, non-constructible payloads of the public `ResponseToken` enum
+// (reached only through `ResponseToken`'s methods), so naming them directly is
+// not part of the crate's public surface.
 pub use types::{
     ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
-    IncomingRequest, Message, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    MockResponseToken, Payload, PayloadSlices, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
-    TopicMessage,
+    IncomingRequest, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, Payload,
+    PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
+    SubscriberBufferSizes, SubscriberQoS, Subscription, TopicMessage,
 };
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,

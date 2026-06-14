@@ -8,6 +8,9 @@ edition.workspace = true
 config = { path = "../config-internal" }
 bytes = "1"
 serde_json = "1.0"
+# `sync` + `rt` are what pmi's own code names directly. The MockAdapter also uses
+# tokio `time` and the multi-thread runtime; those arrive transitively via zenoh,
+# so the mock is not built as a standalone zenoh-less backend (see lib.rs).
 tokio = { version = "1", features = ["sync", "rt"] }
 # Used for Subscription / ServiceQueryable channels: a flume bounded
 # channel lets the zenoh reception callback `send` synchronously (with
