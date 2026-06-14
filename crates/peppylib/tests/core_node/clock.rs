@@ -81,8 +81,20 @@ async fn subscribe_clock_yields_typed_ticks() {
         .await
         .expect("subscribe_clock should succeed");
 
-    // Brief settle for zenoh discovery; same idiom as topic_messenger_communication.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Deterministically wait until the publisher's session sees the subscription
+    // (peer-mode discovery is not instantaneous) instead of guessing a fixed
+    // settle delay, so the emit below cannot be dropped before routing.
+    let matched = TopicMessenger::wait_for_subscriber(
+        &server,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        test_node_target(CORE_NODE),
+        names::CLOCK,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("wait_for_subscriber should not error");
+    assert!(matched, "subscriber should route to the publisher within 2 s");
 
     let canned = ClockTick::new(1_700_000_000_123_456_789);
     TopicMessenger::emit(

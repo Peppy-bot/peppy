@@ -125,18 +125,23 @@ impl StandaloneConfig {
 /// - Otherwise, runs in standalone mode with the provided config (or defaults)
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
+    /// When set, [`resolve_mode`](Self::resolve_mode) pins standalone mode and
+    /// skips the `PEPPY_RUNTIME_CONFIG` env detection. Set by
+    /// [`force_standalone`](Self::force_standalone).
+    force_standalone: bool,
     peppy_config_path: PathBuf,
     _params: std::marker::PhantomData<Params>,
 }
 
 impl<Params> NodeBuilder<Params>
 where
-    Params: crate::DeserializeOwned + crate::JsonSchema,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create a new NodeBuilder
     pub fn new() -> Self {
         Self {
             standalone_config: None,
+            force_standalone: false,
             peppy_config_path: PathBuf::from(NODE_CONFIG_FILE),
             _params: std::marker::PhantomData,
         }
@@ -149,6 +154,18 @@ where
     /// daemon mode takes precedence and this config is ignored.
     pub fn standalone(mut self, config: StandaloneConfig) -> Self {
         self.standalone_config = Some(config);
+        self
+    }
+
+    /// Force standalone mode with `config`, ignoring `PEPPY_RUNTIME_CONFIG`.
+    ///
+    /// Unlike [`standalone`](Self::standalone) (a fallback that daemon-mode
+    /// detection overrides), this pins standalone mode unconditionally. Use it
+    /// when embedding a node outside the CLI launch path, or when an inherited
+    /// `PEPPY_RUNTIME_CONFIG` must not flip the node into daemon mode.
+    pub fn force_standalone(mut self, config: StandaloneConfig) -> Self {
+        self.standalone_config = Some(config);
+        self.force_standalone = true;
         self
     }
 
@@ -201,10 +218,14 @@ where
     }
 
     fn resolve_mode(&self) -> ExecutionMode {
-        // Daemon mode takes precedence - CLI sets PEPPY_RUNTIME_CONFIG
-        // This allows nodes to specify .standalone(config) as a fallback
-        // while still running in daemon mode when launched by the CLI
-        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+        // An explicit force_standalone() pins standalone mode and skips env
+        // detection entirely (for embedders and deterministic tests). Otherwise
+        // daemon mode takes precedence - the CLI sets PEPPY_RUNTIME_CONFIG -
+        // which lets a node specify .standalone(config) as a fallback while
+        // still running in daemon mode when launched by the CLI.
+        if !self.force_standalone
+            && std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok()
+        {
             return ExecutionMode::Daemon;
         }
 
@@ -214,7 +235,7 @@ where
 
 impl<Params> Default for NodeBuilder<Params>
 where
-    Params: crate::DeserializeOwned + crate::JsonSchema,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn default() -> Self {
         Self::new()
@@ -235,7 +256,7 @@ pub struct NodeContext<Params> {
 
 impl<Params> NodeContext<Params>
 where
-    Params: crate::DeserializeOwned + crate::JsonSchema,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create the NodeRunner, connecting to the messaging system.
     ///
@@ -617,17 +638,7 @@ async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::test_utils::EnvVarGuard;
     use tempfile::TempDir;
-
-    /// Ensure standalone mode is used regardless of env var state.
-    ///
-    /// Returns an [`EnvVarGuard`] that holds the global env-var mutex for the
-    /// duration of the test, preventing processor (daemon-mode) tests from
-    /// setting `RUNTIME_CONFIG_VAR_NAME` concurrently.
-    fn ensure_standalone_mode() -> EnvVarGuard {
-        EnvVarGuard::remove(config::consts::RUNTIME_CONFIG_VAR_NAME)
-    }
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
     struct TestParams {
@@ -649,7 +660,6 @@ mod tests {
 
     #[test]
     fn parameters_can_only_be_taken_once() {
-        let _guard = ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -658,7 +668,7 @@ mod tests {
 
         let mut ctx = NodeBuilder::<TestParams>::new()
             .with_config_path(&peppy_config)
-            .standalone(config)
+            .force_standalone(config)
             .init()
             .expect("init should succeed");
 
@@ -674,7 +684,6 @@ mod tests {
 
     #[test]
     fn init_fails_eagerly_on_invalid_parameter_types() {
-        let _guard = ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -684,7 +693,7 @@ mod tests {
 
         let Err(err) = NodeBuilder::<TestParams>::new()
             .with_config_path(&peppy_config)
-            .standalone(config)
+            .force_standalone(config)
             .init()
         else {
             panic!("init should fail with type mismatch");
@@ -699,7 +708,6 @@ mod tests {
 
     #[test]
     fn init_parses_parameters_eagerly() {
-        let _guard = ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -708,7 +716,7 @@ mod tests {
 
         let mut ctx = NodeBuilder::<TestParams>::new()
             .with_config_path(&peppy_config)
-            .standalone(config)
+            .force_standalone(config)
             .init()
             .expect("init should succeed");
 

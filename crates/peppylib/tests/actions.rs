@@ -47,8 +47,6 @@ async fn action_messenger_communication() {
     .await
     .expect("expose should succeed");
 
-    // Allow subscriptions to propagate
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Run the server side in a spawned task
     let goal_resp = goal_response_payload.clone();
@@ -184,7 +182,6 @@ async fn setup_goal_handshake(
     .await
     .expect("expose should succeed");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let (publisher_tx, publisher_rx) = tokio::sync::oneshot::channel::<ActionFeedbackPublisher>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -410,7 +407,6 @@ async fn concurrent_action_two_goals_independent() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let server = tokio::spawn(async move {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
@@ -518,7 +514,6 @@ async fn concurrent_action_cancel_targets_one_goal() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let server = tokio::spawn(async move {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
@@ -620,7 +615,6 @@ async fn concurrent_action_reject_then_accept() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Reject goals whose payload is "reject"; accept the rest and echo the
     // request into the result. The loop keeps serving after a rejection.
@@ -709,7 +703,6 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The server accepts the goal and then abandons it: the context is dropped
     // without ever calling `complete`.
@@ -813,7 +806,6 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The server accepts the goal, emits one feedback, then hands the live
     // `GoalContext` out to the test body — it is deliberately NOT dropped
@@ -955,7 +947,6 @@ async fn concurrent_action_result_parks_until_complete() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Accept, wait, then complete — so the client's prompt poll parks first.
     let server = tokio::spawn(async move {
@@ -1031,7 +1022,6 @@ async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let server = tokio::spawn(async move {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
@@ -1117,7 +1107,6 @@ async fn concurrent_action_completed_result_expires_after_grace() {
     .await
     .expect("expose should succeed")
     .with_result_retention_grace(grace);
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The server accepts each goal, completes it immediately, and drops the
     // context (end of the loop body) without waiting for the client to fetch.
@@ -1163,14 +1152,25 @@ async fn concurrent_action_completed_result_expires_after_grace() {
     assert_eq!(res_again.status, ResultStatus::Completed);
     assert_eq!(res_again.body.as_ref(), b"result:A");
 
-    // Never fetched in time: after well over the grace window the slot is
-    // evicted and a late poll resolves to a typed `Expired` outcome.
+    // Never fetched in time: once the grace window elapses the sweeper evicts
+    // the slot and a late poll resolves to a typed `Expired` outcome. Poll until
+    // eviction (bounded by 10x the grace) rather than sleeping a fixed multiple
+    // of it: the test resolves as soon as the slot is gone, with no fixed dead
+    // wait and no single-shot race against the 250ms sweeper interval.
     let goal_slow = send(b"B").await.expect("send goal B");
-    tokio::time::sleep(grace * 5).await;
-    let expired =
-        ActionMessenger::request_result(&client_handle, &goal_slow, Duration::from_secs(2))
-            .await
-            .expect("a late poll must resolve to a typed outcome, not error");
+    let mut expired = None;
+    for _ in 0..100 {
+        let reply =
+            ActionMessenger::request_result(&client_handle, &goal_slow, Duration::from_secs(2))
+                .await
+                .expect("a late poll must resolve to a typed outcome, not error");
+        if reply.status == ResultStatus::Expired {
+            expired = Some(reply);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let expired = expired.expect("slot should be evicted to Expired within 10x the grace window");
     assert_eq!(expired.status, ResultStatus::Expired);
 
     server.abort();
@@ -1210,7 +1210,6 @@ async fn concurrent_action_cancel_after_terminal_is_already_terminal() {
     )
     .await
     .expect("expose should succeed");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let server = tokio::spawn(async move {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
@@ -1344,8 +1343,6 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
     let (native_task, native_done) = run_goal_handler(native_action, native_response.clone());
     let (iface_task, iface_done) = run_goal_handler(iface_action, iface_response.clone());
 
-    // Allow subscriptions to propagate.
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let native_goal = ActionMessenger::send_goal(
         &caller_handle,

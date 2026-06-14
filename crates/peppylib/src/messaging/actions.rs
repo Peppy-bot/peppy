@@ -2,8 +2,7 @@ use super::discovery::discover_producer;
 use super::generate_short_id;
 use super::topics::Subscription;
 use super::{
-    DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, ServiceEndpoint, ServiceResponder,
-    TopicPublisher,
+    DISCOVERY_TIMEOUT, MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher,
 };
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
@@ -19,9 +18,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 use tokio::sync::{Mutex as TokioMutex, Notify};
-use tokio::time::Duration;
+// tokio's clock so the retention/eviction timeouts run on virtual time under
+// `#[tokio::test(start_paused = true)]`; in a normal runtime it reads the real
+// monotonic clock, so production behavior is unchanged.
+use tokio::time::{Duration, Instant};
 use tracing::warn;
 
 pub struct ActionMessenger;
@@ -87,6 +88,21 @@ pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
     Ok((goal_id, &wire[body_start..]))
 }
 
+/// Split a goal-envelope `wire` into its owned `goal_id` and a zero-copy `Bytes`
+/// slice of the user payload. The slice reuses `wire`'s buffer: the
+/// user-payload offset is derived from the suffix length that
+/// [`unwrap_goal_payload`] returns (a sub-slice of the same buffer), so no
+/// payload copy happens. Shared by both goal-receive paths. The feedback path
+/// (`declare_from_wire`) additionally validates the goal_id with
+/// [`is_safe_goal_id`] before splicing it into a topic keyexpr; the no-feedback
+/// path does not, because there the goal_id is only a registry key / request
+/// payload field and never reaches a keyexpr.
+fn split_goal_envelope(wire: &Bytes) -> Result<(String, Bytes)> {
+    let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
+    let offset = wire.len() - user_payload.len();
+    Ok((goal_id.to_string(), wire.slice(offset..)))
+}
+
 const RESULT_OUTCOME_ENVELOPE: &str = "action_result_outcome_envelope";
 
 /// The terminal status of a goal, carried as a 1-byte tag prefixing the result
@@ -133,7 +149,7 @@ pub fn wrap_result_outcome(status: ResultStatus, body: &[u8]) -> Payload {
 
 /// Decode a result-outcome envelope produced by [`wrap_result_outcome`] into its
 /// [`ResultStatus`] and body bytes. Errors on an empty wire or an unknown tag.
-pub fn unwrap_result_outcome(wire: &[u8]) -> Result<(ResultStatus, &[u8])> {
+pub(crate) fn unwrap_result_outcome(wire: &[u8]) -> Result<(ResultStatus, &[u8])> {
     let tag = *wire.first().ok_or_else(|| Error::InternalEncodingError {
         identifier: RESULT_OUTCOME_ENVELOPE.to_string(),
         reason: "wire payload is empty".to_string(),
@@ -189,7 +205,7 @@ pub struct ActionFeedbackPublisher {
 /// Whether `message`'s payload is the end-of-stream sentinel emitted by
 /// [`ActionFeedbackPublisher::publish_end`].
 fn is_end_sentinel(message: &Message) -> bool {
-    message.payload().is_empty()
+    message.payload_bytes().is_empty()
 }
 
 impl ActionFeedbackPublisher {
@@ -253,25 +269,18 @@ impl ActionFeedbackPublisherFactory {
     /// goal requests, and each goal's feedback must be addressed back under
     /// the link_id its consumer subscribed for.
     pub async fn declare_from_wire(&self, link_id: &str, wire: Bytes) -> Result<DeclaredFeedback> {
-        let (goal_id, user_payload_offset) = {
-            let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
-            // The goal_id is appended to the feedback topic to scope the
-            // publisher per goal cycle. Reject anything that could let a
-            // malicious or malformed envelope escape that scope (extra
-            // segments, Zenoh wildcards, ...) so the publisher cannot be
-            // steered onto a topic the server didn't intend.
-            if !is_safe_goal_id(goal_id) {
-                return Err(envelope_error(format!(
-                    "goal_id contains unsafe characters: {goal_id:?}"
-                )));
-            }
-            // Cheap derived offset so we can slice the original `Bytes`
-            // and skip the `Vec<u8>` copy of the user payload.
-            let offset = wire.len() - user_payload.len();
-            (goal_id.to_string(), offset)
-        };
+        let (goal_id, user_payload) = split_goal_envelope(&wire)?;
+        // The goal_id is appended to the feedback topic to scope the publisher
+        // per goal cycle. Reject anything that could let a malicious or
+        // malformed envelope escape that scope (extra segments, Zenoh
+        // wildcards, ...) so the publisher cannot be steered onto a topic the
+        // server didn't intend.
+        if !is_safe_goal_id(&goal_id) {
+            return Err(envelope_error(format!(
+                "goal_id contains unsafe characters: {goal_id:?}"
+            )));
+        }
         let publisher = self.declare(link_id, &goal_id).await?;
-        let user_payload = wire.slice(user_payload_offset..);
         Ok(DeclaredFeedback {
             publisher,
             goal_id,
@@ -605,20 +614,7 @@ impl ActionMessenger {
             to_target,
             to_action_name,
         )?;
-        match messenger
-            .poll_service(
-                &sender.goal_service(),
-                Payload::new(),
-                ServiceQueryKind::Probe,
-                PROBE_TIMEOUT,
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(Error::ServiceUnreachable { .. }) => Ok(false),
-            Err(Error::ServiceTimeout { .. }) => Ok(true),
-            Err(e) => Err(e),
-        }
+        super::discovery::probe_reachable(messenger, &sender.goal_service()).await
     }
 
     /// Measure the round-trip latency of a single `Probe`-kind query to an
@@ -654,17 +650,14 @@ impl ActionMessenger {
             to_target,
             to_action_name,
         )?;
-        let request = Payload::from(pmi::build_sized_probe_request(request_size, response_size));
-        let started = Instant::now();
-        let reply = messenger
-            .poll_service(
-                &sender.goal_service(),
-                request,
-                ServiceQueryKind::Probe,
-                response_timeout,
-            )
-            .await?;
-        Ok((started.elapsed(), reply.payload().as_ref().len()))
+        super::discovery::probe_round_trip(
+            messenger,
+            &sender.goal_service(),
+            request_size,
+            response_size,
+            response_timeout,
+        )
+        .await
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,
@@ -1168,8 +1161,8 @@ type ResultAct = Option<(ServiceResponder, Payload)>;
 
 /// Extract the `goal_id` carried by a cancel/result request payload (the same
 /// length-prefixed envelope goals use, with an empty body).
-fn goal_id_from_request(payload: &Payload) -> Result<String> {
-    let (goal_id, _) = unwrap_goal_payload(payload.as_ref())?;
+fn goal_id_from_request(payload: &[u8]) -> Result<String> {
+    let (goal_id, _) = unwrap_goal_payload(payload)?;
     Ok(goal_id.to_string())
 }
 
@@ -1198,7 +1191,7 @@ async fn run_cancel_loop(
             }
         };
 
-        let goal_id = match goal_id_from_request(&context.message().payload()) {
+        let goal_id = match goal_id_from_request(context.message().payload_bytes().as_ref()) {
             Ok(goal_id) => goal_id,
             Err(_) => {
                 let _ = responder
@@ -1284,7 +1277,7 @@ async fn run_result_loop(
             }
         };
 
-        let goal_id = match goal_id_from_request(&context.message().payload()) {
+        let goal_id = match goal_id_from_request(context.message().payload_bytes().as_ref()) {
             Ok(goal_id) => goal_id,
             Err(_) => {
                 let _ = responder
@@ -1354,39 +1347,51 @@ async fn run_retention_sweeper(
             _ = stop.cancelled() => return,
             _ = tokio::time::sleep(SWEEP_INTERVAL) => {}
         }
-        let now = Instant::now();
-
-        // Evict terminal slots past their window, tombstoning each. `try_lock`
-        // skips a slot whose per-slot mutex is momentarily held (e.g. mid
-        // transition or being read by a poll); it is rechecked next tick.
-        let mut expired_ids = Vec::new();
-        registry
-            .lock()
-            .unwrap()
-            .retain(|goal_id, slot| match slot.state.try_lock() {
-                Ok(guard) => match &*guard {
-                    GoalState::Terminal { evict_at, .. } if *evict_at <= now => {
-                        expired_ids.push(goal_id.clone());
-                        false
-                    }
-                    _ => true,
-                },
-                Err(_) => true,
-            });
-        if !expired_ids.is_empty() {
-            let mut tomb = tombstones.lock().unwrap();
-            for goal_id in expired_ids {
-                tomb.insert(goal_id);
-            }
-        }
-
-        // Drop parked-before-accept polls whose deadline has passed (their
-        // responders close, so the client falls back to its own timeout).
-        pending_waiters.lock().unwrap().retain(|_, waiters| {
-            waiters.retain(|w| w.deadline > now);
-            !waiters.is_empty()
-        });
+        sweep_once(&registry, &pending_waiters, &tombstones, Instant::now());
     }
+}
+
+/// One retention-sweeper pass against an explicit `now`: evict terminal slots
+/// whose `evict_at <= now` (tombstoning each so late polls resolve to `Expired`)
+/// and drop parked-before-accept polls whose `deadline <= now`. The `now` is a
+/// parameter rather than read inside, so the eviction logic is unit-testable
+/// deterministically without the network or wall-clock waits.
+fn sweep_once(
+    registry: &GoalRegistry,
+    pending_waiters: &PendingWaiters,
+    tombstones: &Tombstones,
+    now: Instant,
+) {
+    // Evict terminal slots past their window, tombstoning each. `try_lock`
+    // skips a slot whose per-slot mutex is momentarily held (e.g. mid
+    // transition or being read by a poll); it is rechecked next tick.
+    let mut expired_ids = Vec::new();
+    registry
+        .lock()
+        .unwrap()
+        .retain(|goal_id, slot| match slot.state.try_lock() {
+            Ok(guard) => match &*guard {
+                GoalState::Terminal { evict_at, .. } if *evict_at <= now => {
+                    expired_ids.push(goal_id.clone());
+                    false
+                }
+                _ => true,
+            },
+            Err(_) => true,
+        });
+    if !expired_ids.is_empty() {
+        let mut tomb = tombstones.lock().unwrap();
+        for goal_id in expired_ids {
+            tomb.insert(goal_id);
+        }
+    }
+
+    // Drop parked-before-accept polls whose deadline has passed (their
+    // responders close, so the client falls back to its own timeout).
+    pending_waiters.lock().unwrap().retain(|_, waiters| {
+        waiters.retain(|w| w.deadline > now);
+        !waiters.is_empty()
+    });
 }
 
 /// A concurrent action server. Built from an [`ActionCreation`] by
@@ -1518,11 +1523,7 @@ impl ConcurrentAction {
             )
         } else {
             // No feedback topic: just extract the goal_id and user payload.
-            let (goal_id, request_bytes) = {
-                let (goal_id, body) = unwrap_goal_payload(wire.as_ref())?;
-                let offset = wire.len() - body.len();
-                (goal_id.to_string(), wire.slice(offset..))
-            };
+            let (goal_id, request_bytes) = split_goal_envelope(&wire)?;
             (goal_id, request_bytes, None)
         };
 
@@ -1904,5 +1905,84 @@ mod envelope_tests {
     fn unwrap_rejects_non_utf8_goal_id() {
         // 0xFF / 0xFE form an invalid UTF-8 sequence.
         assert_unwrap_error(unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']));
+    }
+
+    fn empty_registry() -> GoalRegistry {
+        Arc::new(StdMutex::new(HashMap::new()))
+    }
+
+    fn empty_pending() -> PendingWaiters {
+        Arc::new(StdMutex::new(HashMap::new()))
+    }
+
+    fn fresh_tombstones() -> Tombstones {
+        Arc::new(StdMutex::new(ExpiredTombstones::new(EXPIRED_TOMBSTONE_CAP)))
+    }
+
+    /// A terminal goal slot fixture with the given eviction deadline. The
+    /// outcome is irrelevant to retention, so the body-less `Abandoned` keeps
+    /// the fixture minimal.
+    fn terminal_slot(evict_at: Instant) -> GoalSlot {
+        GoalSlot {
+            cancel: CancellationToken::new(),
+            state: Arc::new(TokioMutex::new(GoalState::Terminal {
+                outcome: GoalOutcome::Abandoned,
+                evict_at,
+            })),
+            terminal: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    // Determinism: the retention sweeper's eviction logic is exercised against an
+    // explicit `now` under tokio's virtual clock, so there is no wall-clock sleep
+    // and no race with a real-time sweeper interval. `start_paused` only provides
+    // a runtime for `Instant::now()`; the assertions key off the injected `now`.
+    #[tokio::test(start_paused = true)]
+    async fn sweep_evicts_only_terminal_slots_past_their_window() {
+        let now = Instant::now();
+        let registry = empty_registry();
+        let pending = empty_pending();
+        let tombstones = fresh_tombstones();
+
+        registry
+            .lock()
+            .unwrap()
+            .insert("expired".to_string(), terminal_slot(now - Duration::from_millis(1)));
+        registry
+            .lock()
+            .unwrap()
+            .insert("fresh".to_string(), terminal_slot(now + Duration::from_secs(10)));
+
+        sweep_once(&registry, &pending, &tombstones, now);
+
+        let registry = registry.lock().unwrap();
+        assert!(!registry.contains_key("expired"), "past-window slot should be evicted");
+        assert!(registry.contains_key("fresh"), "in-window slot should be retained");
+        let tombstones = tombstones.lock().unwrap();
+        assert!(tombstones.contains("expired"), "evicted goal should be tombstoned");
+        assert!(!tombstones.contains("fresh"), "retained goal should not be tombstoned");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sweep_skips_slot_whose_state_is_momentarily_locked() {
+        let now = Instant::now();
+        let registry = empty_registry();
+        let pending = empty_pending();
+        let tombstones = fresh_tombstones();
+
+        // Expired, but its per-slot mutex is held (as during a transition or a
+        // concurrent poll), so `try_lock` fails and the sweep must leave it for
+        // the next tick rather than evicting a slot it cannot inspect.
+        let slot = terminal_slot(now - Duration::from_secs(1));
+        registry.lock().unwrap().insert("busy".to_string(), slot.clone());
+        let _held = slot.state.lock().await;
+
+        sweep_once(&registry, &pending, &tombstones, now);
+
+        assert!(
+            registry.lock().unwrap().contains_key("busy"),
+            "a slot whose state is locked must be skipped and retried next tick"
+        );
+        assert!(!tombstones.lock().unwrap().contains("busy"));
     }
 }

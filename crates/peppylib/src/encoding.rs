@@ -97,43 +97,85 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
     }
 }
 
-/// Encode a Cap'n Proto message builder into bytes.
-///
-/// # Example
-/// ```ignore
-/// use peppylib::encoding::encode_message;
-///
-/// let mut message = capnp::message::Builder::new_default();
-/// message.init_root::<my_capnp::my_request::Builder>();
-///
-/// let payload = encode_message(&message).unwrap();
-/// assert!(!payload.is_empty());
-/// ```
-pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
+/// Encode a Cap'n Proto message builder into bytes. Crate-internal: used by the
+/// [`capnp_empty_message!`] macro and the action cancel-ack codec.
+pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
     serialize::write_message(&mut buffer, message)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
     Ok(Payload::from(buffer))
 }
 
-/// Decode bytes into a Cap'n Proto message reader.
-///
-/// Returns an owned segments reader that can be used to read the message.
-///
-/// # Example
-/// ```ignore
-/// use peppylib::encoding::{decode_message, encode_message};
-///
-/// let mut message = capnp::message::Builder::new_default();
-/// message.init_root::<my_capnp::my_request::Builder>();
-/// let bytes = encode_message(&message).unwrap();
-///
-/// let reader = decode_message(&bytes).unwrap();
-/// let _request = reader.get_root::<my_capnp::my_request::Reader>().unwrap();
-/// ```
-pub fn decode_message(
+/// Decode bytes into a Cap'n Proto message reader. Returns an owned segments
+/// reader. Crate-internal: used by the [`capnp_empty_message!`] macro and the
+/// action cancel-ack codec.
+pub(crate) fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
     serialize::read_message(data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CapnpTimestamp, convert_time, convert_time_from_capnp};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// Every timestamped wire message round-trips through these two functions, so
+    /// the conversion must be exactly invertible across the epoch boundary. The
+    /// table is deterministic (no `SystemTime::now()`), and each case names the
+    /// branch it exercises.
+    #[test]
+    fn convert_time_round_trips_across_the_epoch_boundary() {
+        let cases = [
+            ("epoch", UNIX_EPOCH),
+            ("epoch + sub-second", UNIX_EPOCH + Duration::new(0, 500)),
+            (
+                "realistic 2023 instant",
+                UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789),
+            ),
+            (
+                "pre-epoch, sub-second",
+                UNIX_EPOCH - Duration::new(0, 500_000_000),
+            ),
+            ("pre-epoch, exact second", UNIX_EPOCH - Duration::new(3, 0)),
+            (
+                "pre-epoch, second + nanos",
+                UNIX_EPOCH - Duration::new(2, 250_000_000),
+            ),
+        ];
+
+        for (label, original) in cases {
+            let restored = convert_time_from_capnp(convert_time(original));
+            assert_eq!(restored, original, "round-trip failed for {label}");
+        }
+    }
+
+    #[test]
+    fn convert_time_encodes_post_epoch_fields_directly() {
+        let ts = convert_time(UNIX_EPOCH + Duration::new(10, 250));
+        assert_eq!(ts, CapnpTimestamp { sec: 10, nsec: 250 });
+    }
+
+    #[test]
+    fn convert_time_borrows_into_the_previous_second_for_sub_second_pre_epoch() {
+        // 0.5s before the epoch: the seconds field rolls back one extra second
+        // and the nanos carry the complement, so the pair still sums to -0.5s.
+        let ts = convert_time(UNIX_EPOCH - Duration::new(0, 500_000_000));
+        assert_eq!(
+            ts,
+            CapnpTimestamp {
+                sec: -1,
+                nsec: 500_000_000
+            }
+        );
+    }
+
+    #[test]
+    fn convert_time_keeps_whole_seconds_for_exact_pre_epoch_second() {
+        // An exact second before the epoch has no nanos to borrow, so the
+        // nsec==0 branch keeps the seconds field at the negated whole second.
+        let ts = convert_time(UNIX_EPOCH - Duration::new(3, 0));
+        assert_eq!(ts, CapnpTimestamp { sec: -3, nsec: 0 });
+    }
 }

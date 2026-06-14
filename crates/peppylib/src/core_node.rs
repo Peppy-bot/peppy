@@ -1,7 +1,3 @@
-pub mod clock;
-pub mod datastore;
-pub mod info;
-pub mod stack;
 pub mod transport;
 
 /// Subscribes to a periodic core-node-published topic (e.g. `clock`,

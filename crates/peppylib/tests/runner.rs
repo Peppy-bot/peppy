@@ -1,7 +1,7 @@
 mod common;
 
 use common::test_node_target;
-use config::consts::PEPPYGEN_OUTPUT_PATH;
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
@@ -42,13 +42,13 @@ impl EnvAndDirGuard {
             .lock()
             .expect("env lock poisoned by a previous test panic");
 
-        let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
+        let previous_runtime_config = std::env::var(RUNTIME_CONFIG_VAR_NAME).ok();
         let previous_dir = std::env::current_dir().expect("current dir should be readable");
 
         // SAFETY: environment mutation is guarded by a global mutex to avoid races.
         unsafe {
             std::env::set_var(
-                peppylib::config::RUNTIME_CONFIG_VAR_NAME,
+                RUNTIME_CONFIG_VAR_NAME,
                 runtime_config_path,
             )
         };
@@ -69,13 +69,13 @@ impl EnvAndDirGuard {
             .lock()
             .expect("env lock poisoned by a previous test panic");
 
-        let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
+        let previous_runtime_config = std::env::var(RUNTIME_CONFIG_VAR_NAME).ok();
         let previous_dir = std::env::current_dir().expect("current dir should be readable");
 
         // SAFETY: environment mutation is guarded by a global mutex to avoid races.
         // Remove the env var to ensure standalone mode is used.
         unsafe {
-            std::env::remove_var(peppylib::config::RUNTIME_CONFIG_VAR_NAME);
+            std::env::remove_var(RUNTIME_CONFIG_VAR_NAME);
         };
 
         Self {
@@ -92,8 +92,8 @@ impl Drop for EnvAndDirGuard {
         // SAFETY: environment mutation is guarded by a global mutex to avoid races.
         unsafe {
             match &self.previous_runtime_config {
-                Some(value) => std::env::set_var(peppylib::config::RUNTIME_CONFIG_VAR_NAME, value),
-                None => std::env::remove_var(peppylib::config::RUNTIME_CONFIG_VAR_NAME),
+                Some(value) => std::env::set_var(RUNTIME_CONFIG_VAR_NAME, value),
+                None => std::env::remove_var(RUNTIME_CONFIG_VAR_NAME),
             }
         }
     }
@@ -107,7 +107,7 @@ async fn daemon_runner_succeed() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -251,7 +251,7 @@ async fn standalone_runner_succeed() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -310,7 +310,7 @@ async fn node_ready_but_not_healthy() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -557,7 +557,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -694,7 +694,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -831,7 +831,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -920,7 +920,7 @@ async fn start_daemon_stack(shutdown_grace_secs: Option<u64>) -> DaemonStack {
     let (router_host, router_port) = (router.host.clone(), router.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {
@@ -1233,7 +1233,7 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
-    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
       peppy_schema: "node_v1",
       manifest: {

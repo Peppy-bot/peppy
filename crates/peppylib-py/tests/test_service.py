@@ -43,8 +43,6 @@ async def test_service_messenger_communication():
             SERVICE_NAME,
         )
 
-        # Allow listener to propagate
-        await asyncio.sleep(0.05)
 
         # Spawn the handler so we can poll concurrently
         async def handle():
@@ -103,7 +101,6 @@ async def test_service_handler_exception_returns_service_error():
             SERVICE_NAME,
         )
 
-        await asyncio.sleep(0.05)
 
         def failing_handler(_request):
             raise RuntimeError("handler boom")
@@ -158,8 +155,6 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             iface_service.handle_next_request(lambda _req: iface_response)
         )
 
-        # Allow subscriptions to propagate.
-        await asyncio.sleep(0.1)
 
         # Native poll → native handler.
         from_native = await ServiceMessenger.poll(

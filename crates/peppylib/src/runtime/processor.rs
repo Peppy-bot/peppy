@@ -28,8 +28,10 @@ pub struct Processor {
 impl Processor {
     /// Create processor for daemon mode.
     ///
-    /// Reads configuration from PEPPY_RUNTIME_CONFIG env var.
-    /// Validates fingerprint matches compiled code.
+    /// Resolves the launch-config path from the `PEPPY_RUNTIME_CONFIG` env var
+    /// (set by the CLI when it launches the node) and delegates to
+    /// [`new_daemon_from_path`](Self::new_daemon_from_path). Validates the
+    /// fingerprint matches compiled code.
     pub fn new_daemon(peppy_config: impl AsRef<Path>) -> Result<Self> {
         let launch_config_path = std::env::var(RUNTIME_CONFIG_VAR_NAME).map_err(|source| {
             Error::MissingInstanceIdEnvVar {
@@ -38,7 +40,21 @@ impl Processor {
             }
         })?;
 
-        let runtime_config = Self::load_runtime_config(&launch_config_path)?;
+        Self::new_daemon_from_path(peppy_config, &launch_config_path)
+    }
+
+    /// Create processor for daemon mode from an explicit launch-config path.
+    ///
+    /// This is the env-free core that [`new_daemon`](Self::new_daemon) wraps:
+    /// the launch-config path is passed in rather than read from the
+    /// environment, so callers that already know the path (embedders, tests)
+    /// can construct a daemon-mode processor without touching process state.
+    /// Validates the fingerprint matches compiled code.
+    pub fn new_daemon_from_path(
+        peppy_config: impl AsRef<Path>,
+        launch_config_path: &str,
+    ) -> Result<Self> {
+        let runtime_config = Self::load_runtime_config(launch_config_path)?;
 
         let codegen_fingerprint = config::fingerprint::read_codegen_fingerprint(
             peppy_config.as_ref(),
@@ -204,7 +220,7 @@ impl Processor {
     }
 
     /// Daemon-resolved framework `use_sim_time` flag for this instance.
-    /// Read by [`crate::core_node::clock::clock_for_node`] to pick between
+    /// Read by [`crate::clock::for_node`] to pick between
     /// the wall-time and sim-time `PeppyClock` implementations.
     pub fn use_sim_time(&self) -> bool {
         self.runtime_config.node_instance.framework.use_sim_time
@@ -274,9 +290,8 @@ fn build_consumer_filters(
 
 #[cfg(test)]
 mod tests {
-    use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
+    use super::{PEPPYGEN_OUTPUT_PATH, Processor};
     use crate::runtime::builder::StandaloneConfig;
-    use crate::runtime::test_utils::EnvVarGuard;
     use config::node::TypeToken;
     use config::{
         AnyType, ParameterSchema, ParameterSpec, runtime::RuntimeConfig, validate_node_arguments,
@@ -285,7 +300,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn loads_runtime_config_from_env() {
+    fn loads_runtime_config_from_path() {
         let bound_core_node = "epic-whale-6789";
         let bound_node_name = "uvc_camera";
         let bound_instance_id = "camera_front";
@@ -355,15 +370,13 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let runtime_processor = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path
                 .to_str()
                 .expect("runtime config path should be valid UTF-8"),
-        );
-
-        let runtime_processor = Processor::new_daemon(&peppy_config_path)
-            .expect("runtime processor should load config from env");
+        )
+        .expect("runtime processor should load config from path");
 
         let mut expected_parameters: BTreeMap<String, AnyType> = BTreeMap::new();
         expected_parameters.insert("exposure".into(), AnyType::Float(0.25));
@@ -429,12 +442,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path.to_str().unwrap(),
-        );
-
-        let Err(err) = Processor::new_daemon(&peppy_config_path) else {
+        ) else {
             panic!("expected fingerprint mismatch error");
         };
         let err_string = err.to_string();
@@ -484,12 +495,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path.to_str().unwrap(),
-        );
-
-        let Err(err) = Processor::new_daemon(&peppy_config_path) else {
+        ) else {
             panic!("expected missing parameter error");
         };
         let err_string = err.to_string();
@@ -539,12 +548,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path.to_str().unwrap(),
-        );
-
-        let Err(err) = Processor::new_daemon(&peppy_config_path) else {
+        ) else {
             panic!("expected type mismatch error");
         };
         let err_string = err.to_string();
@@ -604,12 +611,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path.to_str().unwrap(),
-        );
-
-        let Err(err) = Processor::new_daemon(&peppy_config_path) else {
+        ) else {
             panic!("expected type mismatch error");
         };
         let err_string = err.to_string();
@@ -668,12 +673,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path.to_str().unwrap(),
-        );
-
-        let Err(err) = Processor::new_daemon(&peppy_config_path) else {
+        ) else {
             panic!("expected type mismatch error");
         };
         let err_string = err.to_string();
@@ -719,12 +722,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard = EnvVarGuard::set(
-            RUNTIME_CONFIG_VAR_NAME,
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
             runtime_config_path.to_str().unwrap(),
-        );
-
-        let Err(err) = Processor::new_daemon(&peppy_config_path) else {
+        ) else {
             panic!("expected codegen fingerprint read error");
         };
         assert!(

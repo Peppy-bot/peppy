@@ -131,66 +131,32 @@ where
 }
 
 #[cfg(test)]
-pub(crate) mod test_utils {
-    use std::env;
-    use std::sync::{Mutex, PoisonError};
+mod tests {
+    use super::CancellationToken;
 
-    /// Global mutex that serializes all env-var mutations across test threads
-    /// within this crate, preventing races between processor (daemon-mode) and
-    /// builder (standalone-mode) tests.
-    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
+    #[test]
+    fn child_token_is_cancelled_when_parent_is_cancelled() {
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+        assert!(!child.is_cancelled());
 
-    /// RAII guard that sets an env var while held and restores the previous
-    /// value on drop. All mutations are serialized via [`ENV_VAR_MUTEX`].
-    pub(crate) struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
+        parent.cancel();
+        assert!(
+            child.is_cancelled(),
+            "cancelling the parent must propagate to the child"
+        );
     }
 
-    impl EnvVarGuard {
-        pub(crate) fn set(key: &'static str, value: &str) -> Self {
-            // Recover from a poisoned mutex: the guarded section only mutates a
-            // single env var, so a panic while held leaves no broken invariant.
-            // Without this, one failing test cascades PoisonError into every
-            // later env-dependent test and hides the real failure.
-            let _lock = ENV_VAR_MUTEX.lock().unwrap_or_else(PoisonError::into_inner);
-            let previous = env::var(key).ok();
-            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-            unsafe { env::set_var(key, value) };
-            Self {
-                key,
-                previous,
-                _lock,
-            }
-        }
+    #[test]
+    fn child_token_cancel_does_not_cancel_parent() {
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
 
-        pub(crate) fn remove(key: &'static str) -> Self {
-            // Recover from a poisoned mutex: the guarded section only mutates a
-            // single env var, so a panic while held leaves no broken invariant.
-            // Without this, one failing test cascades PoisonError into every
-            // later env-dependent test and hides the real failure.
-            let _lock = ENV_VAR_MUTEX.lock().unwrap_or_else(PoisonError::into_inner);
-            let previous = env::var(key).ok();
-            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-            unsafe { env::remove_var(key) };
-            Self {
-                key,
-                previous,
-                _lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(ref value) = self.previous {
-                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-                unsafe { env::set_var(self.key, value) };
-            } else {
-                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-                unsafe { env::remove_var(self.key) };
-            }
-        }
+        child.cancel();
+        assert!(child.is_cancelled());
+        assert!(
+            !parent.is_cancelled(),
+            "cancelling a child must not cancel its parent"
+        );
     }
 }

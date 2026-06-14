@@ -38,8 +38,6 @@ async def test_node_health_request_response_roundtrip():
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
-        # Allow the service to fully establish its listeners
-        await asyncio.sleep(0.05)
 
         # Build and send the health request
         request_payload = b"health"
