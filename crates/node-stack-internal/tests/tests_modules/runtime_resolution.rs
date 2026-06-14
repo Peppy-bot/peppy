@@ -6,6 +6,7 @@ use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::fixtures;
+use crate::helpers::graph_query;
 use crate::helpers::real_lifecycle;
 
 #[tokio::test]
@@ -904,10 +905,9 @@ fn node_stack_wires_dependencies_for_dependants() {
         .push_config(dependent, false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
-    let deps = stack.dependencies_of("brain", "v1");
+    let deps = graph_query::dependency_names(&stack, "brain", "v1");
     assert!(
-        deps.iter()
-            .any(|entity| { entity.read().config().manifest.name.as_str() == "lidar" }),
+        deps.iter().any(|name| name == "lidar"),
         "brain should depend on lidar in the stack"
     );
 }
@@ -1161,11 +1161,9 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         "entity should still point to the original snapshot config path"
     );
 
-    let dependents = stack.dependents_of("lidar", "v1");
+    let dependents = graph_query::dependent_names(&stack, "lidar", "v1");
     assert!(
-        dependents
-            .iter()
-            .any(|entity| { entity.read().config().manifest.name.as_str() == "brain" }),
+        dependents.iter().any(|name| name == "brain"),
         "lidar should still have brain as a dependent"
     );
 }
@@ -1311,11 +1309,9 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     );
 
     // Dependency wiring should still be intact
-    let dependents = stack.dependents_of("lidar", "v1");
+    let dependents = graph_query::dependent_names(&stack, "lidar", "v1");
     assert!(
-        dependents
-            .iter()
-            .any(|entity| { entity.read().config().manifest.name.as_str() == "brain" }),
+        dependents.iter().any(|name| name == "brain"),
         "lidar should still have brain as a dependent after non-breaking update"
     );
 }
