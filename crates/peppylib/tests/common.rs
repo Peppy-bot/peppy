@@ -27,7 +27,10 @@ pub async fn wait_for_topic_subscriber(
     )
     .await
     .expect("wait_for_subscriber should not error");
-    assert!(matched, "no subscriber for topic `{topic_name}` routed within 2s");
+    assert!(
+        matched,
+        "no subscriber for topic `{topic_name}` routed within 2s"
+    );
 }
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";

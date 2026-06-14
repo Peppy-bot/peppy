@@ -223,8 +223,7 @@ where
         // daemon mode takes precedence - the CLI sets PEPPY_RUNTIME_CONFIG -
         // which lets a node specify .standalone(config) as a fallback while
         // still running in daemon mode when launched by the CLI.
-        if !self.force_standalone
-            && std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok()
+        if !self.force_standalone && std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok()
         {
             return ExecutionMode::Daemon;
         }

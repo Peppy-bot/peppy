@@ -46,12 +46,7 @@ impl EnvAndDirGuard {
         let previous_dir = std::env::current_dir().expect("current dir should be readable");
 
         // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-        unsafe {
-            std::env::set_var(
-                RUNTIME_CONFIG_VAR_NAME,
-                runtime_config_path,
-            )
-        };
+        unsafe { std::env::set_var(RUNTIME_CONFIG_VAR_NAME, runtime_config_path) };
         std::env::set_current_dir(temp_dir).expect("set_current_dir should succeed");
 
         Self {

@@ -47,7 +47,6 @@ async fn action_messenger_communication() {
     .await
     .expect("expose should succeed");
 
-
     // Run the server side in a spawned task
     let goal_resp = goal_response_payload.clone();
     let fb = feedback_payload.clone();
@@ -181,7 +180,6 @@ async fn setup_goal_handshake(
     )
     .await
     .expect("expose should succeed");
-
 
     let (publisher_tx, publisher_rx) = tokio::sync::oneshot::channel::<ActionFeedbackPublisher>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1342,7 +1340,6 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
 
     let (native_task, native_done) = run_goal_handler(native_action, native_response.clone());
     let (iface_task, iface_done) = run_goal_handler(iface_action, iface_response.clone());
-
 
     let native_goal = ActionMessenger::send_goal(
         &caller_handle,

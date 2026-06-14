@@ -1944,23 +1944,35 @@ mod envelope_tests {
         let pending = empty_pending();
         let tombstones = fresh_tombstones();
 
-        registry
-            .lock()
-            .unwrap()
-            .insert("expired".to_string(), terminal_slot(now - Duration::from_millis(1)));
-        registry
-            .lock()
-            .unwrap()
-            .insert("fresh".to_string(), terminal_slot(now + Duration::from_secs(10)));
+        registry.lock().unwrap().insert(
+            "expired".to_string(),
+            terminal_slot(now - Duration::from_millis(1)),
+        );
+        registry.lock().unwrap().insert(
+            "fresh".to_string(),
+            terminal_slot(now + Duration::from_secs(10)),
+        );
 
         sweep_once(&registry, &pending, &tombstones, now);
 
         let registry = registry.lock().unwrap();
-        assert!(!registry.contains_key("expired"), "past-window slot should be evicted");
-        assert!(registry.contains_key("fresh"), "in-window slot should be retained");
+        assert!(
+            !registry.contains_key("expired"),
+            "past-window slot should be evicted"
+        );
+        assert!(
+            registry.contains_key("fresh"),
+            "in-window slot should be retained"
+        );
         let tombstones = tombstones.lock().unwrap();
-        assert!(tombstones.contains("expired"), "evicted goal should be tombstoned");
-        assert!(!tombstones.contains("fresh"), "retained goal should not be tombstoned");
+        assert!(
+            tombstones.contains("expired"),
+            "evicted goal should be tombstoned"
+        );
+        assert!(
+            !tombstones.contains("fresh"),
+            "retained goal should not be tombstoned"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1974,7 +1986,10 @@ mod envelope_tests {
         // concurrent poll), so `try_lock` fails and the sweep must leave it for
         // the next tick rather than evicting a slot it cannot inspect.
         let slot = terminal_slot(now - Duration::from_secs(1));
-        registry.lock().unwrap().insert("busy".to_string(), slot.clone());
+        registry
+            .lock()
+            .unwrap()
+            .insert("busy".to_string(), slot.clone());
         let _held = slot.state.lock().await;
 
         sweep_once(&registry, &pending, &tombstones, now);

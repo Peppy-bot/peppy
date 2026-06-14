@@ -9,7 +9,8 @@ use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
 use super::common::{
-    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
+    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target,
+    wait_for_topic_subscriber, wait_until_reachable,
 };
 
 /// Spins up a single-shot `clock` service listener that returns `response`
@@ -84,17 +85,14 @@ async fn subscribe_clock_yields_typed_ticks() {
     // Deterministically wait until the publisher's session sees the subscription
     // (peer-mode discovery is not instantaneous) instead of guessing a fixed
     // settle delay, so the emit below cannot be dropped before routing.
-    let matched = TopicMessenger::wait_for_subscriber(
+    wait_for_topic_subscriber(
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
         names::CLOCK,
-        Duration::from_secs(2),
     )
-    .await
-    .expect("wait_for_subscriber should not error");
-    assert!(matched, "subscriber should route to the publisher within 2 s");
+    .await;
 
     let canned = ClockTick::new(1_700_000_000_123_456_789);
     TopicMessenger::emit(

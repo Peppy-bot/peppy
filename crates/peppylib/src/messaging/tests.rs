@@ -1,10 +1,10 @@
 // The crate sets `#![deny(unsafe_code)]` in lib.rs. This test module is the one
-// place that needs `unsafe`: the pre-main `#[ctor::ctor(unsafe)]` that sets
-// `ZENOH_RUNTIME` before zenoh's lazy global runtime initializes, and the
-// `libc` getrlimit/setrlimit FFI that raises the fd limit to avoid EMFILE
-// flakes. Both are load-bearing and have no safe equivalent, so this is the
-// single, narrowly-scoped opt-out from the crate-wide deny.
-#![allow(unsafe_code)]
+// place that needs `unsafe`, in exactly two pre-main helpers below: the
+// `#[ctor::ctor(unsafe)]` that sets `ZENOH_RUNTIME` before zenoh's lazy global
+// runtime initializes, and the `libc` getrlimit/setrlimit FFI that raises the
+// fd limit to avoid EMFILE flakes. Both are load-bearing and have no safe
+// equivalent. Each helper carries its own `#[allow(unsafe_code)]` so the
+// crate-wide deny still guards the rest of this file against accidental unsafe.
 
 use crate::types::Payload;
 use config::node::QoSProfile;
@@ -70,6 +70,7 @@ impl ActionClientCase {
 /// thread and before zenoh's lazy global runtimes read it. Spawned zenohd
 /// child processes inherit it, which is harmless. An operator-provided
 /// `ZENOH_RUNTIME` wins. Remove once the upstream fix ships in a release.
+#[allow(unsafe_code)]
 #[ctor::ctor(unsafe)]
 fn ensure_zenoh_net_runtime_workers() {
     if std::env::var_os("ZENOH_RUNTIME").is_none() {
@@ -86,6 +87,7 @@ fn ensure_zenoh_net_runtime_workers() {
 /// the hard limit removes that ceiling without reducing test parallelism. Best
 /// effort: a failed syscall leaves the original limit in place and the real
 /// EMFILE error still surfaces.
+#[allow(unsafe_code)]
 fn ensure_test_fd_limit() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -892,7 +894,6 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -1072,7 +1073,6 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -1196,7 +1196,6 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
-
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -1464,7 +1463,6 @@ async fn service_communication_poll_core_node_scoped() {
                 .await
         })
     };
-
 
     // Each iteration runs a fresh discover-then-pin sequence; without the
     // core-node scope the foreign listener would win some of these races.
@@ -1747,7 +1745,6 @@ async fn service_communication_fails_service_timeouts() {
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
 
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
         let request_payload = Payload::from_static(b"enable=true");
@@ -1897,7 +1894,6 @@ async fn service_handle_request_processes_multiple_messages() {
         .await
         .expect("service should signal readiness");
 
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -2018,7 +2014,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
     service_ready_rx
         .await
         .expect("service should signal readiness");
-
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -2251,7 +2246,6 @@ async fn action_communication_no_instance_id_target() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -2493,7 +2487,6 @@ async fn action_communication_with_instance_id_target() {
         .await
         .expect("action server should signal readiness");
 
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -2714,7 +2707,6 @@ async fn action_communication_goal_cancelled() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
 
     let caller_handle = router.messenger().await;
 
@@ -2978,7 +2970,6 @@ async fn single_action_communication_multiple_polls() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
@@ -3481,7 +3472,6 @@ async fn service_communication_poll_full_wildcard_discovers() {
         .await
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
-
 
     {
         let caller_handle = router.messenger().await;

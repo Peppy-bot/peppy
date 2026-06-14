@@ -64,7 +64,12 @@ pub(super) async fn probe_reachable(
     sender: &ServiceWireSender,
 ) -> Result<bool> {
     match messenger
-        .poll_service(sender, Payload::new(), ServiceQueryKind::Probe, PROBE_TIMEOUT)
+        .poll_service(
+            sender,
+            Payload::new(),
+            ServiceQueryKind::Probe,
+            PROBE_TIMEOUT,
+        )
         .await
     {
         Ok(_) => Ok(true),

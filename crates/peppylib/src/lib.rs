@@ -23,11 +23,11 @@ pub mod types;
 // single verb-less call, so it stays flat as a function rather than a module.
 pub mod clock;
 pub mod datastore;
-pub mod stack;
 mod info;
+pub mod stack;
 pub use info::info;
 
-pub use types::Payload;
+pub use types::{Message, Payload};
 
 #[allow(clippy::all)]
 mod health_capnp {

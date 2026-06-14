@@ -467,9 +467,11 @@ impl ServiceMessenger {
     /// Sends a lightweight probe to check whether a service is listening
     /// within the [`ServiceTarget`] scope (a full producer pin, one core
     /// node, or any matching producer). The probe is answered by the
-    /// transport adapter; the user handler is never invoked. Returns
-    /// `true` if the service responds within [`PROBE_TIMEOUT`](super::PROBE_TIMEOUT),
-    /// `false` if unreachable.
+    /// transport adapter; the user handler is never invoked. Returns `true`
+    /// if the service replies within [`PROBE_TIMEOUT`](super::PROBE_TIMEOUT)
+    /// or is reached but too slow to answer in time (a probe timeout still
+    /// proves the producer is there); `false` only if the service is
+    /// unreachable.
     ///
     /// Bypasses `Self::poll`'s discover-then-pin sequence because a probe
     /// IS the discovery step; routing through `poll` would issue two probes
