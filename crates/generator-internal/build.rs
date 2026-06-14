@@ -297,12 +297,7 @@ mod peppylib_build {
 
         // Check dependency crate sources that are compiled into the .so
         let crates_root = peppylib_py_dir.join("..");
-        for dep_crate in &[
-            "peppylib",
-            "config-internal",
-            "pmi-internal",
-            "mount-policy-internal",
-        ] {
+        for dep_crate in &["peppylib", "config-internal", "pmi-internal"] {
             let dep_src = crates_root.join(dep_crate).join("src");
             if dep_src.is_dir() && super::walkdir(&dep_src).iter().any(|f| newer(f)) {
                 return true;
@@ -426,12 +421,7 @@ mod peppylib_build {
     const SOURCE_HASH_MARKER: &str = ".so-source-hash";
 
     /// Dependency crate source directories that are compiled into the `.so`.
-    const DEP_CRATES: &[&str] = &[
-        "peppylib",
-        "config-internal",
-        "pmi-internal",
-        "mount-policy-internal",
-    ];
+    const DEP_CRATES: &[&str] = &["peppylib", "config-internal", "pmi-internal"];
 
     /// Computes a SHA-256 hash over all source files that feed into the `.so`
     /// build: peppylib-py Rust sources, Python sources, pixi.lock, and
@@ -734,7 +724,6 @@ mod rust_crates_build {
             ("../config-internal", true),
             ("../core-node-api", false),
             ("../build-helpers-internal", false),
-            ("../mount-policy-internal", false),
         ];
 
         let mut hasher = Sha256::new();

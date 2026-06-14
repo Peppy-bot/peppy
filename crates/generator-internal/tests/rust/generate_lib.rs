@@ -235,17 +235,11 @@ fn generate_peppygen_lib_cargo() {
         "peppylib dependency path should point to {PEPPYLIB_OUTPUT_PATH}"
     );
 
-    // Verify the Rust crate symlinks exist. config-internal path-depends on
-    // mount-policy-internal, so the latter must be linked as a sibling too.
+    // Verify the Rust crate symlinks exist.
     let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
         .parent()
         .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in [
-        "peppylib",
-        "pmi-internal",
-        "config-internal",
-        "mount-policy-internal",
-    ] {
+    for crate_name in ["peppylib", "pmi-internal", "config-internal"] {
         let link = node_dir.join(libs_dir).join(crate_name);
         let meta = link.symlink_metadata().unwrap_or_else(|e| {
             panic!(

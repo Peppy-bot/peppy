@@ -191,13 +191,6 @@ pub(crate) struct EmbeddedBuildHelpers;
 #[exclude = "examples/*"]
 pub(crate) struct EmbeddedCoreNodeApi;
 
-#[derive(Embed)]
-#[folder = "../mount-policy-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[exclude = "target/*"]
-pub(crate) struct EmbeddedMountPolicy;
-
 /// Recursively copies a directory and all of its contents.
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;

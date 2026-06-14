@@ -3,11 +3,10 @@
 //!
 //! Lima 2.0+ rejects top-level system directories as guest mountPoints, and using
 //! them as Apptainer bind sources is almost always a mistake (mounting an entire
-//! system directory into a container). Both `config` (validating user
-//! `mount_paths`) and `containers` (mutating the Lima YAML) enforce the same rule.
-//! It lives in this dependency-free leaf crate so the two consumers cannot drift,
-//! replacing the comment-enforced "keep both in sync" invariant they used before.
-#![forbid(unsafe_code)]
+//! system directory into a container). Both config-parse-time validation
+//! (`ContainerConfig::validate`) and the `containers` crate (mutating the Lima YAML)
+//! enforce the same rule against this shared list, so the two cannot drift. The
+//! `containers` crate reaches it via the re-exported `config::node::is_blocked_mount_source`.
 
 /// Top-level system directories that Lima 2.0+ rejects as guest mountPoints.
 pub const BLOCKED_MOUNT_PATHS: &[&str] = &[

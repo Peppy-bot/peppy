@@ -649,11 +649,11 @@ pub struct Manifest {
     pub depends_on: Option<DependsOn>,
 }
 
-// The blocked-mount-path list and predicate live in the dependency-free
-// `mount-policy` crate so this crate (config-parse-time validation) and
-// `containers` (Lima YAML mutation) share one source of truth. Re-exported so
+// The blocked-mount-path list and predicate live in the sibling `mount_policy`
+// module so this crate (config-parse-time validation) and `containers` (Lima YAML
+// mutation) share one source of truth. Re-exported so
 // `config::node::is_blocked_mount_source` stays part of this crate's public API.
-pub use mount_policy::is_blocked_mount_source;
+pub use super::mount_policy::is_blocked_mount_source;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -708,7 +708,10 @@ impl ContainerConfig {
                 continue;
             }
             if is_blocked_mount_source(src) {
-                return Err((mount.clone(), mount_policy::blocked_mount_paths_display()));
+                return Err((
+                    mount.clone(),
+                    super::mount_policy::blocked_mount_paths_display(),
+                ));
             }
         }
         Ok(())

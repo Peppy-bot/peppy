@@ -1,8 +1,8 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
     CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedCoreNodeApi,
-    EmbeddedMountPolicy, EmbeddedPeppylib, EmbeddedPmiInternal, WorkspacePackageMetadata,
-    cache_sibling_path, copy_dir_recursive,
+    EmbeddedPeppylib, EmbeddedPmiInternal, WorkspacePackageMetadata, cache_sibling_path,
+    copy_dir_recursive,
 };
 use crate::{
     error::{Error, Result},
@@ -217,7 +217,7 @@ fn copy_embedded_crate<E: Embed>(
 }
 
 /// Deploys the vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api,
-/// build-helpers-internal, mount-policy-internal) to a shared cache directory, then links or
+/// build-helpers-internal) to a shared cache directory, then links or
 /// copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
@@ -266,11 +266,6 @@ fn deploy_rust_crates_to_shared_cache(
             &staging_dir,
             &metadata,
         )?;
-        copy_embedded_crate::<EmbeddedMountPolicy>(
-            "mount-policy-internal",
-            &staging_dir,
-            &metadata,
-        )?;
 
         if cache_dir.exists() {
             fs::remove_dir_all(&cache_dir)?;
@@ -281,18 +276,17 @@ fn deploy_rust_crates_to_shared_cache(
     drop(lock_file);
 
     // Link or copy all vendored crates (peppylib, pmi-internal, config-internal,
-    // core-node-api, build-helpers-internal, mount-policy-internal) into node_libs_dir.
+    // core-node-api, build-helpers-internal) into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
     // paths (e.g., peppylib has `config = { path = "../config-internal" }` and
-    // build-dependencies, and config has `mount-policy = { path = "../mount-policy-internal" }`),
-    // and Cargo resolves these paths relative to the symlink location, not the target.
+    // build-dependencies), and Cargo resolves these paths relative to the symlink
+    // location, not the target.
     for crate_name in &[
         "peppylib",
         "pmi-internal",
         "config-internal",
         "core-node-api",
         "build-helpers-internal",
-        "mount-policy-internal",
     ] {
         let dest = node_libs_dir.join(crate_name);
         let source = cache_dir.join(crate_name);

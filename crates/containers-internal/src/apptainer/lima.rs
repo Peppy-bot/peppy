@@ -1,5 +1,5 @@
 use super::super::error::{Error, Result};
-use mount_policy::is_blocked_mount_source;
+use config::node::is_blocked_mount_source;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 

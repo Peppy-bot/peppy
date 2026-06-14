@@ -583,7 +583,6 @@ dependencies = [
  "dirs 6.0.0",
  "git2",
  "indexmap 2.14.0",
- "mount-policy",
  "proc-macro2",
  "serde",
  "serde_json",
@@ -635,7 +634,6 @@ version = "0.0.1"
 dependencies = [
  "build-helpers",
  "config",
- "mount-policy",
  "serde",
  "serde_yaml",
  "tempfile",
@@ -2426,10 +2424,6 @@ dependencies = [
  "wasi",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "mount-policy"
-version = "0.0.1"
 
 [[package]]
 name = "names-generator2"
