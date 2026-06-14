@@ -3,7 +3,9 @@ use crate::names;
 use crate::services::repo::refresh::{
     process_refresh, write_cache, write_interface_cache, write_launcher_cache,
 };
-use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
+use crate::services::repo::{
+    json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
+};
 use crate::services::response::into_service_response;
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
@@ -182,7 +184,7 @@ fn handle_repo_exclude_request_inner(
         request.source
     );
 
-    let identity = request.source.identity();
+    let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
         return Ok((
             RepoExcludeResponse::failure("repository path/URL must not be empty").encode()?,

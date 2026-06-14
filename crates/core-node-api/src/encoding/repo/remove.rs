@@ -73,3 +73,58 @@ impl RepoRemoveResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_request_new_round_trips() {
+        let request = RepoRemoveRequest::new(42);
+        assert_eq!(request.id, 42);
+        let payload = request.encode().expect("encode");
+        let decoded = RepoRemoveRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn remove_request_round_trips_zero() {
+        let request = RepoRemoveRequest::new(0);
+        let payload = request.encode().expect("encode");
+        let decoded = RepoRemoveRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.id, 0);
+    }
+
+    #[test]
+    fn remove_response_success_round_trips() {
+        let response = RepoRemoveResponse::success();
+        let payload = response.encode().expect("encode");
+        let decoded = RepoRemoveResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(decoded.success);
+        assert!(decoded.error_message.is_empty());
+    }
+
+    #[test]
+    fn remove_response_failure_round_trips() {
+        let response = RepoRemoveResponse::failure("no such repo");
+        let payload = response.encode().expect("encode");
+        let decoded = RepoRemoveResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message, "no such repo");
+    }
+
+    #[test]
+    fn remove_request_decode_rejects_malformed_bytes() {
+        RepoRemoveRequest::decode(&[0xFF, 0xFF, 0xFF, 0xFF])
+            .expect_err("malformed bytes must be rejected");
+    }
+
+    #[test]
+    fn remove_response_decode_rejects_malformed_bytes() {
+        RepoRemoveResponse::decode(&[0xFF, 0xFF, 0xFF, 0xFF])
+            .expect_err("malformed bytes must be rejected");
+    }
+}

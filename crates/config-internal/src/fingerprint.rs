@@ -116,30 +116,6 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
         .expect("fingerprint should be written");
 }
 
-/// Creates a release fingerprint file with incorrect content to test release mismatch errors.
-///
-/// This function:
-/// 1. Creates a valid config fingerprint
-/// 2. Ensures a stable "current" release fingerprint exists in the peppy data directory
-/// 3. Creates a mismatched release fingerprint in the node's `.peppy` directory
-///
-/// This simulates the scenario where a node was generated with a different peppy version.
-#[cfg(feature = "test_helpers")]
-pub fn create_wrong_release_fingerprint(peppy_config_path: &Path, output_path: &Path) {
-    // First create a valid config fingerprint (without release fingerprint copy)
-    let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
-    let fingerprint_dir = peppy_config_dir.join(output_path);
-    fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
-
-    // Create config fingerprint
-    let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
-    let fingerprint = fingerprint_for_bytes(
-        &fs::read(peppy_config_path).expect("peppy config should be readable"),
-    );
-    fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-        .expect("fingerprint should be written");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +190,48 @@ mod tests {
         // Restore write permissions for cleanup
         fs::set_permissions(&output_dir, fs::Permissions::from_mode(0o755))
             .expect("failed to restore permissions");
+    }
+
+    #[test]
+    fn verify_codegen_fingerprint_round_trips_and_detects_tampering() {
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
+        fs::write(&config_path, "original contents").expect("failed to write config");
+
+        // `generate` writes to an absolute output dir, while `read`/`verify`
+        // address that dir *relative to the config's parent*. Generating into
+        // `<config_parent>/<rel_output>` makes the two sides line up.
+        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        generate_node_config_fingerprint(&config_path, tmp.path().join(rel_output))
+            .expect("failed to generate fingerprint");
+
+        // `read_codegen_fingerprint` returns exactly the digest that was stored.
+        let read = read_codegen_fingerprint(&config_path, rel_output).expect("failed to read");
+        assert_eq!(read, fingerprint_for_bytes(b"original contents"));
+
+        // Verification passes while the config is unchanged.
+        verify_codegen_fingerprint(&config_path, rel_output).expect("verify should pass");
+
+        // Mutating the config makes the stored digest stale -> FingerprintMismatch.
+        fs::write(&config_path, "tampered contents").expect("failed to rewrite config");
+        let err = verify_codegen_fingerprint(&config_path, rel_output)
+            .expect_err("verify should fail after tampering");
+        assert!(
+            matches!(err, crate::error::Error::FingerprintMismatch { .. }),
+            "expected FingerprintMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_codegen_fingerprint_errors_when_file_missing() {
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
+        fs::write(&config_path, "contents").expect("failed to write config");
+
+        // No fingerprint was ever generated, so the read must fail rather than
+        // silently returning an empty/garbage digest.
+        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        assert!(read_codegen_fingerprint(&config_path, rel_output).is_err());
     }
 
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {

@@ -10,7 +10,7 @@ use serde::{
 };
 use std::{
     convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Formatter},
     str::FromStr,
 };
 
@@ -138,33 +138,6 @@ impl From<Name> for String {
         v.0
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallbackNameError {
-    Empty,
-    InvalidStart(char),
-    InvalidChar(char),
-}
-
-impl Display for CallbackNameError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            CallbackNameError::Empty => write!(f, "callback name cannot be empty"),
-            CallbackNameError::InvalidStart(ch) => write!(
-                f,
-                "callback name must start with an ASCII letter or '_' but found `{}`",
-                ch.escape_default()
-            ),
-            CallbackNameError::InvalidChar(ch) => write!(
-                f,
-                "callback name may only contain ASCII letters, digits, or '_' but found `{}`",
-                ch.escape_default()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CallbackNameError {}
 
 // NodeInfo is not part of the new schema; manifest/config/instances carry this information.
 
@@ -1043,6 +1016,44 @@ mod tests {
         assert!(Name::new("Node").is_ok()); // capital letters allowed
         assert!(Name::new("node/").is_err()); // slash not allowed
         assert!(Name::new("node@!").is_err()); // specials not allowed
+    }
+
+    #[test]
+    fn blocked_mount_source_matches_top_level_and_private_aliases() {
+        // Exact top-level system mounts are blocked.
+        assert!(is_blocked_mount_source("/"));
+        assert!(is_blocked_mount_source("/etc"));
+        assert!(is_blocked_mount_source("/usr"));
+        // macOS `/private/X` aliases map back onto the blocked root.
+        assert!(is_blocked_mount_source("/private/tmp"));
+        assert!(is_blocked_mount_source("/private/var"));
+        // Subdirectories of a blocked root are allowed.
+        assert!(!is_blocked_mount_source("/tmp/my_app"));
+        assert!(!is_blocked_mount_source("/etc/myconf"));
+        assert!(!is_blocked_mount_source("/home/user/project"));
+        // Unrelated roots and non-root `/private` subpaths are fine.
+        assert!(!is_blocked_mount_source("/data"));
+        assert!(!is_blocked_mount_source("/private/tmp/sub"));
+    }
+
+    #[test]
+    fn extract_parameter_refs_pulls_each_dot_path() {
+        // No references -> empty.
+        assert!(extract_parameter_refs("/data/output").is_empty());
+        // A single bare reference.
+        assert_eq!(
+            extract_parameter_refs("${parameters:device_path}"),
+            vec!["device_path"]
+        );
+        // Multiple references (one nested dot-path) embedded between literals.
+        assert_eq!(
+            extract_parameter_refs(
+                "/mnt/${parameters:video.device_path}:/in/${parameters:out_dir}"
+            ),
+            vec!["video.device_path", "out_dir"]
+        );
+        // An unterminated reference (no closing brace) is ignored, not partial.
+        assert!(extract_parameter_refs("${parameters:oops").is_empty());
     }
 
     #[test]

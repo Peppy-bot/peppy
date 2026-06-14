@@ -37,3 +37,63 @@ where
     tmp.persist(final_path).map_err(|e| e.error)?;
     Ok(final_path.to_path_buf())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn writes_contents_and_returns_final_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("out.txt");
+
+        let returned =
+            publish_atomic(&target, |tmp| std::fs::write(tmp, b"hello")).expect("publish");
+
+        assert_eq!(returned, target);
+        assert_eq!(std::fs::read(&target).expect("read back"), b"hello");
+    }
+
+    #[test]
+    fn creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Two levels that do not exist yet — publish_atomic must create them.
+        let target = dir.path().join("nested").join("deeper").join("out.txt");
+
+        publish_atomic(&target, |tmp| std::fs::write(tmp, b"x")).expect("publish");
+
+        assert!(target.exists(), "expected {} to exist", target.display());
+    }
+
+    #[test]
+    fn leaves_no_file_when_the_write_closure_fails() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("out.txt");
+
+        let err = publish_atomic(&target, |_tmp| Err(std::io::Error::other("boom")))
+            .expect_err("closure failure should propagate");
+
+        assert_eq!(err.kind(), ErrorKind::Other);
+        // The staging tmp file is cleaned up on drop and nothing was renamed
+        // into place, so the destination must not exist.
+        assert!(!target.exists(), "partial file must not be published");
+        // The staging tmp file must not linger in the parent directory either.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "expected no staging leftovers, found {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn errors_when_final_path_has_no_parent() {
+        // The filesystem root has no parent, so staging a sibling is impossible.
+        let err = publish_atomic(Path::new("/"), |tmp| std::fs::write(tmp, b"x"))
+            .expect_err("root path has no parent");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}

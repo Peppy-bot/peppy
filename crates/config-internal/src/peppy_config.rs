@@ -47,7 +47,7 @@ pub const MIN_DAEMON_GRACE_SECS: u64 = 30;
 /// Cadence, in seconds, of the daemon-liveness heartbeat each spawned node's
 /// watchdog listens for (published by the daemon; see
 /// `core_node::services::clock::publish_daemon_heartbeat`). Defined next to
-/// [`MIN_DAEMON_GRACE_SECS`] so the invariant between them is enforced where
+/// `MIN_DAEMON_GRACE_SECS` so the invariant between them is enforced where
 /// both values live.
 pub const DAEMON_HEARTBEAT_INTERVAL_SECS: u64 = 5;
 // Compile-time guard on the watchdog's false-trip margin: even several missed

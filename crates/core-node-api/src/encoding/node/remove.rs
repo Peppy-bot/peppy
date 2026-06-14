@@ -91,3 +91,84 @@ impl NodeRemoveResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_request_defaults_stop_instances_off() {
+        let request = NodeRemoveRequest::new("my_node", "v1");
+        assert!(!request.stop_instances);
+        let payload = request.encode().expect("encode");
+        let decoded = NodeRemoveRequest::decode(payload.as_ref()).expect("decode");
+        assert!(!decoded.stop_instances);
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn remove_request_round_trips_with_stop_instances_off() {
+        let request = NodeRemoveRequest::new("my_node", "v1").with_stop_instances(false);
+        assert!(!request.stop_instances);
+        let payload = request.encode().expect("encode");
+        let decoded = NodeRemoveRequest::decode(payload.as_ref()).expect("decode");
+        assert!(!decoded.stop_instances);
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn remove_request_round_trips_with_stop_instances_on() {
+        let request = NodeRemoveRequest::new("my_node", "v1").with_stop_instances(true);
+        assert!(request.stop_instances);
+        let payload = request.encode().expect("encode");
+        let decoded = NodeRemoveRequest::decode(payload.as_ref()).expect("decode");
+        assert!(decoded.stop_instances);
+        assert_eq!(decoded.node_name, "my_node");
+        assert_eq!(decoded.tag, "v1");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn remove_request_decode_rejects_malformed_bytes() {
+        NodeRemoveRequest::decode(b"not a capnp message")
+            .expect_err("malformed bytes should be rejected");
+    }
+
+    #[test]
+    fn remove_response_round_trips_success() {
+        let response = NodeRemoveResponse::success();
+        assert!(response.success);
+        assert_eq!(response.error_message, None);
+        let payload = response.encode().expect("encode");
+        let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
+        assert!(decoded.success);
+        assert_eq!(decoded.error_message, None);
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn remove_response_round_trips_failure() {
+        let response = NodeRemoveResponse::failure("not found");
+        assert!(!response.success);
+        assert_eq!(response.error_message, Some("not found".to_owned()));
+        let payload = response.encode().expect("encode");
+        let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message, Some("not found".to_owned()));
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn remove_response_new_round_trips() {
+        let response = NodeRemoveResponse::new(true, Some("partial".to_owned()));
+        let payload = response.encode().expect("encode");
+        let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn remove_response_decode_rejects_malformed_bytes() {
+        NodeRemoveResponse::decode(b"not a capnp message")
+            .expect_err("malformed bytes should be rejected");
+    }
+}

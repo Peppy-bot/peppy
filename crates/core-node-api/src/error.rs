@@ -13,9 +13,6 @@ pub enum Error {
     #[error("invalid UTF-8 in message: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
-    #[error("system clock unavailable: {0}")]
-    SystemTime(#[from] std::time::SystemTimeError),
-
     #[error("decoding error: {0}")]
     Decoding(String),
 
