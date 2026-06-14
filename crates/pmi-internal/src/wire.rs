@@ -360,6 +360,20 @@ impl ServiceKind {
     }
 }
 
+/// The precomputed `[root, discriminator, name, tag]` prefix segments of a
+/// service_root. Built once at receiver construction so the inbound-query
+/// parser can match without rebuilding strings. Single source of truth for the
+/// prefix shape, shared by [`ServiceWireReceiver::new`] and the action
+/// sub-service derivation in [`ActionWireReceiver`].
+fn service_root_prefix(identity: &SenderTarget, kind: ServiceKind) -> [String; 4] {
+    [
+        kind.root_segment().to_string(),
+        identity.discriminator().to_string(),
+        identity.name().to_string(),
+        identity.tag().to_string(),
+    ]
+}
+
 // ─── Topics ──────────────────────────────────────────────────────────────────
 
 /// Publisher-side addressing for a topic emit. Fields are `pub(crate)` so
@@ -540,12 +554,7 @@ impl ServiceWireReceiver {
         as_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
-        let service_root_prefix = [
-            kind.root_segment().to_string(),
-            as_identity.discriminator().to_string(),
-            as_identity.name().to_string(),
-            as_identity.tag().to_string(),
-        ];
+        let service_root_prefix = service_root_prefix(&as_identity, kind);
         Ok(Self {
             bound_core_node: Segment::try_from(bound_core_node)?,
             as_instance_id: Segment::try_from(as_instance_id)?,
@@ -692,12 +701,7 @@ impl ActionWireReceiver {
     }
 
     fn action_service(&self, kind: ServiceKind) -> ServiceWireReceiver {
-        let service_root_prefix = [
-            kind.root_segment().to_string(),
-            self.as_identity.discriminator().to_string(),
-            self.as_identity.name().to_string(),
-            self.as_identity.tag().to_string(),
-        ];
+        let service_root_prefix = service_root_prefix(&self.as_identity, kind);
         ServiceWireReceiver {
             bound_core_node: self.bound_core_node.clone(),
             as_instance_id: self.as_instance_id.clone(),

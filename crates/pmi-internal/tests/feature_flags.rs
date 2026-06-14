@@ -3,15 +3,15 @@
 fn test_with_zenoh_feature() {
     use bytes::Bytes;
     use pmi::{
-        Message, PeppyMessagingInterfaceError, SubscriberBufferSizes, SubscriberQoS,
+        Payload, PeppyMessagingInterfaceError, SubscriberBufferSizes, SubscriberQoS,
         ZenohNetProtocol,
     };
 
     const { assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled") };
 
-    let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
-    assert_eq!(message.identifier(), "test/topic");
-    assert_eq!(&message.payload()[..], b"test payload");
+    let payload = Payload::from_bytes(Bytes::from_static(b"test payload"));
+    assert_eq!(payload.len(), b"test payload".len());
+    assert_eq!(payload.as_bytes().as_ref(), b"test payload");
 
     let qos = SubscriberQoS::Standard;
     assert_eq!(SubscriberBufferSizes::default().size_for(qos), 128);
@@ -32,16 +32,16 @@ fn test_with_zenoh_feature() {
 #[test]
 fn test_without_zenoh_feature() {
     use bytes::Bytes;
-    use pmi::{Message, PeppyMessagingInterfaceError, SubscriberBufferSizes, SubscriberQoS};
+    use pmi::{Payload, PeppyMessagingInterfaceError, SubscriberBufferSizes, SubscriberQoS};
 
     assert!(
         !cfg!(feature = "zenoh"),
         "zenoh feature should be disabled for this test"
     );
 
-    let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
-    assert_eq!(message.identifier(), "test/topic");
-    assert_eq!(&message.payload()[..], b"test payload");
+    let payload = Payload::from_bytes(Bytes::from_static(b"test payload"));
+    assert_eq!(payload.len(), b"test payload".len());
+    assert_eq!(payload.as_bytes().as_ref(), b"test payload");
 
     let qos = SubscriberQoS::HighThroughput;
     assert_eq!(SubscriberBufferSizes::default().size_for(qos), 1024);

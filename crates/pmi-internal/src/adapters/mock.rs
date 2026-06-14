@@ -104,10 +104,10 @@ struct MockLivelinessState {
 type LivelinessState = Arc<Mutex<MockLivelinessState>>;
 
 pub struct MockAdapter {
-    pub is_session_connected: bool,
-    pub is_router_started: bool,
-    pub messages: MessageLog,
-    pub subscriptions: SubscriptionMap,
+    pub(crate) is_session_connected: bool,
+    pub(crate) is_router_started: bool,
+    pub(crate) messages: MessageLog,
+    pub(crate) subscriptions: SubscriptionMap,
     pub(crate) queryables: QueryableMap,
     liveliness: LivelinessState,
 }
@@ -1254,5 +1254,109 @@ mod tests {
             .await
             .expect("pinned right receives");
         assert_eq!(right.payload().to_bytes().as_ref(), b"frame-0");
+    }
+
+    #[tokio::test]
+    async fn messenger_declare_topic_publisher_delivers_to_a_subscriber() {
+        // Exercises the `Messenger` dispatch wrapper (not the adapter directly):
+        // a pre-bound publisher must reach a subscriber on the same topic and be
+        // marked primary so a wildcard subscriber keeps it.
+        use crate::wire::{SenderTarget, TopicWireReceiver, TopicWireSender};
+
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger
+            .start_session()
+            .await
+            .expect("session should start");
+
+        let target = SenderTarget::interface("depth_camera", "v1").expect("iface target");
+        let sender = TopicWireSender::new(
+            "pub_core",
+            "pub_inst",
+            target.clone(),
+            Some("wrist"),
+            "frames",
+        )
+        .expect("sender");
+        let receiver = TopicWireReceiver::new(
+            "sub_core",
+            "sub_inst",
+            None,
+            None,
+            Some(target),
+            None,
+            "frames",
+        )
+        .expect("receiver");
+
+        let subscription = messenger
+            .subscribe_topic(&receiver, SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        let publisher = messenger
+            .declare_topic_publisher(&sender, PublisherQoS::Standard)
+            .expect("declare publisher");
+        publisher
+            .publish(bytes::Bytes::from_static(b"frame-0"))
+            .await
+            .expect("publish");
+
+        let received = subscription
+            .rx
+            .recv_async()
+            .await
+            .expect("subscriber receives the published frame");
+        assert_eq!(received.payload().to_bytes().as_ref(), b"frame-0");
+    }
+
+    #[tokio::test]
+    async fn messenger_declare_action_feedback_publisher_reaches_goal_subscriber() {
+        // The action-feedback dispatch wrapper: feedback pre-bound for a
+        // specific (link_id, goal_id) must reach a consumer subscribed to that
+        // producer's feedback for the same goal.
+        use crate::wire::{ActionWireReceiver, ActionWireSender, SenderTarget};
+
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger
+            .start_session()
+            .await
+            .expect("session should start");
+
+        let target = SenderTarget::node("arm", "v1").expect("node target");
+        let receiver =
+            ActionWireReceiver::new("server_core", "server_inst", target.clone(), "move")
+                .expect("receiver");
+        let sender = ActionWireSender::new(
+            "caller_core",
+            "caller_inst",
+            Some(&config::runtime::ProducerRef::new(
+                "server_core",
+                "server_inst",
+            )),
+            target,
+            "move",
+        )
+        .expect("sender");
+
+        let subscription = messenger
+            .subscribe_action_feedback(&sender, "g7", SubscriberQoS::Standard)
+            .await
+            .expect("subscribe feedback");
+
+        let publisher = messenger
+            .declare_action_feedback_publisher(&receiver, "_", "g7", PublisherQoS::Standard)
+            .expect("declare feedback publisher");
+        publisher
+            .publish(bytes::Bytes::from_static(b"progress-50"))
+            .await
+            .expect("publish feedback");
+
+        let received = subscription
+            .rx
+            .recv_async()
+            .await
+            .expect("feedback subscriber receives the goal update");
+        assert_eq!(received.payload().to_bytes().as_ref(), b"progress-50");
     }
 }
