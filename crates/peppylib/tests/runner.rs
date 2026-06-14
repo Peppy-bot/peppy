@@ -4,12 +4,13 @@ use common::test_node_target;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
+use peppylib::PeppyError;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{
     NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ProducerRef, SHUTDOWN_SERVICE, ServiceTarget,
 };
 use peppylib::runtime::CancellationToken;
-use peppylib::runtime::NodeBuilder;
+use peppylib::runtime::{NodeBuilder, StandaloneConfig};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
@@ -1282,4 +1283,103 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
     hook_rx
         .await
         .expect("shutdown hook should have run before standalone exit");
+}
+
+// `NodeBuilder::init()` parses parameters eagerly and `take_parameters()` is
+// take-once. These cases exercise that behavior through the real builder, so
+// they run in standalone mode via `EnvAndDirGuard::new_standalone()`, which
+// clears `PEPPY_RUNTIME_CONFIG` and serializes against the daemon tests that
+// set it. They live here rather than as in-crate unit tests because forcing
+// standalone needs to control the process environment, and env mutation is
+// `unsafe` while the library crate is `#![deny(unsafe_code)]`.
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ValueParam {
+    value: i64,
+}
+
+/// Write a minimal node manifest with a single parameter `value` of the given
+/// type (for example `"i64"`). Returns the manifest path.
+fn write_value_param_config(dir: &Path, parameter_type: &str) -> PathBuf {
+    let path = dir.join(NODE_CONFIG_FILE);
+    let content = format!(
+        r#"{{
+            peppy_schema: "node_v1",
+            manifest: {{ name: "test_node", tag: "v1" }},
+            execution: {{ language: "rust", parameters: {{ value: "{parameter_type}" }}, run_cmd: ["./test"] }},
+        }}"#,
+    );
+    std::fs::write(&path, content).expect("peppy config should be written");
+    path
+}
+
+#[test]
+fn init_parameters_can_only_be_taken_once() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let peppy_config = write_value_param_config(temp_dir.path(), "i64");
+
+    let config = StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 42 }));
+
+    let mut ctx = NodeBuilder::<ValueParam>::new()
+        .with_config_path(&peppy_config)
+        .standalone(config)
+        .init()
+        .expect("init should succeed");
+
+    let params = ctx.take_parameters().expect("first take should succeed");
+    assert_eq!(params.value, 42);
+
+    let err = ctx.take_parameters().expect_err("second take should fail");
+    assert!(
+        matches!(err, PeppyError::ParametersAlreadyTaken),
+        "expected ParametersAlreadyTaken, got: {err:?}"
+    );
+}
+
+#[test]
+fn init_fails_eagerly_on_invalid_parameter_types() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let peppy_config = write_value_param_config(temp_dir.path(), "i64");
+
+    // Provide a string where i64 is expected; this must fail at init(), not
+    // when parameters are later read.
+    let config = StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "value": "not_a_number" }));
+
+    let Err(err) = NodeBuilder::<ValueParam>::new()
+        .with_config_path(&peppy_config)
+        .standalone(config)
+        .init()
+    else {
+        panic!("init should fail with type mismatch");
+    };
+
+    let err_string = err.to_string();
+    assert!(
+        err_string.contains("value"),
+        "error should mention the invalid parameter, got: {err_string}"
+    );
+}
+
+#[test]
+fn init_parses_parameters_eagerly() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+    let peppy_config = write_value_param_config(temp_dir.path(), "i64");
+
+    let config = StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 99 }));
+
+    let mut ctx = NodeBuilder::<ValueParam>::new()
+        .with_config_path(&peppy_config)
+        .standalone(config)
+        .init()
+        .expect("init should succeed");
+
+    let params = ctx.take_parameters().expect("should take parameters");
+    assert_eq!(params.value, 99);
 }

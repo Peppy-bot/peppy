@@ -125,10 +125,6 @@ impl StandaloneConfig {
 /// - Otherwise, runs in standalone mode with the provided config (or defaults)
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
-    /// When set, [`resolve_mode`](Self::resolve_mode) pins standalone mode and
-    /// skips the `PEPPY_RUNTIME_CONFIG` env detection. Set by
-    /// [`force_standalone`](Self::force_standalone).
-    force_standalone: bool,
     peppy_config_path: PathBuf,
     _params: std::marker::PhantomData<Params>,
 }
@@ -141,7 +137,6 @@ where
     pub fn new() -> Self {
         Self {
             standalone_config: None,
-            force_standalone: false,
             peppy_config_path: PathBuf::from(NODE_CONFIG_FILE),
             _params: std::marker::PhantomData,
         }
@@ -154,18 +149,6 @@ where
     /// daemon mode takes precedence and this config is ignored.
     pub fn standalone(mut self, config: StandaloneConfig) -> Self {
         self.standalone_config = Some(config);
-        self
-    }
-
-    /// Force standalone mode with `config`, ignoring `PEPPY_RUNTIME_CONFIG`.
-    ///
-    /// Unlike [`standalone`](Self::standalone) (a fallback that daemon-mode
-    /// detection overrides), this pins standalone mode unconditionally. Use it
-    /// when embedding a node outside the CLI launch path, or when an inherited
-    /// `PEPPY_RUNTIME_CONFIG` must not flip the node into daemon mode.
-    pub fn force_standalone(mut self, config: StandaloneConfig) -> Self {
-        self.standalone_config = Some(config);
-        self.force_standalone = true;
         self
     }
 
@@ -218,13 +201,10 @@ where
     }
 
     fn resolve_mode(&self) -> ExecutionMode {
-        // An explicit force_standalone() pins standalone mode and skips env
-        // detection entirely (for embedders and deterministic tests). Otherwise
-        // daemon mode takes precedence - the CLI sets PEPPY_RUNTIME_CONFIG -
-        // which lets a node specify .standalone(config) as a fallback while
-        // still running in daemon mode when launched by the CLI.
-        if !self.force_standalone && std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok()
-        {
+        // Daemon mode takes precedence: the CLI sets PEPPY_RUNTIME_CONFIG when it
+        // launches a node. This lets a node specify .standalone(config) as a
+        // fallback while still running in daemon mode when launched by the CLI.
+        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
             return ExecutionMode::Daemon;
         }
 
@@ -632,96 +612,4 @@ async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-    struct TestParams {
-        value: i64,
-    }
-
-    fn write_peppy_config(dir: &std::path::Path, parameters: &str) -> std::path::PathBuf {
-        let path = dir.join("peppy.json5");
-        let content = format!(
-            r#"{{
-                peppy_schema: "node_v1",
-                manifest: {{ name: "test_node", tag: "v1" }},
-                execution: {{ language: "rust", parameters: {{ {parameters} }}, run_cmd: ["./test"] }},
-            }}"#,
-        );
-        std::fs::write(&path, content).expect("peppy config should be written");
-        path
-    }
-
-    #[test]
-    fn parameters_can_only_be_taken_once() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
-
-        let config =
-            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 42 }));
-
-        let mut ctx = NodeBuilder::<TestParams>::new()
-            .with_config_path(&peppy_config)
-            .force_standalone(config)
-            .init()
-            .expect("init should succeed");
-
-        let params = ctx.take_parameters().expect("first take should succeed");
-        assert_eq!(params.value, 42);
-
-        let err = ctx.take_parameters().expect_err("second take should fail");
-        assert!(
-            matches!(err, Error::ParametersAlreadyTaken),
-            "expected ParametersAlreadyTaken, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn init_fails_eagerly_on_invalid_parameter_types() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
-
-        // Provide a string where i64 is expected — should fail at init(), not parameters()
-        let config = StandaloneConfig::new()
-            .with_parameters_json(serde_json::json!({ "value": "not_a_number" }));
-
-        let Err(err) = NodeBuilder::<TestParams>::new()
-            .with_config_path(&peppy_config)
-            .force_standalone(config)
-            .init()
-        else {
-            panic!("init should fail with type mismatch");
-        };
-
-        let err_string = err.to_string();
-        assert!(
-            err_string.contains("value"),
-            "error should mention the invalid parameter, got: {err_string}"
-        );
-    }
-
-    #[test]
-    fn init_parses_parameters_eagerly() {
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
-
-        let config =
-            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 99 }));
-
-        let mut ctx = NodeBuilder::<TestParams>::new()
-            .with_config_path(&peppy_config)
-            .force_standalone(config)
-            .init()
-            .expect("init should succeed");
-
-        // Parameters are already parsed — no Result needed for validation,
-        // only for the take-once check
-        let params = ctx.take_parameters().expect("should take parameters");
-        assert_eq!(params.value, 99);
-    }
 }
