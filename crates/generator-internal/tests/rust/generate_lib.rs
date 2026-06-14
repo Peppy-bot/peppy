@@ -235,7 +235,7 @@ fn generate_peppygen_lib_cargo() {
         "peppylib dependency path should point to {PEPPYLIB_OUTPUT_PATH}"
     );
 
-    // Verify all three Rust crate symlinks exist (peppylib, pmi-internal, config-internal)
+    // Verify the Rust crate symlinks exist.
     let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
         .parent()
         .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");

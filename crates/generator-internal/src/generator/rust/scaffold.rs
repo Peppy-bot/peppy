@@ -216,8 +216,9 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
-/// Deploys the five vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api, build-helpers-internal)
-/// to a shared cache directory, then links or copies them into `node_libs_dir`.
+/// Deploys the vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api,
+/// build-helpers-internal) to a shared cache directory, then links or
+/// copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
 /// to the shared cache. This avoids duplicating source files across nodes.
@@ -274,12 +275,12 @@ fn deploy_rust_crates_to_shared_cache(
     }
     drop(lock_file);
 
-    // Link or copy all five crates (peppylib, pmi-internal, config-internal,
+    // Link or copy all vendored crates (peppylib, pmi-internal, config-internal,
     // core-node-api, build-helpers-internal) into node_libs_dir.
-    // All five are needed because the crates reference each other via relative
-    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`
-    // and `build-helpers = { path = "../build-helpers-internal" }` in build-dependencies),
-    // and Cargo resolves these paths relative to the symlink location, not the target.
+    // All are needed because the crates reference each other via relative sibling
+    // paths (e.g., peppylib has `config = { path = "../config-internal" }` and
+    // build-dependencies), and Cargo resolves these paths relative to the symlink
+    // location, not the target.
     for crate_name in &[
         "peppylib",
         "pmi-internal",

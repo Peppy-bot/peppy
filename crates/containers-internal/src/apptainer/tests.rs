@@ -1,10 +1,44 @@
 #[cfg(target_os = "linux")]
 use super::facade::check_setup_status;
 use super::facade::{Apptainer, Backend, is_uri};
+use crate::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+
+#[cfg(unix)]
+use super::facade::{GuestKillChild, await_guest_kill};
+#[cfg(unix)]
+use std::process::ExitStatus;
+
+// ---------------------------------------------------------------------------
+// Shared test fixtures
+// ---------------------------------------------------------------------------
+
+/// Construct a fully-initialized `Apptainer` for tests that need the real
+/// runtime. apptainer is bundled at compile time, so construction must succeed.
+fn ready_facade() -> Apptainer {
+    Apptainer::new().expect("Apptainer::new() should succeed; apptainer is bundled at compile time")
+}
+
+/// Resolve the bundled apptainer install dir directly, bypassing the
+/// construction-time readiness check in `new()`. The Linux setup-status tests
+/// must inspect a real install even when prerequisites are not yet met.
+#[cfg(target_os = "linux")]
+fn ready_apptainer_dir() -> PathBuf {
+    Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed; apptainer is bundled at compile time")
+}
+
+/// Whether this host restricts unprivileged user namespaces via AppArmor, the
+/// gate the setup-status tests branch on.
+#[cfg(target_os = "linux")]
+fn apparmor_restricts_userns() -> bool {
+    std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+}
 
 // ---------------------------------------------------------------------------
 // Builder argument assembly tests
@@ -12,8 +46,7 @@ use tempfile::TempDir;
 
 #[test]
 fn test_run_command_builds_correct_args() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let cmd = facade.run("image.sif");
     let args = cmd.build_args().expect("build_args should succeed");
@@ -28,8 +61,7 @@ fn test_run_command_builds_correct_args() {
 
 #[test]
 fn test_exec_command_builds_correct_args() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let cmd = facade.exec("container.sif", &["echo", "hello"]);
     let args = cmd.build_args().expect("build_args should succeed");
@@ -41,8 +73,7 @@ fn test_exec_command_builds_correct_args() {
 
 #[test]
 fn test_build_command_builds_correct_args() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let home = std::env::var("HOME").unwrap();
     let output = PathBuf::from(&home).join("test/output.sif");
@@ -57,8 +88,7 @@ fn test_build_command_builds_correct_args() {
 
 #[test]
 fn test_bind_flag_accumulates() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let home = std::env::var("HOME").unwrap();
     let dev1 = format!("{home}/dev1");
@@ -76,8 +106,7 @@ fn test_bind_flag_accumulates() {
 
 #[test]
 fn test_bind_with_dest() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
@@ -96,8 +125,7 @@ fn test_bind_with_dest() {
 
 #[test]
 fn test_bind_with_opts() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
@@ -117,26 +145,8 @@ fn test_bind_with_opts() {
 }
 
 #[test]
-fn test_binds_convenience() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
-
-    let home = std::env::var("HOME").unwrap();
-    let dev1 = format!("{home}/dev1");
-    let dev2 = format!("{home}/dev2");
-    let dev3 = format!("{home}/dev3");
-
-    let cmd = facade.run("image.sif").binds(&[&dev1, &dev2, &dev3]);
-    let args = cmd.build_args().expect("build_args should succeed");
-
-    let bind_count = args.iter().filter(|a| *a == "--bind").count();
-    assert_eq!(bind_count, 3, "should have 3 --bind flags, got: {:?}", args);
-}
-
-#[test]
 fn test_env_flag_format() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let cmd = facade.run("image.sif").env("FOO", "bar");
     let args = cmd.build_args().expect("build_args should succeed");
@@ -147,8 +157,7 @@ fn test_env_flag_format() {
 
 #[test]
 fn test_lima_shell_extra_args_does_not_affect_build_args() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let cmd = facade
         .run("image.sif")
@@ -165,10 +174,48 @@ fn test_lima_shell_extra_args_does_not_affect_build_args() {
     );
 }
 
+/// The complement of the test above: `lima_shell_extra_args` MUST reach the
+/// assembled `limactl` argv, positioned before the `--` separator (so limactl,
+/// not apptainer, consumes them). Driven through a Lima-backend facade so it is
+/// fully deterministic and spawns nothing.
+#[test]
+fn test_lima_shell_extra_args_reach_limactl_argv_before_separator() {
+    let facade = lima_facade();
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let sif = PathBuf::from(&home).join("peppy_extra_args_test/node.sif");
+
+    let cmd = facade
+        .run(sif.to_str().expect("utf-8 sif path"))
+        .lima_shell_extra_args(&["--timeout".to_string(), "30".to_string()])
+        .into_std_command()
+        .expect("Lima run command should assemble");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    let separator = args
+        .iter()
+        .position(|a| a == "--")
+        .expect("limactl argv must contain the -- separator");
+    let timeout = args
+        .iter()
+        .position(|a| a == "--timeout")
+        .expect("lima_shell_extra_args should reach the limactl argv");
+    assert!(
+        timeout < separator,
+        "lima_shell_extra_args must precede the -- separator, got: {args:?}"
+    );
+    assert_eq!(
+        args[timeout + 1],
+        "30",
+        "the extra-arg value should follow its flag"
+    );
+}
+
 #[test]
 fn test_raw_flag_passthrough() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let cmd = facade.run("image.sif").raw_flag("--force");
     let args = cmd.build_args().expect("build_args should succeed");
@@ -182,8 +229,7 @@ fn test_raw_flag_passthrough() {
 
 #[test]
 fn test_args_appended_after_image() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let cmd = facade.run("image.sif").args(&["--config", "app.yaml"]);
     let args = cmd.build_args().expect("build_args should succeed");
@@ -195,10 +241,12 @@ fn test_args_appended_after_image() {
 
 #[test]
 fn test_flags_come_before_positional_args() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
-    let cmd = facade.run("image.sif").writable_tmpfs().contain();
+    let cmd = facade
+        .run("image.sif")
+        .raw_flag("--writable-tmpfs")
+        .raw_flag("--contain");
     let args = cmd.build_args().expect("build_args should succeed");
 
     // Subcommand is first
@@ -227,17 +275,19 @@ fn test_flags_come_before_positional_args() {
 
 #[test]
 fn test_from_valid_dir() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     assert!(
-        facade.install_dir().is_dir(),
-        "install_dir() should be a real directory, got: {}",
-        facade.install_dir().display()
+        facade.apptainer_dir.is_dir(),
+        "the resolved install dir should be a real directory, got: {}",
+        facade.apptainer_dir.display()
     );
+    let apptainer_bin = match &facade.backend {
+        Backend::Native { apptainer_bin } | Backend::Lima { apptainer_bin, .. } => apptainer_bin,
+    };
     assert!(
-        !facade.binary_path().as_os_str().is_empty(),
-        "binary_path() should be non-empty"
+        !apptainer_bin.as_os_str().is_empty(),
+        "the apptainer invocation binary path should be non-empty"
     );
 }
 
@@ -285,19 +335,20 @@ fn test_from_dir_fails_when_binary_missing() {
 /// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
 fn test_apptainer_version_integration() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
-    // On macOS, binary_path should point to the guest-side installation.
+    // On macOS, the invocation binary should point to the guest-side installation.
     if cfg!(target_os = "macos") {
-        let bin = facade.binary_path();
         let expected = PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer");
-        assert_eq!(
-            bin,
-            expected,
-            "On macOS, binary_path should be the guest-side path, got: {}",
-            bin.display()
-        );
+        match &facade.backend {
+            Backend::Lima { apptainer_bin, .. } => assert_eq!(
+                apptainer_bin,
+                &expected,
+                "On macOS, the invocation binary should be the guest-side path, got: {}",
+                apptainer_bin.display()
+            ),
+            Backend::Native { .. } => unreachable!("macOS uses the Lima backend"),
+        }
     }
 
     let version = facade.version();
@@ -316,8 +367,7 @@ fn test_apptainer_version_integration() {
 
 #[test]
 fn test_translate_path_under_home() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let home = std::env::var("HOME").unwrap();
     let path = PathBuf::from(&home).join("projects/my_node/apptainer.def");
@@ -330,8 +380,7 @@ fn test_translate_path_under_home() {
 
 #[test]
 fn test_translate_path_outside_home() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let path = Path::new("/opt/external/file.def");
     let result = facade.translate_path(path);
@@ -367,8 +416,7 @@ fn test_translate_path_outside_home() {
 /// `translate_path()` correctly rejects such paths on macOS.
 #[test]
 fn test_translate_path_rejects_var_folders() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let path = Path::new("/var/folders/T4/random123abc/T/tempdir/output.sif");
     let result = facade.translate_path(path);
@@ -391,8 +439,7 @@ fn test_translate_path_rejects_var_folders() {
 /// been registered in `extra_mounts` (simulating what `ensure_host_mounts()` does).
 #[test]
 fn test_translate_path_accepts_registered_extra_mount() {
-    let mut facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let mut facade = ready_facade();
 
     let mount_dir = PathBuf::from("/var/folders/T4/random123abc/T/tempdir");
     let file_in_mount = mount_dir.join("output.sif");
@@ -425,8 +472,7 @@ fn test_translate_path_accepts_registered_extra_mount() {
 /// exercising the full command-builder pipeline (not just `translate_path` directly).
 #[test]
 fn test_build_args_rejects_path_outside_home() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let output = Path::new("/var/folders/xx/temp123/output.sif");
     let home = std::env::var("HOME").unwrap();
@@ -470,8 +516,7 @@ fn test_is_uri() {
 
 #[test]
 fn test_translate_path_resolves_relative() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     let relative = Path::new("project/my_image.sif");
     let result = facade.translate_path(relative).unwrap();
@@ -501,8 +546,7 @@ fn test_translate_path_resolves_relative() {
 /// the backend is Native.
 #[test]
 fn test_lima_instance_running_after_init() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     match &facade.backend {
         Backend::Lima {
@@ -536,8 +580,7 @@ fn test_lima_instance_running_after_init() {
 
 #[test]
 fn test_host_gateway_returns_correct_value() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
     if cfg!(target_os = "macos") {
         assert_eq!(
@@ -554,6 +597,15 @@ fn test_host_gateway_returns_correct_value() {
     }
 }
 
+/// On non-macOS there is no VM, so `is_lima_ready()` is unconditionally `true`
+/// and resolves no Lima state. (The macOS resolution-failure branches need a
+/// real host environment and are covered by the integration path.)
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn is_lima_ready_is_true_on_native_backend() {
+    assert!(Apptainer::is_lima_ready());
+}
+
 // ---------------------------------------------------------------------------
 // check_setup_status tests (Linux only)
 // ---------------------------------------------------------------------------
@@ -563,8 +615,7 @@ fn test_host_gateway_returns_correct_value() {
 fn check_setup_status_reports_real_installation() {
     // Use resolve_apptainer_dir() directly to avoid the ensure_ready() check
     // in Apptainer::new(), which would fail if setup isn't complete.
-    let apptainer_dir = Apptainer::resolve_apptainer_dir()
-        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
+    let apptainer_dir = ready_apptainer_dir();
 
     let status = check_setup_status(&apptainer_dir);
 
@@ -587,18 +638,14 @@ fn check_setup_status_reports_real_installation() {
 fn check_setup_status_no_apparmor_restriction() {
     // On systems where AppArmor does not restrict user namespaces,
     // check_setup_status should report everything as OK.
-    let apparmor_restricted =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
+    let apparmor_restricted = apparmor_restricts_userns();
 
     if apparmor_restricted {
         eprintln!("SKIPPING: system restricts unprivileged user namespaces via AppArmor");
         return;
     }
 
-    let apptainer_dir = Apptainer::resolve_apptainer_dir()
-        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
+    let apptainer_dir = ready_apptainer_dir();
 
     let status = check_setup_status(&apptainer_dir);
 
@@ -623,18 +670,14 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
     // On systems where AppArmor restricts unprivileged user namespaces,
     // check_setup_status must verify the profile is loaded into the kernel,
     // not just that the file exists on disk.
-    let apparmor_restricted =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
+    let apparmor_restricted = apparmor_restricts_userns();
 
     if !apparmor_restricted {
         eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
         return;
     }
 
-    let apptainer_dir = Apptainer::resolve_apptainer_dir()
-        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
+    let apptainer_dir = ready_apptainer_dir();
 
     let status = check_setup_status(&apptainer_dir);
 
@@ -671,18 +714,14 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
     // When the AppArmor profile references a different starter path than
     // the current installation (e.g. a previous build artifact), apparmor_ok
     // must be false so the profile gets regenerated with the correct path.
-    let apparmor_restricted =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
+    let apparmor_restricted = apparmor_restricts_userns();
 
     if !apparmor_restricted {
         eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
         return;
     }
 
-    let apptainer_dir = Apptainer::resolve_apptainer_dir()
-        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
+    let apptainer_dir = ready_apptainer_dir();
 
     let status = check_setup_status(&apptainer_dir);
 
@@ -853,13 +892,12 @@ fn gocryptfs_bundled_binary_is_runnable() {
 /// automatically with no environment manipulation.
 #[test]
 fn gocryptfs_path_matches_apptainer_search_dir() {
-    let facade = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    let facade = ready_facade();
 
-    // The install_dir is the *host-side* installation root for both backends.
+    // apptainer_dir is the *host-side* installation root for both backends.
     // For Lima, the same layout (including libexec/) is synced into the guest,
     // so the relative location is what matters.
-    let expected = facade.install_dir().join("libexec/apptainer/bin/gocryptfs");
+    let expected = facade.apptainer_dir.join("libexec/apptainer/bin/gocryptfs");
 
     if cfg!(target_os = "linux") {
         assert!(
@@ -1134,5 +1172,214 @@ fn native_build_is_plain_and_kill_is_a_noop() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
         "peppy-native"
+    );
+}
+
+/// `guest_command` with no arguments has nothing to run, so it must return a
+/// configuration error rather than spawning an empty command. Deterministic:
+/// native backend, no subprocess.
+#[test]
+fn guest_command_rejects_empty_args() {
+    let facade = native_facade();
+    let err = facade
+        .guest_command(&[])
+        .expect_err("guest_command with no args should error");
+    match err {
+        Error::ConfigurationError(msg) => {
+            assert!(
+                msg.contains("at least one argument"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected ConfigurationError, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Best-effort batch guest kill: platform/empty gating (deterministic, no VM)
+// ---------------------------------------------------------------------------
+
+/// An empty key slice returns immediately on every platform: nothing to kill,
+/// no Lima resolution, no panic.
+#[test]
+fn kill_guest_process_groups_best_effort_is_noop_for_empty_keys() {
+    Apptainer::kill_guest_process_groups_best_effort(&[]);
+}
+
+/// On the native (Linux) backend the host process-group kill already reaped the
+/// shared-namespace workload, so this returns without resolving or touching Lima
+/// even for a non-empty key set.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn kill_guest_process_groups_best_effort_is_noop_on_native() {
+    Apptainer::kill_guest_process_groups_best_effort(&["some-instance-key".to_string()]);
+}
+
+/// On the native (Linux) backend `ensure_host_mounts` is a pure no-op: all host
+/// paths are already accessible, so it accepts any input and registers nothing.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn ensure_host_mounts_is_noop_on_native() {
+    let mut facade = native_facade();
+    facade
+        .ensure_host_mounts(&["/some/external/path"])
+        .expect("native backend should accept any mounts as a no-op");
+    assert!(
+        facade.extra_mounts.is_empty(),
+        "native backend registers no extra mounts"
+    );
+}
+
+/// The bundled `LIMA_VERSION` pin must be present and shaped like a version
+/// `parse_lima_version` can read, mirroring the bundled-binary checks that already
+/// exist for APPTAINER_VERSION and GOCRYPTFS_VERSION.
+#[test]
+fn lima_version_const_is_present_and_parses() {
+    assert!(
+        !crate::LIMA_VERSION.is_empty(),
+        "LIMA_VERSION should be set by build.rs"
+    );
+    assert!(
+        super::lima::parse_lima_version(crate::LIMA_VERSION).is_some(),
+        "LIMA_VERSION {:?} should parse as X.Y.Z",
+        crate::LIMA_VERSION
+    );
+}
+
+// ---------------------------------------------------------------------------
+// await_guest_kill: bounded-wait decision logic, made deterministic via an
+// injected clock and a fake child so the timeout/exit branches are covered with
+// no real `limactl` subprocess and no wall-clock sleeping (the macOS integration
+// test exercises only the happy path against a live VM).
+// ---------------------------------------------------------------------------
+
+/// A fake guest-kill child with a fixed exit state, so `await_guest_kill`'s
+/// timeout/exit decision can be exercised without spawning `limactl`. Records
+/// whether the timeout path killed it.
+#[cfg(unix)]
+struct FakeKillChild {
+    /// `None` on every poll keeps the child "running" (drives the timeout path);
+    /// `Some(status)` means it has already exited with that status.
+    exit: Option<ExitStatus>,
+    killed: bool,
+}
+
+#[cfg(unix)]
+impl GuestKillChild for FakeKillChild {
+    fn poll_exit(&mut self) -> crate::Result<Option<ExitStatus>> {
+        Ok(self.exit)
+    }
+
+    fn kill_and_reap(&mut self) {
+        self.killed = true;
+    }
+}
+
+/// A clock that advances by `step` on each call, starting at `base`, so a test
+/// can drive `await_guest_kill` deterministically past its deadline.
+#[cfg(unix)]
+fn stepping_clock(
+    base: std::time::Instant,
+    step: std::time::Duration,
+) -> impl FnMut() -> std::time::Instant {
+    let mut n: u32 = 0;
+    move || {
+        let now = base + step * n;
+        n += 1;
+        now
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn await_guest_kill_returns_ok_when_child_exits_cleanly() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::{Duration, Instant};
+
+    let mut child = FakeKillChild {
+        exit: Some(ExitStatus::from_raw(0)),
+        killed: false,
+    };
+    let result = await_guest_kill(
+        &mut child,
+        Path::new("/tmp/peppy/pgids/k.pgid"),
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(1)),
+        |_| panic!("must not sleep: the child has already exited"),
+    );
+    assert!(result.is_ok(), "a clean exit should be Ok, got: {result:?}");
+    assert!(!child.killed, "a cleanly-exited child must not be killed");
+}
+
+#[cfg(unix)]
+#[test]
+fn await_guest_kill_reports_nonzero_exit() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::{Duration, Instant};
+
+    let mut child = FakeKillChild {
+        exit: Some(ExitStatus::from_raw(1 << 8)),
+        killed: false,
+    };
+    let err = await_guest_kill(
+        &mut child,
+        Path::new("/tmp/peppy/pgids/k.pgid"),
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(1)),
+        |_| panic!("must not sleep: the child has already exited"),
+    )
+    .expect_err("a non-zero limactl exit should be an error");
+    match err {
+        Error::LimaInstanceError(msg) => {
+            assert!(
+                msg.contains("limactl exited with"),
+                "unexpected message: {msg}"
+            );
+            assert!(
+                msg.contains("/tmp/peppy/pgids/k.pgid"),
+                "error should name the pgid file: {msg}"
+            );
+        }
+        other => panic!("expected LimaInstanceError, got {other:?}"),
+    }
+    assert!(!child.killed, "an already-exited child must not be killed");
+}
+
+#[cfg(unix)]
+#[test]
+fn await_guest_kill_times_out_and_reaps_a_wedged_child() {
+    use std::time::{Duration, Instant};
+
+    // `exit: None` never reports an exit, so the deadline must fire. The clock
+    // jumps a full timeout per call, so the first deadline check after the first
+    // poll trips immediately (no real time passes).
+    let mut child = FakeKillChild {
+        exit: None,
+        killed: false,
+    };
+    let err = await_guest_kill(
+        &mut child,
+        Path::new("/tmp/peppy/pgids/wedged.pgid"),
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(10)),
+        |_| {},
+    )
+    .expect_err("a child that never exits should time out");
+    match err {
+        Error::LimaInstanceError(msg) => {
+            assert!(msg.contains("timed out"), "unexpected message: {msg}");
+            assert!(
+                msg.contains("/tmp/peppy/pgids/wedged.pgid"),
+                "error should name the pgid file: {msg}"
+            );
+        }
+        other => panic!("expected LimaInstanceError, got {other:?}"),
+    }
+    assert!(
+        child.killed,
+        "the timeout path must kill and reap the wedged child"
     );
 }
