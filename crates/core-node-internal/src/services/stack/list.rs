@@ -1,11 +1,12 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use core_node_api::encoding::{StackListRequest, StackListResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -40,13 +41,10 @@ async fn handle_stack_list_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_list_request_inner(&context, node_stack).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        }
-    })
+    into_service_response(
+        &context,
+        handle_node_list_request_inner(&context, node_stack),
+    )
 }
 
 fn handle_node_list_request_inner(

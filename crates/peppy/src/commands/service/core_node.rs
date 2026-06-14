@@ -1,7 +1,7 @@
 use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use config::consts::PeppyDirs;
-use core_node::{CoreNode, CoreNodeArguments};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use pmi::Messenger;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,14 +58,21 @@ impl CoreNodeRunner {
             daemon_use_sim_time: clock_source.use_sim_time(),
         };
         let peppy_dirs = PeppyDirs::default();
-        let core_node = CoreNode::new(
+        // Fail fast with a clean operator-facing message (no backtrace) when a
+        // runtime prerequisite is missing. The library reports this as an error
+        // rather than calling `std::process::exit`, so the binary owns the exit.
+        if let Err(e) = core_node::check_runtime_prerequisites() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        let core_node = CoreNode::new(CoreNodeConfig {
             messenger,
-            core_node_name.as_deref(),
-            node_arguments,
+            node_name: core_node_name,
+            arguments: node_arguments,
             root_dir,
             peppy_dirs,
             peppy_config,
-        );
+        });
         Self {
             core_node,
             messaging_ready,

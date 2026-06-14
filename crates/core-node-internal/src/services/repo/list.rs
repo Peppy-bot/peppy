@@ -3,6 +3,7 @@ use crate::names;
 use crate::services::repo::cache::nodes_repo_cache_path;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
+use crate::services::response::into_service_response;
 use config::consts::PeppyDirs;
 use core_node_api::encoding::{
     RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
@@ -10,7 +11,7 @@ use core_node_api::encoding::{
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use serde_json::Value;
 use std::collections::HashSet;
 use tokio::task::JoinHandle;
@@ -46,13 +47,10 @@ async fn handle_repo_list_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_repo_list_request_inner(&context, &peppy_dirs).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        }
-    })
+    into_service_response(
+        &context,
+        handle_repo_list_request_inner(&context, &peppy_dirs),
+    )
 }
 
 fn handle_repo_list_request_inner(
