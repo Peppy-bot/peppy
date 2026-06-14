@@ -3,23 +3,12 @@
 //! See [`clock.capnp`](../../schemas/clock.capnp) for the wire-level NTP-style
 //! 4-timestamp exchange.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use capnp::message::Builder;
 
 use crate::clock_capnp;
 use crate::{Payload, Result};
 
 use super::{decode_message, encode_message};
-
-/// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
-/// on the publish/poll paths and in tests. Returns an error if the system
-/// clock is set before the epoch; saturates to `u64::MAX` if the timestamp
-/// would overflow `u64` (post-year-2554, unreachable in practice).
-pub fn wall_now_ns() -> Result<u64> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    Ok(u64::try_from(nanos).unwrap_or(u64::MAX))
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockRequest {
@@ -198,5 +187,26 @@ mod tests {
             let decoded = ClockOffsetResponse::decode(&bytes).expect("decode");
             assert_eq!(decoded, resp);
         }
+    }
+
+    #[test]
+    fn clock_request_roundtrips() {
+        let req = ClockRequest::new(1_234_567_890);
+        let bytes = req.encode().expect("encode");
+        assert_eq!(ClockRequest::decode(&bytes).expect("decode"), req);
+    }
+
+    #[test]
+    fn clock_response_roundtrips() {
+        let resp = ClockResponse::new(111, 222, 333);
+        let bytes = resp.encode().expect("encode");
+        assert_eq!(ClockResponse::decode(&bytes).expect("decode"), resp);
+    }
+
+    #[test]
+    fn clock_tick_roundtrips() {
+        let tick = ClockTick::new(9_999_999);
+        let bytes = tick.encode().expect("encode");
+        assert_eq!(ClockTick::decode(&bytes).expect("decode"), tick);
     }
 }

@@ -63,9 +63,35 @@ pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
     Value::Object(map)
 }
 
+/// The canonical identity string for a [`RepoSource`], used for duplicate
+/// detection and exclusion matching. Lives here (the daemon) rather than in
+/// `core-node-api`: the `Fs` arm canonicalizes against the real filesystem,
+/// which a pure wire-codec crate should not do.
+///
+/// - `Fs`: canonicalized (absolute, symlink-resolved) when possible, so that
+///   `./repo` and `/abs/path/to/repo` produce the same identity. Falls back to
+///   the raw string when the path does not exist.
+/// - `Git`: `repo_url@repo_ref` when a non-empty ref is present, otherwise just
+///   the url — so the same repo pinned to different refs is not collapsed.
+/// - `Url`: the url as-is.
+///
+/// Must stay in sync with [`json_entry_identity`], the JSON-entry equivalent.
+pub(crate) fn source_identity(source: &RepoSource) -> String {
+    match source {
+        RepoSource::Fs(path) => std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
+        RepoSource::Git { repo_url, repo_ref } => match repo_ref {
+            Some(r) if !r.is_empty() => format!("{repo_url}@{r}"),
+            _ => repo_url.clone(),
+        },
+        RepoSource::Url(url) => url.clone(),
+    }
+}
+
 /// Returns the canonical identity for a persisted JSON repo entry.
 ///
-/// Must stay in sync with [`RepoSource::identity`]:
+/// Must stay in sync with [`source_identity`]:
 /// - `fs`: canonicalized path when possible (falls back to raw string).
 /// - `git`: `url@ref` when a non-empty `ref` field is present, otherwise `url`.
 /// - other (`url`): the url as-is.
@@ -149,4 +175,90 @@ pub(crate) fn normalize_repo_entries(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // Coverage for `source_identity` (relocated here from `core-node-api`
+    // alongside the function, which moved out of the pure wire-codec crate
+    // because its `Fs` arm canonicalizes against the real filesystem).
+    use super::source_identity;
+    use core_node_api::encoding::RepoSource;
+
+    #[test]
+    fn identity_git_distinguishes_refs() {
+        let a = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some("main".to_string()),
+        };
+        let b = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some("dev".to_string()),
+        };
+        assert_ne!(source_identity(&a), source_identity(&b));
+        assert!(source_identity(&a).contains("main"));
+        assert!(source_identity(&b).contains("dev"));
+    }
+
+    #[test]
+    fn identity_git_without_ref_matches_url() {
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: None,
+        };
+        assert_eq!(source_identity(&src), "https://github.com/org/repo");
+    }
+
+    #[test]
+    fn identity_git_empty_ref_matches_url() {
+        // Treat empty ref as "no ref" so it matches legacy entries without a ref.
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some(String::new()),
+        };
+        assert_eq!(source_identity(&src), "https://github.com/org/repo");
+    }
+
+    #[test]
+    fn identity_fs_canonicalizes_existing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
+
+        // Build a non-canonical spelling: `<canonical>/../<basename>`.
+        let parent = canonical.parent().unwrap();
+        let name = canonical.file_name().unwrap();
+        let roundabout = parent
+            .join("..")
+            .join(parent.file_name().unwrap())
+            .join(name);
+
+        let raw = RepoSource::Fs(roundabout);
+        let canon = RepoSource::Fs(canonical);
+        assert_eq!(
+            source_identity(&raw),
+            source_identity(&canon),
+            "canonicalization must collapse equivalent paths"
+        );
+    }
+
+    #[test]
+    fn identity_fs_nonexistent_falls_back_to_raw() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp
+            .path()
+            .join("definitely")
+            .join("does-not-exist")
+            .join("xyz");
+        let src = RepoSource::Fs(missing.clone());
+        assert_eq!(
+            source_identity(&src),
+            missing.to_string_lossy().into_owned()
+        );
+    }
+
+    #[test]
+    fn identity_url_is_unchanged() {
+        let src = RepoSource::Url("https://example.com/packages".to_string());
+        assert_eq!(source_identity(&src), "https://example.com/packages");
+    }
 }

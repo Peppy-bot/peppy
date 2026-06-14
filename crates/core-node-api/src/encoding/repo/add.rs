@@ -53,28 +53,12 @@ pub enum RepoSource {
 }
 
 impl RepoSource {
-    /// The canonical identity string used for duplicate detection and exclusion matching.
+    /// The discriminant kind of this source.
     ///
-    /// - `Fs`: canonicalized (absolute, symlink-resolved) when possible, so that
-    ///   `./repo` and `/abs/path/to/repo` produce the same identity. Falls back
-    ///   to the raw string when the path does not exist.
-    /// - `Git`: `repo_url@repo_ref` when a ref is present, otherwise just the
-    ///   url — so that the same repo pinned to different refs is not collapsed
-    ///   into a single identity.
-    /// - `Url`: the url as-is.
-    pub fn identity(&self) -> String {
-        match self {
-            RepoSource::Fs(path) => std::fs::canonicalize(path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
-            RepoSource::Git { repo_url, repo_ref } => match repo_ref {
-                Some(r) if !r.is_empty() => format!("{repo_url}@{r}"),
-                _ => repo_url.clone(),
-            },
-            RepoSource::Url(url) => url.clone(),
-        }
-    }
-
+    /// The canonical *identity* string (used for duplicate detection and
+    /// exclusion matching) is intentionally not computed here: the `Fs` arm
+    /// canonicalizes against the real filesystem, which is the daemon's job —
+    /// see `core-node`'s `services::repo::source_identity`.
     pub fn kind(&self) -> RepoSourceKind {
         match self {
             RepoSource::Fs(_) => RepoSourceKind::Fs,
@@ -230,77 +214,172 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_git_distinguishes_refs() {
-        let a = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some("main".to_string()),
-        };
-        let b = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some("dev".to_string()),
-        };
-        assert_ne!(a.identity(), b.identity());
-        assert!(a.identity().contains("main"));
-        assert!(b.identity().contains("dev"));
+    fn source_kind_as_str_parse_roundtrips() {
+        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git, RepoSourceKind::Url] {
+            assert_eq!(RepoSourceKind::parse(kind.as_str()), Some(kind));
+        }
     }
 
     #[test]
-    fn identity_git_without_ref_matches_url() {
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: None,
-        };
-        assert_eq!(src.identity(), "https://github.com/org/repo");
+    fn source_kind_as_str_values() {
+        assert_eq!(RepoSourceKind::Fs.as_str(), "fs");
+        assert_eq!(RepoSourceKind::Git.as_str(), "git");
+        assert_eq!(RepoSourceKind::Url.as_str(), "url");
     }
 
     #[test]
-    fn identity_git_empty_ref_matches_url() {
-        // Treat empty ref as "no ref" so it matches legacy entries without a ref.
-        let src = RepoSource::Git {
-            repo_url: "https://github.com/org/repo".to_string(),
-            repo_ref: Some(String::new()),
-        };
-        assert_eq!(src.identity(), "https://github.com/org/repo");
+    fn source_kind_parse_rejects_unknown() {
+        assert_eq!(RepoSourceKind::parse("bogus"), None);
+        assert_eq!(RepoSourceKind::parse(""), None);
+        assert_eq!(RepoSourceKind::parse("Fs"), None);
     }
 
     #[test]
-    fn identity_fs_canonicalizes_existing_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
+    fn source_kind_display_matches_as_str() {
+        assert_eq!(RepoSourceKind::Git.to_string(), "git");
+    }
 
-        // Build a non-canonical spelling via the symlink-prone /tmp or an
-        // equivalent relative path: construct `<canonical>/../<basename>`.
-        let parent = canonical.parent().unwrap();
-        let name = canonical.file_name().unwrap();
-        let roundabout = parent
-            .join("..")
-            .join(parent.file_name().unwrap())
-            .join(name);
-
-        let raw = RepoSource::Fs(roundabout.clone());
-        let canon = RepoSource::Fs(canonical.clone());
+    #[test]
+    fn source_kind_reports_variant() {
         assert_eq!(
-            raw.identity(),
-            canon.identity(),
-            "canonicalization must collapse equivalent paths"
+            RepoSource::Fs(PathBuf::from("/abs/repo")).kind(),
+            RepoSourceKind::Fs
+        );
+        assert_eq!(
+            RepoSource::Git {
+                repo_url: "https://github.com/org/repo".to_string(),
+                repo_ref: None,
+            }
+            .kind(),
+            RepoSourceKind::Git
+        );
+        assert_eq!(
+            RepoSource::Url("https://example.com/packages".to_string()).kind(),
+            RepoSourceKind::Url
         );
     }
 
     #[test]
-    fn identity_fs_nonexistent_falls_back_to_raw() {
-        let tmp = tempfile::tempdir().unwrap();
-        let missing = tmp
-            .path()
-            .join("definitely")
-            .join("does-not-exist")
-            .join("xyz");
-        let src = RepoSource::Fs(missing.clone());
-        assert_eq!(src.identity(), missing.to_string_lossy().into_owned());
+    fn source_display_label_fs_is_path() {
+        let src = RepoSource::Fs(PathBuf::from("/abs/path/to/repo"));
+        assert_eq!(src.display_label(), "/abs/path/to/repo");
     }
 
     #[test]
-    fn identity_url_is_unchanged() {
+    fn source_display_label_git_with_ref() {
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some("main".to_string()),
+        };
+        assert_eq!(
+            src.display_label(),
+            "https://github.com/org/repo (ref: main)"
+        );
+    }
+
+    #[test]
+    fn source_display_label_git_without_ref() {
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: None,
+        };
+        assert_eq!(src.display_label(), "https://github.com/org/repo");
+    }
+
+    #[test]
+    fn source_display_label_git_empty_ref() {
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some(String::new()),
+        };
+        assert_eq!(src.display_label(), "https://github.com/org/repo");
+    }
+
+    #[test]
+    fn source_display_label_url_is_unchanged() {
         let src = RepoSource::Url("https://example.com/packages".to_string());
-        assert_eq!(src.identity(), "https://example.com/packages");
+        assert_eq!(src.display_label(), "https://example.com/packages");
+    }
+
+    #[test]
+    fn add_request_new_fs_defaults_top_false() {
+        let request = RepoAddRequest::new_fs("/abs/path/to/repo");
+        assert_eq!(
+            request.source,
+            RepoSource::Fs(PathBuf::from("/abs/path/to/repo"))
+        );
+        assert!(!request.top);
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_new_git_with_ref_roundtrips() {
+        let request =
+            RepoAddRequest::new_git("https://github.com/org/repo", Some("main".to_string()));
+        assert_eq!(
+            request.source,
+            RepoSource::Git {
+                repo_url: "https://github.com/org/repo".to_string(),
+                repo_ref: Some("main".to_string()),
+            }
+        );
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_new_git_without_ref_roundtrips() {
+        // An empty ref on the wire decodes back to None via optional_text.
+        let request = RepoAddRequest::new_git("https://github.com/org/repo", None);
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_new_url_roundtrips() {
+        let request = RepoAddRequest::new_url("https://example.com/packages");
+        assert_eq!(
+            request.source,
+            RepoSource::Url("https://example.com/packages".to_string())
+        );
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_with_top_builder_sets_flag_and_roundtrips() {
+        let request = RepoAddRequest::new_url("https://example.com/packages").with_top(true);
+        assert!(request.top);
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_decode_rejects_malformed() {
+        assert!(RepoAddRequest::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn add_response_success_roundtrips() {
+        let response = RepoAddResponse::success();
+        assert!(response.success);
+        assert_eq!(response.error_message, "");
+        let bytes = response.encode().expect("encode");
+        assert_eq!(RepoAddResponse::decode(&bytes).expect("decode"), response);
+    }
+
+    #[test]
+    fn add_response_failure_roundtrips() {
+        let response = RepoAddResponse::failure("already added");
+        assert!(!response.success);
+        assert_eq!(response.error_message, "already added");
+        let bytes = response.encode().expect("encode");
+        assert_eq!(RepoAddResponse::decode(&bytes).expect("decode"), response);
+    }
+
+    #[test]
+    fn add_response_decode_rejects_malformed() {
+        assert!(RepoAddResponse::decode(b"not capnp").is_err());
     }
 }

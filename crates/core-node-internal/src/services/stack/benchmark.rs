@@ -30,10 +30,11 @@ use config::node::{
 use core_node_api::encoding::{
     BenchmarkFeedbackStep, ClockConfidence, ClockOffsetRequest, ClockOffsetResponse, InterfaceKind,
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
-    StackBenchmarkGoalResponse, StackBenchmarkResult, wall_now_ns,
+    StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
+use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
     CLOCK_OFFSET_SERVICE, ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal,
     SenderTarget, ServiceTarget,

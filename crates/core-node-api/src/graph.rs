@@ -463,4 +463,116 @@ mod tests {
         assert!(msg.contains("v1"), "got: {msg}");
         assert_eq!(err.label(), "router:v1");
     }
+
+    #[test]
+    fn instance_count_and_running_ids_count_running_only() {
+        let node = make_node(
+            "foo",
+            "v1",
+            &[
+                ("r1", InstanceState::Running),
+                ("s1", InstanceState::Starting),
+                ("r2", InstanceState::Running),
+            ],
+        );
+        assert_eq!(node.instance_count(), 2);
+        assert_eq!(node.running_instance_ids(), vec!["r1", "r2"]);
+        // The documented invariant: the two agree on count.
+        assert_eq!(node.instance_count(), node.running_instance_ids().len());
+    }
+
+    #[test]
+    fn label_joins_name_and_tag() {
+        let node = make_node("router", "v2", &[]);
+        assert_eq!(node.label(), "router:v2");
+    }
+
+    #[test]
+    fn stage_label_reports_stage_or_unknown() {
+        // make_node sets stage = Some(Ready).
+        assert_eq!(make_node("a", "v1", &[]).stage_label(), "Ready");
+
+        // A legacy payload with no stage reports "Unknown".
+        let legacy = SerializedNode {
+            name: "a".into(),
+            tag: "v1".into(),
+            config_path: String::new(),
+            artifact_path: None,
+            stage: None,
+            instances: vec![],
+        };
+        assert_eq!(legacy.stage_label(), "Unknown");
+    }
+
+    #[test]
+    fn instance_state_str_display_and_parse_round_trip() {
+        for state in [InstanceState::Starting, InstanceState::Running] {
+            assert_eq!(state.to_string(), state.as_str());
+            assert_eq!(state.as_str().parse::<InstanceState>(), Ok(state));
+        }
+        assert_eq!(InstanceState::Starting.as_str(), "starting");
+        assert_eq!(InstanceState::Running.as_str(), "running");
+
+        let err = "bogus"
+            .parse::<InstanceState>()
+            .expect_err("unknown must fail");
+        assert_eq!(err, UnknownInstanceState("bogus".to_owned()));
+        assert!(err.to_string().contains("bogus"), "got: {err}");
+    }
+
+    #[test]
+    fn node_stage_str_display_and_parse_round_trip() {
+        for stage in [
+            NodeStage::Added,
+            NodeStage::Building,
+            NodeStage::Ready,
+            NodeStage::Root,
+        ] {
+            assert_eq!(stage.to_string(), stage.as_str());
+            assert_eq!(stage.as_str().parse::<NodeStage>(), Ok(stage));
+        }
+
+        let err = "Nope".parse::<NodeStage>().expect_err("unknown must fail");
+        assert_eq!(err, UnknownNodeStage("Nope".to_owned()));
+        assert!(err.to_string().contains("Nope"), "got: {err}");
+    }
+
+    #[test]
+    fn node_decodes_legacy_payload_without_stage_or_instances() {
+        // Producers that predate `stage`/`instances` omit both; serde defaults
+        // them to `None`/empty rather than failing to parse.
+        let legacy = r#"{"name":"n","tag":"v1","config_path":"","artifact_path":null}"#;
+        let decoded: SerializedNode = serde_json::from_str(legacy).expect("decode legacy node");
+        assert_eq!(decoded.stage, None);
+        assert!(decoded.instances.is_empty());
+        assert_eq!(decoded.stage_label(), "Unknown");
+    }
+
+    #[test]
+    fn edge_via_interface_defaults_to_none_and_is_omitted_when_absent() {
+        let edge = SerializedEdge {
+            from: make_node("a", "v1", &[]),
+            to: make_node("b", "v1", &[]),
+            via_interface: None,
+        };
+        let json = serde_json::to_string(&edge).expect("serialize");
+        assert!(
+            !json.contains("via_interface"),
+            "None must be omitted from the wire form: {json}"
+        );
+        let decoded: SerializedEdge = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, edge);
+
+        // And a populated interface round-trips.
+        let via = SerializedEdge {
+            via_interface: Some("camera:v1".to_owned()),
+            ..edge
+        };
+        let json = serde_json::to_string(&via).expect("serialize");
+        assert!(json.contains("camera:v1"), "got: {json}");
+        assert_eq!(
+            serde_json::from_str::<SerializedEdge>(&json).expect("decode"),
+            via
+        );
+    }
 }
