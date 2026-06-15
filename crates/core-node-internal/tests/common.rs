@@ -1765,6 +1765,7 @@ async fn start_core_node_with_messenger(
         root_dir,
         peppy_dirs: peppy_dirs.clone(),
         peppy_config,
+        shutdown_token: tokio_util::sync::CancellationToken::new(),
     });
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
