@@ -1350,6 +1350,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             // Abandon an in-flight probe the moment shutdown starts, so a probe
             // racing the session close cannot emit a teardown-time warning.
             let poll_result = tokio::select! {
+                biased;
                 _ = p.shutdown_token.cancelled() => return,
                 _ = p.instance_done.cancelled() => return,
                 result = ServiceMessenger::poll(
@@ -1367,11 +1368,14 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             let probe_succeeded = poll_result.is_ok();
             let probe_error = poll_result.err();
 
-            // If the exit watcher cancelled us while this probe was in flight,
-            // the instance's process has exited and the watcher is moving it to a
-            // terminal state. Stop here without recording or logging, so a node
-            // that simply finished never produces a trailing "became unhealthy".
-            if p.instance_done.is_cancelled() {
+            // If either cancellation fired while this probe was in flight, stop
+            // here without recording or logging. `instance_done` means the
+            // instance's process exited on its own and the exit watcher is moving
+            // it to a terminal state, so a node that simply finished never
+            // produces a trailing "became unhealthy". `shutdown_token` means the
+            // daemon is tearing down on purpose, so a probe that raced the session
+            // close must not emit a teardown-time warning.
+            if p.instance_done.is_cancelled() || p.shutdown_token.is_cancelled() {
                 return;
             }
 

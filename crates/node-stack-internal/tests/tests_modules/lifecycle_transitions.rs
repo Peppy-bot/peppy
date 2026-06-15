@@ -758,7 +758,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let pid = child.id().expect("child has pid");
     assert!(pid > 0, "spawned child should have a valid pid");
 
-    let returned_child =
+    let mut returned_child =
         NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
             .await
             .expect("commit_started should succeed");
@@ -782,12 +782,10 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         }
     }
 
-    // Tear down: stop the instance and kill the child process.
+    // Tear down: stop the instance and kill the child using the owned handle so
+    // it is reaped, not left as a zombie parented to the test process.
     handle.write().stop_instance(&instance_id);
-    let _ = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .status();
+    let _ = returned_child.kill().await;
 }
 
 #[tokio::test]
@@ -914,7 +912,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     }
 
     let new_pid = child.id().expect("child has pid");
-    let returned_child =
+    let mut returned_child =
         NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
             .await
             .expect("commit_started should succeed");
@@ -943,12 +941,10 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         }
     }
 
-    // Tear down: stop the new instance and SIGTERM the real child.
+    // Tear down: stop the new instance and kill the real child using the owned
+    // handle so it is reaped, not left as a zombie parented to the test process.
     handle.write().stop_instance(&instance_id);
-    let _ = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(new_pid.to_string())
-        .status();
+    let _ = returned_child.kill().await;
 }
 
 #[tokio::test]

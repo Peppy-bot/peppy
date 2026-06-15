@@ -179,9 +179,23 @@ async fn handle_node_stop_request_inner(
     // Claim the instance for termination before signaling it, so its exit
     // watcher treats the upcoming exit as an intentional stop (owned by this
     // path's registry removal) rather than a self-exit, and never relabels a
-    // force-kill as a crash. The flag rides the shared `Arc`, so marking the
-    // resolved clone marks the tracked instance.
-    instance.mark_stopping();
+    // force-kill as a crash. Claim under the entity read lock (not on the
+    // lock-free clone) so the claim is mutually exclusive with the write lock
+    // `mark_instance_exited` holds across its `is_stopping()` check and its
+    // terminal-state flip. A lock-free store on the shared `Arc` could otherwise
+    // land between that check and flip, letting a self-exit racing this stop be
+    // recorded as a terminal exit. The bulk teardown paths (`stop_instances`,
+    // `collect_doomed_instances`) claim the same way.
+    {
+        let guard = entity_handle.read();
+        if let Some(inst) = guard
+            .instances()
+            .iter()
+            .find(|inst| inst.instance_id() == &instance_id)
+        {
+            inst.mark_stopping();
+        }
+    }
 
     // Cooperative-then-force, identical to the SIGINT teardown for this one
     // instance: ask the node to shut down, give it a bounded grace window, then

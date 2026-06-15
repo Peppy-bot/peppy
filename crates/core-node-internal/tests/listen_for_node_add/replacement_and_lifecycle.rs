@@ -1664,8 +1664,8 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     // future change short-circuits the wait on an unreachable/failed cooperative
     // send, this fires instead of the upper bound passing vacuously.
     assert!(
-        elapsed >= grace,
-        "stuck instances should burn the full force-kill window, took only {elapsed:?}"
+        elapsed >= window,
+        "stuck instances should burn the full force-kill window ({window:?}), took only {elapsed:?}"
     );
     // Upper bound (shared budget): the whole batch burns ONE force-kill window
     // (plus the bounded reap and the add's own staging work — comfortably under

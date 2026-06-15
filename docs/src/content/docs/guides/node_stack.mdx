@@ -270,7 +270,7 @@ This stops **one instance** of the `hello_world:v1` node, but the node itself st
 Stopping is a **graceful-then-forced** operation, and the command blocks until the instance's process has actually exited:
 
 1. The daemon asks the instance to shut down cooperatively and gives it a grace period (`shutdown_grace_secs`, 5 seconds by default; see [Daemon shutdown and orphan prevention](#daemon-shutdown-and-orphan-prevention)) for its cleanup to run. For a robot node this is its chance to park actuators, release hardware, and flush state. Inside the node, this ask fires the runtime's cancellation token and then runs the node's registered shutdown hooks; see [Graceful shutdown](/guides/first_node/#graceful-shutdown) for the quick-start and the [shutdown lifecycle guide](/advanced_guides/shutdown/) for the full node-side contract.
-2. If the instance doesn't exit cooperatively in time (the grace window plus the brief teardown its runtime needs afterwards), the daemon **force-kills its whole process group** (the node and any child processes it spawned), so nothing is left running.
+2. If the instance doesn't exit cooperatively in time (the grace window plus the brief teardown its runtime needs afterward), the daemon **force-kills its whole process group** (the node and any child processes it spawned), so nothing is left running.
 
 If the instance had to be force-killed, `peppy node stop` warns you instead of reporting a clean stop:
 

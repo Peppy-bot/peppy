@@ -92,7 +92,7 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 
 `stack.list` returns a `StackList` with two fields:
 
-- `graph`: the node graph, with every node's metadata and its running instances.
+- `graph`: the node graph, with every node's metadata and its tracked instances.
 - `dot_graph`: an optional Graphviz DOT rendering, populated only when the second argument (`with_dot_graph`) is `true`. Pass `false` to skip the rendering when you only need the structured graph.
 
 Each node entry carries its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
