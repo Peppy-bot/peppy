@@ -14,7 +14,9 @@ use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err
 pub struct PyServiceRequestContext {
     request_id: String,
     link_id: String,
-    payload: Vec<u8>,
+    // `Payload` (refcounted `Bytes`) so handing the bytes to the `message()`
+    // wrapper is a refcount bump and Python receives a single copy in the getter.
+    payload: Payload,
     instance_id: String,
     core_node: String,
 }
@@ -33,7 +35,7 @@ impl PyServiceRequestContext {
 
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.payload)
+        PyBytes::new(py, self.payload.as_ref())
     }
 
     #[getter]
@@ -65,7 +67,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         Self {
             request_id,
             link_id,
-            payload: message.payload().to_vec(),
+            payload: message.payload(),
             instance_id: message.instance_id().to_string(),
             core_node: message.core_node().to_string(),
         }

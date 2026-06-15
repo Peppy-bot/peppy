@@ -14,9 +14,22 @@ impl std::fmt::Debug for Message {
 }
 
 impl Message {
-    /// Get the payload of the message.
+    /// Get the payload of the message as an owned [`Payload`].
+    ///
+    /// Use this when you need to hand ownership of the bytes onward (e.g.
+    /// echoing a payload back as a response). For read-only access (decode,
+    /// length, emptiness) prefer [`payload_bytes`](Self::payload_bytes), which
+    /// avoids the copy on the common contiguous path.
     pub fn payload(&self) -> Payload {
         Payload::from(self.0.payload().to_bytes())
+    }
+
+    /// Borrow the payload bytes without copying when the underlying buffer is
+    /// contiguous (the common Zenoh/mock case); returns an owned buffer only for
+    /// a non-contiguous multi-slice payload. Unlike [`payload`](Self::payload),
+    /// this does not allocate on the receive hot path for read-only callers.
+    pub fn payload_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        self.0.payload().as_bytes()
     }
 
     /// Get the instance ID of the sender.

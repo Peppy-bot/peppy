@@ -78,7 +78,7 @@ async fn poll_core_node_service<Response>(
         response_timeout,
     )
     .await?;
-    decode_response(response.payload().as_ref()).map_err(Into::into)
+    decode_response(response.payload_bytes().as_ref()).map_err(Into::into)
 }
 
 async fn send_core_node_goal(

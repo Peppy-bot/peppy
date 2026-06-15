@@ -42,8 +42,6 @@ async def test_ready_node():
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
-        # Allow the service to fully establish its listeners
-        await asyncio.sleep(0.05)
 
         request_payload = b"ready"
 

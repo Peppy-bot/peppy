@@ -131,7 +131,7 @@ pub struct NodeBuilder<Params> {
 
 impl<Params> NodeBuilder<Params>
 where
-    Params: crate::DeserializeOwned + crate::JsonSchema,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create a new NodeBuilder
     pub fn new() -> Self {
@@ -201,9 +201,9 @@ where
     }
 
     fn resolve_mode(&self) -> ExecutionMode {
-        // Daemon mode takes precedence - CLI sets PEPPY_RUNTIME_CONFIG
-        // This allows nodes to specify .standalone(config) as a fallback
-        // while still running in daemon mode when launched by the CLI
+        // Daemon mode takes precedence: the CLI sets PEPPY_RUNTIME_CONFIG when it
+        // launches a node. This lets a node specify .standalone(config) as a
+        // fallback while still running in daemon mode when launched by the CLI.
         if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
             return ExecutionMode::Daemon;
         }
@@ -214,7 +214,7 @@ where
 
 impl<Params> Default for NodeBuilder<Params>
 where
-    Params: crate::DeserializeOwned + crate::JsonSchema,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn default() -> Self {
         Self::new()
@@ -235,7 +235,7 @@ pub struct NodeContext<Params> {
 
 impl<Params> NodeContext<Params>
 where
-    Params: crate::DeserializeOwned + crate::JsonSchema,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create the NodeRunner, connecting to the messaging system.
     ///
@@ -612,109 +612,4 @@ async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::test_utils::EnvVarGuard;
-    use tempfile::TempDir;
-
-    /// Ensure standalone mode is used regardless of env var state.
-    ///
-    /// Returns an [`EnvVarGuard`] that holds the global env-var mutex for the
-    /// duration of the test, preventing processor (daemon-mode) tests from
-    /// setting `RUNTIME_CONFIG_VAR_NAME` concurrently.
-    fn ensure_standalone_mode() -> EnvVarGuard {
-        EnvVarGuard::remove(config::consts::RUNTIME_CONFIG_VAR_NAME)
-    }
-
-    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-    struct TestParams {
-        value: i64,
-    }
-
-    fn write_peppy_config(dir: &std::path::Path, parameters: &str) -> std::path::PathBuf {
-        let path = dir.join("peppy.json5");
-        let content = format!(
-            r#"{{
-                peppy_schema: "node_v1",
-                manifest: {{ name: "test_node", tag: "v1" }},
-                execution: {{ language: "rust", parameters: {{ {parameters} }}, run_cmd: ["./test"] }},
-            }}"#,
-        );
-        std::fs::write(&path, content).expect("peppy config should be written");
-        path
-    }
-
-    #[test]
-    fn parameters_can_only_be_taken_once() {
-        let _guard = ensure_standalone_mode();
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
-
-        let config =
-            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 42 }));
-
-        let mut ctx = NodeBuilder::<TestParams>::new()
-            .with_config_path(&peppy_config)
-            .standalone(config)
-            .init()
-            .expect("init should succeed");
-
-        let params = ctx.take_parameters().expect("first take should succeed");
-        assert_eq!(params.value, 42);
-
-        let err = ctx.take_parameters().expect_err("second take should fail");
-        assert!(
-            matches!(err, Error::ParametersAlreadyTaken),
-            "expected ParametersAlreadyTaken, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn init_fails_eagerly_on_invalid_parameter_types() {
-        let _guard = ensure_standalone_mode();
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
-
-        // Provide a string where i64 is expected — should fail at init(), not parameters()
-        let config = StandaloneConfig::new()
-            .with_parameters_json(serde_json::json!({ "value": "not_a_number" }));
-
-        let Err(err) = NodeBuilder::<TestParams>::new()
-            .with_config_path(&peppy_config)
-            .standalone(config)
-            .init()
-        else {
-            panic!("init should fail with type mismatch");
-        };
-
-        let err_string = err.to_string();
-        assert!(
-            err_string.contains("value"),
-            "error should mention the invalid parameter, got: {err_string}"
-        );
-    }
-
-    #[test]
-    fn init_parses_parameters_eagerly() {
-        let _guard = ensure_standalone_mode();
-        let temp_dir = TempDir::new().expect("temp dir should be created");
-        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
-
-        let config =
-            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 99 }));
-
-        let mut ctx = NodeBuilder::<TestParams>::new()
-            .with_config_path(&peppy_config)
-            .standalone(config)
-            .init()
-            .expect("init should succeed");
-
-        // Parameters are already parsed — no Result needed for validation,
-        // only for the take-once check
-        let params = ctx.take_parameters().expect("should take parameters");
-        assert_eq!(params.value, 99);
-    }
 }

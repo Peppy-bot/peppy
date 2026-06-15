@@ -36,41 +36,6 @@ impl fmt::Display for ParameterDeserializationError {
 
 impl std::error::Error for ParameterDeserializationError {}
 
-/// Error for missing required parameters in standalone mode.
-///
-/// Stores only the parameter names so each language binding can format
-/// a hint with the correct syntax (e.g. `::` for Rust, `.` for Python).
-#[derive(Debug)]
-pub struct MissingStandaloneParameters {
-    pub parameters: Vec<String>,
-}
-
-impl MissingStandaloneParameters {
-    /// Format the error with a language-specific hint.
-    pub fn format_with_hint(&self, hint: &str) -> String {
-        format!(
-            "missing required parameter(s) for standalone mode: {}. {}",
-            self.parameters.join(", "),
-            hint
-        )
-    }
-}
-
-impl fmt::Display for MissingStandaloneParameters {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.format_with_hint(
-                "Provide them via StandaloneConfig::with_parameters() \
-                 or StandaloneConfig::with_parameters_json()"
-            )
-        )
-    }
-}
-
-impl std::error::Error for MissingStandaloneParameters {}
-
 #[derive(Debug, Error)]
 pub enum Error {
     // -- general
@@ -211,14 +176,8 @@ pub enum Error {
     #[error(transparent)]
     NodeArgumentsValidation(#[from] config::NodeArgumentsError),
 
-    #[error("missing parameter `{path}` in compiled node parameters")]
-    MissingCompiledParameter { path: String },
-
     #[error(transparent)]
     ParameterDeserialization(#[from] ParameterDeserializationError),
-
-    #[error(transparent)]
-    MissingStandaloneParameters(#[from] MissingStandaloneParameters),
 
     #[error("parameters have already been taken (take_parameters() can only be called once)")]
     ParametersAlreadyTaken,
@@ -244,22 +203,6 @@ pub enum Error {
 
     #[error("invalid core node name `{node_name}`: {reason}")]
     InvalidCoreNodeName { node_name: String, reason: String },
-
-    #[error("failed to create messenger for topic `{topic_name}` on {host}:{port}, {source_msg}")]
-    TopicMessengerConnect {
-        topic_name: String,
-        host: String,
-        port: u16,
-        source_msg: String,
-    },
-
-    #[error("failed to create messenger for node `{node_name}` on {host}:{port}, {source_msg}")]
-    NodeMessengerConnect {
-        node_name: String,
-        host: String,
-        port: u16,
-        source_msg: String,
-    },
 
     #[error("failed to subscribe to topic `{topic_name}` in node `{node_name}`, {source_msg}")]
     TopicSubscribe {

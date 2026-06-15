@@ -30,6 +30,71 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// Returns true if a file inside a Rust crate is source that affects the crate's
+/// compiled output: `.rs`, `.toml`, `.capnp`, `.j2`, plus config-internal's
+/// `tools/capnp_*` helpers. `relative_path` is relative to the crate root.
+/// Mirrors the rust-embed include/exclude rules used when embedding crate source
+/// for node scaffolding, so the staleness hash and the embed stay in agreement.
+fn is_crate_source_file(relative_path: &str, is_config_internal: bool) -> bool {
+    if relative_path.starts_with("target/")
+        || relative_path.starts_with("tests/")
+        || relative_path.starts_with("examples/")
+    {
+        return false;
+    }
+
+    if relative_path.ends_with(".rs")
+        || relative_path.ends_with(".toml")
+        || relative_path.ends_with(".capnp")
+        || relative_path.ends_with(".j2")
+    {
+        return true;
+    }
+
+    is_config_internal && relative_path.starts_with("tools/capnp_")
+}
+
+/// Recursively collects every compilation-relevant source file under a crate
+/// directory, skipping the `target`, `tests`, and `examples` subdirectories.
+/// Paths are returned unsorted; callers that need determinism sort the result.
+fn collect_crate_source_files(
+    crate_dir: &std::path::Path,
+    is_config_internal: bool,
+) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![crate_dir.to_path_buf()];
+
+    while let Some(current) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to read directory {}: {}",
+                    current.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(crate_dir).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy();
+            if path.is_dir() {
+                // Only top-level target/tests/examples are excluded.
+                if rel_str == "target" || rel_str == "tests" || rel_str == "examples" {
+                    continue;
+                }
+                stack.push(path);
+            } else if is_crate_source_file(&rel_str, is_config_internal) {
+                files.push(path);
+            }
+        }
+    }
+
+    files
+}
+
 mod ruff_build {
     use std::env;
     use std::process::Command;
@@ -143,6 +208,7 @@ mod ruff_build {
 }
 
 mod peppylib_build {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -249,98 +315,34 @@ mod peppylib_build {
         }
     }
 
-    /// Returns true if maturin needs to run: the native `.so` is absent or older
-    /// than any source file in peppylib-py (`src/**`, `peppylib/**/*.py`, `pixi.lock`)
-    /// or its dependency crates (`peppylib`, `config-internal`, `pmi-internal`).
-    fn so_needs_rebuild(peppylib_py_dir: &Path, peppylib_dir: &Path) -> bool {
-        // Use the oldest existing platform-suffixed .so as the reference timestamp.
-        // Using .min() ensures that if ANY platform's .so is stale (e.g. cross-compiled
-        // Linux .so lagging behind the native macOS .so), all .so files get rebuilt.
-        let so_mtime = std::fs::read_dir(peppylib_dir).ok().and_then(|d| {
-            d.filter_map(|e| e.ok())
-                .filter(|e| {
-                    let n = e.file_name();
-                    let s = n.to_string_lossy();
-                    s.starts_with("_peppylib.abi3.") && s.ends_with(".so")
-                })
-                .filter_map(|e| e.metadata().ok()?.modified().ok())
-                .min()
-        });
-        let Some(so_mtime) = so_mtime else {
-            return true;
-        };
-
-        let newer = |path: &Path| {
-            std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| t > so_mtime)
-        };
-
-        let src_dir = peppylib_py_dir.join("src");
-        if src_dir.is_dir() && super::walkdir(&src_dir).iter().any(|f| newer(f)) {
-            return true;
+    /// All `.py` files in the peppylib package directory, excluding `__pycache__`.
+    /// These do not feed the compiled `.so` but are embedded alongside it, so a
+    /// change must refresh the `PEPPYLIB_SO_HASH` embed cache key.
+    fn peppylib_python_files(peppylib_dir: &Path) -> Vec<PathBuf> {
+        if !peppylib_dir.is_dir() {
+            return Vec::new();
         }
-
-        let py_dir = peppylib_py_dir.join("peppylib");
-        if py_dir.is_dir() {
-            let changed = super::walkdir(&py_dir)
-                .into_iter()
-                .filter(|f| {
-                    !f.components().any(|c| c.as_os_str() == "__pycache__")
-                        && f.extension().is_some_and(|e| e == "py")
-                })
-                .any(|f| newer(&f));
-            if changed {
-                return true;
-            }
-        }
-
-        // Check dependency crate sources that are compiled into the .so
-        let crates_root = peppylib_py_dir.join("..");
-        for dep_crate in &["peppylib", "config-internal", "pmi-internal"] {
-            let dep_src = crates_root.join(dep_crate).join("src");
-            if dep_src.is_dir() && super::walkdir(&dep_src).iter().any(|f| newer(f)) {
-                return true;
-            }
-        }
-
-        newer(&peppylib_py_dir.join("pixi.lock"))
+        super::walkdir(peppylib_dir)
+            .into_iter()
+            .filter(|f| {
+                !f.components().any(|c| c.as_os_str() == "__pycache__")
+                    && f.extension().is_some_and(|e| e == "py")
+            })
+            .collect()
     }
 
+    /// Registers every input that should rerun this build script: each file that
+    /// feeds the compiled `.so` (so a dep-crate edit retriggers the staleness
+    /// check), each `.py` file in the peppylib package (so a Python edit refreshes
+    /// the embed key), and the manual-refresh override env var.
     fn register_rerun_triggers(peppylib_py_dir: &Path) {
-        println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
-        println!(
-            "cargo:rerun-if-changed={}",
-            peppylib_py_dir.join("pixi.lock").display()
-        );
-        let src_dir = peppylib_py_dir.join("src");
-        if src_dir.is_dir() {
-            for entry in super::walkdir(&src_dir) {
-                println!("cargo:rerun-if-changed={}", entry.display());
-            }
+        for file in so_rebuild_input_files(peppylib_py_dir) {
+            println!("cargo:rerun-if-changed={}", file.display());
         }
-
-        // Watch .py source files in the peppylib package directory.
-        let peppylib_dir = peppylib_py_dir.join("peppylib");
-        if peppylib_dir.is_dir() {
-            for entry in super::walkdir(&peppylib_dir) {
-                if entry.components().any(|c| c.as_os_str() == "__pycache__") {
-                    continue;
-                }
-                if entry.extension().is_some_and(|ext| ext == "py") {
-                    println!("cargo:rerun-if-changed={}", entry.display());
-                }
-            }
+        for py_file in peppylib_python_files(&peppylib_py_dir.join("peppylib")) {
+            println!("cargo:rerun-if-changed={}", py_file.display());
         }
-    }
-
-    fn resolve_pixi_task() -> &'static str {
-        let profile = std::env::var("PROFILE").unwrap();
-        if profile == "release" {
-            "release"
-        } else {
-            "dev"
-        }
+        println!("cargo:rerun-if-env-changed={REBUILD_ENV_VAR}");
     }
 
     /// Returns true if `pixi` is available on PATH.
@@ -433,96 +435,129 @@ mod peppylib_build {
         std::fs::remove_dir_all(&wheels_dir).ok();
     }
 
-    /// Marker file that records the source hash at the time the `.so` was built.
-    const SOURCE_HASH_MARKER: &str = ".so-source-hash";
+    /// Marker file recording, per platform, the source hash and profile each
+    /// embedded `.so` was built from. Tracking state per artifact lets the host
+    /// and Linux `.so` files go stale independently: the host always rebuilds,
+    /// while a stale Linux `.so` is left alone on debug builds.
+    const BUILD_STATE_MARKER: &str = ".so-build-state";
 
-    /// Dependency crate source directories that are compiled into the `.so`.
-    const DEP_CRATES: &[&str] = &["peppylib", "config-internal", "pmi-internal"];
+    /// Env var that forces a full rebuild (including the Linux cross-compile) on
+    /// a debug build. Set by the release build path and available to developers
+    /// iterating on container bindings.
+    const REBUILD_ENV_VAR: &str = "PEPPYLIB_REBUILD";
 
-    /// Computes a SHA-256 hash over all source files that feed into the `.so`
-    /// build: peppylib-py Rust sources, Python sources, pixi.lock, and
-    /// dependency crate sources. Used to detect branch-switch staleness that
-    /// mtime-based checks miss.
+    /// Dependency crates compiled into the `.so`, paired with whether the crate
+    /// is config-internal (which embeds extra `tools/capnp_*` helpers). This list
+    /// MUST stay in sync with peppylib-py's path dependencies in
+    /// `crates/peppylib-py/Cargo.toml`; a crate missing here means edits to it
+    /// silently produce a stale `.so`.
+    const SO_DEP_CRATES: &[(&str, bool)] = &[
+        ("peppylib", false),
+        ("config-internal", true),
+        ("pmi-internal", false),
+        ("core-node-api", false),
+    ];
+
+    /// Every existing file whose contents are compiled into the `.so`: peppylib-py's
+    /// own Rust bindings and build manifests, plus the source of every dependency
+    /// crate. This is the single source of truth shared by the content hash and the
+    /// rerun registration so they cannot drift apart. The peppylib package `.py`
+    /// files are deliberately excluded; they are embedded alongside the `.so` but
+    /// never affect the compiled binary.
+    fn so_rebuild_input_files(peppylib_py_dir: &Path) -> Vec<PathBuf> {
+        let mut files = super::collect_crate_source_files(&peppylib_py_dir.join("src"), false);
+
+        for manifest in ["Cargo.toml", "pyproject.toml", "pixi.toml", "pixi.lock"] {
+            let path = peppylib_py_dir.join(manifest);
+            if path.is_file() {
+                files.push(path);
+            }
+        }
+
+        let crates_root = peppylib_py_dir.join("..");
+        for (crate_name, is_config) in SO_DEP_CRATES {
+            files.extend(super::collect_crate_source_files(
+                &crates_root.join(crate_name),
+                *is_config,
+            ));
+        }
+
+        files.sort();
+        files
+    }
+
+    /// Computes a SHA-256 hash over every `.so` input file, keyed by each file's
+    /// path relative to the crates root so a move is detected and same-named files
+    /// in different crates never collide.
     fn compute_source_hash(peppylib_py_dir: &Path) -> String {
         use sha2::{Digest, Sha256};
 
-        let mut hasher = Sha256::new();
-
-        let mut collect_dir = |dir: &Path, filter_py: bool| {
-            if !dir.is_dir() {
-                return;
-            }
-            let mut files = super::walkdir(dir);
-            files.sort();
-            for f in &files {
-                if f.components().any(|c| c.as_os_str() == "__pycache__") {
-                    continue;
-                }
-                if filter_py && f.extension().is_none_or(|e| e != "py") {
-                    continue;
-                }
-                if let Ok(bytes) = std::fs::read(f) {
-                    hasher.update(f.file_name().unwrap_or_default().as_encoded_bytes());
-                    hasher.update(&bytes);
-                }
-            }
-        };
-
-        // peppylib-py Rust sources
-        collect_dir(&peppylib_py_dir.join("src"), false);
-        // peppylib-py Python sources
-        collect_dir(&peppylib_py_dir.join("peppylib"), true);
-
-        // Dependency crate sources
         let crates_root = peppylib_py_dir.join("..");
-        for dep_crate in DEP_CRATES {
-            collect_dir(&crates_root.join(dep_crate).join("src"), false);
+        let mut hasher = Sha256::new();
+        for file in so_rebuild_input_files(peppylib_py_dir) {
+            let rel = file.strip_prefix(&crates_root).unwrap_or(&file);
+            if let Ok(bytes) = std::fs::read(&file) {
+                hasher.update(rel.to_string_lossy().as_bytes());
+                hasher.update(&bytes);
+            }
         }
-
-        // pixi.lock
-        if let Ok(bytes) = std::fs::read(peppylib_py_dir.join("pixi.lock")) {
-            hasher.update(b"pixi.lock");
-            hasher.update(&bytes);
-        }
-
         let hash = hasher.finalize();
         hash.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// Returns the current source hash if it differs from the saved marker,
-    /// or `None` if the marker matches (sources unchanged).
-    fn source_hash_if_changed(peppylib_py_dir: &Path, peppylib_dir: &Path) -> Option<String> {
-        let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
-        let current = compute_source_hash(peppylib_py_dir);
-        let Ok(saved) = std::fs::read_to_string(&marker_path) else {
-            return Some(current); // No marker = assume stale
+    /// Reads the per-platform build state, mapping each platform suffix to the
+    /// `(source_hash, profile)` its `.so` was last built from. A missing or
+    /// malformed marker parses to an empty map (everything treated as stale).
+    fn read_build_state(peppylib_dir: &Path) -> BTreeMap<String, (String, String)> {
+        let Ok(contents) = std::fs::read_to_string(peppylib_dir.join(BUILD_STATE_MARKER)) else {
+            return BTreeMap::new();
         };
-        if saved.trim() != current {
-            Some(current)
-        } else {
-            None
-        }
+        contents
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let platform = fields.next()?.to_string();
+                let hash = fields.next()?.to_string();
+                let profile = fields.next()?.to_string();
+                Some((platform, (hash, profile)))
+            })
+            .collect()
     }
 
-    /// Writes the source hash marker after a successful build.
-    fn write_source_hash_marker(peppylib_dir: &Path, hash: &str) {
-        let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
-        // Use write_if_changed to avoid unnecessary disk writes when the
-        // hash is identical (e.g. consecutive no-op builds).
-        build_helpers::write_if_changed(&marker_path, hash.as_bytes());
+    /// Writes the per-platform build state, using write_if_changed to avoid
+    /// touching the file (and its mtime) on no-op builds.
+    fn write_build_state(peppylib_dir: &Path, state: &BTreeMap<String, (String, String)>) {
+        let body: String = state
+            .iter()
+            .map(|(platform, (hash, profile))| format!("{platform}\t{hash}\t{profile}\n"))
+            .collect();
+        build_helpers::write_if_changed(&peppylib_dir.join(BUILD_STATE_MARKER), body.as_bytes());
     }
 
-    /// Deletes all platform `.so` files so the next build starts fresh.
-    fn remove_stale_so_files(peppylib_dir: &Path) {
-        if let Ok(entries) = std::fs::read_dir(peppylib_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let s = name.to_string_lossy();
-                if s.starts_with("_peppylib.abi3.") && s.ends_with(".so") {
-                    std::fs::remove_file(entry.path()).ok();
-                }
+    /// Removes `.so` files (and their state entries) for platforms that are no
+    /// longer built, so a removed target does not leave a stale artifact behind.
+    fn prune_orphan_so_files(
+        peppylib_dir: &Path,
+        state: &mut BTreeMap<String, (String, String)>,
+        current_platforms: &[String],
+    ) {
+        let Ok(entries) = std::fs::read_dir(peppylib_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let suffix = name
+                .to_string_lossy()
+                .strip_prefix("_peppylib.abi3.")
+                .and_then(|s| s.strip_suffix(".so"))
+                .map(str::to_string);
+            if let Some(suffix) = suffix
+                && !current_platforms.contains(&suffix)
+            {
+                std::fs::remove_file(entry.path()).ok();
             }
         }
+        state.retain(|platform, _| current_platforms.contains(platform));
     }
 
     /// Computes a combined SHA-256 hash of all platform `.so` files **and**
@@ -568,67 +603,98 @@ mod peppylib_build {
 
         register_rerun_triggers(&peppylib_py_dir);
 
-        // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
-        // does not deadlock on the workspace build lock held by the outer cargo.
-        let cache_dir = build_helpers::cache_dir("peppylib-py");
-        let target_dir = cache_dir.join("target");
-        let pixi_task = resolve_pixi_task();
+        let profile = build_helpers::BuildProfile::from_env();
+        let current_hash = compute_source_hash(&peppylib_py_dir);
+        let host = host_platform_suffix();
 
-        // Skip peppylib build when pixi is unavailable.
-        // When skipped, the hash is computed from whatever .so files already
-        // exist (e.g. from a prior build).
+        // Every platform this machine produces: the host always, plus the Linux
+        // cross-compile targets on macOS.
+        #[cfg(target_os = "macos")]
+        let platforms: Vec<String> = std::iter::once(host.clone())
+            .chain(
+                LINUX_CROSS_TARGETS
+                    .iter()
+                    .map(|t| t.platform_suffix.to_string()),
+            )
+            .collect();
+        #[cfg(not(target_os = "macos"))]
+        let platforms: Vec<String> = vec![host.clone()];
+
+        // When pixi is unavailable we cannot rebuild, so fail only if an artifact
+        // is actually missing or built from stale sources; otherwise serve what
+        // exists.
         if !is_pixi_available() {
-            if source_hash_if_changed(&peppylib_py_dir, &peppylib_dir).is_some() {
-                panic!(
-                    "Stale peppylib-py .so files: sources have changed since last build \
-                     but pixi is not available to rebuild. Run \
-                     `cargo build -p generator` on a machine with pixi first."
-                );
-            }
+            let state = read_build_state(&peppylib_dir);
+            let needs_rebuild = platforms.iter().any(|p| {
+                let so = peppylib_dir.join(format!("_peppylib.abi3.{p}.so"));
+                !so.exists() || state.get(p).map(|(h, _)| h.as_str()) != Some(current_hash.as_str())
+            });
+            assert!(
+                !needs_rebuild,
+                "Stale peppylib-py .so files: sources have changed since last build \
+                 but pixi is not available to rebuild. Run \
+                 `cargo build -p generator` on a machine with pixi first."
+            );
             println!(
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
-        } else {
-            // Use both mtime and content-hash checks. The hash check catches
-            // branch-switch staleness that mtime comparison misses (the .so
-            // may be newer than re-checked-out source files).
-            let hash_result = source_hash_if_changed(&peppylib_py_dir, &peppylib_dir);
-            let sources_changed =
-                so_needs_rebuild(&peppylib_py_dir, &peppylib_dir) || hash_result.is_some();
-
-            if sources_changed {
-                // Delete stale .so files before rebuilding so we start fresh.
-                remove_stale_so_files(&peppylib_dir);
-
-                build_native_so(
-                    &peppylib_py_dir,
-                    &peppylib_dir,
-                    &so_path,
-                    pixi_task,
-                    &target_dir,
-                );
-            } else {
-                println!("cargo:warning=Skipping peppylib-py native build (sources unchanged).");
-            }
-
-            // Cross-compile for each Linux target if sources changed OR if
-            // the target's .so is missing (e.g. a new platform was added).
-            #[cfg(target_os = "macos")]
-            for target in LINUX_CROSS_TARGETS {
-                let target_so =
-                    peppylib_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
-                if sources_changed || !target_so.exists() {
-                    cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
-                }
-            }
-
-            // Record the source hash so future builds can detect staleness.
-            let hash = hash_result.unwrap_or_else(|| compute_source_hash(&peppylib_py_dir));
-            write_source_hash_marker(&peppylib_dir, &hash);
+            compute_and_emit_so_hash(&peppylib_dir);
+            return;
         }
 
-        // Guard against partial rebuilds leaving an unsuffixed .so behind
+        // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
+        // does not deadlock on the workspace build lock held by the outer cargo.
+        let target_dir = build_helpers::cache_dir("peppylib-py").join("target");
+        let mut state = read_build_state(&peppylib_dir);
+        let force = std::env::var(REBUILD_ENV_VAR).is_ok_and(|v| !v.is_empty() && v != "0");
+
+        // Host extension: rebuilt whenever it is missing, its recorded
+        // (hash, profile) is stale, or a rebuild is forced. Built in both
+        // profiles so local host scaffolding always matches current sources.
+        let host_so = peppylib_dir.join(format!("_peppylib.abi3.{host}.so"));
+        let host_state = (current_hash.clone(), profile.tag().to_string());
+        let host_current = state.get(&host) == Some(&host_state);
+        if build_helpers::should_build_host(host_so.exists(), host_current, force) {
+            build_native_so(
+                &peppylib_py_dir,
+                &peppylib_dir,
+                &so_path,
+                profile.tag(),
+                &target_dir,
+            );
+            state.insert(host.clone(), host_state);
+        } else {
+            println!("cargo:warning=Skipping peppylib-py host native build (sources unchanged).");
+        }
+
+        // Linux extensions (macOS only): rebuilt when missing, or when stale
+        // during a release or forced build. A present-but-stale Linux `.so` is
+        // left alone on debug builds to keep `cargo build`/`cargo test` fast.
+        #[cfg(target_os = "macos")]
+        {
+            for target in LINUX_CROSS_TARGETS {
+                let suffix = target.platform_suffix;
+                let target_so = peppylib_dir.join(format!("_peppylib.abi3.{suffix}.so"));
+                let target_state = (current_hash.clone(), "release".to_string());
+                let stale = state.get(suffix) != Some(&target_state);
+                if build_helpers::should_cross_compile(profile, target_so.exists(), stale, force) {
+                    cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
+                    state.insert(suffix.to_string(), target_state);
+                } else if stale {
+                    println!(
+                        "cargo:warning=peppylib-py {suffix} .so is STALE and was NOT cross-compiled \
+                         (debug build). Run a release build or `{REBUILD_ENV_VAR}=1 cargo build \
+                         -p generator` to refresh container bindings."
+                    );
+                }
+            }
+        }
+
+        prune_orphan_so_files(&peppylib_dir, &mut state, &platforms);
+        write_build_state(&peppylib_dir, &state);
+
+        // Guard against partial rebuilds leaving an unsuffixed .so behind.
         if so_path.exists() {
             std::fs::remove_file(&so_path).ok();
         }
@@ -663,74 +729,6 @@ mod rust_crates_build {
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
 
-    /// Returns true if the file should be included, matching the rust_embed attributes:
-    /// include: *.rs, *.toml, *.capnp, *.j2, tools/capnp_*
-    /// exclude: target/*, tests/*, examples/*
-    fn should_include(relative_path: &str, is_config_internal: bool) -> bool {
-        // Exclude patterns
-        if relative_path.starts_with("target/")
-            || relative_path.starts_with("tests/")
-            || relative_path.starts_with("examples/")
-        {
-            return false;
-        }
-
-        // Include patterns
-        if relative_path.ends_with(".rs")
-            || relative_path.ends_with(".toml")
-            || relative_path.ends_with(".capnp")
-            || relative_path.ends_with(".j2")
-        {
-            return true;
-        }
-
-        // config-internal has tools/capnp_* include pattern
-        if is_config_internal && relative_path.starts_with("tools/capnp_") {
-            return true;
-        }
-
-        false
-    }
-
-    fn collect_files(dir: &std::path::Path, is_config_internal: bool) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        let mut stack = vec![dir.to_path_buf()];
-
-        while let Some(current) = stack.pop() {
-            let entries = match std::fs::read_dir(&current) {
-                Ok(e) => e,
-                Err(e) => {
-                    println!(
-                        "cargo:warning=Failed to read directory {}: {}",
-                        current.display(),
-                        e
-                    );
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let rel = path.strip_prefix(dir).unwrap_or(&path);
-                    let rel_str = rel.to_string_lossy();
-                    // Skip excluded directories entirely
-                    if rel_str == "target" || rel_str == "tests" || rel_str == "examples" {
-                        continue;
-                    }
-                    stack.push(path);
-                } else {
-                    let rel = path.strip_prefix(dir).unwrap_or(&path);
-                    let rel_str = rel.to_string_lossy();
-                    if should_include(&rel_str, is_config_internal) {
-                        files.push(path);
-                    }
-                }
-            }
-        }
-
-        files
-    }
-
     pub fn run() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
@@ -746,7 +744,7 @@ mod rust_crates_build {
 
         for (rel, is_config) in &crate_dirs {
             let dir = manifest_dir.join(rel);
-            let mut files = collect_files(&dir, *is_config);
+            let mut files = super::collect_crate_source_files(&dir, *is_config);
             // Sort for deterministic hashing
             files.sort();
 

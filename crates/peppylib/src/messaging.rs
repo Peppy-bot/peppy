@@ -6,12 +6,16 @@ mod discovery;
 mod services;
 mod topics;
 
+// `unwrap_result_outcome` is intentionally not re-exported: unlike its public
+// siblings (`wrap_result_outcome` / `encode_cancel_ack`, which the integration
+// tests use to assert the wire codec), it is only used inside `actions` and its
+// unit tests, so it stays `pub(crate)`.
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
     ActionMessenger, ActionResultReply, CancelState, ConcurrentAction, DeclaredFeedback,
     EmptyPayloadError, GoalContext, NonEmptyPayload, PendingGoal, ResultStatus, decode_cancel_ack,
-    encode_cancel_ack, generate_goal_id, unwrap_goal_payload, unwrap_result_outcome,
-    wrap_goal_payload, wrap_result_outcome,
+    encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_payload,
+    wrap_result_outcome,
 };
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
@@ -19,20 +23,25 @@ pub use services::{
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
 mod filter;
-pub use filter::{ConsumerFilter, ProducerRef, resolve_consumer_filter};
+pub use filter::{ConsumerFilter, ProducerRef};
+// Used only by the processor at startup to pre-resolve per-link_id filters.
+pub(crate) use filter::resolve_consumer_filter;
 
-// Public re-exports. `SenderTarget` / `InterfaceIdentifier` / `NodeIdentifier`
-// / `SenderTargetError` / `ServiceKind` describe the shape of messaging calls
-// and surface in user-facing peppylib APIs. `ActionWireSender` is exposed
-// because peppylib-py caches one to drive subsequent cancel / result calls
-// without locking. `ActionLivelinessToken` is the type of the public
-// `ActionCreation::liveliness_token` field. The other wire structs
-// (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to peppylib's
-// own messaging implementation; each submodule imports them directly from
-// `pmi::`.
+// Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
+// the shared vocabulary of its public messaging API rather than hidden
+// implementation details (every consumer also depends on pmi directly).
+// `SenderTarget` / `SenderTargetError` appear in nearly every messaging
+// signature and are emitted by the code generator. `InterfaceIdentifier` /
+// `NodeIdentifier` / `ActionWireSender` / `ActionLivelinessToken` are surfaced
+// for the Python bindings, which cache an `ActionWireSender` to drive
+// cancel / result calls without re-locking and name `ActionLivelinessToken` as
+// the type of the public `ActionCreation::liveliness_token` field. The other
+// wire structs (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to
+// peppylib's own messaging implementation; each submodule imports them directly
+// from `pmi::`.
 pub use pmi::{
     ActionLivelinessToken, ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget,
-    SenderTargetError, ServiceKind,
+    SenderTargetError,
 };
 
 use crate::error::{Error, Result};
@@ -145,9 +154,23 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
 }
 
 impl MessengerHandle {
+    /// Build a handle from an already-shared `pmi::Messenger`. This is the
+    /// escape hatch for consumers that construct and own the messenger
+    /// themselves (peppy and core-node-internal both do); the `from_host_port*`
+    /// constructors are the normal path for opening a fresh session.
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self {
             messenger,
+            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
+        }
+    }
+
+    /// Wrap a freshly-opened `Messenger` in the shared-handle state. Shared by
+    /// the `from_host_port*` constructors so the handle's field initialization
+    /// lives in one place.
+    fn from_messenger(messenger: Messenger) -> Self {
+        Self {
+            messenger: Arc::new(Mutex::new(messenger)),
             active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
         }
     }
@@ -237,10 +260,7 @@ impl MessengerHandle {
     pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?;
         let messenger = Self::new_session(adapter).await?;
-        Ok(Self {
-            messenger: Arc::new(Mutex::new(messenger)),
-            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
-        })
+        Ok(Self::from_messenger(messenger))
     }
 
     /// Like [`from_host_port`](Self::from_host_port) but opens a *reconnecting*
@@ -255,10 +275,7 @@ impl MessengerHandle {
         let adapter =
             ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?.with_session_reconnect();
         let messenger = Self::new_session(adapter).await?;
-        Ok(Self {
-            messenger: Arc::new(Mutex::new(messenger)),
-            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
-        })
+        Ok(Self::from_messenger(messenger))
     }
 
     /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
@@ -282,10 +299,7 @@ impl MessengerHandle {
         )?
         .with_session_reconnect();
         let messenger = Self::new_session(adapter).await?;
-        Ok(Self {
-            messenger: Arc::new(Mutex::new(messenger)),
-            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
-        })
+        Ok(Self::from_messenger(messenger))
     }
 
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
@@ -482,7 +496,7 @@ impl MessengerHandle {
         let message = Message::from(reply.into_message());
         match kind {
             ServiceReplyKind::HandlerError => {
-                let reason = match std::str::from_utf8(message.payload().as_ref()) {
+                let reason = match std::str::from_utf8(message.payload_bytes().as_ref()) {
                     Ok(s) => s.to_string(),
                     Err(_) => "service returned a non-UTF8 error payload".to_string(),
                 };

@@ -92,7 +92,7 @@ impl ClockSubscription {
     pub async fn on_next_tick(&mut self) -> Result<Option<ClockTick>> {
         match self.inner.on_next_message().await {
             Some(message) => {
-                let tick = ClockTick::decode(message.payload().as_ref())?;
+                let tick = ClockTick::decode(message.payload_bytes().as_ref())?;
                 Ok(Some(tick))
             }
             None => Ok(None),
@@ -178,7 +178,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     // Subscription destructor.
     let feeder = spawn(async move {
         while let Some(message) = subscription.on_next_message().await {
-            match ClockTick::decode(message.payload().as_ref()) {
+            match ClockTick::decode(message.payload_bytes().as_ref()) {
                 Ok(tick) => {
                     // 0 is the not-ready sentinel, so clamp to 1 if a
                     // simulator ever publishes a literal zero.
@@ -198,7 +198,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
 pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
-    let inner = super::subscribe_core_topic(node_runner, names::CLOCK).await?;
+    let inner = crate::core_node::subscribe_core_topic(node_runner, names::CLOCK).await?;
     Ok(ClockSubscription { inner })
 }
 

@@ -12,7 +12,11 @@ use tokio::sync::Mutex;
 #[pyclass(name = "TopicMessage", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTopicMessage {
-    pub(crate) payload: Vec<u8>,
+    // Held as a `Payload` (refcounted `Bytes`) rather than `Vec<u8>` so cloning a
+    // `PyTopicMessage` is a refcount bump, and the wire bytes are copied into a
+    // Python buffer once, in the getter, instead of also being copied eagerly at
+    // construction.
+    pub(crate) payload: Payload,
     pub(crate) instance_id: String,
     pub(crate) core_node: String,
 }
@@ -21,7 +25,7 @@ pub struct PyTopicMessage {
 impl PyTopicMessage {
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.payload)
+        PyBytes::new(py, self.payload.as_ref())
     }
 
     #[getter]
@@ -46,7 +50,7 @@ impl PyTopicMessage {
 impl From<Message> for PyTopicMessage {
     fn from(msg: Message) -> Self {
         Self {
-            payload: msg.payload().to_vec(),
+            payload: msg.payload(),
             instance_id: msg.instance_id().to_string(),
             core_node: msg.core_node().to_string(),
         }
