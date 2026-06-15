@@ -459,6 +459,7 @@ impl CoreNode {
                     },
                     use_sim_time: self.daemon_use_sim_time,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    shutdown_token: self.shutdown_token.clone(),
                 },
             )
             .boxed(),
@@ -536,6 +537,7 @@ impl CoreNode {
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    shutdown_token: self.shutdown_token.clone(),
                 },
             )
             .boxed(),

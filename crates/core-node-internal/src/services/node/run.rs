@@ -99,6 +99,10 @@ pub struct NodeRunServiceConfig {
     pub health_monitor_interval: Duration,
     pub health_monitor_timeout: Duration,
     pub daemon_defaults: DaemonDefaults,
+    /// Daemon-shutdown signal. Cancelled at the start of a clean shutdown so the
+    /// per-node health monitors stop probing before the stack is torn down,
+    /// rather than flagging intentionally-stopping nodes as unhealthy.
+    pub shutdown_token: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -113,6 +117,7 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) health_monitor_interval: Duration,
     pub(crate) health_monitor_timeout: Duration,
     pub(crate) daemon_defaults: DaemonDefaults,
+    pub(crate) shutdown_token: CancellationToken,
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
@@ -171,6 +176,7 @@ pub async fn listen_for_node_run(
             health_monitor_interval: config.health_monitor_interval,
             health_monitor_timeout: config.health_monitor_timeout,
             daemon_defaults: config.daemon_defaults,
+            shutdown_token: config.shutdown_token,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -963,6 +969,7 @@ async fn process_node_run(
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
                         interval: ctx.action.health_monitor_interval,
                         timeout: ctx.action.health_monitor_timeout,
+                        shutdown_token: ctx.action.shutdown_token.clone(),
                     });
 
                     // Wait until the readers have drained the child's startup
@@ -1247,6 +1254,7 @@ struct HealthMonitorParams {
     peppy_dirs: PeppyDirs,
     interval: Duration,
     timeout: Duration,
+    shutdown_token: CancellationToken,
 }
 
 /// Spawns a background task that periodically polls the node's health service
@@ -1256,8 +1264,10 @@ struct HealthMonitorParams {
 /// instance from the stack, so an unhealthy node stays visible until it
 /// recovers or is stopped explicitly (e.g. `node stop`).
 ///
-/// The task exits only when the instance is no longer found in the stack
-/// (stopped externally).
+/// The task exits when the instance is no longer found in the stack (stopped
+/// externally) or when `shutdown_token` is cancelled (the daemon is shutting
+/// down, so the monitored nodes are being torn down on purpose and must not be
+/// reported unhealthy for it).
 fn spawn_health_monitor(p: HealthMonitorParams) {
     tokio::spawn(async move {
         let instance_id_str = p.target_instance_id.as_str().to_owned();
@@ -1279,7 +1289,14 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
         let mut was_healthy = true;
 
         loop {
-            tokio::time::sleep(p.interval).await;
+            // Wait out the probe interval, but bail the instant the daemon starts
+            // shutting down: probing nodes that are intentionally being torn down
+            // would log spurious "unhealthy" / "Session not initialized" warnings
+            // for the whole teardown window.
+            tokio::select! {
+                _ = p.shutdown_token.cancelled() => return,
+                _ = tokio::time::sleep(p.interval) => {}
+            }
 
             // Resolve the monitored instance once per tick. If it was removed
             // externally (e.g. user ran `node stop`), our job is done: skip the
@@ -1297,20 +1314,27 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
                 return;
             };
 
-            let poll_result = ServiceMessenger::poll(
-                &p.messenger,
-                &p.core_node_name,
-                &p.caller_instance_id,
-                SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
-                NODE_HEALTH_SERVICE,
-                ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
-                    p.target_core_node.as_str(),
-                    p.target_instance_id.as_str(),
-                )),
-                request_payload.clone(),
-                p.timeout,
-            )
-            .await;
+            // Bound to a local so the borrow in `ServiceTarget::Producer` outlives
+            // the `select!` expansion (a temporary would be dropped too early).
+            let producer_ref = peppylib::messaging::ProducerRef::new(
+                p.target_core_node.as_str(),
+                p.target_instance_id.as_str(),
+            );
+            // Abandon an in-flight probe the moment shutdown starts, so a probe
+            // racing the session close cannot emit a teardown-time warning.
+            let poll_result = tokio::select! {
+                _ = p.shutdown_token.cancelled() => return,
+                result = ServiceMessenger::poll(
+                    &p.messenger,
+                    &p.core_node_name,
+                    &p.caller_instance_id,
+                    SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
+                    NODE_HEALTH_SERVICE,
+                    ServiceTarget::Producer(&producer_ref),
+                    request_payload.clone(),
+                    p.timeout,
+                ) => result,
+            };
 
             let probe_succeeded = poll_result.is_ok();
             let probe_error = poll_result.err();

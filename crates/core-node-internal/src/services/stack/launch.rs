@@ -82,6 +82,9 @@ pub struct StackLaunchDefaults {
     /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
     /// injected into every launched node.
     pub daemon_defaults: DaemonDefaults,
+    /// Daemon-shutdown signal, forwarded to each launched node's health monitor
+    /// so it stops probing the instant a clean shutdown begins.
+    pub shutdown_token: CancellationToken,
 }
 
 pub async fn listen_for_stack_launch(
@@ -107,6 +110,7 @@ pub async fn listen_for_stack_launch(
         timeouts,
         use_sim_time: daemon_use_sim_time,
         daemon_defaults,
+        shutdown_token,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -118,6 +122,7 @@ pub async fn listen_for_stack_launch(
             timeouts,
             daemon_use_sim_time,
             daemon_defaults,
+            shutdown_token,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -169,6 +174,8 @@ struct ProcessLaunchContext {
     /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
     /// injected into every launched node.
     daemon_defaults: DaemonDefaults,
+    /// Daemon-shutdown signal, forwarded to each launched node's health monitor.
+    shutdown_token: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -181,6 +188,7 @@ struct LaunchActionContext {
     timeouts: StackLaunchTimeouts,
     daemon_use_sim_time: bool,
     daemon_defaults: DaemonDefaults,
+    shutdown_token: CancellationToken,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -695,6 +703,7 @@ async fn start_node_directly(
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
         daemon_defaults: ctx.daemon_defaults,
+        shutdown_token: ctx.shutdown_token.clone(),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -1546,6 +1555,7 @@ async fn handle_goal_request(
             timeouts,
             daemon_use_sim_time,
             daemon_defaults,
+            shutdown_token,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -1571,6 +1581,7 @@ async fn handle_goal_request(
             },
             daemon_use_sim_time,
             daemon_defaults,
+            shutdown_token,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
