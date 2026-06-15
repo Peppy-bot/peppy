@@ -1052,6 +1052,92 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
                 )
 
 
+@pytest.mark.asyncio
+async def test_failed_async_setup_does_not_leak_event_loop_thread(monkeypatch):
+    """If async setup fails AFTER the event-loop thread has started but before
+    the teardown handle is returned, run() must still stop and join that daemon
+    thread before raising.
+
+    The loop thread runs native code; left unjoined it can be killed
+    mid-native-call during interpreter finalization (the same SIGSEGV
+    `test_shutdown_joins_event_loop_thread` guards on the success path). Such a
+    failure is rare in practice (e.g. resource exhaustion submitting the setup
+    coroutine or spawning the shutdown monitor), so we inject it by making
+    `asyncio.run_coroutine_threadsafe` raise, which fails the setup-coroutine
+    submission right after the loop thread is started.
+    """
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+
+    real_run_coroutine_threadsafe = asyncio.run_coroutine_threadsafe
+
+    def boom(coro, *_args, **_kwargs):
+        # Close the setup coroutine we are refusing to schedule so it does not
+        # raise a "coroutine was never awaited" warning, then fail the submission.
+        coro.close()
+        raise RuntimeError("injected post-start setup failure")
+
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+                .with_node_name(TEST_NODE_NAME)
+            )
+
+            error_queue: queue.Queue = queue.Queue()
+            lingering_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                async def setup_fn(_params, _node_runner):
+                    # Never runs: the patched run_coroutine_threadsafe raises
+                    # when start_async_setup submits this coroutine.
+                    return None
+
+                try:
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+                finally:
+                    # Runs whether or not run() raised: the daemon event-loop
+                    # thread must be gone the instant run() returns.
+                    lingering_queue.put(
+                        [
+                            t.name
+                            for t in threading.enumerate()
+                            if t.name == EVENT_LOOP_THREAD_NAME
+                        ]
+                    )
+
+            # Restore eagerly in finally so the router teardown below (which uses
+            # asyncio) does not hit the patched function.
+            asyncio.run_coroutine_threadsafe = boom
+            try:
+                runner_thread = threading.Thread(target=run_node, daemon=True)
+                runner_thread.start()
+                runner_thread.join(timeout=10.0)
+            finally:
+                asyncio.run_coroutine_threadsafe = real_run_coroutine_threadsafe
+
+    assert not runner_thread.is_alive(), (
+        "run() did not return after a post-start async-setup failure"
+    )
+    assert not error_queue.empty(), "expected run() to raise the injected failure"
+    lingering = lingering_queue.get_nowait()
+    assert lingering == [], (
+        f"event-loop thread leaked after async setup failed post-start: {lingering}"
+    )
+
+
 PENDING_SERVICE_NODE_SCRIPT = '''\
 import asyncio
 import sys
@@ -1276,7 +1362,8 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
     `event_loop.stop()` orphaned, so shutdown hung for the entire grace window
     and the daemon force-killed the node. We pin a long grace and assert the
     node exits well inside it after a real SHUTDOWN_SERVICE request. This runs
-    end-to-end through the real `make_shutdown_trigger`; the asyncio mechanic is
+    end-to-end through the real `make_loop_teardown` (the drain hook awaits the
+    drain future; `quiesce` fires the stop trigger); the asyncio mechanic is
     pinned in isolation by `test_shutdown_drain_deadlock.py`.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
@@ -1303,19 +1390,23 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
             setup_done_queue: queue.Queue = queue.Queue()
             error_queue: queue.Queue = queue.Queue()
             cleanup_ran = threading.Event()
+            background_finally_ran = threading.Event()
 
             def run_node():
                 try:
 
                     async def setup_fn(_params, node_runner):
-                        token = node_runner.cancellation_token()
-
                         async def background_loop():
-                            # A long-lived task like a generated emit loop: the
-                            # pending asyncio task the drain hook must cancel and
-                            # gather before stopping the loop.
-                            while not token.is_cancelled():
-                                await asyncio.sleep(0.01)
+                            # A long-lived task like a generated emit loop that
+                            # does NOT poll the token, so the drain hook is what
+                            # cancels it. Its finally must run (cancelled and
+                            # gathered) while the loop is still alive, before
+                            # quiesce stops the loop.
+                            try:
+                                while True:
+                                    await asyncio.sleep(0.01)
+                            finally:
+                                background_finally_ran.set()
 
                         async def on_shutdown():
                             # Cooperative cleanup; proves the hook phase ran
@@ -1365,6 +1456,10 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
     )
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
     assert cleanup_ran.is_set(), "cooperative on_shutdown hook did not run"
+    assert background_finally_ran.is_set(), (
+        "the drain hook must cancel the background task and gather it (running "
+        "its finally) while the loop is alive, before quiesce stops the loop"
+    )
 
 
 @pytest.mark.asyncio

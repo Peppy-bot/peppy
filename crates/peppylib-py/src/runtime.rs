@@ -45,9 +45,10 @@ fn event_loop_join_timeout_secs() -> f64 {
 /// pyo3 future) and, because the thread is a daemon, CPython would otherwise
 /// kill it mid-call during interpreter finalization, segfaulting the process.
 struct EventLoopShutdown {
-    /// Pure-Python callable that cancels pending tasks and stops the loop.
-    /// Idempotent and safe to call from any thread.
-    trigger: Py<PyAny>,
+    /// Pure-Python callable that stops the loop (cancelling any still-pending
+    /// tasks first, on the loop thread) so its thread can exit. Idempotent and
+    /// safe to call from any thread; a no-op once the loop is no longer running.
+    stop_trigger: Py<PyAny>,
     /// The daemon thread running the event loop. Joined before `run` returns
     /// so no native call is in flight when the interpreter finalizes.
     thread: Py<PyAny>,
@@ -62,9 +63,12 @@ impl EventLoopShutdown {
     fn quiesce(self) {
         let join_timeout = event_loop_join_timeout_secs();
         let still_alive = Python::try_attach(|py| -> PyResult<bool> {
-            // Best-effort cancellation; the join below must run even if the
-            // trigger raises, so the daemon thread cannot outlive `run`.
-            let _ = self.trigger.bind(py).call0();
+            // Schedule the loop stop (which cancels any straggler tasks first,
+            // on the loop thread); the join below releases the GIL so the loop
+            // thread can run it. Best-effort: the stop trigger swallows its own
+            // errors and the join must run even if it somehow raises, so the
+            // daemon thread cannot outlive `run`.
+            let _ = self.stop_trigger.bind(py).call0();
             let thread = self.thread.bind(py);
             thread.call_method1("join", (join_timeout,))?;
             thread.call_method0("is_alive")?.is_truthy()
@@ -76,6 +80,24 @@ impl EventLoopShutdown {
             );
         }
     }
+}
+
+/// Best-effort stop and join of the asyncio event-loop thread, used when
+/// [`start_async_setup`] fails after the loop thread has started. The loop is
+/// already running `run_forever`, and on an error path the [`EventLoopShutdown`]
+/// handle is never returned to `run`, so nothing else stops it. Left running,
+/// the daemon thread would outlive `run` and be killed mid native call when the
+/// interpreter finalizes (the SIGSEGV this whole teardown exists to prevent).
+fn abort_loop_thread(event_loop: &Bound<'_, PyAny>, thread: &Bound<'_, PyAny>) {
+    // A bare loop.stop() from this (non-loop) thread only sets a flag and would
+    // not wake the idle loop; schedule it cross-thread so the loop wakes and
+    // run_forever returns. The join then releases the GIL so the loop thread can
+    // run the stop and exit. No task cancellation: setup failed, so there is no
+    // user cleanup to run, and the join is what actually prevents the SIGSEGV.
+    if let Ok(stop) = event_loop.getattr("stop") {
+        let _ = event_loop.call_method1("call_soon_threadsafe", (stop,));
+    }
+    let _ = thread.call_method1("join", (event_loop_join_timeout_secs(),));
 }
 
 fn peppy_io_err(message: impl Into<String>) -> peppylib::PeppyError {
@@ -358,38 +380,72 @@ def make_run_loop(event_loop, asyncio_mod, cancel_token):
             cancel_token.cancel()
     return _run
 
-def make_shutdown_trigger(event_loop, asyncio_mod):
-    async def _drain():
+def make_loop_teardown(event_loop, asyncio_mod):
+    def _cancel_other_tasks():
+        # Cancel every task except the caller's own and return them. Called from
+        # the drain coroutine (current_task is the drain itself, correctly
+        # excluded) and from the on-loop stop callback (current_task is None, so
+        # nothing is excluded and every task is cancelled). Runs only on the loop
+        # thread, where task.cancel() is safe.
         current = asyncio_mod.current_task()
         pending = [task for task in asyncio_mod.all_tasks() if task is not current]
         for task in pending:
             task.cancel()
+        return pending
+
+    async def _drain():
+        # Cancel pending tasks and wait for their cancellation (and any finally
+        # cleanup) to finish, then RETURN without stopping the loop. The loop is
+        # stopped separately, by the stop trigger that quiesce fires after the
+        # shutdown-hook phase. Because nothing stops the loop here, the future
+        # this coroutine completes is set through the ordinary path while the
+        # loop is still running, so it can never be orphaned. Removing the loop
+        # stop from the awaited coroutine is the whole point of splitting drain
+        # from stop. See tests/test_shutdown_drain_deadlock.py.
+        pending = _cancel_other_tasks()
         if pending:
             await asyncio_mod.gather(*pending, return_exceptions=True)
-        # Defer the stop one scheduling hop instead of calling event_loop.stop()
-        # here. Per CPython's loop.stop() contract, stopping mid-iteration runs
-        # the current callback batch then exits, dropping callbacks scheduled by
-        # that batch. run_coroutine_threadsafe completes its concurrent.futures
-        # .Future from exactly such a freshly-scheduled callback (its internal
-        # set-state), so a direct stop() here orphans the future the drain hook
-        # awaits and the hook blocks for the whole grace window. call_soon lets
-        # the loop run one more full ready-queue drain, in which the set-state
-        # callback (and any trailing finally-cleanup from the gathered tasks)
-        # fire, before _stopping is observed at the top of the next iteration.
-        # See tests/test_shutdown_drain_deadlock.py.
-        event_loop.call_soon(event_loop.stop)
 
-    def _trigger():
-        # Cancel pending tasks and stop the loop so its thread can exit before
-        # the process tears down. Safe to call from any thread and idempotent:
-        # a no-op (returning None) once the loop is no longer running.
-        # Otherwise returns the drain's concurrent.futures.Future so callers
-        # that need to sequence work after the drain can wait on it.
+    def _drain_trigger():
+        # Run the drain on the loop and return its concurrent.futures.Future so
+        # the caller can await completion. A no-op (returns None) once the loop
+        # is no longer running. Safe to call from any thread and idempotent: a
+        # drain with nothing pending completes its future immediately.
         if not event_loop.is_running():
             return None
         return asyncio_mod.run_coroutine_threadsafe(_drain(), event_loop)
 
-    return _trigger
+    def _stop_loop():
+        # Runs ON the loop thread (scheduled by _stop_trigger via
+        # call_soon_threadsafe). Cancels any task the drain hook never reached
+        # (the grace-timeout path, where a slow user hook exhausted the window
+        # so the drain hook was abandoned before it cancelled and gathered),
+        # then defers loop.stop() one hop so those cancellations run their
+        # finally cleanup before the loop exits. This call_soon(stop) is NOT the
+        # orphaning hazard the old in-drain stop was: nothing awaits a future
+        # across it (quiesce only joins the loop thread), so the batch ordering
+        # here is a best-effort cleanup nicety, not a correctness dependency. No
+        # gather: an uncancellable task must never be able to block the stop.
+        _cancel_other_tasks()
+        event_loop.call_soon(event_loop.stop)
+
+    def _stop_trigger():
+        # Stop the loop so its thread can exit before the process tears down.
+        # Called from the main thread, so the stop work is marshalled onto the
+        # loop thread with call_soon_threadsafe, which also wakes a loop blocked
+        # in select; a bare loop.stop() from another thread only sets a flag and
+        # would leave an idle loop running. Best-effort and idempotent: a no-op
+        # once the loop is no longer running, and any error (the loop closed
+        # between the check and the schedule) is swallowed so the caller always
+        # proceeds to join the loop thread.
+        if not event_loop.is_running():
+            return
+        try:
+            event_loop.call_soon_threadsafe(_stop_loop)
+        except RuntimeError:
+            pass
+
+    return _drain_trigger, _stop_trigger
 ",
         c"_peppy_event_loop_helpers.py",
         c"_peppy_event_loop_helpers",
@@ -458,27 +514,63 @@ fn start_async_setup(
         *slot = Some(event_loop.clone().unbind());
     }
 
-    // 6. Build the shutdown trigger: a pure-Python callable that cancels
-    //    pending tasks and stops the loop, returning the drain's future (or
-    //    None when the loop is already stopped). Fired by the drain hook
-    //    below, by the setup-scoped shutdown monitor, and by the main thread
-    //    in `quiesce` after builder.run() returns.
-    let shutdown_trigger = helpers
-        .getattr("make_shutdown_trigger")?
-        .call1((&event_loop, &asyncio))?;
+    // Steps 6-9 are all fallible and run while the loop thread (started above)
+    // is already in `run_forever`, before the `EventLoopShutdown` handle that
+    // `quiesce` uses to stop it has been returned. If any step fails, stop and
+    // join the loop thread here, or it outlives `run` and is killed mid native
+    // call when the interpreter finalizes.
+    build_async_setup(
+        py,
+        &helpers,
+        &event_loop,
+        &asyncio,
+        node_runner,
+        setup_awaitable,
+        &thread,
+    )
+    .inspect_err(|_| abort_loop_thread(&event_loop, &thread))
+}
+
+/// Steps 6-9 of [`start_async_setup`], split out so any failure can be caught by
+/// the caller and turned into a stop+join of the already-running loop thread.
+/// Builds the loop teardown, registers the loop-drain shutdown hook, submits the
+/// setup coroutine, and spawns the setup-scoped shutdown monitor.
+fn build_async_setup(
+    py: Python<'_>,
+    helpers: &Bound<'_, PyModule>,
+    event_loop: &Bound<'_, PyAny>,
+    asyncio: &Bound<'_, PyModule>,
+    node_runner: &Arc<NodeRunner>,
+    setup_awaitable: &Bound<'_, PyAny>,
+    thread: &Bound<'_, PyAny>,
+) -> PyResult<AsyncSetup> {
+    // 6. Build the loop teardown: two pure-Python callables. The drain trigger
+    //    cancels pending tasks and gathers them WITHOUT stopping the loop, and
+    //    returns the drain's future (or None when the loop is already stopped);
+    //    it is fired by the drain hook below and by the setup-scoped shutdown
+    //    monitor. The stop trigger stops the loop (cancelling any stragglers
+    //    first) and is fired only by the main thread in `quiesce`, after
+    //    builder.run() returns. Keeping the stop out of the drain is what lets
+    //    the loop outlive the user shutdown hooks and the drain hook's awaited
+    //    future complete with the loop still running, never orphaned.
+    let teardown = helpers
+        .getattr("make_loop_teardown")?
+        .call1((event_loop, asyncio))?;
+    let drain_trigger = teardown.get_item(0)?;
+    let stop_trigger = teardown.get_item(1)?;
 
     // 7. Register the loop drain as a shutdown hook NOW, before the setup
     //    coroutine can register any user hook. Hooks run in reverse
     //    registration order, so this one runs last: user hooks execute with
     //    the loop (and the node's tokio runtime and messenger) still fully
-    //    alive, and only then are the remaining asyncio tasks cancelled,
-    //    gathered, and the loop stopped. Awaiting the drain inside the hook
-    //    phase keeps the tokio runtime alive while cancelled tasks run their
-    //    `finally` cleanup.
-    let trigger_for_hook = shutdown_trigger.clone().unbind();
+    //    alive, and only then are the remaining asyncio tasks cancelled and
+    //    gathered. Awaiting the drain inside the hook phase keeps the tokio
+    //    runtime alive while cancelled tasks run their `finally` cleanup. The
+    //    loop itself is stopped later by `quiesce`, not here.
+    let drain_trigger_for_hook = drain_trigger.clone().unbind();
     node_runner.on_shutdown(async move {
         let drain_done = crate::py_future::try_attach_gated(|py| {
-            let drain_future = match trigger_for_hook.bind(py).call0() {
+            let drain_future = match drain_trigger_for_hook.bind(py).call0() {
                 Ok(future) => future,
                 Err(err) => {
                     print_shutdown_hook_error(py, &err);
@@ -504,8 +596,7 @@ fn start_async_setup(
     //    thread needs the GIL to run the coroutine) and without blocking its
     //    tokio worker, so the runner's select stays responsive to shutdown
     //    requests and cancellation arriving mid-setup.
-    let future =
-        asyncio.call_method1("run_coroutine_threadsafe", (setup_awaitable, &event_loop))?;
+    let future = asyncio.call_method1("run_coroutine_threadsafe", (setup_awaitable, event_loop))?;
     let setup_complete_rx = notify_on_future_done(py, &future)?;
     let future_ref = future.unbind();
 
@@ -519,8 +610,10 @@ fn start_async_setup(
     //    which retires the monitor by dropping the `monitor_disarm` sender:
     //    from then on the drain hook registered above owns the teardown, and
     //    the monitor must not cancel tasks out from under user shutdown
-    //    hooks. The `biased` order makes the disarm win a race.
-    let trigger_for_monitor = shutdown_trigger.clone().unbind();
+    //    hooks. The `biased` order makes the disarm win a race. The monitor
+    //    fires the DRAIN trigger only: cancelling the setup task is what
+    //    unsticks the runner, and the loop is stopped later by `quiesce`.
+    let drain_trigger_for_monitor = drain_trigger.clone().unbind();
     let cancel_for_shutdown = node_runner.cancellation_token().clone();
     let (disarm_tx, mut disarm_rx) = tokio::sync::oneshot::channel::<()>();
     let rt_handle = tokio::runtime::Handle::current();
@@ -538,10 +631,11 @@ fn start_async_setup(
                 return;
             }
             // Gated attach: if this thread is scheduled so late that the
-            // attach gate has closed, the main thread has already fired the
-            // same idempotent trigger in `quiesce`, so skipping is safe.
+            // attach gate has closed, the main thread has already stopped the
+            // loop via `quiesce` (whose stop trigger also cancels), so skipping
+            // is safe.
             let _ = crate::py_future::try_attach_gated(|py| -> PyResult<()> {
-                trigger_for_monitor.bind(py).call0()?;
+                drain_trigger_for_monitor.bind(py).call0()?;
                 Ok(())
             });
         })
@@ -551,8 +645,8 @@ fn start_async_setup(
         setup_complete_rx,
         setup_future: future_ref,
         event_loop_shutdown: EventLoopShutdown {
-            trigger: shutdown_trigger.unbind(),
-            thread: thread.unbind(),
+            stop_trigger: stop_trigger.unbind(),
+            thread: thread.clone().unbind(),
         },
         monitor_disarm: disarm_tx,
     })
@@ -971,12 +1065,16 @@ impl PyNodeBuilder {
                 },
             );
 
-            // Quiesce the asyncio event loop before returning: cancel pending
-            // tasks, stop the loop, and JOIN its thread. Joining is what
-            // prevents the SIGSEGV; without it the daemon loop thread can be
-            // killed while inside a native call (pycapnp serialization, a pyo3
-            // future) during interpreter finalization. The shutdown monitor may
-            // have already fired the cancellation, but the trigger is idempotent.
+            // Quiesce the asyncio event loop before returning: stop the loop
+            // (cancelling any straggler tasks first) and JOIN its thread.
+            // Joining is what prevents the SIGSEGV; without it the daemon loop
+            // thread can be killed while inside a native call (pycapnp
+            // serialization, a pyo3 future) during interpreter finalization.
+            // The drain hook and/or the shutdown monitor may have already
+            // cancelled the tasks, but the stop trigger is idempotent. This is
+            // the only place the loop is stopped, so it runs on every async-setup
+            // exit path, including when a slow user hook exhausted the grace
+            // window and the drain hook never completed.
             if let Some(shutdown) = event_loop_handle.lock().ok().and_then(|mut g| g.take()) {
                 shutdown.quiesce();
             }
