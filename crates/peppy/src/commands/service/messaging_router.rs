@@ -26,6 +26,22 @@ const WATCHDOG_RESTART_GRACE: Duration = Duration::from_secs(3);
 /// not spin in a tight restart loop.
 const WATCHDOG_POST_RESTART_BACKOFF: Duration = Duration::from_secs(10);
 
+/// How long the messaging router keeps the session open waiting for the core
+/// node to finish tearing down its nodes (cooperative shutdown rides over that
+/// session) before giving up, so a hung teardown cannot wedge the shutdown.
+///
+/// Sized to the core node's worst-case stop: `force_kill_deadline` (hook grace +
+/// event-loop join + interpreter finalize) for a stuck node, plus the reap
+/// budget and a one-second margin. Derived from the same `force_kill_deadline`
+/// the teardown itself uses so the two cannot drift apart. An earlier regression
+/// was exactly that drift: the deadline grew but this budget did not, so the
+/// router closed the session out from under a node still stopping over it.
+pub(super) fn teardown_budget_for(shutdown_grace_secs: u64) -> Duration {
+    core_node::force_kill_deadline(Duration::from_secs(shutdown_grace_secs))
+        + core_node::TEARDOWN_REAP_BUDGET
+        + Duration::from_secs(1)
+}
+
 pub struct MessagingRouter {
     messenger: Arc<Mutex<Messenger>>,
     messaging_ready: watch::Sender<bool>,
@@ -37,7 +53,8 @@ pub struct MessagingRouter {
     core_node_done: Option<watch::Receiver<bool>>,
     /// Upper bound on the wait for `core_node_done`, so a hung teardown cannot
     /// wedge the messaging shutdown. Sized to the core node's worst-case stop
-    /// duration (cooperative grace + reap budget) plus a small margin.
+    /// duration: `force_kill_deadline(grace)` (hook grace + event-loop join +
+    /// interpreter finalize) plus the reap budget and a small margin.
     teardown_budget: Duration,
 }
 
@@ -319,6 +336,27 @@ mod tests {
             !ready,
             "a hung teardown must surface as a timeout so the router proceeds"
         );
+    }
+
+    #[test]
+    fn teardown_budget_outlasts_the_daemon_force_kill_window() {
+        // The router must not close the session before the core node can finish
+        // its worst-case teardown, or a node still stopping cooperatively over
+        // that session is cut off and force-killed. Pin the budget strictly above
+        // the daemon's force-kill deadline plus its reap budget across every
+        // accepted grace (minimum accepted is 1s), so a future change to
+        // `force_kill_deadline` cannot silently outgrow this budget again (the
+        // original regression was exactly that drift).
+        for grace_secs in 1..=600 {
+            let budget = super::teardown_budget_for(grace_secs);
+            let worst_case = core_node::force_kill_deadline(Duration::from_secs(grace_secs))
+                + core_node::TEARDOWN_REAP_BUDGET;
+            assert!(
+                budget > worst_case,
+                "teardown budget {budget:?} for grace {grace_secs}s must exceed the daemon's \
+                 worst-case teardown {worst_case:?} (force-kill deadline + reap)",
+            );
+        }
     }
 
     #[tokio::test]

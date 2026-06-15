@@ -1,5 +1,5 @@
 use super::core_node::CoreNodeRunner;
-use super::messaging_router::MessagingRouter;
+use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
@@ -101,12 +101,10 @@ impl ServeCommandBuilder {
         // Shutdown-side counterpart of `messaging_ready`: the core node signals
         // this once teardown finishes, releasing the router to close the session.
         let (core_node_done_tx, core_node_done_rx) = watch::channel(false);
-        // Bound the router's wait on core node teardown by the core node's
-        // worst-case stop duration (cooperative grace + reap budget) plus a
-        // small margin, so a hung teardown cannot wedge the messaging shutdown.
-        let teardown_budget = Duration::from_secs(self.peppy_config.lifecycle.shutdown_grace_secs)
-            + core_node::TEARDOWN_REAP_BUDGET
-            + Duration::from_secs(1);
+        // Keep the session open until the core node's worst-case teardown
+        // finishes (cooperative node shutdown rides over it). Derived from the
+        // same force_kill_deadline the teardown uses; see `teardown_budget_for`.
+        let teardown_budget = teardown_budget_for(self.peppy_config.lifecycle.shutdown_grace_secs);
         self.messenger = Some(Arc::clone(&messenger));
         self.messaging_ready = Some(messaging_ready_rx);
         self.core_node_done_tx = Some(core_node_done_tx);

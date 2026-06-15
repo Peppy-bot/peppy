@@ -967,12 +967,14 @@ fn lima_kill_pgid_argv_sigkills_the_whole_group() {
     // nothing is interpolated or shell-escaped. The negative PGID SIGKILLs the
     // whole group (apptainer + its %post children), then `rm -f` removes the pgid
     // file (the cancel path SIGKILLs the wrapper before it can self-clean).
-    // Best-effort: a missing/already-dead group is not an error.
+    // Best-effort: a missing/already-dead group is not an error, so `cat`'s stderr
+    // is silenced inside the substitution (the outer `2>/dev/null` covers `kill`
+    // only, not the command substitution).
     assert_eq!(argv[0], "sh");
     assert_eq!(argv[1], "-c");
     assert_eq!(
         argv[2],
-        "kill -KILL -\"$(cat \"$1\")\" 2>/dev/null; rm -f \"$1\" 2>/dev/null; true"
+        "kill -KILL -\"$(cat \"$1\" 2>/dev/null)\" 2>/dev/null; rm -f \"$1\" 2>/dev/null; true"
     );
     assert_eq!(
         argv[3], "sh",

@@ -11,7 +11,7 @@ mod stack;
 use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::FORBIDDEN_ENV_KEYS;
-pub use node::{TEARDOWN_REAP_BUDGET, teardown_all_instances};
+pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
 
 use crate::Result;
 use config::{
@@ -459,6 +459,7 @@ impl CoreNode {
                     },
                     use_sim_time: self.daemon_use_sim_time,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    shutdown_token: self.shutdown_token.clone(),
                 },
             )
             .boxed(),
@@ -536,6 +537,7 @@ impl CoreNode {
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    shutdown_token: self.shutdown_token.clone(),
                 },
             )
             .boxed(),

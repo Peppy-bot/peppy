@@ -176,6 +176,27 @@ async fn handle_node_stop_request_inner(
             .map_err(Into::into);
     }
 
+    // Claim the instance for termination before signaling it, so its exit
+    // watcher treats the upcoming exit as an intentional stop (owned by this
+    // path's registry removal) rather than a self-exit, and never relabels a
+    // force-kill as a crash. Claim under the entity read lock (not on the
+    // lock-free clone) so the claim is mutually exclusive with the write lock
+    // `mark_instance_exited` holds across its `is_stopping()` check and its
+    // terminal-state flip. A lock-free store on the shared `Arc` could otherwise
+    // land between that check and flip, letting a self-exit racing this stop be
+    // recorded as a terminal exit. The bulk teardown paths (`stop_instances`,
+    // `collect_doomed_instances`) claim the same way.
+    {
+        let guard = entity_handle.read();
+        if let Some(inst) = guard
+            .instances()
+            .iter()
+            .find(|inst| inst.instance_id() == &instance_id)
+        {
+            inst.mark_stopping();
+        }
+    }
+
     // Cooperative-then-force, identical to the SIGINT teardown for this one
     // instance: ask the node to shut down, give it a bounded grace window, then
     // SIGKILL its process group if it ignored us, and wait for it to be gone.
@@ -334,8 +355,13 @@ async fn force_stop_instances(
     graceful_budget: Duration,
 ) -> Vec<StopOutcome> {
     // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
-    // concurrently, then poll until they're all gone or the budget elapses.
-    let _ = tokio::time::timeout(graceful_budget, async {
+    // concurrently, then poll until they're all gone or the deadline elapses.
+    // The deadline is the node's full cooperative exit cost (hook grace +
+    // event-loop join + interpreter finalize), not just the hook grace, so a
+    // node that cleans up correctly is never force-killed; see
+    // `force_kill_deadline`.
+    let deadline = force_kill_deadline(graceful_budget);
+    let _ = tokio::time::timeout(deadline, async {
         let sends = doomed.iter().map(|d| async move {
             if let Err(e) = send_shutdown_signal(
                 messenger,
@@ -381,9 +407,11 @@ async fn force_stop_instances(
             };
             let outcome = if pid_running_in(&snapshot, pid) {
                 warn!(
-                    "Node instance '{}' did not exit within the {}s shutdown grace period; \
-                     force-killing its process group (pid {})",
+                    "Node instance '{}' did not exit within its {}s cooperative shutdown \
+                     window ({}s grace + runtime teardown); force-killing its process group \
+                     (pid {})",
                     d.instance_id.as_str(),
+                    deadline.as_secs(),
                     graceful_budget.as_secs(),
                     pid
                 );
@@ -498,16 +526,23 @@ pub(super) async fn stop_instances(
             let is_container = guard.config().execution.container.is_some();
             instance_ids
                 .iter()
-                .map(|instance_id| DoomedInstance {
-                    node_name: node_name.to_owned(),
-                    node_tag: node_tag.to_owned(),
-                    instance_id: instance_id.clone(),
-                    pid: guard
+                .map(|instance_id| {
+                    // Claim each instance for termination before it is signaled,
+                    // so its exit watcher leaves the state to this path's removal
+                    // and does not record an intentional stop as a self-exit.
+                    let pid = guard
                         .instances()
                         .iter()
                         .find(|inst| inst.instance_id() == instance_id)
-                        .and_then(|inst| inst.pid()),
-                    is_container,
+                        .inspect(|inst| inst.mark_stopping())
+                        .and_then(|inst| inst.pid());
+                    DoomedInstance {
+                        node_name: node_name.to_owned(),
+                        node_tag: node_tag.to_owned(),
+                        instance_id: instance_id.clone(),
+                        pid,
+                        is_container,
+                    }
                 })
                 .collect()
         }
@@ -539,6 +574,23 @@ pub(super) async fn stop_instances(
 /// derive its request timeout from the daemon's worst-case stop duration
 /// (configured grace + this reap) instead of guessing at it.
 pub const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
+
+/// How long the daemon waits for a cooperatively-stopping node's process to
+/// disappear before force-killing its group. Strictly larger than the node's
+/// real exit cost so a node that cleans up correctly is never SIGKILLed: after
+/// receiving the shutdown request a node runs its hooks (bounded by
+/// `shutdown_grace`), then a Python node joins its asyncio event-loop thread
+/// (bounded by [`config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS`]), then the
+/// interpreter finalizes ([`config::peppy_config::RUNTIME_FINALIZE_MARGIN_SECS`]
+/// of slack). The single source of this formula: the CLI request timeout and
+/// the `shutdown_grace_margin` regression test both derive from it.
+pub fn force_kill_deadline(shutdown_grace: Duration) -> Duration {
+    shutdown_grace
+        + Duration::from_secs(
+            config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS
+                + config::peppy_config::RUNTIME_FINALIZE_MARGIN_SECS,
+        )
+}
 
 /// A non-root node instance to terminate — the routing identity + process info
 /// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
@@ -600,6 +652,13 @@ pub async fn teardown_all_instances(
 /// Snapshot every non-root instance (both `Running` and `Starting` — a
 /// `Starting` instance already has a live child) with its routing identity and
 /// pid. Skips the root entity by pointer identity.
+///
+/// Each collected instance is claimed via `mark_stopping()` so its exit watcher
+/// treats the upcoming kill as intentional and does not relabel it a crash. The
+/// daemon-shutdown caller does not strictly need this (its watchers bail on the
+/// shutdown token), but the reset and launch-clear callers do: they tear the
+/// stack down while the daemon keeps running, so without the claim each
+/// force-killed instance would be recorded as `Failed` by its watcher.
 fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> {
     let root = node_stack.root();
     let mut doomed = Vec::new();
@@ -612,6 +671,9 @@ fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> 
         let node_tag = guard.config().manifest.tag.clone();
         let is_container = guard.config().execution.container.is_some();
         for inst in guard.instances() {
+            // Claim before termination so the exit watcher leaves removal to the
+            // teardown and never records an intentional kill as a self-exit.
+            inst.mark_stopping();
             doomed.push(DoomedInstance {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),

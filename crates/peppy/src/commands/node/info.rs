@@ -108,8 +108,9 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             // Health is the daemon's last `node_health` probe result, carried
             // in `NodeInstanceInfo::healthy`; `healthy` until a probe is seen
             // to fail. Shown alongside state so a running-but-failing instance
-            // stands out without a separate `stack list` round-trip.
-            let health = crate::commands::health_label(instance.healthy);
+            // stands out without a separate `stack list` round-trip. A terminal
+            // (finished/failed) instance has no live health, so it renders `-`.
+            let health = crate::commands::instance_health_label(instance.state, instance.healthy);
             let _ = writeln!(
                 out,
                 "           - {}  [{}]  {}",

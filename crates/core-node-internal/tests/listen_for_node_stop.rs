@@ -2,16 +2,20 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    build_staged_node, children_of, create_test_node_with_name, is_process_running, poll_until,
-    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    build_staged_node, children_of, create_test_node_with_name, install_kill_on_shutdown_listener,
+    instance_state_in_any_state, is_process_running, poll_until, send_node_add_and_wait,
+    send_node_add_then_build, send_node_run_and_wait, spawn_real_running_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::node::Name;
+use core_node::force_kill_deadline;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -152,6 +156,141 @@ async fn listen_for_node_stop_success() {
         .expect("kill task should not panic");
 }
 
+/// A cooperative node that legitimately takes longer than the bare grace window
+/// to disappear (a real one runs its hooks within `grace`, then a Python node
+/// joins its asyncio loop and the interpreter finalizes) must still be reported
+/// graceful, not force-killed. This pins the Issue 2 fix: the daemon's
+/// force-kill deadline is `force_kill_deadline(grace)` (grace + loop-join +
+/// finalize), not the bare `grace`. We make the node exit at `grace + 2s` (past
+/// the old `grace` deadline, comfortably inside the new one) and assert it is
+/// classified graceful. Under the old behavior the process is still alive at the
+/// `grace` deadline and would be SIGKILLed and reported force-killed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_deadline() {
+    const TARGET_NODE_NAME: &str = "slow_cooperative_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "slow_cooperative_instance";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let grace = node_stack.shutdown_grace();
+    let deadline = force_kill_deadline(grace);
+    // Exit after the bare grace but well inside the full deadline, so the test
+    // genuinely distinguishes "daemon waits grace" (old, force-kill) from
+    // "daemon waits grace + teardown margin" (new, graceful).
+    let exit_delay = grace + Duration::from_secs(2);
+    assert!(
+        exit_delay > grace && exit_delay < deadline,
+        "exit delay {exit_delay:?} must sit between the grace {grace:?} and the \
+         force-kill deadline {deadline:?} for this test to be meaningful",
+    );
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "60"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+    build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
+
+    let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    // No built-in shutdown listener: our delayed-kill listener below is the only
+    // one, so the process exits exactly at `exit_delay` rather than immediately.
+    let running = spawn_real_stuck_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
+    let pid = running.pid;
+    std::mem::forget(running); // node_stop is responsible for reaping the child.
+    assert!(
+        is_process_running(pid),
+        "process {pid} should be running before stop"
+    );
+
+    let shutdown_handle =
+        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
+    let (shutdown_task, shutdown_rx) = listen_for_shutdown(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        common::test_node_target(TARGET_NODE_NAME),
+    )
+    .await
+    .expect("failed to start shutdown service");
+    let _shutdown_task = AbortOnDrop(shutdown_task);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The cooperative node acks the shutdown immediately but only exits after
+    // `exit_delay`, modeling hook cleanup plus runtime teardown that runs past
+    // the bare grace window.
+    let kill_task = tokio::spawn(async move {
+        shutdown_rx
+            .await
+            .expect("shutdown channel should not be dropped");
+        tokio::time::sleep(exit_delay).await;
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status();
+    });
+
+    let response = poll_node_stop(
+        &NodeStopRequest::new(TARGET_INSTANCE_ID),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started_core_node.core_node_name),
+        deadline + Duration::from_secs(5),
+    )
+    .await
+    .expect("node_stop request should complete");
+
+    assert!(response.success, "node_stop should succeed");
+    assert!(
+        !response.force_killed,
+        "a node that exits cooperatively after the grace window but within the \
+         force-kill deadline must be reported graceful, not force-killed"
+    );
+    assert!(
+        !is_process_running(pid),
+        "process {pid} should be gone after a graceful stop"
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), kill_task)
+        .await
+        .expect("kill task should complete")
+        .expect("kill task should not panic");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_stop_fails_when_instance_id_not_found() {
     const MISSING_INSTANCE_ID: &str = "missing_instance";
@@ -239,14 +378,16 @@ async fn node_stop_force_kills_whole_process_group() {
 
     // System under test: cooperative phase times out (stuck node), then the
     // force phase SIGKILLs the whole group. The timeout must exceed the
-    // handler's graceful (3s) + reap (2s) budget plus messaging round-trips.
+    // handler's full force-kill deadline (grace + runtime teardown) plus the
+    // reap budget and messaging round-trips.
+    let stop_timeout = force_kill_deadline(node_stack.shutdown_grace()) + Duration::from_secs(8);
     let response = poll_node_stop(
         &NodeStopRequest::new(INSTANCE_ID),
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        Duration::from_secs(20),
+        stop_timeout,
     )
     .await
     .expect("node_stop request should complete");
@@ -389,15 +530,16 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
 
     // System under test: the real stop handler sends SHUTDOWN_SERVICE, the
     // node's NodeBuilder runtime cancels its cancellation token and exits.
-    // The timeout must exceed the handler's graceful (3s) + reap (2s) budget
-    // plus messaging round-trips.
+    // The timeout must exceed the handler's full force-kill deadline (grace +
+    // runtime teardown) plus the reap budget and messaging round-trips.
+    let stop_timeout = force_kill_deadline(node_stack.shutdown_grace()) + Duration::from_secs(8);
     let response = poll_node_stop(
         &NodeStopRequest::new(TARGET_INSTANCE_ID),
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        Duration::from_secs(20),
+        stop_timeout,
     )
     .await
     .expect("node_stop request should complete");
@@ -536,5 +678,169 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
         foreign_hits.load(Ordering::SeqCst),
         0,
         "the foreign core node's node_stop handler must never see a scoped request"
+    );
+}
+
+/// An explicit `node_stop` of a node that has a LIVE exit watcher (started
+/// through the real `node_run` path) must end with the instance fully removed -
+/// gone from every lifecycle state, not lingering as a terminal `Failed`, and
+/// the intentional kill must never be recorded as a crash. The stop path claims
+/// the instance (`mark_stopping`) before signaling it, so the watcher that
+/// observes the force-kill leaves removal to the stop path instead of relabeling
+/// the kill. The other stop tests drive instances spawned without a watcher, so
+/// this is the one that exercises the watcher-versus-stop interaction end to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
+    const TARGET_NODE_NAME: &str = "watched_stoppable_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "watched_stoppable_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "300"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Mocks satisfy the readiness gate so the real node_run path commits the
+    // instance and spawns its exit watcher (the bare `sleep` cannot speak the
+    // protocol itself).
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    );
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+    let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
+
+    // Bridge the cooperative shutdown to a real kill so the stop completes fast
+    // instead of waiting out the whole force-kill deadline. Crucially the kill
+    // lands strictly AFTER the stop path's `mark_stopping` claim, so the watcher
+    // sees an intentional stop, not a crash.
+    let _kill_on_shutdown =
+        install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
+
+    let response = poll_node_stop(
+        &NodeStopRequest::new(TARGET_INSTANCE_ID),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("node_stop request should complete");
+    assert!(
+        response.success,
+        "node_stop should succeed, got error: {:?}",
+        response.error_message
+    );
+
+    poll_until(
+        Duration::from_secs(5),
+        "node process should be gone after stop",
+        || (!is_process_running(pid)).then_some(()),
+    )
+    .await;
+
+    // The instance is removed from EVERY state, not left as a terminal record.
+    // (The Running-only `find_by_instance_id` would also return None for a
+    // lingering `Failed`, so this must check across all states to be meaningful.)
+    poll_until(
+        Duration::from_secs(5),
+        "instance should be fully removed from the stack after stop, not lingering as terminal",
+        || {
+            instance_state_in_any_state(&started.node_stack, &instance_id)
+                .is_none()
+                .then_some(())
+        },
+    )
+    .await;
+
+    // The claim made the watcher leave the kill alone, so no crash was recorded
+    // for this instance. On correct code this holds regardless of watcher/stop
+    // ordering; a regression that dropped the claim would let the watcher relabel
+    // the force-kill as `failed` in the stack log.
+    let log_content =
+        std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default();
+    assert!(
+        !log_content
+            .lines()
+            .any(|line| line.contains(TARGET_INSTANCE_ID) && line.contains("failed")),
+        "an explicit stop must never be recorded as a crash, got:
+{}",
+        log_content
     );
 }

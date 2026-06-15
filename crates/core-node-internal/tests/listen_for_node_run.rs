@@ -1,10 +1,10 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, create_test_node_with_name, send_node_add_then_build,
-    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
-    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, write_peppy_json5,
+    AbortOnDrop, NodeRunTestTimeouts, create_test_node_with_name, instance_state_in_any_state,
+    poll_until, send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
+    start_core_node_with_health_monitor, start_core_node_with_health_timeout,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
@@ -2027,14 +2027,13 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         "instance should be in the stack after successful start"
     );
 
-    // Kill the process to simulate an unexpected death
-    let _ = std::process::Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .status();
-
-    // Drop the health listener so subsequent health polls from the monitor
-    // will fail (the node process is dead and the mock health service is gone)
+    // Leave the node process alive but stop answering health probes: dropping
+    // the mock health listener makes the monitor's polls time out. This is the
+    // "alive but unresponsive" case (a hung or deadlocked node) — the node is
+    // still running, so it must be flagged unhealthy while staying `Running`,
+    // not removed or marked terminal. A process that actually exits is the
+    // different, terminal case covered by
+    // `listen_for_node_run_marks_node_failed_when_its_process_exits`.
     drop(health_task);
 
     // Wait for the health monitor to detect the failure and mark the instance
@@ -2090,6 +2089,544 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     assert!(
         log_content.contains(TARGET_NODE_NAME),
         "stack log should mention the node name, got:
+{}",
+        log_content
+    );
+
+    // Cleanup: the node was deliberately left alive so the monitor could flag
+    // it unhealthy. Stop its process now that the assertions are done.
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+}
+
+/// A committed node whose process exits on its own is moved to a terminal state
+/// by the exit watcher — `Failed` for an unclean (signal / non-zero) exit —
+/// instead of being left `Running` and merely flagged unhealthy. The instance
+/// stays tracked so it remains visible in `stack list`, but as a terminal state,
+/// and the `Running`-only lookup no longer returns it. Regression guard for the
+/// one-shot/crashed-node fix: a dead process must never read as
+/// "running / unhealthy".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
+    const TARGET_NODE_NAME: &str = "exit_watcher_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "exit_watcher_instance";
+
+    let started =
+        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
+            .await;
+
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "300"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be Running after a successful start"
+    );
+
+    // Simulate an unexpected death: SIGKILL the process so it exits uncleanly.
+    // We keep the health mock alive to prove the terminal transition is driven
+    // by the exit watcher observing the dead process, not by health probes.
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+
+    // The exit watcher observes the exit and transitions the instance to a
+    // terminal `Failed` state. The watcher reaps the process within a few
+    // milliseconds; give it 5 seconds for CI safety.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if instance_state_in_any_state(&started.node_stack, &instance_id)
+            == Some(core_node_api::InstanceState::Failed)
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "instance was not marked Failed within timeout (state: {:?})",
+                instance_state_in_any_state(&started.node_stack, &instance_id)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A terminal instance is not `Running`, so the Running-only lookup stops
+    // returning it — but it stays tracked, visible as `Failed`, rather than
+    // lingering as "running / unhealthy" or vanishing entirely.
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_none(),
+        "a terminal instance must not be reported as Running"
+    );
+    assert_eq!(
+        instance_state_in_any_state(&started.node_stack, &instance_id),
+        Some(core_node_api::InstanceState::Failed),
+        "the crashed instance stays tracked so it remains visible in the stack"
+    );
+
+    // The stack log records the failure. The exit watcher appends it just after
+    // it flips the instance to `Failed` (see spawn_exit_watcher), so the append
+    // lands a beat after the state the loop above polled for. Race the log write
+    // as its own event instead of reading once and losing to it.
+    let stack_log_path = started.peppy_dirs.stack_log_path();
+    poll_until(
+        Duration::from_secs(5),
+        "stack log should record the failed transition for the crashed instance",
+        || {
+            let content = std::fs::read_to_string(&stack_log_path).ok()?;
+            (content.contains(TARGET_INSTANCE_ID) && content.contains("failed")).then_some(())
+        },
+    )
+    .await;
+
+    drop(health_task);
+}
+
+/// A committed node whose process exits cleanly on its own (status 0) is moved
+/// to the terminal `Finished` state by the exit watcher. This is the headline
+/// one-shot case: a node that completes its work and shuts itself down, the
+/// clean-exit companion to `..._marks_node_failed_when_its_process_exits`
+/// (which SIGKILLs for an unclean exit). The instance stays tracked so it is
+/// still visible in `stack list`, but as `Finished` rather than lingering as
+/// "running". The exit also stops the health monitor, so a node that simply
+/// finished never trails a spurious "became unhealthy" warning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly() {
+    const TARGET_NODE_NAME: &str = "clean_exit_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "clean_exit_instance";
+
+    let started =
+        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
+            .await;
+
+    // Runs until asked to stop, then exits cleanly (status 0) via the SIGTERM
+    // trap, standing in for a one-shot node finishing its work. The short inner
+    // sleep keeps any orphaned `sleep` child from outliving the test.
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "trap 'exit 0' TERM; while true; do sleep 0.2; done"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be Running after a successful start"
+    );
+
+    // Trigger a clean self-exit: SIGTERM fires the trap, which exits 0. The
+    // health mock stays alive, so the terminal transition can only be driven by
+    // the exit watcher observing the cleanly-exited process, not by a probe.
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+
+    // The exit watcher observes the clean exit and transitions to `Finished`.
+    poll_until(
+        Duration::from_secs(5),
+        "instance should be marked Finished after a clean self-exit",
+        || {
+            (instance_state_in_any_state(&started.node_stack, &instance_id)
+                == Some(core_node_api::InstanceState::Finished))
+            .then_some(())
+        },
+    )
+    .await;
+
+    // Terminal, so the Running-only lookup stops returning it, but it stays
+    // tracked as `Finished` rather than vanishing or reading as "running".
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_none(),
+        "a terminal instance must not be reported as Running"
+    );
+
+    // The stack log records the clean finish. The exit watcher appends it just
+    // after the state flip, so race the append as its own event.
+    let stack_log_path = started.peppy_dirs.stack_log_path();
+    poll_until(
+        Duration::from_secs(5),
+        "stack log should record the finished transition for the clean exit",
+        || {
+            let content = std::fs::read_to_string(&stack_log_path).ok()?;
+            (content.contains(TARGET_INSTANCE_ID) && content.contains("finished")).then_some(())
+        },
+    )
+    .await;
+    let log_content =
+        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
+    assert!(
+        !log_content.contains("failed"),
+        "a clean exit must not be recorded as a failure, got:
+{}",
+        log_content
+    );
+
+    // The health monitor stops the moment the instance goes terminal, so a node
+    // that simply finished never trails a "became unhealthy". Drop the health
+    // mock now (so any further probe would fail) and give the monitor several
+    // intervals: a monitor that kept probing a finished node would log unhealthy
+    // within ~300ms; it must not.
+    drop(health_task);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let log_content =
+        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
+    assert!(
+        !log_content.contains("became unhealthy"),
+        "a finished node must never be reported as became-unhealthy, got:
+{}",
+        log_content
+    );
+}
+
+/// On a clean daemon shutdown the per-node exit watcher and health monitor must
+/// go quiet. An instance whose process is force-killed as part of teardown must
+/// not be relabeled a crash (`Failed`) - teardown, not the watcher, owns its
+/// removal - and the health monitor must not emit a teardown-time "became
+/// unhealthy" warning for a node being torn down on purpose. Both behaviors
+/// hang off the daemon `shutdown_token`; this drives the real token (the same
+/// one the core node threads into every node's watcher and monitor) and asserts
+/// the suppression end to end. Regression guard for the "suppress shutdown-time
+/// health warnings" / "never relabel an intentional kill as a crash" fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
+    const TARGET_NODE_NAME: &str = "shutdown_suppressed_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "shutdown_suppressed_instance";
+
+    let started =
+        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
+            .await;
+
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "300"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be Running after a successful start"
+    );
+
+    // Begin a clean daemon shutdown: cancel the token the core node threads into
+    // every node's exit watcher and health monitor. Both bail on it with a
+    // `biased` select, so this wins deterministically even against the kill below.
+    started.shutdown_token.cancel();
+    // From here a probe would fail (teardown), but the monitor must already be
+    // quiescing on the token rather than probing the node being torn down.
+    drop(health_task);
+    // Simulate teardown force-killing the node's process.
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+
+    // Sync on the process actually being gone (a zombie counts as gone): by now
+    // the watcher's `child.wait()` would have fired had the token not pre-empted
+    // it, so any (wrong) terminal transition would already have happened.
+    poll_until(
+        Duration::from_secs(5),
+        "node process should be gone after the force-kill",
+        || (!common::is_process_running(pid)).then_some(()),
+    )
+    .await;
+
+    // The exit watcher bailed on the shutdown token, so the intentional kill is
+    // never relabeled a crash: the instance stays `Running` (teardown owns its
+    // removal). Give the watcher a generous window to (wrongly) act.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    loop {
+        let state = instance_state_in_any_state(&started.node_stack, &instance_id);
+        assert!(
+            !matches!(
+                state,
+                Some(core_node_api::InstanceState::Finished)
+                    | Some(core_node_api::InstanceState::Failed)
+            ),
+            "a node force-killed during shutdown must not be relabeled terminal, got {state:?}"
+        );
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        instance_state_in_any_state(&started.node_stack, &instance_id),
+        Some(core_node_api::InstanceState::Running),
+        "the instance stays Running during shutdown; teardown, not the watcher, owns removal"
+    );
+
+    // The health monitor returned on the token before it could record the now-
+    // unreachable node, so no teardown-time "became unhealthy" was logged.
+    let log_content =
+        std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default();
+    assert!(
+        !log_content.contains("became unhealthy"),
+        "no node may be reported unhealthy during a clean shutdown, got:
 {}",
         log_content
     );

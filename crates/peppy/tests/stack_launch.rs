@@ -316,7 +316,7 @@ async fn node_launch_command_succeed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_command_fails_when_node_never_becomes_healthy() {
+async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_stack() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -450,12 +450,17 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
 
+    // New contract: a launch replaces the whole stack, tearing it down at the
+    // clear step, so a failed launch leaves a clean stack with only the root
+    // core node. node_a is not rolled back; it is torn down along with the
+    // partial new stack. This mirrors the core-node-internal contract test
+    // listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy_and_clears_stack.
     assert!(
-        graph
+        !graph
             .nodes
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
-        "graph should still contain node_a after failed launch. Got: {:?}",
+        "node_a should be torn down by the failed launch, not restored. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
@@ -464,7 +469,14 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             .nodes
             .iter()
             .any(|n| n.label().contains(&format!("{node_b_name}:{node_tag}"))),
-        "graph should not contain node_b after failed launch. Got: {:?}",
+        "node_b should not be present after a failed launch. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        graph.nodes.len(),
+        1,
+        "only the root core node should remain after a failed launch. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }

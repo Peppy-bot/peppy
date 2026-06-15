@@ -56,13 +56,28 @@ const _: () = assert!(MIN_DAEMON_GRACE_SECS >= 3 * DAEMON_HEARTBEAT_INTERVAL_SEC
 
 /// Default cooperative-shutdown grace period, in seconds. How long the daemon
 /// (on a clean ctrl+C / `systemctl stop`) and `peppy node stop` wait for a node
-/// to exit on its own before force-killing its process group.
-pub const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 3;
+/// to run its cleanup hooks before force-killing its process group. 5s gives a
+/// robot node room to park actuators and release hardware before it is killed.
+pub const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 5;
 /// Minimum accepted cooperative-shutdown grace period, in seconds. At least 1 so
 /// the cooperative shutdown signal is actually given a chance to land before the
 /// force-kill (a 0 would cancel the in-flight send and amount to an immediate
 /// SIGKILL).
 pub const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
+
+/// Worst-case time a node runtime needs to tear down its asyncio event-loop
+/// thread after its shutdown hooks finish, before the OS process can exit. A
+/// background task may be executing native code (pycapnp serialization, a pyo3
+/// future) that must be joined rather than killed mid-call, so this is a real
+/// floor the daemon must allow for. Read by `peppylib-py` to bound the loop-join
+/// and by the daemon to size its force-kill deadline above the node's real exit
+/// cost. Nodes with no asyncio loop (sync-setup Python, Rust) simply finish well
+/// inside it.
+pub const EVENT_LOOP_JOIN_BUDGET_SECS: u64 = 5;
+/// Slack for interpreter finalize / `Drop` after the loop thread joins, before
+/// the OS process actually disappears. Added on top of the grace and join
+/// windows when the daemon computes how long to wait before force-killing.
+pub const RUNTIME_FINALIZE_MARGIN_SECS: u64 = 2;
 
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) because

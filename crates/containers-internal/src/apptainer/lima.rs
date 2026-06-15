@@ -69,9 +69,14 @@ pub(crate) fn lima_guest_pgid_argv(
 /// arrives as `$1`, so it needs no shell escaping. The negative PGID targets the
 /// whole group (`sh` + apptainer + its children); the `rm -f` cleans up on the
 /// cancel path, where the wrapper is SIGKILLed before it can self-clean.
-/// Best-effort: a missing or already-dead group is not an error.
+/// Best-effort: a missing or already-dead group is not an error, so `cat`'s own
+/// stderr is silenced inside the command substitution. The outer `2>/dev/null`
+/// only covers `kill`; it does not reach `cat`, because the substitution is
+/// expanded before `kill`'s redirection applies, so without the inner redirect a
+/// missing pgid file leaks "cat: ...: No such file or directory" to the guest
+/// stderr that limactl forwards to the daemon.
 pub(crate) fn lima_kill_pgid_argv(pgid_file: &Path) -> Vec<String> {
-    let script = "kill -KILL -\"$(cat \"$1\")\" 2>/dev/null; \
+    let script = "kill -KILL -\"$(cat \"$1\" 2>/dev/null)\" 2>/dev/null; \
                   rm -f \"$1\" 2>/dev/null; true";
     vec![
         "sh".to_string(),

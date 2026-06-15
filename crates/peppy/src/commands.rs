@@ -11,7 +11,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::SerializedNodeGraph;
+use core_node_api::{InstanceState, SerializedNodeGraph};
 use peppylib::MessengerHandle;
 
 use crate::{
@@ -32,6 +32,19 @@ pub(crate) const SCROLLING_OUTPUT_LINES: usize = 10;
 /// an instance's health, so the two commands can never drift apart on it.
 pub(crate) fn health_label(healthy: bool) -> &'static str {
     if healthy { "healthy" } else { "unhealthy" }
+}
+
+/// The health cell for an instance, accounting for its lifecycle state. A
+/// terminal instance (`Finished`/`Failed`) has exited, so its last health probe
+/// is meaningless — render a neutral `-` rather than a stale `healthy`/
+/// `unhealthy`. Live instances render their probed health via [`health_label`].
+/// Shared by `stack list` and `node info` so the two never diverge.
+pub(crate) fn instance_health_label(state: InstanceState, healthy: bool) -> &'static str {
+    if state.is_terminal() {
+        "-"
+    } else {
+        health_label(healthy)
+    }
 }
 
 /// Trait for executable commands
@@ -85,6 +98,25 @@ mod tests {
         // drift apart.
         assert_eq!(health_label(true), "healthy");
         assert_eq!(health_label(false), "unhealthy");
+    }
+
+    #[test]
+    fn instance_health_label_neutralizes_terminal_states() {
+        // Live instances report their probed health.
+        assert_eq!(
+            instance_health_label(InstanceState::Running, true),
+            "healthy"
+        );
+        assert_eq!(
+            instance_health_label(InstanceState::Starting, false),
+            "unhealthy"
+        );
+        // Terminal instances have exited, so health is not applicable — the
+        // stale `healthy` flag must never surface as a verdict.
+        assert_eq!(instance_health_label(InstanceState::Finished, true), "-");
+        assert_eq!(instance_health_label(InstanceState::Finished, false), "-");
+        assert_eq!(instance_health_label(InstanceState::Failed, true), "-");
+        assert_eq!(instance_health_label(InstanceState::Failed, false), "-");
     }
 
     #[test]
