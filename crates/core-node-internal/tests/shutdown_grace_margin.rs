@@ -13,7 +13,7 @@ use std::time::Duration;
 use config::peppy_config::{
     DEFAULT_SHUTDOWN_GRACE_SECS, EVENT_LOOP_JOIN_BUDGET_SECS, RUNTIME_FINALIZE_MARGIN_SECS,
 };
-use core_node::{TEARDOWN_REAP_BUDGET, force_kill_deadline};
+use core_node::force_kill_deadline;
 
 /// Node-side bounded exit cost: hook grace + event-loop join. Interpreter
 /// finalize is unbounded node-side and is what the daemon's finalize margin
@@ -57,13 +57,8 @@ fn deadline_is_grace_plus_join_plus_finalize() {
     );
 }
 
-#[test]
-fn cli_request_timeout_outlasts_the_daemon_deadline() {
-    // The CLI waits force_kill_deadline + reap + a messaging margin; since the
-    // reap budget is positive, the CLI always strictly outlasts the daemon's
-    // worst-case stop, so it never reports a timeout for a stop that succeeded.
-    let grace = Duration::from_secs(DEFAULT_SHUTDOWN_GRACE_SECS);
-    let daemon_deadline = force_kill_deadline(grace);
-    let cli_lower_bound = daemon_deadline + TEARDOWN_REAP_BUDGET;
-    assert!(cli_lower_bound > daemon_deadline);
-}
+// The top link of the timeout chain (the CLI request timeout strictly outlasts
+// this deadline + reap) is pinned in the `peppy` crate's `commands::node::stop`
+// tests, where the CLI-only `STOP_MESSAGING_MARGIN` is in scope. It cannot live
+// here: `core-node-internal` is below `peppy` in the dependency graph. Together
+// the two give the full CLI > daemon-deadline > node-bounded-exit chain.

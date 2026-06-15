@@ -198,6 +198,25 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// The state of an instance regardless of lifecycle stage, including terminal
+/// (`Finished`/`Failed`) instances that the `Running`-only
+/// `NodeStack::find_by_instance_id` no longer returns. Lets a test observe the
+/// exit watcher's terminal transition, or confirm an instance is gone from every
+/// state (not lingering as terminal after a stop/reset).
+pub fn instance_state_in_any_state(
+    node_stack: &NodeStack,
+    instance_id: &config::node::Name,
+) -> Option<core_node_api::InstanceState> {
+    node_stack.snapshot().into_iter().find_map(|handle| {
+        handle
+            .read()
+            .instances()
+            .iter()
+            .find(|inst| inst.instance_id() == instance_id)
+            .map(|inst| inst.state())
+    })
+}
+
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
 /// `deadline` expires. Replaces fixed sleeps used as broker-propagation
 /// barriers in tests that spawn a `handle_requests` task and then need to
@@ -1570,6 +1589,11 @@ pub struct StartedCoreNode {
     pub node_stack: NodeStack,
     pub peppy_dirs: PeppyDirs,
     pub task: AbortOnDrop<core_node::Result<()>>,
+    /// The same daemon-shutdown token the core node threads into every spawned
+    /// node's health monitor and exit watcher. Exposed so a test can cancel it
+    /// and assert the shutdown-time suppression (no spurious "became unhealthy",
+    /// no crash relabeling of intentionally-stopped nodes).
+    pub shutdown_token: tokio_util::sync::CancellationToken,
     _data_dir: TempDir,
 }
 
@@ -1758,6 +1782,7 @@ async fn start_core_node_with_messenger(
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
     let core_node = CoreNode::new(CoreNodeConfig {
         messenger: Arc::clone(&shared_messenger),
         node_name: Some("test_core_node".to_string()),
@@ -1765,7 +1790,7 @@ async fn start_core_node_with_messenger(
         root_dir,
         peppy_dirs: peppy_dirs.clone(),
         peppy_config,
-        shutdown_token: tokio_util::sync::CancellationToken::new(),
+        shutdown_token: shutdown_token.clone(),
     });
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
@@ -1786,6 +1811,7 @@ async fn start_core_node_with_messenger(
         node_stack,
         peppy_dirs,
         task: AbortOnDrop(task),
+        shutdown_token,
         _data_dir: data_dir,
     }
 }
@@ -1952,6 +1978,41 @@ async fn spawn_real_running_instance_inner(
         _feedback_drain: drain,
         _shutdown_listener: shutdown_listener,
     }
+}
+
+/// Installs a messenger-side shutdown listener that SIGKILLs `pid` when the
+/// daemon fires a cooperative `SHUTDOWN_SERVICE` signal at `(name,
+/// instance_id)`. A node started through the real `node_run` service path gets a
+/// live exit watcher but no node-side shutdown handling (the `run_cmd` is a bare
+/// `sleep`), so without this it would ignore the cooperative phase and force the
+/// stop/reset/teardown to wait out the whole force-kill deadline. Bridging the
+/// signal to a kill lets those tests cooperate quickly while still exercising the
+/// watcher-versus-stop interaction. The returned guard aborts the listener on
+/// drop.
+pub async fn install_kill_on_shutdown_listener(
+    started: &StartedCoreNode,
+    name: &str,
+    instance_id: &config::node::Name,
+    pid: u32,
+) -> AbortOnDrop<peppylib::PeppyResult<()>> {
+    let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+        &shutdown_handle,
+        &started.core_node_name,
+        instance_id.as_str(),
+        test_node_target(name),
+    )
+    .await
+    .expect("failed to start shutdown listener for test instance");
+    tokio::spawn(async move {
+        if shutdown_rx.await.is_ok() {
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+    });
+    AbortOnDrop(shutdown_task)
 }
 
 /// RAII guard for a test-spawned instance deliberately left in `Starting`:

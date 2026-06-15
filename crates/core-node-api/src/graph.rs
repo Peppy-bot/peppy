@@ -559,6 +559,40 @@ mod tests {
     }
 
     #[test]
+    fn instance_state_serde_wire_form_is_lowercase_and_matches_as_str() {
+        // The wire form is a cross-process contract (the daemon serializes
+        // instance state into the graph the CLI/UI deserialize). It rides on the
+        // `#[serde(rename_all = "lowercase")]` derive, a code path entirely
+        // separate from `as_str`/`FromStr`, so pin the literal JSON bytes for
+        // every variant and assert the two representations cannot drift apart.
+        let cases = [
+            (InstanceState::Starting, "\"starting\""),
+            (InstanceState::Running, "\"running\""),
+            (InstanceState::Finished, "\"finished\""),
+            (InstanceState::Failed, "\"failed\""),
+        ];
+        for (state, wire) in cases {
+            assert_eq!(
+                serde_json::to_string(&state).expect("serialize"),
+                wire,
+                "wire form regressed for {state:?}"
+            );
+            assert_eq!(
+                serde_json::from_str::<InstanceState>(wire).expect("deserialize"),
+                state,
+                "wire form did not round-trip for {state:?}"
+            );
+            // The derived serde form and the hand-written `as_str` must stay
+            // identical: a future variant added to only one path would diverge.
+            assert_eq!(
+                serde_json::to_value(state).expect("to_value"),
+                serde_json::Value::String(state.as_str().to_owned()),
+                "serde form and as_str diverged for {state:?}"
+            );
+        }
+    }
+
+    #[test]
     fn node_stage_str_display_and_parse_round_trip() {
         for stage in [
             NodeStage::Added,
