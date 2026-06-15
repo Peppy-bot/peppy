@@ -1493,21 +1493,31 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
     tokio::spawn(async move {
         let instance_id_str = target_instance_id.as_str().to_owned();
 
-        // Wait for the process to exit, but abandon the wait the instant the
-        // daemon starts shutting down: the whole stack is being torn down on
-        // purpose, so its nodes must not be recorded as having crashed.
+        // Wait for the process to exit, watching for daemon shutdown racing it.
+        // On shutdown (`None`) the whole stack is being torn down on purpose, so
+        // this node must not be recorded as crashed and the stop path owns
+        // removal; on a self-exit (`Some`) it moves to a terminal state below.
         let status = tokio::select! {
             biased;
-            _ = shutdown_token.cancelled() => return,
-            status = child.wait() => status,
+            _ = shutdown_token.cancelled() => None,
+            status = child.wait() => Some(status),
         };
 
-        // The process is gone. Stop the health monitor first, before any lock
-        // work, so it cannot squeeze in one more probe against the dead process
-        // and log a misleading "became unhealthy" for a node that just finished.
+        // The process is, or imminently will be, gone. Stop the health monitor
+        // first, before any lock work, so it cannot squeeze in one more probe
+        // against the dead process and log a misleading "became unhealthy".
         instance_done.cancel();
 
-        // A `wait()` error (the OS refused to report the status — vanishingly
+        // On daemon shutdown still drain `child.wait()` to reap the process the
+        // teardown is SIGKILLing: this task owns the only handle that can reap it
+        // (no `kill_on_drop`), so returning now would orphan a zombie. The stop
+        // path owns removal, so do not record a terminal state here.
+        let Some(status) = status else {
+            let _ = child.wait().await;
+            return;
+        };
+
+        // A `wait()` error (the OS refused to report the status, vanishingly
         // rare) is treated as an unclean exit, the conservative choice.
         let exited_cleanly = matches!(&status, Ok(s) if s.success());
 

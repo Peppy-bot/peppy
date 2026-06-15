@@ -49,19 +49,19 @@ impl From<&NodeEntity> for SerializedNode {
     }
 }
 
-/// Lifecycle stage of a `NodeEntity`. Describes *artifact readiness only* —
-/// per-instance state (Starting/Running) lives on each
-/// [`TrackedNodeInstance`] inside `Ready.instances`.
+/// Lifecycle stage of a `NodeEntity`. Describes *artifact readiness only*.
+/// Per-instance state (Starting, Running, or a terminal Finished/Failed) lives
+/// on each [`TrackedNodeInstance`] inside `Ready.instances`.
 ///
 /// - `Added` — config registered, no artifact, no instances.
 /// - `Building` — `build()` is running its I/O. Acts as the concurrency
 ///   barrier: a second concurrent `build()` on the same entity sees this
 ///   stage and is rejected immediately with no queueing.
 /// - `Ready` — artifact is on disk. The instances list may be empty (no
-///   instances spawned yet, equivalent to the old `Built` stage), contain
-///   only `Running` instances (equivalent to the old `Started` stage), or
-///   contain a mix of `Starting` and `Running` instances (in-flight
-///   `prepare_and_spawn` calls coexisting with already-running instances).
+///   instances spawned yet, equivalent to the old `Built` stage) or hold any
+///   mix of `Starting` (in-flight `prepare_and_spawn`), `Running`, and terminal
+///   `Finished`/`Failed` instances. A self-exited instance stays listed as
+///   `Finished` or `Failed` until the stack is cleared or it is stopped.
 /// - `Root` — the synthetic daemon entity. Has no buildable artifact and
 ///   exactly one `Running` instance (the daemon process itself). The
 ///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
@@ -914,7 +914,7 @@ impl NodeEntity {
     }
 
     /// Phase 2 (success): records the spawned instance against the entity and
-    /// transitions `Starting → Started`. Returns the live `Child` so the caller
+    /// transitions `Starting → Running`. Returns the live `Child` so the caller
     /// can watch it for exit (see the process-exit watcher in `node_run`),
     /// turning a self-exit into a terminal `Finished`/`Failed` instance state.
     ///
@@ -1116,9 +1116,10 @@ impl NodeEntity {
     ///
     /// - `(None, [])` → `Added`
     /// - `(Some, [])` → `Ready { instances: [] }`
-    /// - `(Some, instances)` → `Ready { instances }` (callers are responsible
-    ///   for the instances having `state == Running` — this constructor does
-    ///   not enforce it)
+    /// - `(Some, instances)` → `Ready { instances }` (callers set each
+    ///   instance's state: `Running`, or the terminal `Finished`/`Failed` for
+    ///   fixtures that exercise self-exited nodes. This constructor does not
+    ///   enforce it)
     /// - `(None, instances)` → invalid; panics
     #[cfg(test)]
     pub(crate) fn from_snapshot(

@@ -532,13 +532,14 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     // node's NodeBuilder runtime cancels its cancellation token and exits.
     // The timeout must exceed the handler's full force-kill deadline (grace +
     // runtime teardown) plus the reap budget and messaging round-trips.
+    let stop_timeout = force_kill_deadline(node_stack.shutdown_grace()) + Duration::from_secs(8);
     let response = poll_node_stop(
         &NodeStopRequest::new(TARGET_INSTANCE_ID),
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        Duration::from_secs(20),
+        stop_timeout,
     )
     .await
     .expect("node_stop request should complete");

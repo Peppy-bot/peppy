@@ -226,8 +226,10 @@ async fn node_reset_force_kills_whole_process_group() {
     let running =
         spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id).await;
     let node_pid = running.pid;
-    // Drop the guard's stop-on-drop so only the reset kills the process group.
-    std::mem::forget(running);
+    // Keep `running` in scope: the reset is what kills the process group, but
+    // its Drop stays as a teardown fallback if an assertion panics first. On the
+    // success path the reset already reaped everything, so the guard's
+    // stop-on-drop is a harmless no-op.
 
     poll_until(
         Duration::from_secs(5),
