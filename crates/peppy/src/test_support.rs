@@ -192,6 +192,7 @@ impl ServeCommandEmulation {
             root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
             peppy_config: config::peppy_config::PeppyConfig::default(),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
         });
         let core_node_name = core_node.node_name().to_string();
 

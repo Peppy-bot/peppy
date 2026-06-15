@@ -36,6 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
@@ -116,6 +117,11 @@ pub struct CoreNodeConfig {
     /// Daemon-global messaging mode + peer buffer sizes, injected into every
     /// spawned node's runtime config (see `node::run`).
     pub peppy_config: config::peppy_config::PeppyConfig,
+    /// Cancelled at the start of daemon shutdown to stop the core node's own
+    /// clock + heartbeat publishers before the messaging session is closed, so
+    /// they do not spin against a closed session logging a failed publish on
+    /// every tick.
+    pub shutdown_token: CancellationToken,
 }
 
 pub struct CoreNode {
@@ -135,6 +141,9 @@ pub struct CoreNode {
     /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
     peppy_config: config::peppy_config::PeppyConfig,
+    /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
+    /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
+    shutdown_token: CancellationToken,
     /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
     /// instance is rejected rather than silently re-registering listeners.
     started: AtomicBool,
@@ -201,6 +210,7 @@ impl CoreNode {
             root_dir,
             peppy_dirs,
             peppy_config,
+            shutdown_token,
         } = config;
 
         let manifest_name = match node_name {
@@ -258,6 +268,7 @@ impl CoreNode {
             heartbeat_interval,
             daemon_use_sim_time,
             peppy_config,
+            shutdown_token,
             started: AtomicBool::new(false),
         }
     }
@@ -365,6 +376,7 @@ impl CoreNode {
                     self.instance_id(),
                     self.node_name(),
                     Arc::clone(&clock_cache),
+                    self.shutdown_token.clone(),
                 )
                 .boxed()
             } else {
@@ -375,6 +387,7 @@ impl CoreNode {
                     self.node_name(),
                     self.clock_publish_interval,
                     Arc::clone(&clock_source),
+                    self.shutdown_token.clone(),
                 )
                 .boxed()
             },
@@ -386,6 +399,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.heartbeat_interval,
+                self.shutdown_token.clone(),
             )
             .boxed(),
             info::listen_for_info(
