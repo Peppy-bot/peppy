@@ -1107,14 +1107,12 @@ impl NodeEntity {
         )
     }
 
-    /// Reconstructs an entity from a previously-captured snapshot during stack
-    /// restore. The state is taken at face value — no I/O is performed and
-    /// the lifecycle is bypassed.
-    ///
-    /// Used only by [`crate::node_stack::NodeStack::apply_from`] when cloning
-    /// state from another stack at startup, where the artifact already exists
-    /// on disk and the source instances are still tracked. The resulting
-    /// stage is determined by the `(artifact_path, instances)` combination:
+    /// Test-only constructor that materializes an entity directly in a target
+    /// stage, taking the state at face value: no I/O is performed and the
+    /// build/spawn lifecycle is bypassed. Fixtures use it to stand up `Added`
+    /// or `Ready` entities (with already-`Running` instances) without driving
+    /// the real `build()` / `prepare_and_spawn` paths. The resulting stage is
+    /// determined by the `(artifact_path, instances)` combination:
     ///
     /// - `(None, [])` → `Added`
     /// - `(Some, [])` → `Ready { instances: [] }`
@@ -1122,6 +1120,7 @@ impl NodeEntity {
     ///   for the instances having `state == Running` — this constructor does
     ///   not enforce it)
     /// - `(None, instances)` → invalid; panics
+    #[cfg(test)]
     pub(crate) fn from_snapshot(
         config: NodeConfig,
         config_path: PathBuf,

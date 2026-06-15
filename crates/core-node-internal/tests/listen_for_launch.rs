@@ -2,6 +2,7 @@ mod common;
 
 use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeout};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::node::Name;
 use config::node::NodeConfigParser;
 use core_node::names;
 use core_node_api::encoding::{
@@ -18,7 +19,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
-use crate::common::{TestPackagesCache, start_core_node_with_mock_messenger};
+use crate::common::{
+    StartedCoreNode, TestPackagesCache, TestRunningInstance, build_staged_node, is_process_running,
+    poll_until, send_node_add_and_wait, spawn_real_running_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
+};
 
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
@@ -36,6 +41,53 @@ impl Default for NodeConfigOptions<'_> {
             emits_camera_stream: false,
         }
     }
+}
+
+/// Seeds a real, running `sleep 60` instance on the daemon's stack: adds the
+/// node, builds it, and starts an instance, returning the source dir + live
+/// guard + pid. The launch-failure tests use this to stand up a previous stack
+/// that a new launch must tear down (not orphan) when the new launch fails. The
+/// returned `TempDir` and guard must be kept alive for the duration of the test
+/// so the seeded source and instance are only torn down by the launch under
+/// test, not by the guard's stop-on-drop.
+async fn seed_running_node(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &str,
+) -> (tempfile::TempDir, TestRunningInstance, u32) {
+    let source_dir = tempfile::tempdir().expect("temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            peppy_schema: "node_v1",
+            manifest: {{ name: "{name}", tag: "{tag}" }},
+            execution: {{ language: "rust", run_cmd: ["sleep", "60"] }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("seed node_add should complete");
+    assert!(add.success, "seed node_add failed: {:?}", add.error_message);
+
+    build_staged_node(started, name, tag).await;
+
+    let id = Name::new(instance_id).expect("valid instance id");
+    let guard = spawn_real_running_instance(started, name, tag, &id).await;
+    let pid = guard.pid;
+    assert!(
+        is_process_running(pid),
+        "seeded node {name} process {pid} should be running"
+    );
+    (source_dir, guard, pid)
 }
 
 const LAUNCHER_EXAMPLE1: &str = r#"
@@ -1281,6 +1333,22 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     assert!(result_a.success, "first launch should succeed");
     assert!(node_stack.contains("node_a", NODE_TAG));
 
+    // Capture the launch-started process so we can prove the relaunch tears it
+    // down instead of orphaning it.
+    let pid_a = node_stack
+        .find("node_a", NODE_TAG)
+        .expect("node_a should be in the stack after the first launch")
+        .read()
+        .instances()
+        .first()
+        .expect("node_a should have a running instance")
+        .pid()
+        .expect("node_a instance should have a pid");
+    assert!(
+        is_process_running(pid_a),
+        "node_a process {pid_a} should be running after the first launch"
+    );
+
     let launch_b = r#"
     { peppy_schema: "launcher_v1", deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
@@ -1305,10 +1373,21 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         node_stack.contains("node_b", NODE_TAG),
         "second request should replace existing stack (add node_b)"
     );
+
+    // Core regression: the relaunch must terminate the previous stack's process,
+    // not orphan it. Before the fix, node_a's OS process survived the relaunch,
+    // detached from the daemon and invisible to `stack list`.
+    poll_until(
+        Duration::from_secs(10),
+        &format!("node_a process {pid_a} should be terminated by the relaunch, not orphaned"),
+        || (!is_process_running(pid_a)).then_some(()),
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy() {
+async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy_and_clears_stack()
+ {
     const NODE_TAG: &str = "v1";
 
     // Use a short health timeout so the test doesn't take too long.
@@ -1317,23 +1396,17 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
 
-    // Seed stack with an existing node so we can verify rollback.
-    let existing_path = write_node_config(
-        nodes_dir.path(),
+    // Seed a real running previous stack so we can prove the launch tears it
+    // down (not orphans it) when the new launch fails.
+    let (_seed_src, _seed_guard, existing_pid) = seed_running_node(
+        &started_core_node,
         "existing_node",
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+        "existing_inst",
+    )
+    .await;
 
-    // Node to be launched.
+    // Node to be launched: starts a real process but never reports healthy.
     let _node_b_path = write_node_config(
         nodes_dir.path(),
         "node_b",
@@ -1357,7 +1430,6 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         .await
         .expect("ready should start"),
     );
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_b = r#"
     { peppy_schema: "launcher_v1", deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
@@ -1365,33 +1437,81 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launch_b).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_node_launch_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &launch_file_path,
-        GOAL_TIMEOUT,
-        Duration::from_secs(30),
+    // Drive the launch concurrently so we can capture node_b's started pid
+    // before the health-timeout failure tears the stack down. Without the fix,
+    // that partially-started instance would be orphaned by the failure path.
+    let caller = started_core_node.caller_handle.clone();
+    let core_name = started_core_node.core_node_name.clone();
+    let path = launch_file_path.clone();
+    let launch_task = tokio::spawn(async move {
+        send_node_launch_and_wait(
+            &caller,
+            &core_name,
+            &path,
+            GOAL_TIMEOUT,
+            Duration::from_secs(30),
+        )
+        .await
+    });
+
+    let node_b_pid = poll_until(
+        Duration::from_secs(10),
+        "node_b should start a real process before the health timeout fails the launch",
+        || {
+            node_stack
+                .find("node_b", NODE_TAG)
+                .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
+        },
     )
-    .await
-    .expect("launch should complete");
+    .await;
+    assert!(
+        is_process_running(node_b_pid),
+        "node_b process {node_b_pid} should be running while the launch waits on health"
+    );
+
+    let (_goal_response, result) = launch_task
+        .await
+        .expect("launch task panicked")
+        .expect("launch should complete");
 
     assert!(
         !result.success,
         "launch should fail because the node never becomes healthy"
     );
 
+    // New contract: a failed launch leaves a clean empty stack.
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "only root should remain after a failed launch"
+    );
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on failure"
+        !node_stack.contains("existing_node", NODE_TAG),
+        "previous stack should be torn down, not restored, on failure"
     );
     assert!(
         !node_stack.contains("node_b", NODE_TAG),
         "node_b should not be present after failed launch"
     );
+
+    // Neither the previous stack's process nor the partially-started new
+    // instance may be orphaned by the failure path.
+    poll_until(
+        Duration::from_secs(15),
+        &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
+        || (!is_process_running(existing_pid)).then_some(()),
+    )
+    .await;
+    poll_until(
+        Duration::from_secs(15),
+        &format!("partial new instance {node_b_pid} should be terminated, not orphaned"),
+        || (!is_process_running(node_b_pid)).then_some(()),
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores_stack() {
+async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_stack() {
     const NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1399,21 +1519,15 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
 
-    // Seed stack with an existing node so we can verify rollback.
-    let existing_path = write_node_config(
-        nodes_dir.path(),
+    // Seed a real running previous stack so we can prove the launch tears it
+    // down (not orphans it) when the new launch fails.
+    let (_seed_src, _seed_guard, existing_pid) = seed_running_node(
+        &started_core_node,
         "existing_node",
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+        "existing_inst",
+    )
+    .await;
 
     // Node with a failing build_cmd.
     let _failing_node_path = write_node_config_with_options(
@@ -1457,14 +1571,29 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         "error message should contain the node name:tag, got: {error_message}"
     );
 
+    // New contract: a failed launch leaves a clean empty stack. The previous
+    // stack is torn down at the clear step, not rolled back.
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "only root should remain after a failed launch"
+    );
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on build_cmd failure"
+        !node_stack.contains("existing_node", NODE_TAG),
+        "previous stack should be torn down, not restored, on failure"
     );
     assert!(
         !node_stack.contains("failing_node", NODE_TAG),
         "failing_node should not be present after failed launch"
     );
+
+    // The previous stack's process must be terminated, not orphaned.
+    poll_until(
+        Duration::from_secs(10),
+        &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
+        || (!is_process_running(existing_pid)).then_some(()),
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1478,21 +1607,15 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
 
-    // Seed stack with an existing node so we can verify rollback.
-    let existing_path = write_node_config(
-        nodes_dir.path(),
+    // Seed a real running previous stack so we can prove the launch tears it
+    // down (not orphans it) when the new launch fails.
+    let (_seed_src, _seed_guard, existing_pid) = seed_running_node(
+        &started_core_node,
         "existing_node",
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+        "existing_inst",
+    )
+    .await;
 
     // Node whose run_cmd exits immediately with a non-zero status.
     let _failing_node_path = write_node_config_with_options(
@@ -1540,14 +1663,29 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         "error message should contain the instance ID, got: {error_message}"
     );
 
+    // New contract: a failed launch leaves a clean empty stack. The previous
+    // stack is torn down at the clear step, not rolled back.
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "only root should remain after a failed launch"
+    );
     assert!(
-        node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on run_cmd failure"
+        !node_stack.contains("existing_node", NODE_TAG),
+        "previous stack should be torn down, not restored, on failure"
     );
     assert!(
         !node_stack.contains(NODE_NAME, NODE_TAG),
         "{NODE_NAME} should not be present after failed launch"
     );
+
+    // The previous stack's process must be terminated, not orphaned.
+    poll_until(
+        Duration::from_secs(10),
+        &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
+        || (!is_process_running(existing_pid)).then_some(()),
+    )
+    .await;
 
     // The node was successfully added before the start failed, so we expect one add log entry.
     assert_eq!(

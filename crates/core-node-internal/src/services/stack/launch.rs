@@ -6,7 +6,8 @@ use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, Concur
 use crate::services::node::{
     DaemonDefaults, FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
     NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
-    run_node_add, run_node_build_for_entity, run_node_run, write_error_to_log,
+    run_node_add, run_node_build_for_entity, run_node_run, teardown_all_instances,
+    write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
@@ -748,11 +749,12 @@ async fn start_node_directly(
     }
 }
 
-async fn restore_stack(
-    ctx: &ProcessLaunchContext,
-    backup: &NodeStack,
-    reason: String,
-) -> LaunchResult {
+/// Launch failure path: tear down whatever partial stack got started and clear
+/// it, then return the failure. A launch replaces the previous stack by tearing
+/// it down at the clear step, so on failure there is nothing to roll back to;
+/// the honest end state is an empty stack rather than orphaned half-started
+/// instances.
+async fn fail_and_clear_stack(ctx: &ProcessLaunchContext, reason: String) -> LaunchResult {
     publish_stderr(
         ctx,
         format!("Launch failed: {reason}"),
@@ -760,10 +762,7 @@ async fn restore_stack(
     )
     .await;
 
-    if let Err(err) = ctx.node_stack.apply_from(backup) {
-        let msg = format!("{reason}\n(also failed to restore previous stack: {err})");
-        return LaunchResult::failure(&ctx.log_path, msg);
-    }
+    teardown_and_reset_stack(ctx).await;
 
     LaunchResult::failure(&ctx.log_path, reason)
 }
@@ -1031,7 +1030,7 @@ async fn validate_and_order_dependencies(
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    // The root entity stays in the stack across launches (snapshot_and_clear_stack
+    // The root entity stays in the stack across launches (teardown_and_reset_stack
     // preserves it), so its instance_id must participate in stack-wide uniqueness
     // checks. Synthesize a single-instance DeploymentInstance for it, but pass
     // `depends_on: None` / empty `conforms_to` in the binding item below so the
@@ -1202,40 +1201,27 @@ fn topological_sort(
     Ok(ordered)
 }
 
-/// Step 4: Snapshot current stack and clear it.
-async fn snapshot_and_clear_stack(
-    ctx: &ProcessLaunchContext,
-) -> std::result::Result<NodeStack, LaunchResult> {
-    let backup_stack = {
-        let root_handle = ctx.node_stack.root();
-        let (root_cfg, root_path) = {
-            let guard = root_handle.read();
-            (
-                guard.config().clone(),
-                guard
-                    .artifact_path()
-                    .unwrap_or_else(|| guard.config_path())
-                    .to_path_buf(),
-            )
-        };
-        let backup = NodeStack::new(root_cfg, None, root_path);
-        if let Err(err) = backup.apply_from(&ctx.node_stack) {
-            let msg = format!("failed to snapshot current stack: {err}");
-            publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
-        }
-        backup
-    };
-
+/// Step 4: Stop the currently-running stack and clear it.
+///
+/// Cooperatively shuts down every running instance, force-killing the process
+/// group of any straggler, before dropping them from the stack, so a relaunch
+/// never orphans the previous stack's processes. Also reused by the launch
+/// failure path to tear down a partial new stack. Infallible.
+async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
     publish_stdout(
         ctx,
-        "Clearing current node stack",
+        "Stopping current node stack",
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
+    teardown_all_instances(
+        &ctx.messenger,
+        &ctx.bound_core_node,
+        &ctx.core_instance_id,
+        &ctx.node_stack,
+    )
+    .await;
     ctx.node_stack.reset();
-
-    Ok(backup_stack)
 }
 
 /// Step 5: Add every node to the node stack in dependency order.
@@ -1243,7 +1229,6 @@ async fn add_nodes_to_stack(
     ctx: &ProcessLaunchContext,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
-    backup_stack: &NodeStack,
     add_log_paths: &mut Vec<NodeAddLogEntry>,
     build_log_paths: &mut Vec<NodeBuildLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
@@ -1288,7 +1273,7 @@ async fn add_nodes_to_stack(
                         .error_message
                         .unwrap_or_else(|| "node_add failed".to_string());
                     let reason = format!("failed to add node {}: {}", key.label(), inner);
-                    return Err(restore_stack(ctx, backup_stack, reason).await);
+                    return Err(fail_and_clear_stack(ctx, reason).await);
                 }
                 let node_name = result.node_name.clone().unwrap_or_else(|| key.name.clone());
                 let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
@@ -1311,12 +1296,12 @@ async fn add_nodes_to_stack(
 
                 if let Err(err) = build_result {
                     let reason = format!("failed to build node {}: {}", key.label(), err);
-                    return Err(restore_stack(ctx, backup_stack, reason).await);
+                    return Err(fail_and_clear_stack(ctx, reason).await);
                 }
             }
             Err(err) => {
                 let reason = format!("failed to add node {}: {}", key.label(), err);
-                return Err(restore_stack(ctx, backup_stack, reason).await);
+                return Err(fail_and_clear_stack(ctx, reason).await);
             }
         }
     }
@@ -1329,7 +1314,6 @@ async fn start_node_instances(
     ctx: &ProcessLaunchContext,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
-    backup_stack: &NodeStack,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
     resolved_slot_bindings: &std::collections::BTreeMap<
         String,
@@ -1379,16 +1363,15 @@ async fn start_node_instances(
             ) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    return Err(restore_stack(ctx, backup_stack, e.to_string()).await);
+                    return Err(fail_and_clear_stack(ctx, e.to_string()).await);
                 }
             };
 
             let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
                 Ok(json) => json,
                 Err(e) => {
-                    return Err(restore_stack(
+                    return Err(fail_and_clear_stack(
                         ctx,
-                        backup_stack,
                         format!("failed to serialize runtime config: {e}"),
                     )
                     .await);
@@ -1408,7 +1391,7 @@ async fn start_node_instances(
             let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
                 Ok(r) => r,
                 Err(e) => {
-                    return Err(restore_stack(ctx, backup_stack, e).await);
+                    return Err(fail_and_clear_stack(ctx, e).await);
                 }
             };
 
@@ -1437,7 +1420,7 @@ async fn start_node_instances(
                             instance_id,
                             inner
                         );
-                        return Err(restore_stack(ctx, backup_stack, reason).await);
+                        return Err(fail_and_clear_stack(ctx, reason).await);
                     }
                 }
                 Err(err) => {
@@ -1447,7 +1430,7 @@ async fn start_node_instances(
                         instance_id,
                         err
                     );
-                    return Err(restore_stack(ctx, backup_stack, reason).await);
+                    return Err(fail_and_clear_stack(ctx, reason).await);
                 }
             }
         }
@@ -1638,11 +1621,9 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
             Err(launch_result) => return launch_result,
         };
 
-    // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `run_cmd` fails on one of the nodes)
-    let backup_stack = match snapshot_and_clear_stack(&ctx).await {
-        Ok(result) => result,
-        Err(launch_result) => return launch_result,
-    };
+    // Step 4: Stop and clear the currently-running stack. A launch replaces it,
+    // so the old instances are torn down here before the new ones are built.
+    teardown_and_reset_stack(&ctx).await;
 
     // Build lookup map
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
@@ -1659,7 +1640,6 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         &ctx,
         &ordered,
         &planned_by_key,
-        &backup_stack,
         &mut add_log_paths,
         &mut build_log_paths,
     )
@@ -1672,7 +1652,6 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
                 &ctx,
                 &ordered,
                 &planned_by_key,
-                &backup_stack,
                 &mut run_log_paths,
                 &resolved_slot_bindings,
             )

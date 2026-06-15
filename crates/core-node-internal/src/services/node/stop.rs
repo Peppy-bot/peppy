@@ -638,6 +638,13 @@ pub async fn teardown_all_instances(
 /// Snapshot every non-root instance (both `Running` and `Starting` — a
 /// `Starting` instance already has a live child) with its routing identity and
 /// pid. Skips the root entity by pointer identity.
+///
+/// Each collected instance is claimed via `mark_stopping()` so its exit watcher
+/// treats the upcoming kill as intentional and does not relabel it a crash. The
+/// daemon-shutdown caller does not strictly need this (its watchers bail on the
+/// shutdown token), but the reset and launch-clear callers do: they tear the
+/// stack down while the daemon keeps running, so without the claim each
+/// force-killed instance would be recorded as `Failed` by its watcher.
 fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> {
     let root = node_stack.root();
     let mut doomed = Vec::new();
@@ -650,6 +657,9 @@ fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> 
         let node_tag = guard.config().manifest.tag.clone();
         let is_container = guard.config().execution.container.is_some();
         for inst in guard.instances() {
+            // Claim before termination so the exit watcher leaves removal to the
+            // teardown and never records an intentional kill as a self-exit.
+            inst.mark_stopping();
             doomed.push(DoomedInstance {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
