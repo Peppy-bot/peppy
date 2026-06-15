@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{MessengerHandle, ProducerRef, ServiceMessenger, ServiceTarget};
+use peppylib::messaging::{
+    MessengerHandle, ProducerRef, ServiceMessenger, ServiceTarget, TopicMessenger,
+};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use pmi::{ZenohAdapter, ZenohdInstance};
 use tempfile::TempDir;
@@ -64,6 +66,35 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+/// Deterministically waits until `publisher`'s session sees a subscriber for
+/// `topic_name` before the test emits on it, replacing a fixed "settle for
+/// zenoh discovery" sleep. Peer-mode discovery is not instantaneous, so an emit
+/// sent before routing completes can be dropped. The arguments mirror the
+/// subsequent [`TopicMessenger::emit`] call. Panics if no subscriber routes
+/// within 2s.
+pub(crate) async fn wait_for_topic_subscriber(
+    publisher: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    target: SenderTarget,
+    topic_name: &str,
+) {
+    let matched = TopicMessenger::wait_for_subscriber(
+        publisher,
+        core_node,
+        instance_id,
+        target,
+        topic_name,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("wait_for_subscriber should not error");
+    assert!(
+        matched,
+        "no subscriber for topic `{topic_name}` routed within 2s"
+    );
 }
 
 /// Starts an ephemeral zenoh router, builds a `NodeRunner` pointed at it, and

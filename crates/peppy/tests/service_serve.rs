@@ -7,10 +7,11 @@ use peppy::commands::service::ClockSource;
 use peppy::commands::service::serve::CancellationToken;
 use peppy::commands::service::serve::ServeCommand;
 use peppy::context::AppContext;
+use peppy::test_support::wait_for_log;
 
 #[test]
 fn serve_command() {
-    let ctx = Arc::new(AppContext::default());
+    let ctx = Arc::new(AppContext::from_current_dir().expect("current dir is readable"));
     let log_capture = peppy::test_support::LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
@@ -22,8 +23,17 @@ fn serve_command() {
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
 
+    // Gate the shutdown on serve's observable readiness rather than a guessed
+    // delay: cancel only once it has logged that it is initialized and is
+    // waiting on the shutdown signal. The cancellation token is sticky, so even
+    // if we cancel between the log line and the select loop, the signal is seen.
+    let log_for_shutdown = log_capture.clone();
     let shutdown_thread = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(200));
+        wait_for_log(
+            || log_for_shutdown.logs(),
+            "Serve command initialized!",
+            Duration::from_secs(30),
+        );
         shutdown_token_clone.cancel();
     });
 

@@ -1,7 +1,8 @@
 use crate::Result;
 use crate::names;
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
+use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext, Subscription, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 /// Failures observable from a [`ClockSource`]. Wall mode propagates a system
@@ -147,6 +149,9 @@ fn handle_clock_request_inner(
 /// Wall mode only. In sim mode the daemon does not publish; an external
 /// simulator does, and the daemon merely subscribes (see
 /// [`subscribe_external_clock`]).
+///
+/// `cancel` stops the loop on daemon shutdown so it does not spin against a
+/// closed session, logging a failed publish on every tick.
 pub async fn publish_clock(
     messenger: MessengerHandle,
     core_node_name: &str,
@@ -154,6 +159,7 @@ pub async fn publish_clock(
     node_name: &str,
     interval: Duration,
     source: Arc<dyn ClockSource>,
+    cancel: CancellationToken,
 ) -> Result<JoinHandle<Result<()>>> {
     let publisher = declare_sensor_publisher(
         &messenger,
@@ -164,7 +170,7 @@ pub async fn publish_clock(
     )
     .await?;
     Ok(tokio::spawn(run_clock_publisher(
-        publisher, interval, source,
+        publisher, interval, source, cancel,
     )))
 }
 
@@ -195,6 +201,7 @@ async fn run_clock_publisher(
     publisher: TopicPublisher,
     interval: Duration,
     source: Arc<dyn ClockSource>,
+    cancel: CancellationToken,
 ) -> Result<()> {
     let mut ticker = tokio::time::interval(interval);
     // Skip catch-up bursts after a backlog (e.g. test pause / GC stall).
@@ -202,7 +209,13 @@ async fn run_clock_publisher(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            // Check cancellation first so a shutdown that races a due tick wins,
+            // stopping the loop instead of emitting one last doomed publish.
+            biased;
+            _ = cancel.cancelled() => break,
+            _ = ticker.tick() => {}
+        }
         let now_ns = match source.now_ns() {
             Ok(t) => t,
             Err(e) => {
@@ -221,6 +234,7 @@ async fn run_clock_publisher(
             warn!("clock tick emit failed: {e}");
         }
     }
+    Ok(())
 }
 
 /// Spawns a task that emits a liveness beat on the `daemon_heartbeat` topic at
@@ -241,6 +255,7 @@ pub async fn publish_daemon_heartbeat(
     instance_id: &str,
     node_name: &str,
     interval: Duration,
+    cancel: CancellationToken,
 ) -> Result<JoinHandle<Result<()>>> {
     let publisher = declare_sensor_publisher(
         &messenger,
@@ -250,10 +265,16 @@ pub async fn publish_daemon_heartbeat(
         names::DAEMON_HEARTBEAT,
     )
     .await?;
-    Ok(tokio::spawn(run_heartbeat_publisher(publisher, interval)))
+    Ok(tokio::spawn(run_heartbeat_publisher(
+        publisher, interval, cancel,
+    )))
 }
 
-async fn run_heartbeat_publisher(publisher: TopicPublisher, interval: Duration) -> Result<()> {
+async fn run_heartbeat_publisher(
+    publisher: TopicPublisher,
+    interval: Duration,
+    cancel: CancellationToken,
+) -> Result<()> {
     // The value is never read by the node — only the message's arrival matters
     // — so encode the constant payload once, outside the loop.
     let payload = ClockTick::new(0).encode()?;
@@ -262,11 +283,17 @@ async fn run_heartbeat_publisher(publisher: TopicPublisher, interval: Duration) 
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            // Stop cleanly on shutdown rather than beating into a closed session.
+            biased;
+            _ = cancel.cancelled() => break,
+            _ = ticker.tick() => {}
+        }
         if let Err(e) = publisher.publish(payload.clone()).await {
             warn!("daemon heartbeat emit failed: {e}");
         }
     }
+    Ok(())
 }
 
 /// Subscribes to the `clock` topic and feeds the latest observed timestamp
@@ -285,6 +312,7 @@ pub async fn subscribe_external_clock(
     instance_id: &str,
     node_name: &str,
     cache: Arc<AtomicU64>,
+    cancel: CancellationToken,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut subscription: Subscription = TopicMessenger::subscribe(
         &messenger,
@@ -299,7 +327,18 @@ pub async fn subscribe_external_clock(
     .await?;
 
     Ok(tokio::spawn(async move {
-        while let Some(message) = subscription.on_next_message().await {
+        loop {
+            // The subscription also ends on session close, but selecting on the
+            // shutdown token makes the exit deterministic and matches the
+            // publisher loops.
+            let message = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                message = subscription.on_next_message() => match message {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
             match ClockTick::decode(message.payload().as_ref()) {
                 Ok(tick) => {
                     // `0` is reserved as "not ready" — a simulator publishing
@@ -318,6 +357,69 @@ pub async fn subscribe_external_clock(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+    use tokio::sync::Mutex;
+
+    /// A messenger handle over a started in-memory mock session, enough for the
+    /// publisher loops to declare a publisher and tick.
+    async fn started_mock_messenger() -> MessengerHandle {
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger
+            .start_session()
+            .await
+            .expect("mock session should start");
+        MessengerHandle::from_shared(Arc::new(Mutex::new(messenger)))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clock_publisher_stops_promptly_on_cancel() {
+        let cancel = CancellationToken::new();
+        let handle = publish_clock(
+            started_mock_messenger().await,
+            "test_core_node",
+            "test_instance",
+            "test_core_node",
+            Duration::from_millis(10),
+            Arc::new(WallClockSource),
+            cancel.clone(),
+        )
+        .await
+        .expect("clock publisher should spawn");
+
+        // Let it run a few ticks, then ask it to stop.
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        cancel.cancel();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("publisher must stop promptly after cancel, not spin")
+            .expect("publisher task should not panic");
+        outcome.expect("publisher should exit Ok after a clean cancel");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn heartbeat_publisher_stops_promptly_on_cancel() {
+        let cancel = CancellationToken::new();
+        let handle = publish_daemon_heartbeat(
+            started_mock_messenger().await,
+            "test_core_node",
+            "test_instance",
+            "test_core_node",
+            Duration::from_millis(10),
+            cancel.clone(),
+        )
+        .await
+        .expect("heartbeat publisher should spawn");
+
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        cancel.cancel();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("heartbeat must stop promptly after cancel, not spin")
+            .expect("heartbeat task should not panic");
+        outcome.expect("heartbeat should exit Ok after a clean cancel");
+    }
 
     #[test]
     fn wall_clock_source_returns_a_value() {

@@ -1,3 +1,9 @@
+// The crate contains no `unsafe`: process control, IO, and path handling all go
+// through safe std APIs. `forbid` (not `deny`) makes any future `unsafe` a hard
+// compile error that cannot be locally silenced, so adding FFI (e.g. a host-native
+// `libc::kill`) becomes a deliberate decision rather than a silent regression.
+#![forbid(unsafe_code)]
+
 mod apptainer;
 mod error;
 

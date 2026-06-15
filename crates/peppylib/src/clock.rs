@@ -13,9 +13,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick, wall_now_ns};
+use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use core_node_api::names;
 
 use crate::core_node::transport::poll_clock;
@@ -24,6 +24,19 @@ use crate::messaging::Subscription;
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
+/// on the publish/poll paths and in tests. Returns an error if the system clock
+/// is set before the epoch; saturates to `u64::MAX` if the timestamp would
+/// overflow `u64` (post-year-2554, unreachable in practice).
+///
+/// Lives in `peppylib` (the lowest crate shared by both the daemon and clients)
+/// rather than in `core-node-api`: reading the system clock is a side effect a
+/// pure wire-codec crate should not perform.
+pub fn wall_now_ns() -> Result<u64> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
 
 /// Result of an NTP-style clock-sync exchange with the core node.
 #[derive(Debug, Clone)]
@@ -79,7 +92,7 @@ impl ClockSubscription {
     pub async fn on_next_tick(&mut self) -> Result<Option<ClockTick>> {
         match self.inner.on_next_message().await {
             Some(message) => {
-                let tick = ClockTick::decode(message.payload().as_ref())?;
+                let tick = ClockTick::decode(message.payload_bytes().as_ref())?;
                 Ok(Some(tick))
             }
             None => Ok(None),
@@ -165,7 +178,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     // Subscription destructor.
     let feeder = spawn(async move {
         while let Some(message) = subscription.on_next_message().await {
-            match ClockTick::decode(message.payload().as_ref()) {
+            match ClockTick::decode(message.payload_bytes().as_ref()) {
                 Ok(tick) => {
                     // 0 is the not-ready sentinel, so clamp to 1 if a
                     // simulator ever publishes a literal zero.
@@ -185,7 +198,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
 pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
-    let inner = super::subscribe_core_topic(node_runner, names::CLOCK).await?;
+    let inner = crate::core_node::subscribe_core_topic(node_runner, names::CLOCK).await?;
     Ok(ClockSubscription { inner })
 }
 
@@ -214,6 +227,18 @@ mod tests {
         };
         let now = clock.now_ns().expect("wall should always succeed");
         assert!(now > 0);
+    }
+
+    #[test]
+    fn wall_now_ns_is_past_2020_and_non_decreasing() {
+        // Deterministic without sleeping: assert only invariants true of any
+        // real clock — a timestamp past 2020-01-01 (1_577_836_800 s) and a
+        // monotonic-ish non-regression between two back-to-back reads.
+        const Y2020_NS: u64 = 1_577_836_800_000_000_000;
+        let first = wall_now_ns().expect("clock read");
+        let second = wall_now_ns().expect("clock read");
+        assert!(first >= Y2020_NS, "clock before 2020: {first}");
+        assert!(second >= first, "clock went backwards: {first} -> {second}");
     }
 
     #[tokio::test]

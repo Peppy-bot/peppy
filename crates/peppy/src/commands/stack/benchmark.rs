@@ -134,7 +134,7 @@ async fn benchmark_async(
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
                 if let Ok(feedback) = StackBenchmarkFeedback::decode(&msg.payload()) {
-                    scrolling.add_line(&feedback.line, feedback.is_stderr());
+                    scrolling.add_line(&feedback.line);
                 }
             }
             Ok(Err(_)) => break, // end-of-stream: the goal has completed
@@ -311,7 +311,12 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
             );
         }
     }
-    baseline::save(&baseline_path, &current);
+    if let Err(err) = baseline::save(&baseline_path, &current) {
+        eprintln!(
+            "warning: failed to save latency baseline to {}: {err}",
+            baseline_path.display()
+        );
+    }
 }
 
 /// Which report table rows are being rendered for. The synthetic table shows

@@ -2,6 +2,7 @@ use crate::Result;
 use crate::names;
 use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
+use crate::services::response::into_service_response;
 use config::ParsingError;
 use config::consts::PeppyDirs;
 use config::node::{NodeConfigParser, validate_dependency_specs};
@@ -11,7 +12,7 @@ use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -167,13 +168,10 @@ async fn handle_node_sync_request(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_sync_request_inner(&context, &node_stack, peppy_dirs)
-        .await
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        })
+    into_service_response(
+        &context,
+        handle_node_sync_request_inner(&context, &node_stack, peppy_dirs).await,
+    )
 }
 
 async fn handle_node_sync_request_inner(
@@ -748,11 +746,11 @@ pub fn collect_consumed_interfaces(
             ) else {
                 continue;
             };
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
-                topic: consumed_topic.clone(),
+            interfaces.push(DeploymentInterface::consumed_topic(
+                consumed_topic.clone(),
                 message_format,
                 dependency,
-            }));
+            ));
         }
     }
 
@@ -786,13 +784,11 @@ pub fn collect_consumed_interfaces(
             ) else {
                 continue;
             };
-            interfaces.push(DeploymentInterface::new(
-                InterfaceVariant::ConsumedService {
-                    service: consumed_service.clone(),
-                    request_format,
-                    response_format,
-                    dependency,
-                },
+            interfaces.push(DeploymentInterface::consumed_service(
+                consumed_service.clone(),
+                request_format,
+                response_format,
+                dependency,
             ));
         }
     }
@@ -824,11 +820,11 @@ pub fn collect_consumed_interfaces(
             ) else {
                 continue;
             };
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
-                action: consumed_action.clone(),
-                messages: action_message,
+            interfaces.push(DeploymentInterface::consumed_action(
+                consumed_action.clone(),
+                action_message,
                 dependency,
-            }));
+            ));
         }
     }
 
@@ -1045,18 +1041,10 @@ fn action_message_from_exposed(
             .goal_service
             .as_ref()
             .and_then(|s| s.request_message_format.clone()),
-        goal_response: exposed_action
-            .goal_service
-            .as_ref()
-            .and_then(|s| s.response_message_format.clone()),
         feedback: exposed_action
             .feedback_topic
             .as_ref()
             .and_then(|t| t.message_format.clone()),
-        result_request: exposed_action
-            .result_service
-            .as_ref()
-            .and_then(|s| s.request_message_format.clone()),
         result_response: exposed_action
             .result_service
             .as_ref()
@@ -1198,22 +1186,22 @@ pub fn resolve_conforms_to(
         };
 
         for topic in parsed.interfaces.topics {
-            out.push(DeploymentInterface::new(InterfaceVariant::EmittedTopic {
+            out.push(DeploymentInterface::emitted_topic(
                 topic,
-                origin: Some(origin.clone()),
-            }));
+                Some(origin.clone()),
+            ));
         }
         for service in parsed.interfaces.services {
-            out.push(DeploymentInterface::new(InterfaceVariant::ExposedService {
+            out.push(DeploymentInterface::exposed_service(
                 service,
-                origin: Some(origin.clone()),
-            }));
+                Some(origin.clone()),
+            ));
         }
         for action in parsed.interfaces.actions {
-            out.push(DeploymentInterface::new(InterfaceVariant::ExposedAction {
+            out.push(DeploymentInterface::exposed_action(
                 action,
-                origin: Some(origin.clone()),
-            }));
+                Some(origin.clone()),
+            ));
         }
     }
 

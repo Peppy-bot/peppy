@@ -35,3 +35,10 @@ rstest = "0.26"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# Strip symbols + debuginfo from release artifacts. The peppylib Python extension
+# (_peppylib.abi3.so) is built in release via maturin/PEP517; unstripped it was
+# ~457 MB (full debug_info). uv caches that wheel per build (append-only cache),
+# so unstripped builds ballooned ~/.cache/uv into the hundreds of GB. Stripping
+# cuts the cdylib ~10-40x and also shrinks the wheels shipped to PyPI. Use
+# strip = "debuginfo" instead if you need symbolized release backtraces.
+strip = true

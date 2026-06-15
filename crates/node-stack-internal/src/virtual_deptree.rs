@@ -51,7 +51,6 @@ impl VirtualNodeInfo {
 #[derive(Debug)]
 pub struct VirtualDeptree {
     graph: StableDiGraph<NodeKey, ()>,
-    by_key: HashMap<NodeKey, NodeIndex>,
     infos: HashMap<NodeIndex, VirtualNodeInfo>,
 }
 
@@ -147,11 +146,7 @@ impl VirtualDeptree {
             });
         }
 
-        Ok(Self {
-            graph,
-            by_key,
-            infos,
-        })
+        Ok(Self { graph, infos })
     }
 
     /// Returns the dependency-ordered slice of node infos. Dependencies are
@@ -160,21 +155,6 @@ impl VirtualDeptree {
         // Already validated as acyclic in `build`.
         let order = toposort(&self.graph, None).expect("graph is a DAG by construction");
         order.into_iter().map(|idx| &self.infos[&idx]).collect()
-    }
-
-    /// Returns the number of nodes in the tree.
-    pub fn len(&self) -> usize {
-        self.infos.len()
-    }
-
-    /// Returns `true` when the tree contains no nodes.
-    pub fn is_empty(&self) -> bool {
-        self.infos.is_empty()
-    }
-
-    /// Looks up a node by `(name, tag)`.
-    pub fn get(&self, key: &NodeKey) -> Option<&VirtualNodeInfo> {
-        self.by_key.get(key).and_then(|idx| self.infos.get(idx))
     }
 }
 
@@ -221,8 +201,6 @@ mod tests {
     #[test]
     fn build_empty_returns_empty_order() {
         let tree = VirtualDeptree::build(vec![]).unwrap();
-        assert!(tree.is_empty());
-        assert_eq!(tree.len(), 0);
         assert!(tree.topological_order().is_empty());
     }
 
@@ -235,7 +213,7 @@ mod tests {
         let b = write_node(&b_dir, "b", &[]);
 
         let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]).unwrap();
-        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.topological_order().len(), 2);
         let order = tree.topological_order();
         assert_eq!(order.len(), 2);
         let names: Vec<String> = order.iter().map(|n| key_of(n).0).collect();
@@ -319,7 +297,7 @@ mod tests {
         let a = write_node(&a_dir, "a", &[("external_x", "v999")]);
 
         let tree = VirtualDeptree::build(vec![(a_dir, a)]).unwrap();
-        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.topological_order().len(), 1);
         let order = tree.topological_order();
         assert_eq!(order.len(), 1);
         assert_eq!(key_of(order[0]).0, "a");
@@ -503,7 +481,7 @@ mod tests {
 
         let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)])
             .expect("mutual topics must stay allowed");
-        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.topological_order().len(), 2);
     }
 
     #[test]
@@ -524,7 +502,7 @@ mod tests {
 
         let tree = VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)])
             .expect("one-directional service dep is fine");
-        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.topological_order().len(), 2);
     }
 
     #[test]

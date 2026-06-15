@@ -13,12 +13,23 @@ use config::runtime::SlotBinding;
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
-/// name (`"starting"`, `"running"`).
+/// name (`"starting"`, `"running"`, `"finished"`, `"failed"`).
+///
+/// `Starting` and `Running` are live states; `Finished` and `Failed` are
+/// terminal: the node's OS process has exited on its own (not via an explicit
+/// stop or daemon teardown) and the instance will not run again. `Finished` is
+/// a clean exit (status code 0), the expected end state of a one-shot node that
+/// completes its work and shuts itself down; `Failed` is a non-zero or
+/// signal-driven exit, i.e. the node crashed. Terminal instances stay visible
+/// in the stack until the stack is cleared or the instance is stopped, and the
+/// health monitor never probes them (a finished node has no health to report).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceState {
     Starting,
     Running,
+    Finished,
+    Failed,
 }
 
 impl InstanceState {
@@ -26,7 +37,17 @@ impl InstanceState {
         match self {
             InstanceState::Starting => "starting",
             InstanceState::Running => "running",
+            InstanceState::Finished => "finished",
+            InstanceState::Failed => "failed",
         }
+    }
+
+    /// `true` for the terminal states (`Finished`, `Failed`): the process has
+    /// exited and the instance will not transition again. Callers use this to
+    /// skip live-only work such as health probing and to render an exited
+    /// instance without a (meaningless) health verdict.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, InstanceState::Finished | InstanceState::Failed)
     }
 }
 
@@ -43,6 +64,8 @@ impl FromStr for InstanceState {
         match s {
             "starting" => Ok(InstanceState::Starting),
             "running" => Ok(InstanceState::Running),
+            "finished" => Ok(InstanceState::Finished),
+            "failed" => Ok(InstanceState::Failed),
             other => Err(UnknownInstanceState(other.to_owned())),
         }
     }
@@ -462,5 +485,166 @@ mod tests {
         assert!(msg.contains("router"), "got: {msg}");
         assert!(msg.contains("v1"), "got: {msg}");
         assert_eq!(err.label(), "router:v1");
+    }
+
+    #[test]
+    fn instance_count_and_running_ids_count_running_only() {
+        let node = make_node(
+            "foo",
+            "v1",
+            &[
+                ("r1", InstanceState::Running),
+                ("s1", InstanceState::Starting),
+                ("r2", InstanceState::Running),
+            ],
+        );
+        assert_eq!(node.instance_count(), 2);
+        assert_eq!(node.running_instance_ids(), vec!["r1", "r2"]);
+        // The documented invariant: the two agree on count.
+        assert_eq!(node.instance_count(), node.running_instance_ids().len());
+    }
+
+    #[test]
+    fn label_joins_name_and_tag() {
+        let node = make_node("router", "v2", &[]);
+        assert_eq!(node.label(), "router:v2");
+    }
+
+    #[test]
+    fn stage_label_reports_stage_or_unknown() {
+        // make_node sets stage = Some(Ready).
+        assert_eq!(make_node("a", "v1", &[]).stage_label(), "Ready");
+
+        // A legacy payload with no stage reports "Unknown".
+        let legacy = SerializedNode {
+            name: "a".into(),
+            tag: "v1".into(),
+            config_path: String::new(),
+            artifact_path: None,
+            stage: None,
+            instances: vec![],
+        };
+        assert_eq!(legacy.stage_label(), "Unknown");
+    }
+
+    #[test]
+    fn instance_state_str_display_and_parse_round_trip() {
+        for state in [
+            InstanceState::Starting,
+            InstanceState::Running,
+            InstanceState::Finished,
+            InstanceState::Failed,
+        ] {
+            assert_eq!(state.to_string(), state.as_str());
+            assert_eq!(state.as_str().parse::<InstanceState>(), Ok(state));
+        }
+        assert_eq!(InstanceState::Starting.as_str(), "starting");
+        assert_eq!(InstanceState::Running.as_str(), "running");
+        assert_eq!(InstanceState::Finished.as_str(), "finished");
+        assert_eq!(InstanceState::Failed.as_str(), "failed");
+
+        let err = "bogus"
+            .parse::<InstanceState>()
+            .expect_err("unknown must fail");
+        assert_eq!(err, UnknownInstanceState("bogus".to_owned()));
+        assert!(err.to_string().contains("bogus"), "got: {err}");
+    }
+
+    #[test]
+    fn instance_state_terminal_classification() {
+        assert!(!InstanceState::Starting.is_terminal());
+        assert!(!InstanceState::Running.is_terminal());
+        assert!(InstanceState::Finished.is_terminal());
+        assert!(InstanceState::Failed.is_terminal());
+    }
+
+    #[test]
+    fn instance_state_serde_wire_form_is_lowercase_and_matches_as_str() {
+        // The wire form is a cross-process contract (the daemon serializes
+        // instance state into the graph the CLI/UI deserialize). It rides on the
+        // `#[serde(rename_all = "lowercase")]` derive, a code path entirely
+        // separate from `as_str`/`FromStr`, so pin the literal JSON bytes for
+        // every variant and assert the two representations cannot drift apart.
+        let cases = [
+            (InstanceState::Starting, "\"starting\""),
+            (InstanceState::Running, "\"running\""),
+            (InstanceState::Finished, "\"finished\""),
+            (InstanceState::Failed, "\"failed\""),
+        ];
+        for (state, wire) in cases {
+            assert_eq!(
+                serde_json::to_string(&state).expect("serialize"),
+                wire,
+                "wire form regressed for {state:?}"
+            );
+            assert_eq!(
+                serde_json::from_str::<InstanceState>(wire).expect("deserialize"),
+                state,
+                "wire form did not round-trip for {state:?}"
+            );
+            // The derived serde form and the hand-written `as_str` must stay
+            // identical: a future variant added to only one path would diverge.
+            assert_eq!(
+                serde_json::to_value(state).expect("to_value"),
+                serde_json::Value::String(state.as_str().to_owned()),
+                "serde form and as_str diverged for {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn node_stage_str_display_and_parse_round_trip() {
+        for stage in [
+            NodeStage::Added,
+            NodeStage::Building,
+            NodeStage::Ready,
+            NodeStage::Root,
+        ] {
+            assert_eq!(stage.to_string(), stage.as_str());
+            assert_eq!(stage.as_str().parse::<NodeStage>(), Ok(stage));
+        }
+
+        let err = "Nope".parse::<NodeStage>().expect_err("unknown must fail");
+        assert_eq!(err, UnknownNodeStage("Nope".to_owned()));
+        assert!(err.to_string().contains("Nope"), "got: {err}");
+    }
+
+    #[test]
+    fn node_decodes_legacy_payload_without_stage_or_instances() {
+        // Producers that predate `stage`/`instances` omit both; serde defaults
+        // them to `None`/empty rather than failing to parse.
+        let legacy = r#"{"name":"n","tag":"v1","config_path":"","artifact_path":null}"#;
+        let decoded: SerializedNode = serde_json::from_str(legacy).expect("decode legacy node");
+        assert_eq!(decoded.stage, None);
+        assert!(decoded.instances.is_empty());
+        assert_eq!(decoded.stage_label(), "Unknown");
+    }
+
+    #[test]
+    fn edge_via_interface_defaults_to_none_and_is_omitted_when_absent() {
+        let edge = SerializedEdge {
+            from: make_node("a", "v1", &[]),
+            to: make_node("b", "v1", &[]),
+            via_interface: None,
+        };
+        let json = serde_json::to_string(&edge).expect("serialize");
+        assert!(
+            !json.contains("via_interface"),
+            "None must be omitted from the wire form: {json}"
+        );
+        let decoded: SerializedEdge = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, edge);
+
+        // And a populated interface round-trips.
+        let via = SerializedEdge {
+            via_interface: Some("camera:v1".to_owned()),
+            ..edge
+        };
+        let json = serde_json::to_string(&via).expect("serialize");
+        assert!(json.contains("camera:v1"), "got: {json}");
+        assert_eq!(
+            serde_json::from_str::<SerializedEdge>(&json).expect("decode"),
+            via
+        );
     }
 }

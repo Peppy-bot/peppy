@@ -26,21 +26,35 @@ fn test_node_arguments() -> CoreNodeArguments {
     }
 }
 
+/// Builds a `CoreNodeConfig` for the constructor tests; the cases differ only in
+/// the messenger, the explicit name, and the dirs.
+fn test_core_node_config(
+    messenger: Arc<Mutex<Messenger>>,
+    node_name: Option<&str>,
+    peppy_dirs: PeppyDirs,
+) -> CoreNodeConfig {
+    CoreNodeConfig {
+        messenger,
+        node_name: node_name.map(str::to_string),
+        arguments: test_node_arguments(),
+        root_dir: std::env::temp_dir(),
+        peppy_dirs,
+        peppy_config: config::peppy_config::PeppyConfig::default(),
+        shutdown_token: tokio_util::sync::CancellationToken::new(),
+    }
+}
+
 /// Verifies that the core node is configured to run in-process, not as a spawned
 /// subprocess or inside a container.
 #[tokio::test]
 async fn core_node_execution_has_no_run_cmd_and_no_container() {
     let messenger = create_mock_messenger().await;
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
-    let node_arguments = test_node_arguments();
-    let core_node = CoreNode::new(
+    let core_node = CoreNode::new(test_core_node_config(
         messenger,
         Some("test_core_node"),
-        node_arguments,
-        std::env::temp_dir(),
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
-    );
+    ));
 
     let execution = &core_node.node_config().execution;
     assert!(
@@ -60,22 +74,16 @@ async fn core_node_execution_has_no_run_cmd_and_no_container() {
 async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
 
-    let a = CoreNode::new(
+    let a = CoreNode::new(test_core_node_config(
         create_mock_messenger().await,
         None,
-        test_node_arguments(),
-        std::env::temp_dir(),
         peppy_dirs.clone(),
-        config::peppy_config::PeppyConfig::default(),
-    );
-    let b = CoreNode::new(
+    ));
+    let b = CoreNode::new(test_core_node_config(
         create_mock_messenger().await,
         None,
-        test_node_arguments(),
-        std::env::temp_dir(),
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
-    );
+    ));
 
     let name_a = a.node_config().manifest.name.as_str();
     let name_b = b.node_config().manifest.name.as_str();
@@ -98,17 +106,42 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
 async fn core_node_explicit_name_overrides_machine_uid() {
     let messenger = create_mock_messenger().await;
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
-    let node_arguments = test_node_arguments();
-    let core_node = CoreNode::new(
+    let core_node = CoreNode::new(test_core_node_config(
         messenger,
         Some("custom_name"),
-        node_arguments,
-        std::env::temp_dir(),
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
-    );
+    ));
     assert_eq!(
         core_node.node_config().manifest.name.as_str(),
         "custom_name"
     );
+}
+
+/// A second `start_with_ready` on the same instance is rejected rather than
+/// re-running the destructive setup and double-registering listeners.
+#[tokio::test]
+async fn start_with_ready_rejects_a_second_start() {
+    let core_node = Arc::new(CoreNode::new(test_core_node_config(
+        create_mock_messenger().await,
+        Some("dup_start_node"),
+        PeppyDirs::new(std::env::temp_dir()),
+    )));
+
+    // Drive the first start on a task: it registers listeners then serves until
+    // the session closes. The ready signal is a deterministic barrier — once it
+    // fires, the `started` flag is set.
+    let first = Arc::clone(&core_node);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let first_task = tokio::spawn(async move { first.start_with_ready(Some(ready_tx)).await });
+    ready_rx
+        .await
+        .expect("first start should reach the ready signal");
+
+    let err = core_node
+        .start_with_ready(None)
+        .await
+        .expect_err("a second start must be rejected");
+    assert!(matches!(err, crate::Error::AlreadyStarted));
+
+    first_task.abort();
 }

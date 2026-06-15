@@ -1,12 +1,13 @@
 use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use config::consts::PeppyDirs;
-use core_node::{CoreNode, CoreNodeArguments};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use pmi::Messenger;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Cadence of the per-node health monitor (see
@@ -32,6 +33,13 @@ pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
 pub struct CoreNodeRunner {
     core_node: CoreNode,
     messaging_ready: Option<watch::Receiver<bool>>,
+    /// Cancelled at the start of shutdown to stop the core node's clock +
+    /// heartbeat publishers before the messaging session is closed.
+    shutdown_token: CancellationToken,
+    /// Signaled (`true`) once node teardown has finished, releasing the
+    /// messaging router to close the session. The startup `messaging_ready`
+    /// watch's shutdown-side counterpart.
+    core_node_done: watch::Sender<bool>,
 }
 
 impl CoreNodeRunner {
@@ -45,6 +53,7 @@ impl CoreNodeRunner {
         messaging_ready: Option<watch::Receiver<bool>>,
         clock_source: super::ClockSource,
         peppy_config: config::peppy_config::PeppyConfig,
+        core_node_done: watch::Sender<bool>,
     ) -> Self {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
@@ -58,17 +67,30 @@ impl CoreNodeRunner {
             daemon_use_sim_time: clock_source.use_sim_time(),
         };
         let peppy_dirs = PeppyDirs::default();
-        let core_node = CoreNode::new(
+        // Fail fast with a clean operator-facing message (no backtrace) when a
+        // runtime prerequisite is missing. The library reports this as an error
+        // rather than calling `std::process::exit`, so the binary owns the exit.
+        if let Err(e) = core_node::check_runtime_prerequisites() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        // The publishers select on this token; the runner cancels it at the
+        // start of shutdown so they stop before the session is closed.
+        let shutdown_token = CancellationToken::new();
+        let core_node = CoreNode::new(CoreNodeConfig {
             messenger,
-            core_node_name.as_deref(),
-            node_arguments,
+            node_name: core_node_name,
+            arguments: node_arguments,
             root_dir,
             peppy_dirs,
             peppy_config,
-        );
+            shutdown_token: shutdown_token.clone(),
+        });
         Self {
             core_node,
             messaging_ready,
+            shutdown_token,
+            core_node_done,
         }
     }
 
@@ -82,6 +104,8 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let (ready_tx, ready_rx) = oneshot::channel();
         let core_node = self.core_node;
         let mut messaging_ready = self.messaging_ready;
+        let shutdown_token = self.shutdown_token;
+        let core_node_done = self.core_node_done;
         let future = Box::pin(async move {
             let shutdown_signal = super::shutdown_signal::shutdown_signal();
             tokio::pin!(shutdown_signal);
@@ -125,6 +149,10 @@ impl ServeAsyncCommand for CoreNodeRunner {
 
             if shutdown_triggered {
                 info!("Shutting down commands listener...");
+                // Stop the daemon's own clock + heartbeat publishers first, so
+                // they don't spin against the session once the messaging router
+                // closes it (logging a failed publish on every tick).
+                shutdown_token.cancel();
                 // Catchable shutdown (ctrl+C / SIGTERM): the daemon is exiting,
                 // so tear down every spawned node now — cooperatively, then
                 // force-kill any straggler's process group — so none is left
@@ -132,7 +160,13 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 // of `core_node`; `teardown_node_stack` also takes `&self`, so
                 // this second shared borrow is fine. Runs before this handler
                 // returns, so the kills complete before the daemon process exits.
+                // The cooperative stop sends SHUTDOWN_SERVICE over the messaging
+                // session, so the session must still be open here — the router
+                // waits for the `core_node_done` signal below before closing it.
                 core_node.teardown_node_stack().await;
+                // Release the messaging router to close the session now that the
+                // core node no longer needs it.
+                let _ = core_node_done.send(true);
             }
 
             result

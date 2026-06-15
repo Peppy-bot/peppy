@@ -255,3 +255,29 @@ fn action_receiver_all_three_variants_have_consistent_addressing() {
     assert_eq!(cancel.kind, ServiceKind::ActionCancel);
     assert_eq!(result.kind, ServiceKind::ActionResult);
 }
+
+// ─── from_validated panic contract ──────────────────────────────────────────
+
+#[test]
+fn node_from_validated_builds_a_node_target_for_safe_segments() {
+    let target = SenderTarget::node_from_validated("uvc_camera", "v1");
+    assert!(target.is_node());
+    assert_eq!(target.name(), "uvc_camera");
+    assert_eq!(target.tag(), "v1");
+}
+
+#[test]
+fn node_from_validated_normalizes_hyphenated_tag_like_new() {
+    // from_validated funnels through new(), so the hyphen-to-underscore tag
+    // normalization still applies to the validated path.
+    let target = SenderTarget::node_from_validated("arm", "v1-beta");
+    assert_eq!(target.tag(), "v1_beta");
+}
+
+#[test]
+#[should_panic(expected = "validated name and tag should be wire-segment safe")]
+fn node_from_validated_panics_on_reserved_sentinel() {
+    // The documented panic contract: a degenerate name that collides with a
+    // reserved wire sentinel must blow up rather than produce a bad target.
+    let _ = NodeIdentifier::from_validated("_", "v1");
+}

@@ -1,6 +1,15 @@
+// The crate sets `#![deny(unsafe_code)]` in lib.rs. This test module is the one
+// place that needs `unsafe`, in exactly two pre-main helpers below: the
+// `#[ctor::ctor(unsafe)]` that sets `ZENOH_RUNTIME` before zenoh's lazy global
+// runtime initializes, and the `libc` getrlimit/setrlimit FFI that raises the
+// fd limit to avoid EMFILE flakes. Both are load-bearing and have no safe
+// equivalent. Each helper carries its own `#[allow(unsafe_code)]` so the
+// crate-wide deny still guards the rest of this file against accidental unsafe.
+
 use crate::types::Payload;
 use config::node::QoSProfile;
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
+use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -61,6 +70,7 @@ impl ActionClientCase {
 /// thread and before zenoh's lazy global runtimes read it. Spawned zenohd
 /// child processes inherit it, which is harmless. An operator-provided
 /// `ZENOH_RUNTIME` wins. Remove once the upstream fix ships in a release.
+#[allow(unsafe_code)]
 #[ctor::ctor(unsafe)]
 fn ensure_zenoh_net_runtime_workers() {
     if std::env::var_os("ZENOH_RUNTIME").is_none() {
@@ -77,6 +87,7 @@ fn ensure_zenoh_net_runtime_workers() {
 /// the hard limit removes that ceiling without reducing test parallelism. Best
 /// effort: a failed syscall leaves the original limit in place and the real
 /// EMFILE error still surfaces.
+#[allow(unsafe_code)]
 fn ensure_test_fd_limit() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -672,7 +683,9 @@ async fn topic_publish_reliable_5000hz_messages() {
     let emitter_core_node = "emitter_core_node";
     let emitter_instance_id = "emitter_instance";
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
-    let mut rng = rand::rng();
+    // Fixed seed so a failure reproduces the same id ordering run to run, while
+    // still exercising out-of-order payload contents.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
     message_ids.shuffle(&mut rng);
 
     // Deterministically wait for the subscriber before the publish loop so the
@@ -881,9 +894,6 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
-    // Allow services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -1063,9 +1073,6 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
-    // Allow services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -1189,9 +1196,6 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
-
-    // Allow the service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -1335,9 +1339,7 @@ async fn service_communication_poll_wrong_core_node() {
             .expect("service should signal readiness before timeout")
             .expect("service should signal readiness");
 
-        // Allow the service to fully establish its listener
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
+        // No settle sleep: the poll below self-retries on a cold-start miss.
         let caller_handle = router.messenger().await;
         let result = ServiceMessenger::poll(
             &caller_handle,
@@ -1461,9 +1463,6 @@ async fn service_communication_poll_core_node_scoped() {
                 .await
         })
     };
-
-    // Allow both services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Each iteration runs a fresh discover-then-pin sequence; without the
     // core-node scope the foreign listener would win some of these races.
@@ -1606,7 +1605,6 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
         .await
         .expect("service should signal readiness")
         .expect("service should signal readiness");
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     {
         let caller = router.messenger().await;
@@ -1746,9 +1744,6 @@ async fn service_communication_fails_service_timeouts() {
         .await
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
-
-    // Allow the service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
@@ -1899,9 +1894,6 @@ async fn service_handle_request_processes_multiple_messages() {
         .await
         .expect("service should signal readiness");
 
-    // Allow the service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.messenger().await;
@@ -2022,9 +2014,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
     service_ready_rx
         .await
         .expect("service should signal readiness");
-
-    // Allow the service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -2208,7 +2197,7 @@ async fn action_communication_no_instance_id_target() {
 
                     // This test drives the result service directly, so it frames
                     // the reply with the engine's result-outcome envelope itself.
-                    Ok(super::wrap_result_outcome(
+                    Ok(super::actions::wrap_result_outcome(
                         ResultStatus::Completed,
                         response_payload.as_ref(),
                     ))
@@ -2257,9 +2246,6 @@ async fn action_communication_no_instance_id_target() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
-    // Allow the action server to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -2451,7 +2437,7 @@ async fn action_communication_with_instance_id_target() {
 
                     // This test drives the result service directly, so it frames
                     // the reply with the engine's result-outcome envelope itself.
-                    Ok(super::wrap_result_outcome(
+                    Ok(super::actions::wrap_result_outcome(
                         ResultStatus::Completed,
                         response_payload.as_ref(),
                     ))
@@ -2500,9 +2486,6 @@ async fn action_communication_with_instance_id_target() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
-    // Allow the action server to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -2724,9 +2707,6 @@ async fn action_communication_goal_cancelled() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
-    // Allow the action server to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let caller_handle = router.messenger().await;
 
@@ -2964,7 +2944,7 @@ async fn single_action_communication_multiple_polls() {
                         assert!(body.is_empty(), "result request body must be empty");
 
                         // Driven directly: frame the reply like the engine does.
-                        Ok(super::wrap_result_outcome(
+                        Ok(super::actions::wrap_result_outcome(
                             ResultStatus::Completed,
                             b"result=done",
                         ))
@@ -2990,9 +2970,6 @@ async fn single_action_communication_multiple_polls() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-
-    // Allow the action server to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
@@ -3333,7 +3310,6 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
 
     ready_a_rx.await.expect("server A ready");
     ready_b_rx.await.expect("server B ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = router.messenger().await;
     let goal_handle = ActionMessenger::send_goal(
@@ -3497,8 +3473,6 @@ async fn service_communication_poll_full_wildcard_discovers() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     {
         let caller_handle = router.messenger().await;
         let response = ServiceMessenger::poll(
@@ -3642,7 +3616,6 @@ async fn action_send_goal_full_wildcard_discovers() {
 
     ready_a_rx.await.expect("server A ready");
     ready_b_rx.await.expect("server B ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = router.messenger().await;
     let goal_handle = ActionMessenger::send_goal(
@@ -3752,7 +3725,6 @@ async fn service_poll_same_core_distinct_instances_pinned_routes_to_pinned() {
 
     ready_left_rx.await.expect("left listener ready");
     ready_right_rx.await.expect("right listener ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = router.messenger().await;
     for pinned_inst in [left_inst, right_inst] {
@@ -3853,7 +3825,6 @@ async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
     };
 
     ready_rx.await.expect("listener ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = router.messenger().await;
     let started = std::time::Instant::now();
@@ -3958,7 +3929,6 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
 
     ready_left_rx.await.expect("left arm ready");
     ready_right_rx.await.expect("right arm ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = router.messenger().await;
     for pinned_inst in [left_inst, right_inst] {
@@ -4053,7 +4023,6 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
     };
 
     ready_rx.await.expect("arm ready");
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let caller_handle = router.messenger().await;
     let started = std::time::Instant::now();

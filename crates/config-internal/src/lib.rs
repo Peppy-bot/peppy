@@ -1,3 +1,19 @@
+#![forbid(unsafe_code)]
+
+//! Parsing, validation, and encoding of Peppy configuration documents.
+//!
+//! This crate owns the on-disk Peppy config formats (`peppy.json5` node
+//! configs, launcher files, `peppy_config.json5`) and the typed API the rest
+//! of the workspace builds on: parsing those documents, validating them against
+//! Peppy's schema and structural constraints, encoding a [`node::MessageFormat`]
+//! to Cap'n Proto, and the [`consts::PeppyDirs`] filesystem-layout helper.
+//!
+//! Boundaries: it performs no I/O beyond reading/writing config files and
+//! fingerprints and extracting the bundled Cap'n Proto binary, and requires no
+//! global init — every type is built through an explicit parser/constructor.
+//! The one process-global is [`consts::set_app_env`], a set-once `OnceLock`
+//! that only shifts the default [`consts::PeppyDirs`] root between dev/prod.
+
 mod common;
 mod error;
 mod parsing;
@@ -25,15 +41,14 @@ mod internal {
 // -- common --
 pub use common::{
     AnyType, DefaultValue, NodeArguments, NodeArgumentsError, ParameterSchema, ParameterSpec,
-    TypeMismatch, apply_parameter_defaults, parse_node_arguments, resolve_argument_path,
-    resolve_parameter_path, type_token_name, validate_node_arguments,
+    TypeMismatch, apply_parameter_defaults, resolve_argument_path, type_token_name,
+    validate_node_arguments,
 };
 
 // -- error --
 pub use error::{
     BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateInstanceIdAcrossStack,
-    Error as ConfigError, MissingInterface, ParsingError, Result as ConfigResult, SlotKind,
-    format_bulleted,
+    Error as ConfigError, MissingInterface, ParsingError, SlotKind, format_bulleted,
 };
 
 // -- atomic_write --
@@ -44,12 +59,12 @@ pub mod atomic_write {
 // -- consts --
 pub mod consts {
     pub use crate::internal::consts::{
-        ALLOWED_CONFIG_CHARS, AppEnv, CORE_NODE_TOPIC_NAME, DAEMON_STATE_FILE_ENV,
-        DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST,
-        DEFAULT_MESSAGING_PORT, DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE,
-        NODE_CONFIG_FILE, PEPPY_HOME_ENV, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
-        PeppyDirs, RUNTIME_CONFIG_VAR_NAME, app_env, peppy_root_dir, set_app_env,
+        ALLOWED_CONFIG_CHARS, AppEnv, DAEMON_STATE_FILE_ENV, DEFAULT_ALPINE_BASE_IMAGE,
+        DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT,
+        DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_HOME_ENV,
+        PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+        PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
+        RUNTIME_CONFIG_VAR_NAME, peppy_root_dir, set_app_env,
     };
 }
 
@@ -75,7 +90,6 @@ pub mod fingerprint {
     #[cfg(feature = "test_helpers")]
     pub use crate::internal::fingerprint::{
         create_codegen_fingerprint, create_wrong_codegen_fingerprint,
-        create_wrong_release_fingerprint,
     };
 }
 
@@ -83,23 +97,22 @@ pub mod fingerprint {
 pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
-        CallbackNameError, ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic,
-        ContainerConfig, DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction,
-        ExposedService, InterfaceConformanceEdge, InterfaceKind, Interfaces, Manifest,
-        MessageFormat, MessageSizeEstimate, Name, NodeConfig, NodeConfigCreator, NodeConfigParser,
-        NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile,
-        SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
-        collect_dependency_specs, collect_interface_conformance_edges, estimate_serialized_size,
-        extract_parameter_refs, is_blocked_mount_source, load_standalone_node_config,
-        node_conforms_to, validate_dependency_specs,
+        ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
+        DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
+        InterfaceConformanceEdge, InterfaceKind, Interfaces, Manifest, MessageFormat,
+        MessageSizeEstimate, Name, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
+        ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces,
+        Toolchain, TopicInterfaces, TypeToken, collect_dependency_specs,
+        collect_interface_conformance_edges, estimate_serialized_size, is_blocked_mount_source,
+        load_standalone_node_config, node_conforms_to, validate_dependency_specs,
     };
 }
 
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        DiscoveryConfig, LauncherRuntimeConfig, LifecycleRuntimeConfig, NodeInstanceConfig,
-        ProducerRef, ResolvedFramework, RuntimeConfig, SlotBinding,
+        DiscoveryConfig, LifecycleRuntimeConfig, NodeInstanceConfig, ProducerRef,
+        ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
 
@@ -108,8 +121,8 @@ pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_DAEMON_GRACE_SECS,
         DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
-        DEFAULT_STANDARD_BUFFER_SIZE, LifecycleConfig, MIN_DAEMON_GRACE_SECS, Mode,
-        PEPPY_CONFIG_FILE, PeerConfig, PeppyConfig, load_or_create,
+        DEFAULT_STANDARD_BUFFER_SIZE, EVENT_LOOP_JOIN_BUDGET_SECS, LifecycleConfig, Mode,
+        PeerConfig, PeppyConfig, RUNTIME_FINALIZE_MARGIN_SECS, load_or_create,
     };
 }
 

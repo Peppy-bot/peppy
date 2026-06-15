@@ -1581,19 +1581,20 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
 }
 
 /// Overwriting an entity with SEVERAL stuck running instances must stop them as
-/// one batch — every cooperative shutdown sent concurrently, one shared grace
-/// budget — exactly like the SIGINT teardown, not one full grace window per
+/// one batch — every cooperative shutdown sent concurrently, one shared
+/// force-kill window — exactly like the SIGINT teardown, not one full window per
 /// instance. Locks in both halves of `stop_instances`: correctness (both
 /// process groups force-killed and removed, no orphans) and the shared-budget
-/// timing (a per-instance loop would burn at least 2 × grace in stuck-grace
-/// alone before the second force-kill even fired).
+/// timing (a per-instance loop would burn at least 2 × the force-kill window in
+/// stuck-grace alone before the second force-kill even fired).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     const NODE_NAME: &str = "lidar_two_stuck";
     const NODE_TAG: &str = "v1";
-    // Wider than the 3s default so the timing window below has comfortable
-    // margins on both sides even under parallel-test CI load: batched ≈ one
-    // grace window (~6.3s), serial ≥ two (12s+), bound at 2 × grace (12s).
+    // The daemon force-kills a stuck instance after `force_kill_deadline(grace)`
+    // (grace + the node-runtime teardown margin), not after the bare grace. A
+    // wider configured grace keeps the batched-vs-serial timing window below
+    // comfortably separated even under parallel-test CI load.
     const SHUTDOWN_GRACE_SECS: u64 = 6;
 
     let started_core_node = common::start_core_node_with_shutdown_grace(SHUTDOWN_GRACE_SECS).await;
@@ -1636,6 +1637,9 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
     let grace = Duration::from_secs(SHUTDOWN_GRACE_SECS);
+    // The daemon waits this long for a stuck instance to disappear before
+    // force-killing it: grace plus the node-runtime teardown margin.
+    let window = core_node::force_kill_deadline(grace);
     let overwrite_started = std::time::Instant::now();
     let add_v2 = send_node_add_and_wait(
         &started_core_node.caller_handle,
@@ -1655,23 +1659,23 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
         add_v2.error_message
     );
 
-    // Lower bound: the stuck instances really did sit out a full grace window
-    // (neither answers SHUTDOWN_SERVICE). Pins the test's premise — if a future
-    // change short-circuits the grace on an unreachable/failed cooperative
+    // Lower bound: the stuck instances really did sit out a full force-kill
+    // window (neither answers SHUTDOWN_SERVICE). Pins the test's premise — if a
+    // future change short-circuits the wait on an unreachable/failed cooperative
     // send, this fires instead of the upper bound passing vacuously.
     assert!(
-        elapsed >= grace,
-        "stuck instances should burn the full grace window, took only {elapsed:?}"
+        elapsed >= window,
+        "stuck instances should burn the full force-kill window ({window:?}), took only {elapsed:?}"
     );
-    // Upper bound (shared budget): the whole batch burns ONE stuck-grace
-    // window (plus the bounded reap and the add's own staging work —
-    // comfortably under a second grace window). A per-instance loop burns
-    // ≥ 2 × grace in stuck-grace alone, so it cannot finish under this bound.
+    // Upper bound (shared budget): the whole batch burns ONE force-kill window
+    // (plus the bounded reap and the add's own staging work — comfortably under
+    // a second window). A per-instance loop burns ≥ 2 × the window in stuck-grace
+    // alone, so it cannot finish under this bound.
     assert!(
-        elapsed < grace * 2,
-        "overwrite of two stuck instances should share one grace budget, \
+        elapsed < window * 2,
+        "overwrite of two stuck instances should share one force-kill window, \
          took {elapsed:?} (a per-instance loop would take at least {:?})",
-        grace * 2
+        window * 2
     );
 
     // Both stuck instances must be removed (force-killed, not orphaned).

@@ -1,7 +1,6 @@
 //! Configuration utilities and re-exports from the config crate.
 
-pub use config::NodeArguments;
-pub use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
+use config::NodeArguments;
 pub use config::node::QoSProfile;
 
 /// Format a JSON schema validation error into a human-readable message.
@@ -27,29 +26,13 @@ fn format_validation_error(error: &jsonschema::ValidationError) -> String {
 
 /// Deserialize validated node arguments into a custom parameter struct.
 ///
-/// This function converts [`NodeArguments`] (already validated against the
-/// manifest spec) into a user-defined struct type. It validates the input
-/// against the JSON schema derived from the type, collecting all validation
-/// errors (including multiple missing fields) and reporting them at once.
-///
-/// # Example
-///
-/// ```ignore
-/// use serde::Deserialize;
-/// use schemars::JsonSchema;
-/// use peppylib::config::{NodeArguments, deserialize_parameters};
-///
-/// #[derive(Deserialize, JsonSchema)]
-/// struct MyParams {
-///     timeout: u32,
-///     name: String,
-/// }
-///
-/// fn example(args: &NodeArguments) -> peppylib::PeppyResult<MyParams> {
-///     deserialize_parameters(args)
-/// }
-/// ```
-pub fn deserialize_parameters<T>(args: &NodeArguments) -> Result<T, crate::PeppyError>
+/// Converts [`NodeArguments`] (already validated against the manifest spec) into
+/// a user-defined struct type. It validates the input against the JSON schema
+/// derived from the type, collecting all validation errors (including multiple
+/// missing fields) and reporting them at once. Called by
+/// [`NodeBuilder::init`](crate::runtime::NodeBuilder::init) to parse a node's
+/// typed parameters eagerly.
+pub(crate) fn deserialize_parameters<T>(args: &NodeArguments) -> Result<T, crate::PeppyError>
 where
     T: serde::de::DeserializeOwned + schemars::JsonSchema,
 {

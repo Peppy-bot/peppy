@@ -1,7 +1,7 @@
 use crate::daemon_state::DaemonState;
 use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::NodeConfigParser;
-use core_node::{CoreNode, CoreNodeArguments};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -121,6 +121,11 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
     );
 }
 
+// Held only to keep the messaging router (a child process or in-process task)
+// alive for the emulation's lifetime: the variants are constructed and stored in
+// `_instance`, then dropped with the emulation, but never read. The dead-code
+// lint is allowed here deliberately because the value is a lifetime guard, not
+// data anyone inspects.
 #[allow(dead_code)]
 enum MessengerInstance {
     Mock(MockInstance),
@@ -134,7 +139,6 @@ pub struct ServeCommandEmulation {
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
     core_node_name: String,
-    messaging_port: u16,
 }
 
 impl ServeCommandEmulation {
@@ -173,10 +177,10 @@ impl ServeCommandEmulation {
         let repos_path = conf_dir.join("repositories.json5");
         std::fs::write(&repos_path, "[]").expect("failed to write repositories.json5");
 
-        let core_node = CoreNode::new(
-            Arc::clone(&shared_messenger),
-            Some("test-core-node"),
-            CoreNodeArguments {
+        let core_node = CoreNode::new(CoreNodeConfig {
+            messenger: Arc::clone(&shared_messenger),
+            node_name: Some("test-core-node".to_string()),
+            arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
                 health_monitor_interval: Duration::from_secs(5),
@@ -185,10 +189,11 @@ impl ServeCommandEmulation {
                 heartbeat_interval: Duration::from_secs(5),
                 daemon_use_sim_time: false,
             },
-            temp_dir.path().to_path_buf(),
+            root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
-            config::peppy_config::PeppyConfig::default(),
-        );
+            peppy_config: config::peppy_config::PeppyConfig::default(),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+        });
         let core_node_name = core_node.node_name().to_string();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -221,7 +226,6 @@ impl ServeCommandEmulation {
             shared_messenger,
             daemon_state_path,
             core_node_name,
-            messaging_port: port,
         })
     }
 
@@ -239,9 +243,5 @@ impl ServeCommandEmulation {
 
     pub fn core_node_name(&self) -> &str {
         &self.core_node_name
-    }
-
-    pub fn messaging_port(&self) -> u16 {
-        self.messaging_port
     }
 }

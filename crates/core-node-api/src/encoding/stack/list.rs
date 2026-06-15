@@ -78,3 +78,77 @@ impl StackListResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_default_disables_dot_graph() {
+        let request = StackListRequest::default();
+        assert!(!request.with_dot_graph());
+    }
+
+    #[test]
+    fn request_round_trips_without_dot_graph() {
+        let request = StackListRequest::new(false);
+        assert!(!request.with_dot_graph());
+        let payload = request.encode().expect("encode");
+        let decoded = StackListRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert!(!decoded.with_dot_graph());
+    }
+
+    #[test]
+    fn request_round_trips_with_dot_graph() {
+        let request = StackListRequest::new(true);
+        assert!(request.with_dot_graph());
+        let payload = request.encode().expect("encode");
+        let decoded = StackListRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert!(decoded.with_dot_graph());
+    }
+
+    #[test]
+    fn request_decode_rejects_malformed() {
+        assert!(StackListRequest::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn response_round_trips_with_dot_graph_and_json() {
+        let response = StackListResponse::new(
+            Some("digraph { a -> b }".to_string()),
+            r#"{"nodes":["a","b"],"edges":[["a","b"]]}"#,
+        );
+        let payload = response.encode().expect("encode");
+        let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert_eq!(decoded.dot_graph.as_deref(), Some("digraph { a -> b }"));
+    }
+
+    #[test]
+    fn response_round_trips_without_dot_graph() {
+        // `None` dot_graph leaves the field unset; the empty wire string decodes
+        // back to `None` via `optional_text`.
+        let response = StackListResponse::new(None, r#"{"nodes":[]}"#);
+        let payload = response.encode().expect("encode");
+        let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert_eq!(decoded.dot_graph, None);
+        assert_eq!(decoded.graph_json, r#"{"nodes":[]}"#);
+    }
+
+    #[test]
+    fn response_round_trips_empty_graph_json() {
+        let response = StackListResponse::new(None, "");
+        let payload = response.encode().expect("encode");
+        let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(decoded.graph_json.is_empty());
+    }
+
+    #[test]
+    fn response_decode_rejects_malformed() {
+        assert!(StackListResponse::decode(b"not capnp").is_err());
+    }
+}

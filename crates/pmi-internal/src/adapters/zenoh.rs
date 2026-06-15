@@ -150,6 +150,12 @@ pub struct ZenohClientConfig {
     gossip: bool,
     /// Per-QoS subscriber channel buffer sizes for this session.
     buffer_sizes: SubscriberBufferSizes,
+    /// Operator override (`ZENOH_SESSION_CONFIG`), resolved once at the
+    /// constructor boundary. `Some` replaces the rendered config wholesale,
+    /// including on the reconnecting-session rebuild in `start_session`, so the
+    /// operator file wins regardless of the routing model. `None` renders from
+    /// the fields above.
+    override_config: Option<zenoh::config::Config>,
 }
 
 pub struct ZenohAdapter {
@@ -178,7 +184,7 @@ impl ZenohAdapter {
     ) -> Result<Self> {
         let zenohd_config_path = zenohd::router_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
-        let client_config = Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes);
+        let client_config = Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes)?;
 
         Ok(Self {
             zenohd: Some(facade),
@@ -215,6 +221,7 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
     ) -> Result<Self> {
+        let override_config = Self::resolve_session_config_override()?;
         let client_config = Self::create_client_config(
             protocol,
             host,
@@ -223,6 +230,7 @@ impl ZenohAdapter {
             seed_peers,
             gossip,
             buffer_sizes,
+            override_config,
         );
 
         Ok(Self {
@@ -350,9 +358,40 @@ impl ZenohAdapter {
         zenohd::RouterHealthChecker::new(probe_config)
     }
 
+    /// Resolves the `ZENOH_SESSION_CONFIG` operator override into an optional
+    /// parsed config. When the env var names a non-empty path the file is
+    /// loaded, and an unreadable or invalid file becomes an
+    /// [`Error::ConfigurationError`] rather than a panic. `Ok(None)` when the
+    /// var is unset or blank, in which case the session config is rendered from
+    /// the explicit constructor arguments. Resolved once at the constructor
+    /// boundary so [`create_client_config`](Self::create_client_config) stays a
+    /// pure, env-free builder; mirrors the router's `ZENOH_CONFIG` resolution in
+    /// `zenohd::router_config_path`.
+    fn resolve_session_config_override() -> Result<Option<zenoh::config::Config>> {
+        match std::env::var("ZENOH_SESSION_CONFIG") {
+            Ok(path) if !path.trim().is_empty() => {
+                let path = path.trim();
+                zenoh::config::Config::from_file(path)
+                    .map(Some)
+                    .map_err(|e| {
+                        Error::ConfigurationError(format!(
+                            "ZENOH_SESSION_CONFIG ({path}) is not a readable zenoh config: {e}"
+                        ))
+                    })
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
-    /// non-empty). An operator can override the whole session config without a
-    /// rebuild via `ZENOH_SESSION_CONFIG` (mirrors the router's `ZENOH_CONFIG`).
+    /// non-empty). Pure: the operator override is resolved by the caller via
+    /// [`Self::resolve_session_config_override`] and passed in as
+    /// `override_config`. When present it replaces the rendered config wholesale
+    /// (including the `gossip`/mode rendering below), so the operator file wins
+    /// on routing model. The override does NOT affect `buffer_sizes`, which are
+    /// applied later at the flume/mpsc layer (subscribe / listen / call), so
+    /// peer-mode buffer tuning from `peppy_config.json5` still takes effect.
+    #[allow(clippy::too_many_arguments)]
     fn create_client_config(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -361,6 +400,7 @@ impl ZenohAdapter {
         seed_peers: Vec<String>,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
+        override_config: Option<zenoh::config::Config>,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
         let seeds = if seed_peers.is_empty() {
@@ -369,19 +409,8 @@ impl ZenohAdapter {
             seed_peers
         };
 
-        // `ZENOH_SESSION_CONFIG` overrides the generated zenoh session config
-        // wholesale, including the `gossip`/mode rendering below, so the operator
-        // file wins on routing model. It does NOT affect `buffer_sizes`, which
-        // are applied later at the flume/mpsc layer (subscribe / listen / call),
-        // so peer-mode buffer tuning from `peppy_config.json5` still takes effect.
-        let zenoh_config = match std::env::var("ZENOH_SESSION_CONFIG") {
-            Ok(path) if !path.trim().is_empty() => zenoh::config::Config::from_file(path.trim())
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "ZENOH_SESSION_CONFIG ({}) is not a readable zenoh config: {e}",
-                        path.trim()
-                    )
-                }),
+        let zenoh_config = match &override_config {
+            Some(config) => config.clone(),
             // `gossip` selects the routing model. Enabled: a `peer` that binds a
             // loopback listener and forms direct peer-to-peer links via gossip.
             // Disabled: a plain `client` that routes only through the router (no
@@ -390,14 +419,14 @@ impl ZenohAdapter {
             // separate network namespace) use the client path so they reach the
             // rest of the system through the router instead of advertising an
             // unreachable loopback locator and churning on failed autoconnects.
-            _ if gossip => render_config(&ZenohConfigSpec {
+            None if gossip => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Peer,
                 connect_endpoints: seeds.clone(),
                 listen_endpoints: vec![loopback_listen_endpoint(protocol)],
                 reconnect,
                 gossip: true,
             }),
-            _ => render_config(&ZenohConfigSpec {
+            None => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Client,
                 connect_endpoints: seeds.clone(),
                 listen_endpoints: Vec::new(),
@@ -414,6 +443,7 @@ impl ZenohAdapter {
             seed_peers: seeds,
             gossip,
             buffer_sizes,
+            override_config,
         }
     }
 
@@ -422,7 +452,7 @@ impl ZenohAdapter {
         zenohd: &zenohd::ZenohdFacade,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
-    ) -> ZenohClientConfig {
+    ) -> Result<ZenohClientConfig> {
         // The daemon joins the mesh it hosts, seeded by its own router, so peers
         // can reach its core-node/daemon services. `gossip` (from
         // `peppy_config.json5`) selects whether that session is a peer (direct
@@ -431,7 +461,8 @@ impl ZenohAdapter {
         // rebuilt as reconnecting in `start_session` when `reconnect_session` is
         // set; the readiness probe in `start_router_ephemeral` builds its own
         // client probe config.
-        Self::create_client_config(
+        let override_config = Self::resolve_session_config_override()?;
+        Ok(Self::create_client_config(
             zenohd.zenoh_endpoint.protocol,
             &zenohd.zenoh_endpoint.host,
             zenohd.zenoh_endpoint.port,
@@ -439,7 +470,8 @@ impl ZenohAdapter {
             Vec::new(),
             gossip,
             buffer_sizes,
-        )
+            override_config,
+        ))
     }
 }
 
@@ -458,6 +490,7 @@ impl MessengerBackend for ZenohAdapter {
                 self.client_config.seed_peers.clone(),
                 self.client_config.gossip,
                 self.client_config.buffer_sizes,
+                self.client_config.override_config.clone(),
             )
             .zenoh_config
         } else {
@@ -1153,6 +1186,7 @@ mod tests {
             Vec::new(),
             true,
             SubscriberBufferSizes::default(),
+            None,
         );
         assert_eq!(reconnecting.host, "127.0.0.1");
         assert_eq!(
@@ -1175,6 +1209,7 @@ mod tests {
                 standard: 64,
                 high_throughput: 4096,
             },
+            None,
         );
         assert_eq!(cfg.seed_peers, vec!["tcp/10.0.0.2:7448".to_string()]);
         assert!(!cfg.gossip);

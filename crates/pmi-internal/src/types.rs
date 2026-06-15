@@ -278,10 +278,10 @@ pub(crate) type Guard = Box<dyn std::any::Any + Send + Sync>;
 /// `AbortHandle` alone does not abort on drop — only the explicit `.abort()`
 /// call does — so adapters that need that semantics wrap their handle in
 /// this type before stashing it in a [`Guard`].
-pub struct AbortOnDrop(tokio::task::AbortHandle);
+pub(crate) struct AbortOnDrop(tokio::task::AbortHandle);
 
 impl AbortOnDrop {
-    pub fn new(handle: tokio::task::AbortHandle) -> Self {
+    pub(crate) fn new(handle: tokio::task::AbortHandle) -> Self {
         Self(handle)
     }
 }
@@ -559,7 +559,7 @@ pub struct ZenohResponseToken {
 
 #[cfg(feature = "zenoh")]
 impl ZenohResponseToken {
-    pub fn new(query: zenoh::query::Query, reply_keyexpr: String) -> Self {
+    pub(crate) fn new(query: zenoh::query::Query, reply_keyexpr: String) -> Self {
         Self {
             query,
             reply_keyexpr,
@@ -586,7 +586,10 @@ pub struct MockResponseToken {
 }
 
 impl MockResponseToken {
-    pub fn new(reply_tx: tokio::sync::mpsc::Sender<ServiceReply>, reply_keyexpr: String) -> Self {
+    pub(crate) fn new(
+        reply_tx: tokio::sync::mpsc::Sender<ServiceReply>,
+        reply_keyexpr: String,
+    ) -> Self {
         Self {
             reply_tx,
             reply_keyexpr,
@@ -603,26 +606,28 @@ impl MockResponseToken {
     }
 }
 
-/// Core message structure
+/// Internal in-process message envelope used by the mock adapter's message log
+/// and routing. Not part of the public API: consumers use [`TopicMessage`] (the
+/// real transport envelope); only the mock backend records [`Message`]s.
 #[derive(Clone)]
-pub struct Message {
+pub(crate) struct Message {
     identifier: String,
     payload: bytes::Bytes,
 }
 
 impl Message {
-    pub fn new(identifier: &str, payload: impl AsRef<[u8]>) -> Self {
+    pub(crate) fn new(identifier: &str, payload: impl AsRef<[u8]>) -> Self {
         Self {
             identifier: identifier.to_string(),
             payload: bytes::Bytes::copy_from_slice(payload.as_ref()),
         }
     }
 
-    pub fn identifier(&self) -> &str {
+    pub(crate) fn identifier(&self) -> &str {
         &self.identifier
     }
 
-    pub fn payload(&self) -> &bytes::Bytes {
+    pub(crate) fn payload(&self) -> &bytes::Bytes {
         &self.payload
     }
 }
@@ -694,15 +699,6 @@ impl Payload {
         }
     }
 
-    /// Iterate over the underlying slices without forcing contiguity.
-    pub fn slices(&self) -> PayloadSlices<'_> {
-        match &self.inner {
-            PayloadInner::Bytes(b) => PayloadSlices::BytesSlice(std::iter::once(b.as_ref())),
-            #[cfg(feature = "zenoh")]
-            PayloadInner::Zenoh(z) => PayloadSlices::ZenohSlices(z.slices()),
-        }
-    }
-
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(zbytes: ZBytes) -> Self {
         Self {
@@ -722,24 +718,6 @@ impl Payload {
 impl From<bytes::Bytes> for Payload {
     fn from(value: bytes::Bytes) -> Self {
         Payload::from_bytes(value)
-    }
-}
-
-pub enum PayloadSlices<'a> {
-    BytesSlice(std::iter::Once<&'a [u8]>),
-    #[cfg(feature = "zenoh")]
-    ZenohSlices(zenoh::bytes::ZBytesSliceIterator<'a>),
-}
-
-impl<'a> Iterator for PayloadSlices<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            PayloadSlices::BytesSlice(iter) => iter.next(),
-            #[cfg(feature = "zenoh")]
-            PayloadSlices::ZenohSlices(iter) => iter.next(),
-        }
     }
 }
 
@@ -1079,7 +1057,8 @@ impl MessengerBackend for Messenger {
 
 #[cfg(test)]
 mod tests {
-    use super::{SubscriberBufferSizes, SubscriberQoS};
+    use super::{Payload, ServiceReply, SubscriberBufferSizes, SubscriberQoS, TopicMessage};
+    use crate::wire::ServiceReplyKind;
 
     /// The default buffer sizes must match the historical hardcoded values, so
     /// that removing `SubscriberQoS::channel_size()` changed no behavior for any
@@ -1099,5 +1078,64 @@ mod tests {
         };
         assert_eq!(sizes.size_for(SubscriberQoS::Standard), 64);
         assert_eq!(sizes.size_for(SubscriberQoS::HighThroughput), 4096);
+    }
+
+    #[test]
+    fn payload_from_bytes_exposes_len_emptiness_and_views() {
+        let payload = Payload::from_bytes(bytes::Bytes::from_static(b"frame"));
+        assert_eq!(payload.len(), 5);
+        assert!(!payload.is_empty());
+        assert_eq!(payload.as_bytes().as_ref(), b"frame");
+        assert_eq!(payload.to_bytes(), bytes::Bytes::from_static(b"frame"));
+        // into_bytes is zero-copy for the Bytes-backed payload but still yields
+        // the same contents.
+        assert_eq!(payload.into_bytes(), bytes::Bytes::from_static(b"frame"));
+
+        let empty = Payload::from_bytes(bytes::Bytes::new());
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn payload_equality_with_raw_bytes_is_symmetric() {
+        let raw = bytes::Bytes::from_static(b"ping");
+        let payload = Payload::from_bytes(raw.clone());
+        assert_eq!(payload, raw);
+        assert_eq!(raw, payload);
+        assert_ne!(payload, bytes::Bytes::from_static(b"pong"));
+    }
+
+    #[test]
+    fn topic_message_from_parts_sets_identity_and_leaves_wire_fields_empty() {
+        // The non-keyexpr service path: caller identity comes straight from the
+        // queryable selector, so key_expr and link_id are intentionally empty
+        // and no keyexpr parsing happens.
+        let message = TopicMessage::from_parts(
+            "caller_core".to_string(),
+            "caller_inst".to_string(),
+            bytes::Bytes::from_static(b"body"),
+        );
+        assert_eq!(message.core_node(), "caller_core");
+        assert_eq!(message.instance_id(), "caller_inst");
+        assert_eq!(message.key_expr(), "");
+        assert_eq!(message.link_id(), "");
+        assert_eq!(message.source_timestamp_nanos(), None);
+        assert_eq!(message.payload().as_bytes().as_ref(), b"body");
+    }
+
+    #[test]
+    fn service_reply_exposes_kind_and_borrows_then_consumes_its_message() {
+        let message = TopicMessage::from_parts(
+            "responder_core".to_string(),
+            "responder_inst".to_string(),
+            bytes::Bytes::from_static(b"pong"),
+        );
+        let reply = ServiceReply::new(message, ServiceReplyKind::Response);
+        assert_eq!(reply.kind(), ServiceReplyKind::Response);
+        // message() borrows without consuming...
+        assert_eq!(reply.message().core_node(), "responder_core");
+        // ...then into_message() hands ownership to the caller.
+        let consumed = reply.into_message();
+        assert_eq!(consumed.payload().as_bytes().as_ref(), b"pong");
     }
 }

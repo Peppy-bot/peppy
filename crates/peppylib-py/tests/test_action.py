@@ -58,8 +58,6 @@ async def test_action_messenger_communication():
             True,  # has_feedback
         )
 
-        # Allow subscriptions to propagate
-        await asyncio.sleep(0.05)
 
         async def server():
             pending = await action.recv_next_goal()
@@ -121,7 +119,6 @@ async def test_cancel_goal_concurrent_with_feedback():
             True,  # has_feedback
         )
 
-        await asyncio.sleep(0.05)
 
         # Server: accept the goal and hold it open — never publish feedback and
         # never complete — so the client's on_next_feedback stays pending while
@@ -192,8 +189,6 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
             True,  # has_feedback
         )
 
-        # Allow subscriptions to propagate
-        await asyncio.sleep(0.05)
 
         # Server: accept the goal, emit one feedback, and hand the live
         # GoalContext out. The engine is passed as a parameter (not captured
@@ -296,7 +291,6 @@ async def test_send_goal_honors_target_pair():
             True,  # has_feedback
         )
 
-        await asyncio.sleep(0.05)
 
         async def server():
             pending = await action.recv_next_goal()
@@ -380,7 +374,6 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
         native_task = asyncio.ensure_future(goal_handler(native_action, native_goal_response))
         iface_task = asyncio.ensure_future(goal_handler(iface_action, iface_goal_response))
 
-        await asyncio.sleep(0.1)
 
         native_goal = await ActionMessenger.send_goal(
             caller_handle,
@@ -410,3 +403,72 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
 
         await asyncio.wait_for(native_task, timeout=2.0)
         await asyncio.wait_for(iface_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_reject_then_accept_through_concurrent_action():
+    """A rejected goal is still answered (the client gets its goal response)
+    without creating a context, and the server keeps serving so a later goal is
+    accepted and its typed result routes back by goal_id.
+
+    Python mirror of `concurrent_action_reject_then_accept` in
+    crates/peppylib/tests/actions.rs. Guards the binding's accept/reject mapping
+    and the typed-result framing for the engine path, which the Rust-only tests
+    did not cover from Python.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await ConcurrentAction.expose(
+            server_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            ACTION_NAME,
+            True,  # has_feedback
+        )
+
+        async def server():
+            # First goal is rejected; the second is accepted and completed.
+            rejected = await action.recv_next_goal()
+            assert rejected is not None
+            assert rejected.request_bytes == b"reject"
+            await rejected.reject(b"rejected")
+
+            accepted = await action.recv_next_goal()
+            assert accepted is not None
+            request = accepted.request_bytes
+            ctx = await accepted.accept(b"accepted")
+            await ctx.complete(b"result:" + request)
+
+        server_task = asyncio.create_task(server())
+
+        async def send(payload: bytes):
+            # No settle sleep: send_goal self-retries on a cold-start miss within
+            # its timeout until the goal service queryable propagates.
+            return await ActionMessenger.send_goal(
+                client_handle,
+                CORE_NODE,
+                INSTANCE_ID,
+                SenderTarget.node(NODE_NAME, NODE_TAG),
+                ACTION_NAME,
+                ProducerRef(CORE_NODE, INSTANCE_ID),
+                payload,
+                QoSProfile.Reliable,
+                2.0,
+            )
+
+        # A rejected goal still resolves with the server's goal response.
+        goal_a = await send(b"reject")
+        assert goal_a.goal_response.payload == b"rejected"
+
+        # The server kept serving past the rejection: the next goal is accepted
+        # and its typed Completed result routes back.
+        goal_b = await send(b"B")
+        assert goal_b.goal_response.payload == b"accepted"
+        result_b = await ActionMessenger.request_result(client_handle, goal_b, 2.0)
+        assert result_b.status == RESULT_STATUS_COMPLETED
+        assert result_b.body == b"result:B"
+
+        await asyncio.wait_for(server_task, timeout=2.0)

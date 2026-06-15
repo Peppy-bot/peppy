@@ -69,3 +69,79 @@ impl NodeResetResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_round_trips() {
+        let request = NodeResetRequest::new();
+        let payload = request.encode().expect("encode");
+        let decoded = NodeResetRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    // Round-trips a Default-constructed request; `::default()` on this unit
+    // struct is intentional, hence the lint allow.
+    #[allow(clippy::default_constructed_unit_structs)]
+    #[test]
+    fn request_default_round_trips() {
+        let request = NodeResetRequest::default();
+        let payload = request.encode().expect("encode");
+        NodeResetRequest::decode(payload.as_ref()).expect("decode");
+    }
+
+    #[test]
+    fn request_decode_rejects_malformed() {
+        assert!(NodeResetRequest::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn response_new_round_trips_success() {
+        let response = NodeResetResponse::new(true, None);
+        let payload = response.encode().expect("encode");
+        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(decoded.success);
+        assert_eq!(decoded.error_message, None);
+    }
+
+    #[test]
+    fn response_new_round_trips_with_error_message() {
+        let response = NodeResetResponse::new(false, Some("reset failed".to_string()));
+        let payload = response.encode().expect("encode");
+        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message.as_deref(), Some("reset failed"));
+    }
+
+    #[test]
+    fn response_success_constructor_round_trips() {
+        let response = NodeResetResponse::success();
+        assert!(response.success);
+        assert_eq!(response.error_message, None);
+        let payload = response.encode().expect("encode");
+        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn response_failure_constructor_round_trips() {
+        let response = NodeResetResponse::failure("daemon unreachable");
+        assert!(!response.success);
+        assert_eq!(
+            response.error_message.as_deref(),
+            Some("daemon unreachable")
+        );
+        let payload = response.encode().expect("encode");
+        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn response_decode_rejects_malformed() {
+        assert!(NodeResetResponse::decode(b"not capnp").is_err());
+    }
+}

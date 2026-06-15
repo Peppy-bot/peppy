@@ -1,4 +1,5 @@
 use super::super::error::{Error, Result};
+use config::node::is_blocked_mount_source;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -68,9 +69,14 @@ pub(crate) fn lima_guest_pgid_argv(
 /// arrives as `$1`, so it needs no shell escaping. The negative PGID targets the
 /// whole group (`sh` + apptainer + its children); the `rm -f` cleans up on the
 /// cancel path, where the wrapper is SIGKILLed before it can self-clean.
-/// Best-effort: a missing or already-dead group is not an error.
+/// Best-effort: a missing or already-dead group is not an error, so `cat`'s own
+/// stderr is silenced inside the command substitution. The outer `2>/dev/null`
+/// only covers `kill`; it does not reach `cat`, because the substitution is
+/// expanded before `kill`'s redirection applies, so without the inner redirect a
+/// missing pgid file leaks "cat: ...: No such file or directory" to the guest
+/// stderr that limactl forwards to the daemon.
 pub(crate) fn lima_kill_pgid_argv(pgid_file: &Path) -> Vec<String> {
-    let script = "kill -KILL -\"$(cat \"$1\")\" 2>/dev/null; \
+    let script = "kill -KILL -\"$(cat \"$1\" 2>/dev/null)\" 2>/dev/null; \
                   rm -f \"$1\" 2>/dev/null; true";
     vec![
         "sh".to_string(),
@@ -81,13 +87,21 @@ pub(crate) fn lima_kill_pgid_argv(pgid_file: &Path) -> Vec<String> {
     ]
 }
 
+/// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
+/// stopping before the `--` separator so callers can inject `limactl`-level flags
+/// (e.g. `lima_shell_extra_args`) between the instance and the guest command.
+pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
+    let mut cmd = Command::new(limactl);
+    cmd.env("LIMA_HOME", lima_home).args(["shell", instance]);
+    cmd
+}
+
 /// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.
 ///
 /// Callers chain additional `.arg()` / `.args()` for the guest-side command.
-fn lima_shell_cmd(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
-    let mut cmd = Command::new(limactl);
-    cmd.env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--"]);
+pub(crate) fn lima_shell_cmd(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
+    let mut cmd = lima_shell_base(limactl, lima_home, instance);
+    cmd.arg("--");
     cmd
 }
 
@@ -684,35 +698,6 @@ where
 /// Reads the Lima YAML config, checks existing mount locations, and appends
 /// any missing paths as writable mounts. Returns `true` if the config was
 /// modified (meaning the VM needs to be restarted to pick up the changes).
-/// Top-level system directories that Lima 2.0+ rejects as guest mountPoints.
-///
-/// NOTE: This list is duplicated in `config-internal/src/node/types.rs`
-/// (which this crate cannot depend on). Keep both in sync.
-const BLOCKED_MOUNT_PATHS: &[&str] = &[
-    "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
-];
-
-/// Check whether a path is a blocked top-level system mount.
-///
-/// Only exact top-level matches are blocked — subdirectories like `/tmp/my_app`
-/// are allowed. Also handles macOS `/private/X` equivalents (e.g., `/private/tmp`
-/// maps to `/tmp`).
-pub(crate) fn is_blocked_system_mount(path: &str) -> bool {
-    if BLOCKED_MOUNT_PATHS.contains(&path) {
-        return true;
-    }
-    // macOS: /private/tmp -> /tmp, /private/var -> /var
-    if let Some(stripped) = path.strip_prefix("/private") {
-        return BLOCKED_MOUNT_PATHS.contains(&stripped);
-    }
-    false
-}
-
-/// Ensure that the given host paths are listed as mounts in the Lima config.
-///
-/// Reads the Lima YAML config, checks existing mount locations, and appends
-/// any missing paths as writable mounts. Returns `true` if the config was
-/// modified (meaning the VM needs to be restarted to pick up the changes).
 ///
 /// Also performs cleanup: removes existing mount entries for paths that no longer
 /// exist on the host or that are blocked system paths (which Lima would reject).
@@ -754,7 +739,7 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         if location == "~" || location == "null" {
             return true;
         }
-        if is_blocked_system_mount(location) {
+        if is_blocked_mount_source(location) {
             tracing::info!("Removing invalid Lima mount (system path): {}", location);
             return false;
         }
@@ -783,7 +768,7 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         .collect();
 
     for path in paths {
-        if is_blocked_system_mount(path) {
+        if is_blocked_mount_source(path) {
             tracing::info!(
                 "Skipping Lima mount for system path: {} (blocked by Lima)",
                 path
@@ -1051,36 +1036,6 @@ mod tests {
             }
             other => panic!("expected LimaInstanceError, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_is_blocked_system_mount_rejects_top_level() {
-        assert!(is_blocked_system_mount("/"));
-        assert!(is_blocked_system_mount("/tmp"));
-        assert!(is_blocked_system_mount("/var"));
-        assert!(is_blocked_system_mount("/etc"));
-        assert!(is_blocked_system_mount("/bin"));
-        assert!(is_blocked_system_mount("/dev"));
-        assert!(is_blocked_system_mount("/home"));
-        assert!(is_blocked_system_mount("/opt"));
-        assert!(is_blocked_system_mount("/sbin"));
-        assert!(is_blocked_system_mount("/usr"));
-    }
-
-    #[test]
-    fn test_is_blocked_system_mount_rejects_private_equivalents() {
-        assert!(is_blocked_system_mount("/private/tmp"));
-        assert!(is_blocked_system_mount("/private/var"));
-        assert!(is_blocked_system_mount("/private/etc"));
-    }
-
-    #[test]
-    fn test_is_blocked_system_mount_allows_subdirectories() {
-        assert!(!is_blocked_system_mount("/tmp/my_app"));
-        assert!(!is_blocked_system_mount("/var/log/my_app"));
-        assert!(!is_blocked_system_mount("/data/shared"));
-        assert!(!is_blocked_system_mount("/mnt/external"));
-        assert!(!is_blocked_system_mount("/private/tmp/foo"));
     }
 
     #[test]

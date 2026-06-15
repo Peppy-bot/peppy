@@ -32,7 +32,9 @@ rayon = "1.11.0"
 service-manager = "0.11"
 ipnet = "2.11"
 netdev = "0.44"
-libc = "0.2"
+# Safe wrappers over the libc syscalls peppy needs (getuid/geteuid and the
+# kill(pid, 0) liveness probe), so the crate carries no `unsafe` for them.
+rustix = { version = "1", features = ["process"] }
 dirs = "6"
 names-generator2 = "0.2.1"
 rand = "0.10"
@@ -48,14 +50,24 @@ parking_lot = { workspace = true, optional = true }
 build-helpers = { path = "../build-helpers-internal" }
 
 [features]
-default = ["test-support"]
+# The shipped CLI carries no test scaffolding by default. `test-support` is
+# opt-in and enabled for this crate's own tests via the dev-dependency
+# self-reference below, so `cargo test` works without extra flags while a plain
+# `cargo build`/`cargo install` stays lean.
+default = []
 # Gate test-only helpers (including config's fingerprint helpers and
-# their git2 transitive dep) behind this feature so a release build with
-# `--no-default-features` doesn't carry them.
+# their git2 transitive dep) behind this feature so a release build doesn't
+# carry them.
 test-support = ["dep:tempfile", "dep:parking_lot", "config/test_helpers"]
 
 [dev-dependencies]
 tempfile = "3.8"
+# Only the daemon-lifecycle e2e test needs raw `kill(2)` to signal a spawned
+# child process; the library itself uses `rustix` and carries no `libc`.
+libc = "0.2"
+# Self-reference so `cargo test` builds this crate with the test-only helpers
+# enabled, without making `test-support` a default feature of the shipped CLI.
+peppy = { path = ".", features = ["test-support"] }
 
 [[test]]
 name = "integration"

@@ -109,3 +109,133 @@ impl InfoResponse {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_container_info() -> ContainerInfo {
+        ContainerInfo {
+            apptainer_version: "1.2.3".to_owned(),
+            lima_version: "0.20.1".to_owned(),
+        }
+    }
+
+    // Deliberately calls `::default()` on the unit struct to assert the Default
+    // impl agrees with `new()`; that's what trips `default_constructed_unit_structs`.
+    #[allow(clippy::default_constructed_unit_structs)]
+    #[test]
+    fn info_request_new_equals_default() {
+        assert_eq!(InfoRequest::new(), InfoRequest);
+        assert_eq!(InfoRequest::new(), InfoRequest::default());
+    }
+
+    #[test]
+    fn info_request_roundtrip() {
+        let original = InfoRequest::new();
+        let encoded = original.encode().expect("encode");
+        let decoded = InfoRequest::decode(&encoded).expect("decode");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn info_request_decode_rejects_malformed() {
+        assert!(InfoRequest::decode(b"not a capnp message").is_err());
+    }
+
+    #[test]
+    fn info_response_new_sets_fields() {
+        let response = InfoResponse::new(
+            3_600,
+            "core-node",
+            "instance-abc",
+            "host-1",
+            5,
+            "v1.0.0",
+            sample_container_info(),
+            7777,
+        );
+        assert_eq!(response.uptime_secs, 3_600);
+        assert_eq!(response.core_node_name, "core-node");
+        assert_eq!(response.core_node_instance_id, "instance-abc");
+        assert_eq!(response.host_name, "host-1");
+        assert_eq!(response.node_count, 5);
+        assert_eq!(response.git_version, "v1.0.0");
+        assert_eq!(response.container_info, sample_container_info());
+        assert_eq!(response.messaging_port, 7777);
+    }
+
+    #[test]
+    fn info_response_roundtrip() {
+        let original = InfoResponse::new(
+            123_456,
+            "core-node",
+            "instance-abc",
+            "host-1",
+            5,
+            "v1.0.0",
+            sample_container_info(),
+            7777,
+        );
+        let encoded = original.encode().expect("encode");
+        let decoded = InfoResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn info_response_roundtrip_empty_strings_and_zero_counts() {
+        let original = InfoResponse::new(
+            0,
+            "",
+            "",
+            "",
+            0,
+            "",
+            ContainerInfo {
+                apptainer_version: String::new(),
+                lima_version: String::new(),
+            },
+            0,
+        );
+        let encoded = original.encode().expect("encode");
+        let decoded = InfoResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn info_response_roundtrip_max_numeric_fields() {
+        let original = InfoResponse::new(
+            u64::MAX,
+            "core-node",
+            "instance-abc",
+            "host-1",
+            u32::MAX,
+            "v1.0.0",
+            sample_container_info(),
+            u16::MAX,
+        );
+        let encoded = original.encode().expect("encode");
+        let decoded = InfoResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded.uptime_secs, u64::MAX);
+        assert_eq!(decoded.node_count, u32::MAX);
+        assert_eq!(decoded.messaging_port, u16::MAX);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn info_response_roundtrip_preserves_container_info() {
+        let container = ContainerInfo {
+            apptainer_version: "9.9.9".to_owned(),
+            lima_version: "8.8.8".to_owned(),
+        };
+        let original = InfoResponse::new(1, "n", "i", "h", 1, "g", container.clone(), 42);
+        let encoded = original.encode().expect("encode");
+        let decoded = InfoResponse::decode(&encoded).expect("decode");
+        assert_eq!(decoded.container_info, container);
+    }
+
+    #[test]
+    fn info_response_decode_rejects_malformed() {
+        assert!(InfoResponse::decode(b"not a capnp message").is_err());
+    }
+}

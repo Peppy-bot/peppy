@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::names;
+use crate::services::response::into_service_response;
 use config::node::Name;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use node_stack::NodeStack;
@@ -61,19 +62,17 @@ async fn handle_node_remove_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    handle_node_remove_request_inner(
+    into_service_response(
         &context,
-        &messenger,
-        &core_node_node,
-        &core_instance_id,
-        node_stack,
+        handle_node_remove_request_inner(
+            &context,
+            &messenger,
+            &core_node_node,
+            &core_instance_id,
+            node_stack,
+        )
+        .await,
     )
-    .await
-    .map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
-    })
 }
 
 async fn handle_node_remove_request_inner(
@@ -136,7 +135,13 @@ async fn handle_node_remove_request_inner(
         node_tag: String,
     }
 
+    // `targets` are live (`Running`) instances that get a reachability probe and
+    // a cooperative shutdown before removal. `terminal_targets` are instances
+    // that already exited on their own (`Finished`/`Failed`): there is no process
+    // to probe or signal, but they are still tracked, so they must be counted by
+    // the safety gate and cleared from the entity before `remove_config`.
     let mut targets: Vec<RemovalTarget> = Vec::new();
+    let mut terminal_targets: Vec<RemovalTarget> = Vec::new();
     let mut config_targets: Vec<ConfigRemovalTarget> = Vec::new();
     for handle in matching_entities {
         let guard = handle.read();
@@ -150,14 +155,19 @@ async fn handle_node_remove_request_inner(
             // Skip Starting instances: they will resolve via the
             // prepare_and_spawn → abort_started path; calling stop_instance on
             // them is a no-op at best and racy at worst.
-            if instance.state() != node_stack::InstanceState::Running {
+            if instance.state() == node_stack::InstanceState::Starting {
                 continue;
             }
-            targets.push(RemovalTarget {
+            let target = RemovalTarget {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
                 instance_id: instance.instance_id().clone(),
-            });
+            };
+            if instance.state().is_terminal() {
+                terminal_targets.push(target);
+            } else {
+                targets.push(target);
+            }
         }
     }
 
@@ -208,17 +218,23 @@ async fn handle_node_remove_request_inner(
         }
     }
 
-    // Safety gate: without `stop_instances`, any tracked instance — reachable
-    // or not — blocks the remove. Previously only reachable instances were
-    // counted, which let a tracked-but-unreachable instance sneak the node
-    // out from under a still-running child.
-    if !request.stop_instances && (!running_targets.is_empty() || !unreachable_targets.is_empty()) {
+    // Safety gate: without `stop_instances`, any tracked instance — reachable,
+    // unreachable, or terminal — blocks the remove. Reachable/unreachable could
+    // still be backed by a live process; terminal instances have exited but are
+    // still tracked, and `remove_config` rejects a node that still has any
+    // instance, so they must be cleared first too.
+    if !request.stop_instances
+        && (!running_targets.is_empty()
+            || !unreachable_targets.is_empty()
+            || !terminal_targets.is_empty())
+    {
         let example = running_targets
             .first()
             .or_else(|| unreachable_targets.first())
+            .or_else(|| terminal_targets.first())
             .expect("one of the lists is non-empty");
         return NodeRemoveResponse::failure(format!(
-            "Node '{}' has tracked instances (reachable or unreachable, e.g. '{}'); set stop_instances=true to stop them before removing",
+            "Node '{}' has tracked instances (e.g. '{}'); set stop_instances=true to clear them before removing",
             request.node_name,
             example.instance_id.as_str(),
         ))
@@ -282,7 +298,11 @@ async fn handle_node_remove_request_inner(
         }
     }
 
-    for target in &targets {
+    // Clear every tracked instance from its entity before `remove_config`:
+    // the live ones we just cooperatively stopped, plus any terminal ones that
+    // had already exited. `stop_instance` removes a `Running` or terminal
+    // instance (only `Starting` is excluded), so both kinds are handled here.
+    for target in targets.iter().chain(terminal_targets.iter()) {
         let Some(handle) = node_stack.find(&target.node_name, &target.node_tag) else {
             // Entity was concurrently removed; nothing to stop. Treat as
             // success rather than failing the whole removal request.

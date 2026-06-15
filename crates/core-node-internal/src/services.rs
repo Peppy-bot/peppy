@@ -5,12 +5,13 @@ mod info;
 mod node;
 mod ping;
 pub(crate) mod repo;
+mod response;
 mod stack;
 
 use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::FORBIDDEN_ENV_KEYS;
-pub use node::{TEARDOWN_REAP_BUDGET, teardown_all_instances};
+pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
 
 use crate::Result;
 use config::{
@@ -31,10 +32,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
@@ -97,6 +99,31 @@ impl CoreNodeArguments {
     }
 }
 
+/// Everything [`CoreNode::new`] needs, grouped so the constructor reads as a
+/// single named bundle rather than a long positional argument list (the
+/// `Arc<Mutex<Messenger>>`, `PeppyDirs`, and `PeppyConfig` are easy to transpose
+/// positionally).
+pub struct CoreNodeConfig {
+    /// Shared messaging interface the core node binds its services on.
+    pub messenger: Arc<Mutex<Messenger>>,
+    /// Explicit node name; `None` derives a deterministic machine-based default.
+    pub node_name: Option<String>,
+    /// Timeouts, intervals, and the daemon-wide sim-time flag.
+    pub arguments: CoreNodeArguments,
+    /// Root directory the node stack is anchored at.
+    pub root_dir: PathBuf,
+    /// Resolved peppy directory layout.
+    pub peppy_dirs: PeppyDirs,
+    /// Daemon-global messaging mode + peer buffer sizes, injected into every
+    /// spawned node's runtime config (see `node::run`).
+    pub peppy_config: config::peppy_config::PeppyConfig,
+    /// Cancelled at the start of daemon shutdown to stop the core node's own
+    /// clock + heartbeat publishers before the messaging session is closed, so
+    /// they do not spin against a closed session logging a failed publish on
+    /// every tick.
+    pub shutdown_token: CancellationToken,
+}
+
 pub struct CoreNode {
     node_stack: Arc<NodeStack>,
     node_config: NodeConfig,
@@ -114,72 +141,90 @@ pub struct CoreNode {
     /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
     peppy_config: config::peppy_config::PeppyConfig,
+    /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
+    /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
+    shutdown_token: CancellationToken,
+    /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
+    /// instance is rejected rather than silently re-registering listeners.
+    started: AtomicBool,
 }
 
-/// Pre-flight checks that run once at daemon startup. Exits with a
-/// user-friendly message if any check fails (no panic backtrace).
-fn perform_runtime_checks() {
+/// Pre-flight checks that must pass before the daemon starts spawning nodes.
+///
+/// Returns an `Err` (rather than calling `std::process::exit`) so the caller —
+/// the binary — decides how to report a failure. Keeping the library free of
+/// process-exit means a `CoreNode` can be constructed in tests and embedders
+/// without risking a host-process kill.
+pub fn check_runtime_prerequisites() -> Result<()> {
     // Apptainer user namespaces: on Ubuntu 24.04+ an AppArmor profile is
     // required to allow unprivileged user namespace creation.
     #[cfg(target_os = "linux")]
     if let Err(e) = containers::Apptainer::new() {
-        eprintln!("Apptainer pre-flight check failed:\n\n{e}");
-        std::process::exit(1);
+        return Err(crate::Error::RuntimeCheck(e.to_string()));
     }
+    Ok(())
+}
+
+/// Derives the deterministic default core-node name from the machine UID
+/// (falling back to the hostname, then a random name). Reads host identifiers
+/// (`machine_uid`/`hostname`); only called when no explicit name is supplied.
+fn derive_core_node_name() -> Name {
+    let seed_source = machine_uid::get()
+        .map_err(|e| {
+            tracing::warn!("machine_uid::get() failed: {e}; falling back to hostname");
+        })
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            hostname::get().ok().and_then(|h| {
+                let s = h.to_string_lossy().into_owned();
+                if s.is_empty() { None } else { Some(s) }
+            })
+        });
+
+    let generated = match seed_source {
+        Some(src) => {
+            // Hash so the published name does not reveal the UID/hostname.
+            let digest = Sha256::digest(src.as_bytes());
+            let seed: [u8; 32] = digest.into();
+            let mut seeded = StdRng::from_seed(seed);
+            get_random(&mut seeded)
+        }
+        None => {
+            tracing::warn!(
+                "machine UID and hostname unavailable; falling back to non-deterministic core node name"
+            );
+            get_random(&mut rng())
+        }
+    };
+
+    Name::new(format!("core-node-{generated}")).unwrap()
 }
 
 impl CoreNode {
-    pub fn new<P: Into<PathBuf>>(
-        messenger: Arc<Mutex<Messenger>>,
-        node_name: Option<&str>,
-        node_arguments: CoreNodeArguments,
-        root_dir: P,
-        peppy_dirs: PeppyDirs,
-        peppy_config: config::peppy_config::PeppyConfig,
-    ) -> Self {
+    pub fn new(config: CoreNodeConfig) -> Self {
+        let CoreNodeConfig {
+            messenger,
+            node_name,
+            arguments,
+            root_dir,
+            peppy_dirs,
+            peppy_config,
+            shutdown_token,
+        } = config;
+
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
-            None => {
-                let seed_source = machine_uid::get()
-                    .map_err(|e| {
-                        tracing::warn!("machine_uid::get() failed: {e}; falling back to hostname");
-                    })
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        hostname::get().ok().and_then(|h| {
-                            let s = h.to_string_lossy().into_owned();
-                            if s.is_empty() { None } else { Some(s) }
-                        })
-                    });
-
-                let generated = match seed_source {
-                    Some(src) => {
-                        // Hash so the published name does not reveal the UID/hostname.
-                        let digest = Sha256::digest(src.as_bytes());
-                        let seed: [u8; 32] = digest.into();
-                        let mut seeded = StdRng::from_seed(seed);
-                        get_random(&mut seeded)
-                    }
-                    None => {
-                        tracing::warn!(
-                            "machine UID and hostname unavailable; falling back to non-deterministic core node name"
-                        );
-                        get_random(&mut rng())
-                    }
-                };
-
-                Name::new(format!("core-node-{generated}")).unwrap()
-            }
+            None => derive_core_node_name(),
         };
 
-        let node_startup_timeout = node_arguments.node_startup_timeout;
-        let node_start_health_timeout = node_arguments.node_start_health_timeout;
-        let health_monitor_interval = node_arguments.health_monitor_interval;
-        let health_monitor_timeout = node_arguments.health_monitor_timeout;
-        let clock_publish_interval = node_arguments.clock_publish_interval;
-        let heartbeat_interval = node_arguments.heartbeat_interval;
-        let daemon_use_sim_time = node_arguments.daemon_use_sim_time;
+        let node_startup_timeout = arguments.node_startup_timeout;
+        let node_start_health_timeout = arguments.node_start_health_timeout;
+        let health_monitor_interval = arguments.health_monitor_interval;
+        let health_monitor_timeout = arguments.health_monitor_timeout;
+        let clock_publish_interval = arguments.clock_publish_interval;
+        let heartbeat_interval = arguments.heartbeat_interval;
+        let daemon_use_sim_time = arguments.daemon_use_sim_time;
 
         let node_config = NodeConfig {
             peppy_schema: PeppySchema::NodeV1,
@@ -191,15 +236,13 @@ impl CoreNode {
             },
             execution: Execution {
                 language: PeppygenLanguage::Rust,
-                parameters: node_arguments.into_parameters(),
+                parameters: arguments.into_parameters(),
                 build_cmd: None,
                 run_cmd: None,
                 container: None,
             },
             interfaces: Default::default(),
         };
-
-        perform_runtime_checks();
 
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
@@ -225,15 +268,13 @@ impl CoreNode {
             heartbeat_interval,
             daemon_use_sim_time,
             peppy_config,
+            shutdown_token,
+            started: AtomicBool::new(false),
         }
     }
 
     pub fn node_stack(&self) -> &NodeStack {
         &self.node_stack
-    }
-
-    pub fn set_node_stack(&mut self, node_stack: NodeStack) {
-        self.node_stack = Arc::new(node_stack);
     }
 
     /// Tear down every spawned node on a catchable daemon shutdown (ctrl+C /
@@ -260,19 +301,27 @@ impl CoreNode {
         self.node_config.manifest.name.as_str()
     }
 
-    pub fn node_tag(&self) -> &str {
-        self.node_config.manifest.tag.as_str()
-    }
-
-    pub fn instance_id(&self) -> &str {
+    pub(crate) fn instance_id(&self) -> &str {
         self.instance_id.as_str()
     }
 
-    pub async fn start(&self) -> Result<()> {
-        self.start_with_ready(None).await
-    }
-
+    /// Boots the core node: registers every service listener and runs until the
+    /// messaging session is torn down. The optional `ready` sender fires once
+    /// all listeners are registered (used by tests and the serve runner to
+    /// gate dependent startup).
+    ///
+    /// Side effects performed up front, before listeners are registered:
+    /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
+    ///   clear stale state from a previous run — see [`clear_instances_dir`].
+    /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
+    ///   so newly-bundled default repos land in pre-existing user configs.
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
+        // Boot exactly once per instance: a second `start` would re-run the
+        // destructive setup below and register every listener twice.
+        if self.started.swap(true, Ordering::SeqCst) {
+            return Err(crate::Error::AlreadyStarted);
+        }
+
         clear_instances_dir(&self.peppy_dirs);
 
         // Sync `repositories.json5` against the bundled default template so
@@ -327,6 +376,7 @@ impl CoreNode {
                     self.instance_id(),
                     self.node_name(),
                     Arc::clone(&clock_cache),
+                    self.shutdown_token.clone(),
                 )
                 .boxed()
             } else {
@@ -337,6 +387,7 @@ impl CoreNode {
                     self.node_name(),
                     self.clock_publish_interval,
                     Arc::clone(&clock_source),
+                    self.shutdown_token.clone(),
                 )
                 .boxed()
             },
@@ -348,6 +399,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.heartbeat_interval,
+                self.shutdown_token.clone(),
             )
             .boxed(),
             info::listen_for_info(
@@ -407,6 +459,7 @@ impl CoreNode {
                     },
                     use_sim_time: self.daemon_use_sim_time,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    shutdown_token: self.shutdown_token.clone(),
                 },
             )
             .boxed(),
@@ -484,6 +537,7 @@ impl CoreNode {
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    shutdown_token: self.shutdown_token.clone(),
                 },
             )
             .boxed(),

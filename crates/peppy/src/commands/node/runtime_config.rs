@@ -5,7 +5,6 @@ use std::time::Duration;
 use config::launcher::Name;
 use config::node::NodeConfigParser;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
 use names_generator2::get_random;
 use rand::rng;
@@ -65,8 +64,7 @@ async fn print_runtime_config_async(
     )
     .await?;
 
-    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
+    let graph = crate::commands::parse_stack_graph(&response.graph_json)?;
 
     let matching_nodes: Vec<_> = graph.nodes.iter().filter(|n| n.name == node_name).collect();
     if matching_nodes.is_empty() {
@@ -89,13 +87,8 @@ async fn print_runtime_config_async(
         )));
     }
 
-    let (messaging_host, messaging_port) = match conn.messenger.messaging_endpoint().await {
-        Some(endpoint) => endpoint,
-        None => (
-            config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-            conn.messenger.messaging_port().await,
-        ),
-    };
+    let (messaging_host, messaging_port) =
+        crate::commands::resolve_messaging_endpoint(conn.messenger).await;
 
     let instance_id = get_random(rng());
     let node_tag = matching_nodes

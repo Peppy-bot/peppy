@@ -1,5 +1,5 @@
 use super::discovery::discover_producer;
-use super::{DISCOVERY_TIMEOUT, MessengerHandle, PROBE_TIMEOUT, generate_short_id};
+use super::{DISCOVERY_TIMEOUT, MessengerHandle, generate_short_id};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
@@ -467,8 +467,10 @@ impl ServiceMessenger {
     /// Sends a lightweight probe to check whether a service is listening
     /// within the [`ServiceTarget`] scope (a full producer pin, one core
     /// node, or any matching producer). The probe is answered by the
-    /// transport adapter; the user handler is never invoked. Returns
-    /// `true` if the service responds within [`PROBE_TIMEOUT`], `false` if
+    /// transport adapter; the user handler is never invoked. Returns `true`
+    /// if the service replies within [`PROBE_TIMEOUT`](super::PROBE_TIMEOUT)
+    /// or is reached but too slow to answer in time (a probe timeout still
+    /// proves the producer is there); `false` only if the service is
     /// unreachable.
     ///
     /// Bypasses `Self::poll`'s discover-then-pin sequence because a probe
@@ -485,20 +487,7 @@ impl ServiceMessenger {
     ) -> Result<bool> {
         let sender =
             target.wire_sender(bound_core_node, as_instance_id, to_target, to_service_name)?;
-        match messenger
-            .poll_service(
-                &sender,
-                Payload::new(),
-                ServiceQueryKind::Probe,
-                PROBE_TIMEOUT,
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(Error::ServiceUnreachable { .. }) => Ok(false),
-            Err(Error::ServiceTimeout { .. }) => Ok(true),
-            Err(e) => Err(e),
-        }
+        super::discovery::probe_reachable(messenger, &sender).await
     }
 
     /// Measure the round-trip latency of a single `Probe`-kind query to a
@@ -534,11 +523,13 @@ impl ServiceMessenger {
     ) -> Result<(Duration, usize)> {
         let sender =
             target.wire_sender(bound_core_node, as_instance_id, to_target, to_service_name)?;
-        let request = Payload::from(pmi::build_sized_probe_request(request_size, response_size));
-        let started = Instant::now();
-        let reply = messenger
-            .poll_service(&sender, request, ServiceQueryKind::Probe, response_timeout)
-            .await?;
-        Ok((started.elapsed(), reply.payload().as_ref().len()))
+        super::discovery::probe_round_trip(
+            messenger,
+            &sender,
+            request_size,
+            response_size,
+            response_timeout,
+        )
+        .await
     }
 }

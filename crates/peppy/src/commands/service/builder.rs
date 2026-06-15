@@ -1,5 +1,5 @@
 use super::core_node::CoreNodeRunner;
-use super::messaging_router::MessagingRouter;
+use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
@@ -30,6 +30,10 @@ pub struct ServeCommandBuilder {
     core_node_name: Option<String>,
     clock_source: super::ClockSource,
     shutdown_token: Option<CancellationToken>,
+    /// Sender the core node runner uses to tell the messaging router that
+    /// teardown is done. Created alongside the messaging router so the router
+    /// holds the receiver; handed to the core node runner in [`Self::build`].
+    core_node_done_tx: Option<watch::Sender<bool>>,
     root_dir: PathBuf,
     peppy_config: PeppyConfig,
 }
@@ -44,6 +48,7 @@ impl ServeCommandBuilder {
             core_node_name: None,
             clock_source: super::ClockSource::default(),
             shutdown_token: None,
+            core_node_done_tx: None,
             root_dir: root_dir.into(),
             peppy_config: PeppyConfig::default(),
         })
@@ -93,13 +98,23 @@ impl ServeCommandBuilder {
         };
         let messenger = Arc::new(Mutex::new(Messenger::new(adapter)));
         let (messaging_ready_tx, messaging_ready_rx) = watch::channel(false);
+        // Shutdown-side counterpart of `messaging_ready`: the core node signals
+        // this once teardown finishes, releasing the router to close the session.
+        let (core_node_done_tx, core_node_done_rx) = watch::channel(false);
+        // Keep the session open until the core node's worst-case teardown
+        // finishes (cooperative node shutdown rides over it). Derived from the
+        // same force_kill_deadline the teardown uses; see `teardown_budget_for`.
+        let teardown_budget = teardown_budget_for(self.peppy_config.lifecycle.shutdown_grace_secs);
         self.messenger = Some(Arc::clone(&messenger));
         self.messaging_ready = Some(messaging_ready_rx);
+        self.core_node_done_tx = Some(core_node_done_tx);
         self.composite_command =
             self.composite_command
                 .add_async_command(Box::new(MessagingRouter::new(
                     messenger,
                     messaging_ready_tx,
+                    Some(core_node_done_rx),
+                    teardown_budget,
                 )));
         Ok(self)
     }
@@ -121,6 +136,13 @@ impl ServeCommandBuilder {
                 // Capture the shutdown grace before `peppy_config` is moved into
                 // the runner, so the daemon state file can advertise it to clients.
                 let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
+                // The send half of the router's shutdown handshake, created in
+                // `with_messaging_router`. Present whenever a messaging router
+                // exists, which is required for a core node (checked above).
+                let core_node_done_tx = self
+                    .core_node_done_tx
+                    .take()
+                    .expect("core_node_done channel created in with_messaging_router");
                 let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
                     self.core_node_name.clone(),
@@ -130,6 +152,7 @@ impl ServeCommandBuilder {
                     self.messaging_ready.clone(),
                     self.clock_source,
                     self.peppy_config,
+                    core_node_done_tx,
                 );
 
                 // Write the daemon state file with the core node name

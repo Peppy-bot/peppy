@@ -62,7 +62,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
         &mut scrolling_output,
         |payload, output| {
             if let Ok(feedback) = RepoRefreshFeedback::decode(payload) {
-                output.add_line(&format_refresh_line(&feedback), false);
+                output.add_line(&format_refresh_line(&feedback));
             }
         },
         |payload| {

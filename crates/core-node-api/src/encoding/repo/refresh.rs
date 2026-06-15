@@ -271,3 +271,176 @@ impl RepoRefreshResult {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn goal_roundtrips() {
+        let goal = RepoRefreshGoal;
+        let bytes = goal.encode().expect("encode");
+        assert_eq!(RepoRefreshGoal::decode(&bytes).expect("decode"), goal);
+    }
+
+    #[test]
+    fn goal_decode_rejects_malformed() {
+        assert!(RepoRefreshGoal::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn goal_response_accepted_roundtrips() {
+        let response = RepoRefreshGoalResponse::accepted();
+        assert!(response.accepted);
+        assert_eq!(response.rejection_reason, None);
+        let bytes = response.encode().expect("encode");
+        assert_eq!(
+            RepoRefreshGoalResponse::decode(&bytes).expect("decode"),
+            response
+        );
+    }
+
+    #[test]
+    fn goal_response_rejected_roundtrips() {
+        let response = RepoRefreshGoalResponse::rejected("already refreshing");
+        assert!(!response.accepted);
+        assert_eq!(
+            response.rejection_reason.as_deref(),
+            Some("already refreshing")
+        );
+        let bytes = response.encode().expect("encode");
+        assert_eq!(
+            RepoRefreshGoalResponse::decode(&bytes).expect("decode"),
+            response
+        );
+    }
+
+    #[test]
+    fn goal_response_decode_rejects_malformed() {
+        assert!(RepoRefreshGoalResponse::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn item_kind_as_str_parse_roundtrips() {
+        for kind in [
+            RepoItemKind::Node,
+            RepoItemKind::Launcher,
+            RepoItemKind::Interface,
+        ] {
+            assert_eq!(RepoItemKind::parse(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn item_kind_as_str_values() {
+        assert_eq!(RepoItemKind::Node.as_str(), "node");
+        assert_eq!(RepoItemKind::Launcher.as_str(), "launcher");
+        assert_eq!(RepoItemKind::Interface.as_str(), "interface");
+    }
+
+    #[test]
+    fn item_kind_parse_rejects_unknown() {
+        assert_eq!(RepoItemKind::parse("bogus"), None);
+        assert_eq!(RepoItemKind::parse(""), None);
+        assert_eq!(RepoItemKind::parse("Node"), None);
+    }
+
+    #[test]
+    fn item_kind_display_matches_as_str() {
+        assert_eq!(RepoItemKind::Launcher.to_string(), "launcher");
+    }
+
+    #[test]
+    fn feedback_discovered_roundtrips() {
+        let feedback = RepoRefreshFeedback::Discovered {
+            kind: RepoItemKind::Node,
+            item_name: "planner".to_string(),
+            item_tag: "v1".to_string(),
+            source_type: RepoSourceKind::Git,
+            path: "nodes/planner/manifest.json5".to_string(),
+            sha256: "abc123".to_string(),
+        };
+        let bytes = feedback.encode().expect("encode").into_inner();
+        assert_eq!(
+            RepoRefreshFeedback::decode(bytes.as_ref()).expect("decode"),
+            feedback
+        );
+    }
+
+    #[test]
+    fn feedback_discovered_empty_tag_roundtrips() {
+        // Launchers carry an empty tag.
+        let feedback = RepoRefreshFeedback::Discovered {
+            kind: RepoItemKind::Launcher,
+            item_name: "bringup".to_string(),
+            item_tag: String::new(),
+            source_type: RepoSourceKind::Fs,
+            path: "/abs/path/launcher.json5".to_string(),
+            sha256: "def456".to_string(),
+        };
+        let bytes = feedback.encode().expect("encode").into_inner();
+        assert_eq!(
+            RepoRefreshFeedback::decode(bytes.as_ref()).expect("decode"),
+            feedback
+        );
+    }
+
+    #[test]
+    fn feedback_excluded_roundtrips() {
+        let feedback = RepoRefreshFeedback::Excluded {
+            source_type: RepoSourceKind::Url,
+            identity: "https://example.com/packages".to_string(),
+        };
+        let bytes = feedback.encode().expect("encode").into_inner();
+        assert_eq!(
+            RepoRefreshFeedback::decode(bytes.as_ref()).expect("decode"),
+            feedback
+        );
+    }
+
+    #[test]
+    fn feedback_progress_roundtrips() {
+        let feedback = RepoRefreshFeedback::Progress {
+            message: "Cloning https://example.com/repo".to_string(),
+        };
+        let bytes = feedback.encode().expect("encode").into_inner();
+        assert_eq!(
+            RepoRefreshFeedback::decode(bytes.as_ref()).expect("decode"),
+            feedback
+        );
+    }
+
+    #[test]
+    fn feedback_decode_rejects_malformed() {
+        assert!(RepoRefreshFeedback::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn result_success_roundtrips() {
+        let result = RepoRefreshResult::success(3, 1, 2);
+        assert!(result.success);
+        assert_eq!(result.error_message, None);
+        assert_eq!(result.total_nodes_found, 3);
+        assert_eq!(result.total_launchers_found, 1);
+        assert_eq!(result.total_interfaces_found, 2);
+        let bytes = result.encode().expect("encode");
+        assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
+    }
+
+    #[test]
+    fn result_failure_roundtrips() {
+        let result = RepoRefreshResult::failure("scan failed");
+        assert!(!result.success);
+        assert_eq!(result.error_message.as_deref(), Some("scan failed"));
+        assert_eq!(result.total_nodes_found, 0);
+        assert_eq!(result.total_launchers_found, 0);
+        assert_eq!(result.total_interfaces_found, 0);
+        let bytes = result.encode().expect("encode");
+        assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
+    }
+
+    #[test]
+    fn result_decode_rejects_malformed() {
+        assert!(RepoRefreshResult::decode(b"not capnp").is_err());
+    }
+}

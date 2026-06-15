@@ -271,15 +271,10 @@ if __name__ == "__main__":
             .goal_service
             .as_ref()
             .and_then(|s| s.request_message_format.clone()),
-        goal_response: exposed_action
-            .goal_service
-            .as_ref()
-            .and_then(|s| s.response_message_format.clone()),
         feedback: exposed_action
             .feedback_topic
             .as_ref()
             .and_then(|t| t.message_format.clone()),
-        result_request: None,
         result_response: exposed_action
             .result_service
             .as_ref()

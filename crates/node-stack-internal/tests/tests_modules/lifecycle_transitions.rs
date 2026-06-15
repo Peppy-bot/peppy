@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use config::node::Name;
 use node_stack::{
-    BuildContext, EntitySnapshot, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
-    RestoreTarget, WorkingDirGuard,
+    BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage, WorkingDirGuard,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::helpers::config_common::core_node_config;
+use crate::helpers::graph_query;
 use crate::helpers::real_lifecycle;
 
 fn sensor_config() -> config::node::NodeConfig {
@@ -322,11 +322,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
         .expect("first consumer push");
 
     // Initially the consumer depends on producer_a.
-    let deps_a: Vec<String> = stack
-        .dependencies_of("consumer", "v1")
-        .iter()
-        .map(|h| h.read().config().manifest.name.as_str().to_owned())
-        .collect();
+    let deps_a = graph_query::dependency_names(&stack, "consumer", "v1");
     assert_eq!(deps_a, vec!["producer_a".to_string()]);
 
     // Re-push the consumer with the same interfaces, but pointed at
@@ -339,11 +335,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
         )
         .expect("second consumer push");
 
-    let deps_b: Vec<String> = stack
-        .dependencies_of("consumer", "v1")
-        .iter()
-        .map(|h| h.read().config().manifest.name.as_str().to_owned())
-        .collect();
+    let deps_b = graph_query::dependency_names(&stack, "consumer", "v1");
     assert_eq!(
         deps_b,
         vec!["producer_b".to_string()],
@@ -387,9 +379,6 @@ async fn push_config_rejects_replacement_with_live_instances() {
 
 #[tokio::test]
 async fn concurrent_builds_are_rejected_immediately() {
-    use std::time::Duration;
-    use tokio::time::timeout;
-
     // Process node (no container) — `NodeEntity::build` runs the pure-Rust
     // archive path, no apptainer required.
     let stack = NodeStack::new(
@@ -398,14 +387,23 @@ async fn concurrent_builds_are_rejected_immediately() {
         PathBuf::from("/tmp"),
     );
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
-    // Use an `build_cmd` that sleeps long enough to keep the winning task in
-    // `Building` while the loser observes the stage. Without this, archiving
-    // a tiny working dir is fast enough that the winner can reach `Ready`
-    // before the loser even gets scheduled — that race produced the
-    // ambiguous "from: Ready" rejection the assertion below now refuses.
+
+    // Isolated peppy_dirs root for this test.
+    let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
+    let peppy_dirs = config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
+
+    // The winning build blocks in Phase 2 on a build_cmd that waits for this
+    // proceed file, holding the entity in `Building` until the test explicitly
+    // unblocks it. That makes the second build's rejection deterministic
+    // (always observed from `Building`), with no wall-clock sleep or timeout.
+    let proceed_file = peppy_root.path().join("proceed");
+    let blocking_cmd = format!(
+        "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
+        proceed_file.display()
+    );
     stack
         .push_config(
-            sensor_config_with_build_cmd("sleep 0.5"),
+            sensor_config_with_build_cmd(&blocking_cmd),
             false,
             &config_path,
         )
@@ -417,99 +415,77 @@ async fn concurrent_builds_are_rejected_immediately() {
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
     std::fs::write(working_dir.path().join("hello.txt"), b"hi").unwrap();
 
-    // Isolated peppy_dirs root for this test.
-    let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
-    let peppy_dirs = config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
-
     let log_path = peppy_root.path().join("build.log");
     let log_file = Arc::new(StdMutex::new(
         std::fs::File::create(&log_path).expect("create log"),
     ));
-
     let (feedback_tx, _feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
 
-    // Use a barrier so both tasks reach the call to `build` as close to
-    // simultaneously as possible — maximizes the race window. With explicit
-    // Building stage, the loser is rejected immediately (no queueing).
-    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    // Winner: the build that will sit in `Building` until we touch the proceed
+    // file. Spawned so it runs concurrently with the loser below.
+    let winner = {
+        let handle = Arc::clone(&handle);
+        let working_dir = working_dir.path().to_path_buf();
+        let peppy_dirs = peppy_dirs.clone();
+        let feedback_tx = feedback_tx.clone();
+        let log_file = Arc::clone(&log_file);
+        tokio::spawn(async move {
+            NodeEntity::build(
+                &handle,
+                BuildContext {
+                    working_dir: &working_dir,
+                    peppy_dirs: &peppy_dirs,
+                    feedback_tx: &feedback_tx,
+                    log_file,
+                    env_vars: &[],
+                    cancel_token: CancellationToken::new(),
+                },
+            )
+            .await
+        })
+    };
 
-    let spawn_build =
-        |handle: node_stack::EntityHandle,
-         working_dir: PathBuf,
-         peppy_dirs: config::consts::PeppyDirs,
-         feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
-         log_file: Arc<StdMutex<std::fs::File>>,
-         barrier: Arc<tokio::sync::Barrier>| {
-            tokio::spawn(async move {
-                barrier.wait().await;
-                NodeEntity::build(
-                    &handle,
-                    BuildContext {
-                        working_dir: &working_dir,
-                        peppy_dirs: &peppy_dirs,
-                        feedback_tx: &feedback_tx,
-                        log_file,
-                        env_vars: &[],
-                        cancel_token: CancellationToken::new(),
-                    },
-                )
-                .await
-            })
-        };
+    // Deterministically wait until the winner has entered `Building`.
+    real_lifecycle::wait_for_building(&handle).await;
 
-    let t1 = spawn_build(
-        Arc::clone(&handle),
-        working_dir.path().to_path_buf(),
-        peppy_dirs.clone(),
-        feedback_tx.clone(),
-        Arc::clone(&log_file),
-        Arc::clone(&barrier),
-    );
-    let t2 = spawn_build(
-        Arc::clone(&handle),
-        working_dir.path().to_path_buf(),
-        peppy_dirs.clone(),
-        feedback_tx.clone(),
-        Arc::clone(&log_file),
-        Arc::clone(&barrier),
-    );
-
-    // Both must complete (no deadlock) within a generous timeout.
-    let (r1, r2) = timeout(Duration::from_secs(30), async {
-        let r1 = t1.await.expect("task 1 panicked");
-        let r2 = t2.await.expect("task 2 panicked");
-        (r1, r2)
-    })
-    .await
-    .expect("concurrent builds should not deadlock");
-
-    // Exactly one Ok; exactly one InvalidStageTransition. The loser typically
-    // observes `Building` (winner is mid-Phase 2 `sleep 0.5`), but on a slow
-    // or heavily-loaded runner the loser could be starved past the 500 ms
-    // window and observe `Ready` (winner already completed Phase 3). Both
-    // shapes are valid rejections — the point of the test is that the loser
-    // is rejected immediately, regardless of which post-Added stage it sees.
-    let (ok_count, transition_err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
-        Ok(_) => (o + 1, e),
-        Err(NodeStackError::InvalidStageTransition { from, to, .. })
-            if (*from == "Building" || *from == "Ready") && *to == "Ready" =>
-        {
-            (o, e + 1)
+    // Loser: a build attempted while the entity is `Building` must be rejected
+    // immediately with `InvalidStageTransition` and no queueing. The winner is
+    // provably still in `Building` (blocked on the proceed file), so the
+    // rejection is deterministically `Building -> Ready`.
+    let loser = NodeEntity::build(
+        &handle,
+        BuildContext {
+            working_dir: working_dir.path(),
+            peppy_dirs: &peppy_dirs,
+            feedback_tx: &feedback_tx,
+            log_file: Arc::clone(&log_file),
+            env_vars: &[],
+            cancel_token: CancellationToken::new(),
+        },
+    )
+    .await;
+    match loser {
+        Err(NodeStackError::InvalidStageTransition { from, to, .. }) => {
+            assert_eq!(from, "Building");
+            assert_eq!(to, "Ready");
         }
-        Err(other) => panic!("unexpected build error: {:?}", other),
-    });
-    assert_eq!(ok_count, 1, "exactly one build should succeed");
-    assert_eq!(
-        transition_err_count, 1,
-        "the loser should fail immediately with InvalidStageTransition (Building→Ready or Ready→Ready)"
+        other => panic!(
+            "a concurrent build should be rejected from Building, got {:?}",
+            other
+        ),
+    }
+
+    // Unblock the winner and let it finish.
+    std::fs::write(&proceed_file, b"").expect("touch proceed file");
+    let winner_result = winner.await.expect("winner task panicked");
+    assert!(
+        winner_result.is_ok(),
+        "the in-flight build should succeed: {winner_result:?}"
     );
 
-    // Entity ended up in Ready.
-    let guard = handle.read();
-    assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
-
-    // The on-disk archive exists exactly once.
+    // Entity ended up in Ready, with the archive present exactly once.
+    assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
     let archive = peppy_dirs.built_nodes_dir().join("sensor_v1.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
@@ -782,10 +758,15 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let pid = child.id().expect("child has pid");
     assert!(pid > 0, "spawned child should have a valid pid");
 
-    let returned_pid = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
-        .await
-        .expect("commit_started should succeed");
-    assert_eq!(returned_pid, pid);
+    let mut returned_child =
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+            .await
+            .expect("commit_started should succeed");
+    assert_eq!(
+        returned_child.id(),
+        Some(pid),
+        "commit_started hands back the same live child it committed"
+    );
 
     // Entity is still in Ready, but the instance is now Running.
     {
@@ -801,12 +782,10 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         }
     }
 
-    // Tear down: stop the instance and kill the child process.
+    // Tear down: stop the instance and kill the child using the owned handle so
+    // it is reaped, not left as a zombie parented to the test process.
     handle.write().stop_instance(&instance_id);
-    let _ = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .status();
+    let _ = returned_child.kill().await;
 }
 
 #[tokio::test]
@@ -933,10 +912,15 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     }
 
     let new_pid = child.id().expect("child has pid");
-    let returned_pid = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
-        .await
-        .expect("commit_started should succeed");
-    assert_eq!(returned_pid, new_pid);
+    let mut returned_child =
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+            .await
+            .expect("commit_started should succeed");
+    assert_eq!(
+        returned_child.id(),
+        Some(new_pid),
+        "commit_started hands back the same live child it committed"
+    );
 
     // After commit, both instances are Running.
     {
@@ -957,12 +941,10 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         }
     }
 
-    // Tear down: stop the new instance and SIGTERM the real child.
+    // Tear down: stop the new instance and kill the real child using the owned
+    // handle so it is reaped, not left as a zombie parented to the test process.
     handle.write().stop_instance(&instance_id);
-    let _ = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(new_pid.to_string())
-        .status();
+    let _ = returned_child.kill().await;
 }
 
 #[tokio::test]
@@ -1121,130 +1103,6 @@ mod backwards_transitions_are_rejected {
     }
 }
 
-/// Regression for the failed-rebuild rollback bug in the node-add path.
-///
-/// Scenario: a node is already `Ready` (built, with an artifact_path) when a
-/// rebuild is started. `push_config` replaces the entity in-place and the
-/// caller then drives `NodeEntity::build`. If build fails, the add path must
-/// restore the previously-ready entity — otherwise the stack is left with a
-/// dangling `Building` entity (or nothing at all) and the previously-ready
-/// artifact is silently lost. This exercises
-/// `NodeStack::restore_snapshot_if_matches`, which is the node-stack API the
-/// add path calls on the build-failure branch.
-#[tokio::test]
-async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let config_path_v1 = harness.peppy_root.path().join("sensor_v1.json5");
-    let config_path_v2 = harness.peppy_root.path().join("sensor_v2.json5");
-
-    // Build v1 Ready for real — this is what must survive a failed rebuild.
-    let handle_v1 =
-        real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path_v1).await;
-    let v1_config = handle_v1.read().config().clone();
-    let artifact_v1 = handle_v1
-        .read()
-        .artifact_path()
-        .expect("v1 artifact should exist")
-        .to_path_buf();
-
-    // Simulate the rebuild: re-push with a blocking build_cmd so the next
-    // `NodeEntity::build` call sits in `Building` while we run the restore
-    // assertions. The marker/proceed files give us a real-lifecycle way to
-    // observe + control the `Building` stage without any backdoor.
-    let control_dir = tempfile::tempdir().expect("control tempdir");
-    let proceed_file = control_dir.path().join("proceed");
-    let proceed_file_disp = proceed_file.display().to_string();
-    let blocking_config = sensor_config_with_build_cmd(&format!(
-        "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
-        proceed_file_disp
-    ));
-    stack
-        .push_config(blocking_config, false, &config_path_v2)
-        .expect("rebuild push_config should succeed");
-    let handle_after_push = stack.find("sensor", "v1").expect("entity should exist");
-    let captured_generation = handle_after_push.read().generation();
-
-    // Kick off the rebuild in a task. It will sit in `Building` until we
-    // touch the proceed file — and by the time we do, the restore below will
-    // have replaced the entity, so the build task's Phase 3 commit will
-    // observe the generation drift and return InvalidStageTransition instead
-    // of clobbering our restore.
-    let working_dir = tempfile::tempdir().expect("working_dir tempdir");
-    let working_path = working_dir.path().to_path_buf();
-    let peppy_dirs_clone = harness.peppy_dirs.clone();
-    let feedback_tx_clone = harness.feedback_tx.clone();
-    let log_file_clone = Arc::clone(&harness.log_file);
-    let build_handle_clone = Arc::clone(&handle_after_push);
-    let build_task = tokio::spawn(async move {
-        NodeEntity::build(
-            &build_handle_clone,
-            BuildContext {
-                working_dir: &working_path,
-                peppy_dirs: &peppy_dirs_clone,
-                feedback_tx: &feedback_tx_clone,
-                log_file: log_file_clone,
-                env_vars: &[],
-                cancel_token: CancellationToken::new(),
-            },
-        )
-        .await
-    });
-
-    // Wait until the entity is observably in `Building`.
-    real_lifecycle::wait_for_building(&handle_after_push).await;
-
-    // Build "fails" — the caller rolls back by restoring the v1 snapshot it
-    // captured before calling push_config.
-    let restored = stack.restore_snapshot_if_matches(
-        RestoreTarget {
-            name: "sensor",
-            tag: "v1",
-            expected_handle: &handle_after_push,
-            expected_generation: captured_generation,
-        },
-        EntitySnapshot {
-            config: v1_config,
-            config_path: config_path_v1.clone(),
-            artifact_path: Some(artifact_v1.clone()),
-        },
-    );
-    assert!(
-        restored,
-        "restore should succeed when handle+generation match"
-    );
-
-    // Unblock the build task and wait for it to finish. The task's Phase 3
-    // check (generation + stage == Building) will fail because the restore
-    // replaced the entity, so the task returns Err and our restore stays.
-    std::fs::write(&proceed_file, b"").expect("touch proceed file");
-    let build_result = build_task.await.expect("build task should not panic");
-    assert!(
-        build_result.is_err(),
-        "build task should fail its Phase 3 commit after the restore drifted the generation, got Ok"
-    );
-
-    let handle_final = stack.find("sensor", "v1").expect("entity should exist");
-    let guard = handle_final.read();
-    match guard.stage() {
-        NodeStage::Ready {
-            config_path,
-            artifact_path,
-            instances,
-        } => {
-            assert_eq!(config_path, &config_path_v1);
-            assert_eq!(artifact_path, &artifact_v1);
-            assert!(instances.is_empty());
-        }
-        other => panic!("expected Ready after rollback, got {:?}", other),
-    }
-    assert_eq!(
-        guard.artifact_path(),
-        Some(artifact_v1.as_path()),
-        "previous artifact must be restored after a failed rebuild",
-    );
-}
-
 /// `rollback_to_added_if_matches` is the node-stack API the `node_build`
 /// `--force` cancellation path calls: it rolls a `Building` entity back to
 /// `Added` and re-attaches the staged working dir so the forced rebuild can
@@ -1369,101 +1227,4 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
     // observes the entity is no longer `Building` and returns an error.
     std::fs::write(&proceed_file, b"").expect("touch proceed file");
     let _ = build_task.await.expect("build task should not panic");
-}
-
-/// `restore_snapshot_if_matches` must not clobber a concurrent replacement:
-/// if the handle+generation drift (because another `push_config` landed
-/// between the caller's capture and the build failure), the rollback should
-/// be a no-op and the newer entity must stay in place.
-#[tokio::test]
-async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let harness = real_lifecycle::lifecycle_harness();
-    let config_path_v1 = harness.peppy_root.path().join("sensor_v1.json5");
-    let config_path_v2 = harness.peppy_root.path().join("sensor_v2.json5");
-
-    // Push a blocking config so the next build call sits in `Building`
-    // while the "concurrent push" bumps the entity's generation under it.
-    let control_dir = tempfile::tempdir().expect("control tempdir");
-    let proceed_file = control_dir.path().join("proceed");
-    let proceed_file_disp = proceed_file.display().to_string();
-    let blocking_config = sensor_config_with_build_cmd(&format!(
-        "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
-        proceed_file_disp
-    ));
-    stack
-        .push_config(blocking_config, false, &config_path_v1)
-        .expect("initial push_config should succeed");
-    let handle = stack.find("sensor", "v1").expect("entity should exist");
-    let stale_generation = handle.read().generation();
-    let stale_config = handle.read().config().clone();
-
-    // Drive a real build in the background so the entity transitions through
-    // `Building`. We keep the task alive for the rest of the test.
-    let working_dir = tempfile::tempdir().expect("working_dir tempdir");
-    let working_path = working_dir.path().to_path_buf();
-    let peppy_dirs_clone = harness.peppy_dirs.clone();
-    let feedback_tx_clone = harness.feedback_tx.clone();
-    let log_file_clone = Arc::clone(&harness.log_file);
-    let build_handle_clone = Arc::clone(&handle);
-    let build_task = tokio::spawn(async move {
-        NodeEntity::build(
-            &build_handle_clone,
-            BuildContext {
-                working_dir: &working_path,
-                peppy_dirs: &peppy_dirs_clone,
-                feedback_tx: &feedback_tx_clone,
-                log_file: log_file_clone,
-                env_vars: &[],
-                cancel_token: CancellationToken::new(),
-            },
-        )
-        .await
-    });
-
-    // Wait until we observe `Building` on the entity.
-    real_lifecycle::wait_for_building(&handle).await;
-
-    // A concurrent push replaces the entity under the same handle, bumping
-    // its generation. push_config accepts the replacement even while the
-    // entity is in Building — the in-flight build task will then fail its
-    // Phase 3 check via the generation token.
-    stack
-        .push_config(sensor_config(), false, &config_path_v2)
-        .expect("concurrent push_config should succeed");
-
-    let restored = stack.restore_snapshot_if_matches(
-        RestoreTarget {
-            name: "sensor",
-            tag: "v1",
-            expected_handle: &handle,
-            expected_generation: stale_generation,
-        },
-        EntitySnapshot {
-            config: stale_config,
-            config_path: config_path_v1.clone(),
-            artifact_path: Some(PathBuf::from("/tmp/sensor-v1.sif")),
-        },
-    );
-    assert!(
-        !restored,
-        "restore must be a no-op when the generation has drifted"
-    );
-
-    {
-        let guard = handle.read();
-        match guard.stage() {
-            NodeStage::Added { config_path } => {
-                assert_eq!(
-                    config_path, &config_path_v2,
-                    "concurrent replacement must stay in place"
-                );
-            }
-            other => panic!("expected Added (from the concurrent push), got {:?}", other),
-        }
-    }
-
-    // Unblock + drain the build task to avoid leaking the sh child.
-    std::fs::write(&proceed_file, b"").expect("touch proceed file");
-    let _ = build_task.await;
 }

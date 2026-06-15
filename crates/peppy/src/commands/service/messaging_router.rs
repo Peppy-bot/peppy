@@ -26,16 +26,50 @@ const WATCHDOG_RESTART_GRACE: Duration = Duration::from_secs(3);
 /// not spin in a tight restart loop.
 const WATCHDOG_POST_RESTART_BACKOFF: Duration = Duration::from_secs(10);
 
+/// How long the messaging router keeps the session open waiting for the core
+/// node to finish tearing down its nodes (cooperative shutdown rides over that
+/// session) before giving up, so a hung teardown cannot wedge the shutdown.
+///
+/// Sized to the core node's worst-case stop: `force_kill_deadline` (hook grace +
+/// event-loop join + interpreter finalize) for a stuck node, plus the reap
+/// budget and a one-second margin. Derived from the same `force_kill_deadline`
+/// the teardown itself uses so the two cannot drift apart. An earlier regression
+/// was exactly that drift: the deadline grew but this budget did not, so the
+/// router closed the session out from under a node still stopping over it.
+pub(super) fn teardown_budget_for(shutdown_grace_secs: u64) -> Duration {
+    core_node::force_kill_deadline(Duration::from_secs(shutdown_grace_secs))
+        + core_node::TEARDOWN_REAP_BUDGET
+        + Duration::from_secs(1)
+}
+
 pub struct MessagingRouter {
     messenger: Arc<Mutex<Messenger>>,
     messaging_ready: watch::Sender<bool>,
+    /// Signaled (`true`) by the core node once its teardown has finished. The
+    /// router waits on this before closing the session so cooperative node
+    /// shutdown (which sends `SHUTDOWN_SERVICE` over the session) can complete.
+    /// `None` when the daemon runs without a core node, in which case there is
+    /// nothing to wait for.
+    core_node_done: Option<watch::Receiver<bool>>,
+    /// Upper bound on the wait for `core_node_done`, so a hung teardown cannot
+    /// wedge the messaging shutdown. Sized to the core node's worst-case stop
+    /// duration: `force_kill_deadline(grace)` (hook grace + event-loop join +
+    /// interpreter finalize) plus the reap budget and a small margin.
+    teardown_budget: Duration,
 }
 
 impl MessagingRouter {
-    pub fn new(messenger: Arc<Mutex<Messenger>>, messaging_ready: watch::Sender<bool>) -> Self {
+    pub fn new(
+        messenger: Arc<Mutex<Messenger>>,
+        messaging_ready: watch::Sender<bool>,
+        core_node_done: Option<watch::Receiver<bool>>,
+        teardown_budget: Duration,
+    ) -> Self {
         Self {
             messenger,
             messaging_ready,
+            core_node_done,
+            teardown_budget,
         }
     }
 }
@@ -45,6 +79,8 @@ impl ServeAsyncCommand for MessagingRouter {
         let (ready_tx, ready_rx) = oneshot::channel();
         let messenger = self.messenger;
         let messaging_ready = self.messaging_ready;
+        let core_node_done = self.core_node_done;
+        let teardown_budget = self.teardown_budget;
 
         let future = Box::pin(async move {
             {
@@ -94,6 +130,22 @@ impl ServeAsyncCommand for MessagingRouter {
                 }
             }
 
+            // Catchable shutdown fired. The core node still needs the session to
+            // stop its nodes cooperatively (it sends SHUTDOWN_SERVICE over the
+            // session), so wait for it to finish tearing down before closing the
+            // session. Bounded by `teardown_budget` so a hung teardown cannot
+            // wedge the messaging shutdown.
+            if core_node_done.is_some() {
+                info!("Waiting for core node teardown before closing the messaging session...");
+            }
+            if !await_core_node_teardown(core_node_done, teardown_budget).await {
+                warn!(
+                    "Core node teardown did not signal completion within {:?}; \
+                     closing the messaging session anyway",
+                    teardown_budget
+                );
+            }
+
             {
                 let mut messenger = messenger.lock().await;
                 info!("Shutting down the messaging router...");
@@ -117,6 +169,33 @@ impl ServeAsyncCommand for MessagingRouter {
 
         ServeAsyncHandle::new(future, Some(ready_rx))
     }
+}
+
+/// Waits (bounded by `teardown_budget`) for the core node to signal that its
+/// teardown has finished, so the caller can keep the messaging session open
+/// until cooperative node shutdown (which rides over that session) completes.
+///
+/// Returns `true` when there is nothing left to wait for — either the core node
+/// signaled completion, the daemon has no core node (`None`), or the sender was
+/// dropped without signaling (the runner is already gone). Returns `false` only
+/// when the wait exceeded the budget, so the caller logs and proceeds anyway.
+async fn await_core_node_teardown(
+    core_node_done: Option<watch::Receiver<bool>>,
+    teardown_budget: Duration,
+) -> bool {
+    let Some(mut done) = core_node_done else {
+        return true;
+    };
+    let wait = async {
+        while !*done.borrow() {
+            if done.changed().await.is_err() {
+                // The core node runner is gone without signaling (it never
+                // started, or exited early); stop waiting.
+                break;
+            }
+        }
+    };
+    tokio::time::timeout(teardown_budget, wait).await.is_ok()
 }
 
 /// Periodically probes the Zenoh router and respawns zenohd if it stops
@@ -216,4 +295,84 @@ fn warn_messaging_restarted() {
          `peppy stack list` shows a node did not rejoin.\n\
          ===================================================================="
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::await_core_node_teardown;
+    use std::time::Duration;
+    use tokio::sync::watch;
+
+    #[tokio::test]
+    async fn proceeds_once_core_node_signals_completion() {
+        let (done_tx, done_rx) = watch::channel(false);
+        let waiter = tokio::spawn(await_core_node_teardown(
+            Some(done_rx),
+            Duration::from_secs(5),
+        ));
+
+        // The core node finishes teardown and signals.
+        done_tx
+            .send(true)
+            .expect("receiver kept alive by the waiter");
+
+        let ready = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should resolve promptly after the signal")
+            .expect("waiter task should not panic");
+        assert!(
+            ready,
+            "a completion signal must count as ready, not a timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn times_out_when_core_node_never_signals() {
+        // Keep the sender alive so the wait blocks on the (never-changing)
+        // value rather than resolving early on a dropped sender.
+        let (_done_tx, done_rx) = watch::channel(false);
+        let ready = await_core_node_teardown(Some(done_rx), Duration::from_millis(50)).await;
+        assert!(
+            !ready,
+            "a hung teardown must surface as a timeout so the router proceeds"
+        );
+    }
+
+    #[test]
+    fn teardown_budget_outlasts_the_daemon_force_kill_window() {
+        // The router must not close the session before the core node can finish
+        // its worst-case teardown, or a node still stopping cooperatively over
+        // that session is cut off and force-killed. Pin the budget strictly above
+        // the daemon's force-kill deadline plus its reap budget across every
+        // accepted grace (minimum accepted is 1s), so a future change to
+        // `force_kill_deadline` cannot silently outgrow this budget again (the
+        // original regression was exactly that drift).
+        for grace_secs in 1..=600 {
+            let budget = super::teardown_budget_for(grace_secs);
+            let worst_case = core_node::force_kill_deadline(Duration::from_secs(grace_secs))
+                + core_node::TEARDOWN_REAP_BUDGET;
+            assert!(
+                budget > worst_case,
+                "teardown budget {budget:?} for grace {grace_secs}s must exceed the daemon's \
+                 worst-case teardown {worst_case:?} (force-kill deadline + reap)",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn proceeds_immediately_without_a_core_node() {
+        let ready = await_core_node_teardown(None, Duration::from_secs(5)).await;
+        assert!(ready, "no core node means nothing to wait for");
+    }
+
+    #[tokio::test]
+    async fn proceeds_when_the_sender_is_dropped_without_signaling() {
+        let (done_tx, done_rx) = watch::channel(false);
+        drop(done_tx); // runner gone without ever signaling.
+        let ready = await_core_node_teardown(Some(done_rx), Duration::from_secs(5)).await;
+        assert!(
+            ready,
+            "a dropped sender means the runner is already gone, not a timeout"
+        );
+    }
 }

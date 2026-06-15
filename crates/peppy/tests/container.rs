@@ -10,7 +10,7 @@ use peppy::context::AppContext;
 /// important thing is that the command does not panic or crash.
 #[test]
 fn container_status_runs_without_daemon() {
-    let ctx = Arc::new(AppContext::default());
+    let ctx = Arc::new(AppContext::from_current_dir().expect("current dir is readable"));
 
     // status may return Ok (all checks pass) or Err (some checks fail) —
     // either is a valid outcome.  We just verify it doesn't panic.
@@ -26,7 +26,7 @@ fn container_status_runs_without_daemon() {
 /// "nothing to do" (Ok) or fail gracefully (Err with a message) — never panic.
 #[test]
 fn container_setup_runs_without_daemon() {
-    let ctx = Arc::new(AppContext::default());
+    let ctx = Arc::new(AppContext::from_current_dir().expect("current dir is readable"));
 
     let _result = ContainerCommand {
         command: ContainerCommands::Setup,

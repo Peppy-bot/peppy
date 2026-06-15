@@ -1,6 +1,6 @@
 mod common;
 
-use common::test_node_target;
+use common::{test_node_target, wait_for_topic_subscriber};
 use config::node::QoSProfile;
 use peppylib::messaging::{ConsumerFilter, MessengerHandle, TopicMessenger};
 use peppylib::types::Payload;
@@ -41,8 +41,15 @@ async fn topic_messenger_communication() {
     .await
     .expect("subscription should succeed");
 
-    // Allow subscription to propagate
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait until the publisher's session sees the subscription before emitting.
+    wait_for_topic_subscriber(
+        &sender_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        topic_name,
+    )
+    .await;
 
     // Emit a message
     TopicMessenger::emit(
@@ -107,7 +114,14 @@ async fn node_session_recovers_after_router_restart() {
         let sender_handle = MessengerHandle::from_host_port(&host, port)
             .await
             .expect("failed to create sender handle");
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        wait_for_topic_subscriber(
+            &sender_handle,
+            core_node,
+            instance_id,
+            test_node_target(node_name),
+            topic_name,
+        )
+        .await;
         TopicMessenger::emit(
             &sender_handle,
             core_node,
@@ -239,8 +253,24 @@ async fn bidirectional_from_any_topics_with_late_producer() {
     .await
     .expect("robot_arm subscription should succeed");
 
-    // Allow both subscriptions to propagate.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait until each publisher's session sees the subscription it will emit to,
+    // covering both directions before either emit.
+    wait_for_topic_subscriber(
+        &arm_handle,
+        core_node,
+        "arm_1",
+        test_node_target("robot_arm"),
+        joint_states,
+    )
+    .await;
+    wait_for_topic_subscriber(
+        &controller_handle,
+        core_node,
+        "ctrl_1",
+        test_node_target("arm_controller"),
+        joint_commands,
+    )
+    .await;
 
     // Direction 1: robot_arm (arm_1) -> arm_controller.
     let state_payload = Payload::from_static(b"joint_states@arm_1");
@@ -293,7 +323,14 @@ async fn bidirectional_from_any_topics_with_late_producer() {
     let late_arm_handle = MessengerHandle::from_host_port(&host, port)
         .await
         .expect("failed to create late robot_arm handle");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_topic_subscriber(
+        &late_arm_handle,
+        core_node,
+        "arm_2",
+        test_node_target("robot_arm"),
+        joint_states,
+    )
+    .await;
 
     let late_payload = Payload::from_static(b"joint_states@arm_2");
     TopicMessenger::emit(

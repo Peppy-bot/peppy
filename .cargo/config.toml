@@ -1,0 +1,19 @@
+# Redirect uv's cache for everything `cargo` runs — notably the Python generator
+# integration tests, which `uv sync` / `uv run` generated nodes that vendor a
+# freshly-built `peppylib` path dependency — OUT of the user-global ~/.cache/uv
+# and into the disposable, git-ignored `target/` tree.
+#
+# Why this exists:
+#   Each test build of the peppylib path dependency hashes to a new cache key,
+#   and uv's built-wheel cache is APPEND-ONLY (it never evicts). Thousands of
+#   throwaway test builds of the ~457 MB `_peppylib.abi3.so` had accumulated
+#   ~800 GB in ~/.cache/uv (on dev machines and on the reused self-hosted CI
+#   runner alike). Routing them under target/ means `cargo clean` — or just
+#   deleting target/ — reclaims them, and the global cache stays clean. The
+#   `strip = true` release profile (Cargo.toml) shrinks each entry on top of this.
+#
+# `relative = true` resolves the path against this config file's parent (the
+# workspace root) and is expanded to an absolute path before being handed to
+# child processes, so every test shares one cache regardless of its working dir.
+[env]
+UV_CACHE_DIR = { value = "target/uv-cache", relative = true }

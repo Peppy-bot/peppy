@@ -80,8 +80,14 @@ def create_runtime_config(
     instance_id: str,
     arguments: dict,
     node_tag: str = TEST_NODE_TAG,
+    shutdown_grace_secs: int | None = None,
 ) -> None:
-    """Write a runtime config JSON file."""
+    """Write a runtime config JSON file.
+
+    `shutdown_grace_secs`, when set, pins the cooperative-shutdown grace the node
+    bounds its hooks by (otherwise the daemon default applies). A test that needs
+    a long grace to observe shutdown timing sets it explicitly.
+    """
     config = {
         "messaging_host": host,
         "messaging_port": port,
@@ -93,6 +99,8 @@ def create_runtime_config(
             "arguments": arguments,
         },
     }
+    if shutdown_grace_secs is not None:
+        config["lifecycle"] = {"shutdown_grace_secs": shutdown_grace_secs}
     Path(path).write_text(json.dumps(config))
 
 

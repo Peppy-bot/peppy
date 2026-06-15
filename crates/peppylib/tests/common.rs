@@ -1,9 +1,37 @@
 #![allow(dead_code)]
 
-use peppylib::messaging::{MessengerHandle, SenderTarget};
+use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+
+/// Deterministically wait until `publisher`'s session sees a subscriber for the
+/// topic it is about to emit on, replacing a fixed "settle for zenoh discovery"
+/// sleep. The arguments mirror the subsequent [`TopicMessenger::emit`] call.
+/// Panics if no subscriber routes within 2s.
+pub async fn wait_for_topic_subscriber(
+    publisher: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    target: SenderTarget,
+    topic_name: &str,
+) {
+    let matched = TopicMessenger::wait_for_subscriber(
+        publisher,
+        core_node,
+        instance_id,
+        target,
+        topic_name,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("wait_for_subscriber should not error");
+    assert!(
+        matched,
+        "no subscriber for topic `{topic_name}` routed within 2s"
+    );
+}
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 

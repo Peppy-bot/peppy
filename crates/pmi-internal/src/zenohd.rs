@@ -3,7 +3,11 @@ use std::fmt;
 /// Network protocol for the Zenoh transport endpoint. Needed by the client
 /// session config (so it lives under the base `zenoh` feature, not `router`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
+// Udp/Quic/Ws are constructed only by the router config parser in the
+// `router`-gated `facade` module, so a `zenoh`-without-`router` build sees them
+// as never-constructed. Scope the allow to that combo so the default (router)
+// build still warns if a variant genuinely goes dead.
+#[cfg_attr(not(feature = "router"), allow(dead_code))]
 pub enum ZenohNetProtocol {
     #[default]
     Tcp,

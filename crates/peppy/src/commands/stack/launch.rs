@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::PeppyLauncherParser;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, resolve_launcher_path,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
@@ -123,7 +123,7 @@ fn handle_feedback(
         | LaunchFeedbackStep::RunningNode => {
             let output = scrolling_output
                 .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
-            output.add_line(&feedback.line, feedback.is_stderr());
+            output.add_line(&feedback.line);
         }
     }
 }
@@ -137,6 +137,23 @@ fn looks_like_fs_path(input: &Path) -> bool {
         return true;
     }
     input.extension().is_some_and(|ext| ext == "json5")
+}
+
+/// Resolves a user-supplied launcher path, treating a bare name as shorthand for the `.json5`
+/// file. If the path does not have a `.json5` extension and a sibling `<path>.json5` exists as
+/// a file, that is returned; otherwise the original path is returned unchanged so the caller's
+/// existing not-found error path fires.
+///
+/// Lives in the CLI (the sole caller) rather than `core-node-api`: it touches the filesystem
+/// (`is_file`), which a pure wire-codec crate should not do.
+fn resolve_launcher_path(path: PathBuf) -> PathBuf {
+    if path.extension().is_some_and(|ext| ext == "json5") {
+        return path;
+    }
+    let mut with_ext = path.clone().into_os_string();
+    with_ext.push(".json5");
+    let candidate = PathBuf::from(with_ext);
+    if candidate.is_file() { candidate } else { path }
 }
 
 /// Decide whether the user wants a filesystem launcher or a repository launcher.
@@ -416,6 +433,42 @@ mod tests {
     fn saturating_add_does_not_panic_at_u64_max() {
         let got = compute_cli_max_timeout(Some(u64::MAX)).expect("some");
         assert_eq!(got, Duration::MAX);
+    }
+
+    #[test]
+    fn resolve_launcher_path_appends_json5_when_sibling_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("openarm01_sim_teleop");
+        let with_ext = tmp.path().join("openarm01_sim_teleop.json5");
+        std::fs::write(&with_ext, "{}").unwrap();
+
+        assert_eq!(resolve_launcher_path(bare), with_ext);
+    }
+
+    #[test]
+    fn resolve_launcher_path_keeps_explicit_json5_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("foo.json5");
+        std::fs::write(&p, "{}").unwrap();
+
+        assert_eq!(resolve_launcher_path(p.clone()), p);
+    }
+
+    #[test]
+    fn resolve_launcher_path_returns_original_when_no_sibling_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("does_not_exist");
+
+        assert_eq!(resolve_launcher_path(bare.clone()), bare);
+    }
+
+    #[test]
+    fn resolve_launcher_path_ignores_directory_at_sibling_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("name");
+        std::fs::create_dir(tmp.path().join("name.json5")).unwrap();
+
+        assert_eq!(resolve_launcher_path(bare.clone()), bare);
     }
 
     #[test]

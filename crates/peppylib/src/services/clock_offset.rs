@@ -57,7 +57,7 @@ async fn handle_clock_offset_request(
 
     // Validate the (empty) request structurally so any wire-schema skew surfaces
     // loudly instead of being silently ignored.
-    ClockOffsetRequest::decode(context.message().payload().as_ref()).map_err(|err| {
+    ClockOffsetRequest::decode(context.message().payload_bytes().as_ref()).map_err(|err| {
         PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.clone(),
             reason: format!("invalid clock_offset request: {err}"),

@@ -41,8 +41,9 @@ async fn service_messenger_communication() {
     .await
     .expect("listen should succeed");
 
-    // Allow listener to propagate
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // No settle sleep: `poll` below does discover-then-pin with a built-in
+    // cold-start retry bounded by its timeout, so it waits for the listener's
+    // queryable to propagate rather than guessing a fixed delay.
 
     // Spawn the handler so we can poll concurrently
     let response_clone = response_payload.clone();
@@ -147,8 +148,8 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
     });
     iface_ready_rx.await.unwrap();
 
-    // Allow both subscriptions to propagate.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // No settle sleep: both polls below self-retry on a cold-start miss within
+    // their timeout until each scope's queryable propagates.
 
     // Poll the native scope and assert we get the native response.
     let from_native = ServiceMessenger::poll(
@@ -235,7 +236,8 @@ async fn service_iface_tag_hyphen_normalized() {
             .expect("handler should succeed");
     });
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // No settle sleep: the poll below self-retries on a cold-start miss within
+    // its timeout until the listener's queryable propagates.
 
     // Caller uses underscore. Both should normalize to the same wire segment.
     let response = ServiceMessenger::poll(
