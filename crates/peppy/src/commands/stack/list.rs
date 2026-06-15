@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::{CALLER_INSTANCE_ID, health_label};
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use config::runtime::{ProducerRef, SlotBinding};
@@ -152,7 +152,8 @@ pub fn format_stack_list(
 // columns as its plain text and the box stays aligned.
 use super::colors::{
     BINDING_COLOR, COUNT_COLOR, HEALTH_HEALTHY_COLOR, HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR,
-    NODE_COLOR, STATUS_RUNNING_COLOR, STATUS_STARTING_COLOR, paint,
+    NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR, STATUS_RUNNING_COLOR,
+    STATUS_STARTING_COLOR, paint,
 };
 use super::table::render_table;
 
@@ -221,27 +222,36 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
 }
 
 /// The instance's lifecycle state for the STATUS column. Tinted as a
-/// traffic-light cue — green once running, yellow while still starting — and
-/// rendered from the same `InstanceState` that `peppy node info` shows as
-/// `[running]`/`[starting]`, without the brackets since the column delimits it.
+/// traffic-light cue — green once running, yellow while still starting, blue
+/// once finished cleanly, red if it crashed — and rendered from the same
+/// `InstanceState` that `peppy node info` shows as `[running]`/`[starting]`,
+/// without the brackets since the column delimits it.
 fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> String {
     let color = match instance.state {
         InstanceState::Running => STATUS_RUNNING_COLOR,
         InstanceState::Starting => STATUS_STARTING_COLOR,
+        InstanceState::Finished => STATUS_FINISHED_COLOR,
+        InstanceState::Failed => STATUS_FAILED_COLOR,
     };
     paint(colorize, color, &instance.state.to_string())
 }
 
-/// The instance's health for the HEALTH column, from the daemon's live
-/// `node_health` probe carried in [`SerializedInstance::healthy`]. Green for
-/// `healthy`, red for `unhealthy`, so a failing instance stands out.
+/// The instance's health for the HEALTH column. For a live instance this is the
+/// daemon's last `node_health` probe carried in [`SerializedInstance::healthy`]
+/// — green for `healthy`, red for `unhealthy`, so a failing instance stands out.
+/// A terminal (finished/failed) instance has exited, so it has no live health to
+/// report and renders a neutral, uncolored `-`.
 fn format_instance_health(instance: &SerializedInstance, colorize: bool) -> String {
+    let label = crate::commands::instance_health_label(instance.state, instance.healthy);
+    if instance.state.is_terminal() {
+        return label.to_string();
+    }
     let color = if instance.healthy {
         HEALTH_HEALTHY_COLOR
     } else {
         HEALTH_UNHEALTHY_COLOR
     };
-    paint(colorize, color, health_label(instance.healthy))
+    paint(colorize, color, label)
 }
 
 /// One display string per slot binding on the instance, in `link_id →
@@ -291,25 +301,44 @@ fn format_slot_binding(binding: &SlotBinding) -> String {
 
 /// Compact per-node instance summary. Detailed per-instance info is
 /// intentionally deferred to `peppy node info` — the list view is meant to
-/// fit one node per row.
+/// fit one node per row. Terminal instances (finished/crashed) are counted too,
+/// so a one-shot node that has completed still shows up rather than reading as
+/// `0` once its only instance exits.
 fn format_instances_compact(node: &SerializedNode) -> String {
     if node.instances.is_empty() {
         return "0".to_string();
     }
-    let running = node
-        .instances
-        .iter()
-        .filter(|i| i.state == InstanceState::Running)
-        .count();
-    let starting = node
-        .instances
-        .iter()
-        .filter(|i| i.state == InstanceState::Starting)
-        .count();
-    match (running, starting) {
-        (r, 0) => format!("{} running", r),
-        (0, s) => format!("{} starting", s),
-        (r, s) => format!("{} ({} running, {} starting)", r + s, r, s),
+    let count = |state: InstanceState| node.instances.iter().filter(|i| i.state == state).count();
+    let running = count(InstanceState::Running);
+    let starting = count(InstanceState::Starting);
+    let finished = count(InstanceState::Finished);
+    let failed = count(InstanceState::Failed);
+
+    // The common, unambiguous cases keep their original compact phrasing; any
+    // mix (including terminal instances) falls through to an explicit
+    // per-state breakdown so no instance is silently dropped from the count.
+    match (running, starting, finished, failed) {
+        (r, 0, 0, 0) => format!("{r} running"),
+        (0, s, 0, 0) => format!("{s} starting"),
+        (0, 0, f, 0) => format!("{f} finished"),
+        (0, 0, 0, x) => format!("{x} failed"),
+        (r, s, f, x) => {
+            let total = r + s + f + x;
+            let mut parts = Vec::new();
+            if r > 0 {
+                parts.push(format!("{r} running"));
+            }
+            if s > 0 {
+                parts.push(format!("{s} starting"));
+            }
+            if f > 0 {
+                parts.push(format!("{f} finished"));
+            }
+            if x > 0 {
+                parts.push(format!("{x} failed"));
+            }
+            format!("{total} ({})", parts.join(", "))
+        }
     }
 }
 
@@ -460,6 +489,84 @@ mod tests {
             out.contains("2 (1 running, 1 starting)"),
             "mixed breakdown missing:\n{}",
             out
+        );
+    }
+
+    #[test]
+    fn instances_compact_counts_a_finished_one_shot_instance() {
+        // A one-shot node whose only instance has finished must still appear in
+        // the INSTANCES column, not read as "0 running".
+        let nodes = vec![node(
+            "recorder",
+            "v1",
+            NodeStage::Ready,
+            vec![("rec-1", InstanceState::Finished)],
+        )];
+        let out = format_stack_list(&nodes, &[], false);
+        assert!(
+            out.contains("1 finished"),
+            "finished instance missing from compact count:\n{out}"
+        );
+    }
+
+    #[test]
+    fn instances_compact_breaks_down_a_mix_with_terminal_states() {
+        let nodes = vec![node(
+            "mix",
+            "v1",
+            NodeStage::Ready,
+            vec![
+                ("r1", InstanceState::Running),
+                ("f1", InstanceState::Finished),
+                ("x1", InstanceState::Failed),
+            ],
+        )];
+        let out = format_stack_list(&nodes, &[], false);
+        assert!(
+            out.contains("3 (1 running, 1 finished, 1 failed)"),
+            "mixed terminal breakdown missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn bindings_table_renders_terminal_state_with_neutral_health() {
+        // A finished instance shows its terminal status and a neutral `-` for
+        // health (no live probe), never a stale healthy/unhealthy verdict; a
+        // failed instance reads as "failed", not "unhealthy".
+        let nodes = vec![binding_node(
+            "recorder",
+            vec![
+                ("rec-1", InstanceState::Finished, vec![]),
+                ("rec-2", InstanceState::Failed, vec![]),
+            ],
+        )];
+        let out = format_stack_list(&nodes, &[], false);
+        let section = bindings_section(&out);
+
+        let finished_line = section
+            .lines()
+            .find(|l| l.contains("rec-1"))
+            .expect("finished instance row missing");
+        assert!(
+            finished_line.contains("finished"),
+            "finished status missing:\n{out}"
+        );
+        assert!(
+            !finished_line.contains("healthy"),
+            "a finished instance must not render a health verdict:\n{out}"
+        );
+
+        let failed_line = section
+            .lines()
+            .find(|l| l.contains("rec-2"))
+            .expect("failed instance row missing");
+        assert!(
+            failed_line.contains("failed"),
+            "failed status missing:\n{out}"
+        );
+        assert!(
+            !failed_line.contains("unhealthy"),
+            "a failed instance must read as failed, not unhealthy:\n{out}"
         );
     }
 

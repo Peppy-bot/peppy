@@ -2027,14 +2027,13 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         "instance should be in the stack after successful start"
     );
 
-    // Kill the process to simulate an unexpected death
-    let _ = std::process::Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .status();
-
-    // Drop the health listener so subsequent health polls from the monitor
-    // will fail (the node process is dead and the mock health service is gone)
+    // Leave the node process alive but stop answering health probes: dropping
+    // the mock health listener makes the monitor's polls time out. This is the
+    // "alive but unresponsive" case (a hung or deadlocked node) — the node is
+    // still running, so it must be flagged unhealthy while staying `Running`,
+    // not removed or marked terminal. A process that actually exits is the
+    // different, terminal case covered by
+    // `listen_for_node_run_marks_node_failed_when_its_process_exits`.
     drop(health_task);
 
     // Wait for the health monitor to detect the failure and mark the instance
@@ -2093,4 +2092,198 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 {}",
         log_content
     );
+
+    // Cleanup: the node was deliberately left alive so the monitor could flag
+    // it unhealthy. Stop its process now that the assertions are done.
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+}
+
+/// The state of an instance regardless of lifecycle stage, including terminal
+/// (`Finished`/`Failed`) instances that the `Running`-only
+/// `NodeStack::find_by_instance_id` no longer returns. Used to observe the exit
+/// watcher's terminal transition from a test.
+fn instance_state_in_any_state(
+    node_stack: &node_stack::NodeStack,
+    instance_id: &NodeName,
+) -> Option<core_node_api::InstanceState> {
+    node_stack.snapshot().into_iter().find_map(|handle| {
+        handle
+            .read()
+            .instances()
+            .iter()
+            .find(|inst| inst.instance_id() == instance_id)
+            .map(|inst| inst.state())
+    })
+}
+
+/// A committed node whose process exits on its own is moved to a terminal state
+/// by the exit watcher — `Failed` for an unclean (signal / non-zero) exit —
+/// instead of being left `Running` and merely flagged unhealthy. The instance
+/// stays tracked so it remains visible in `stack list`, but as a terminal state,
+/// and the `Running`-only lookup no longer returns it. Regression guard for the
+/// one-shot/crashed-node fix: a dead process must never read as
+/// "running / unhealthy".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
+    const TARGET_NODE_NAME: &str = "exit_watcher_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "exit_watcher_instance";
+
+    let started =
+        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
+            .await;
+
+    let peppy_json5 = r#"{
+            peppy_schema: "node_v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "300"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            common::test_node_target(TARGET_NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be Running after a successful start"
+    );
+
+    // Simulate an unexpected death: SIGKILL the process so it exits uncleanly.
+    // We keep the health mock alive to prove the terminal transition is driven
+    // by the exit watcher observing the dead process, not by health probes.
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+
+    // The exit watcher observes the exit and transitions the instance to a
+    // terminal `Failed` state. The watcher reaps the process within a few
+    // milliseconds; give it 5 seconds for CI safety.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if instance_state_in_any_state(&started.node_stack, &instance_id)
+            == Some(core_node_api::InstanceState::Failed)
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "instance was not marked Failed within timeout (state: {:?})",
+                instance_state_in_any_state(&started.node_stack, &instance_id)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A terminal instance is not `Running`, so the Running-only lookup stops
+    // returning it — but it stays tracked, visible as `Failed`, rather than
+    // lingering as "running / unhealthy" or vanishing entirely.
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_none(),
+        "a terminal instance must not be reported as Running"
+    );
+    assert_eq!(
+        instance_state_in_any_state(&started.node_stack, &instance_id),
+        Some(core_node_api::InstanceState::Failed),
+        "the crashed instance stays tracked so it remains visible in the stack"
+    );
+
+    // The stack log records the failure (the exit watcher's append).
+    let stack_log_path = started.peppy_dirs.stack_log_path();
+    let log_content =
+        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
+    assert!(
+        log_content.contains(TARGET_INSTANCE_ID) && log_content.contains("failed"),
+        "stack log should record the failed transition, got:
+{}",
+        log_content
+    );
+
+    drop(health_task);
 }

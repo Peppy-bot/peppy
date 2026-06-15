@@ -914,24 +914,26 @@ impl NodeEntity {
     }
 
     /// Phase 2 (success): records the spawned instance against the entity and
-    /// transitions `Starting → Started`. Returns the child's pid.
+    /// transitions `Starting → Started`. Returns the live `Child` so the caller
+    /// can watch it for exit (see the process-exit watcher in `node_run`),
+    /// turning a self-exit into a terminal `Finished`/`Failed` instance state.
     ///
     /// Does NOT join the output reader handles — they remain alive past return
     /// so the daemon keeps streaming the running node's stdout/stderr.
     ///
     /// If a concurrent `push_config` replaced the entity wholesale while the
     /// daemon was running its messenger checks, this returns
-    /// [`Error::InvalidStageTransition`] **and kills the spawned child** so
-    /// no orphan process is left behind. On the success path the `Child` is
-    /// dropped without `kill_on_drop`, so the OS process continues running
-    /// under its own pid (the daemon manages termination via PID polling in
-    /// `stop_instance`).
+    /// [`Error::InvalidStageTransition`] **and kills the spawned child** so no
+    /// orphan process is left behind. On the success path the `Child` is handed
+    /// back (not killed, no `kill_on_drop`), so the OS process keeps running; the
+    /// caller owns it from here, holding it in the exit watcher and reaping it on
+    /// exit, while `stop_instance` still drives termination by pid.
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
-    ) -> Result<u32> {
+    ) -> Result<Child> {
         let pid = child.id().unwrap_or(0);
 
         // Helper: on every error path we must kill the still-running child
@@ -1011,10 +1013,11 @@ impl NodeEntity {
 
         match validation_result {
             Ok(()) => {
-                // Successful commit: drop the Child without killing. The
-                // OS process keeps running and the daemon owns its lifetime.
-                drop(child);
-                Ok(pid)
+                // Successful commit: hand the live Child back without killing.
+                // The OS process keeps running; the caller moves it into the
+                // exit watcher, which observes the eventual exit (clean or
+                // crash) and reaps the process.
+                Ok(child)
             }
             Err(e) => {
                 // Concurrent push_config / stale generation / inconsistent
@@ -1140,19 +1143,55 @@ impl NodeEntity {
         Self::with_stage(config, stage)
     }
 
-    /// Removes a `Running` instance from a `Ready` entity. The entity stays
-    /// in `Ready` regardless of whether the instance list becomes empty.
-    /// `Starting` instances are intentionally left alone — to clean those
-    /// up, the caller must use `abort_started`.
+    /// Transitions a `Running` instance of a `Ready` entity to a terminal state
+    /// after its process has exited on its own: `Finished` when `success` (a
+    /// clean exit), `Failed` otherwise (a crash). The instance stays in the
+    /// entity so it remains visible in `stack list`; it is removed only when the
+    /// stack is cleared or the instance is explicitly stopped.
     ///
-    /// Returns `true` if a `Running` instance was removed, `false` otherwise
-    /// (instance missing, in `Starting` state, or entity not in `Ready`).
+    /// No-op (returns `None`) if the instance is missing, not `Running`, marked
+    /// `stopping` (a stop path owns its removal, so an intentional kill is never
+    /// shown as a crash), or the entity is not `Ready`. Returns the new terminal
+    /// state when the transition was applied. The `stopping` check and the state
+    /// flip happen together under the caller's write lock, so they cannot race a
+    /// concurrent stop.
+    pub fn mark_instance_exited(
+        handle: &Arc<RwLock<NodeEntity>>,
+        instance_id: &Name,
+        success: bool,
+    ) -> Option<InstanceState> {
+        let mut guard = handle.write();
+        let NodeStage::Ready { instances, .. } = &mut guard.stage else {
+            return None;
+        };
+        let inst = instances.iter_mut().find(|inst| {
+            inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+        })?;
+        if inst.is_stopping() {
+            return None;
+        }
+        inst.set_exited(success);
+        Some(inst.state())
+    }
+
+    /// Removes a `Running` or terminal (`Finished`/`Failed`) instance from a
+    /// `Ready` entity. The entity stays in `Ready` regardless of whether the
+    /// instance list becomes empty. `Starting` instances are intentionally left
+    /// alone — to clean those up, the caller must use `abort_started`.
+    ///
+    /// Terminal instances are removable here so an explicit stop (or a stack
+    /// clear) can clear out a one-shot node that already exited on its own, and
+    /// so a self-exit that raced the stop path's removal cannot leave an
+    /// untracked instance behind.
+    ///
+    /// Returns `true` if an instance was removed, `false` otherwise (instance
+    /// missing, in `Starting` state, or entity not in `Ready`).
     pub fn stop_instance(&mut self, instance_id: &Name) -> bool {
         let NodeStage::Ready { instances, .. } = &mut self.stage else {
             return false;
         };
         let Some(pos) = instances.iter().position(|inst| {
-            inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+            inst.instance_id() == instance_id && inst.state() != InstanceState::Starting
         }) else {
             return false;
         };
@@ -1200,6 +1239,15 @@ pub struct TrackedNodeInstance {
     /// an entity write lock. `true` until a probe is observed to fail; surfaced
     /// by `stack list` so it reports health without a per-instance round-trip.
     healthy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by the stop paths before they terminate this instance's process, so
+    /// the process-exit watcher can tell a daemon-initiated stop (cooperative
+    /// shutdown or force-kill) apart from a self-exit. When set, the watcher
+    /// leaves the state alone and lets the stop path own removal, rather than
+    /// transitioning the instance to a terminal `Finished`/`Failed` state (and
+    /// mislabeling an intentional force-kill as a crash). Behind an
+    /// `Arc<AtomicBool>` for the same reason as `healthy`: it is flipped through
+    /// the clone the stop path resolves, without an entity write lock.
+    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TrackedNodeInstance {
@@ -1225,6 +1273,7 @@ impl TrackedNodeInstance {
             runtime_config_path: None,
             slot_bindings,
             healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1264,6 +1313,21 @@ impl TrackedNodeInstance {
             .store(healthy, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// `true` once a stop path has claimed this instance for termination via
+    /// [`mark_stopping`]. The process-exit watcher reads this to avoid
+    /// transitioning an intentionally-stopped instance to a terminal state.
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Marks this instance as being deliberately stopped, before its process is
+    /// signaled. Takes `&self` because the flag is an `Arc<AtomicBool>`; the
+    /// stop path flips it through the clone it resolves. Idempotent.
+    pub fn mark_stopping(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Returns the on-disk instance directory recorded during start, if any.
     pub fn instance_dir(&self) -> Option<&Path> {
         self.instance_dir.as_deref()
@@ -1296,6 +1360,20 @@ impl TrackedNodeInstance {
     /// the child's process group. Not exported.
     fn set_starting_pid(&mut self, pid: u32) {
         self.pid = Some(pid);
+    }
+
+    /// Same-module mutator used by `NodeEntity::mark_instance_exited` to flip a
+    /// `Running` instance to a terminal state once its process has exited on its
+    /// own: `Finished` for a clean exit, `Failed` for a crash. The pid is
+    /// cleared because the process is gone, so nothing downstream tries to
+    /// signal a stale (and possibly reused) pid. Not exported.
+    fn set_exited(&mut self, success: bool) {
+        self.state = if success {
+            InstanceState::Finished
+        } else {
+            InstanceState::Failed
+        };
+        self.pid = None;
     }
 }
 
@@ -1404,5 +1482,103 @@ mod tests {
             !serialized.instances[1].healthy,
             "unhealthy instance should serialize as unhealthy"
         );
+    }
+
+    /// Builds a single-`Running`-instance `Ready` entity behind a handle, the
+    /// shape `mark_instance_exited` operates on.
+    fn ready_entity_with(instance: TrackedNodeInstance) -> Arc<RwLock<NodeEntity>> {
+        let entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/tmp/sensor.sif")),
+            vec![instance],
+        );
+        Arc::new(RwLock::new(entity))
+    }
+
+    #[test]
+    fn mark_instance_exited_moves_running_to_finished_on_clean_exit() {
+        let id = Name::new("one-shot-1").unwrap();
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            id.clone(),
+            Some(7),
+            InstanceState::Running,
+            BTreeMap::new(),
+        ));
+
+        let new_state = NodeEntity::mark_instance_exited(&handle, &id, true);
+        assert_eq!(new_state, Some(InstanceState::Finished));
+        {
+            let guard = handle.read();
+            let inst = &guard.instances()[0];
+            assert_eq!(inst.state(), InstanceState::Finished);
+            assert_eq!(inst.pid(), None, "pid is cleared once the process is gone");
+        }
+
+        // A second exit is a no-op: the instance is already terminal.
+        assert_eq!(NodeEntity::mark_instance_exited(&handle, &id, false), None);
+        assert_eq!(
+            handle.read().instances()[0].state(),
+            InstanceState::Finished
+        );
+    }
+
+    #[test]
+    fn mark_instance_exited_moves_running_to_failed_on_unclean_exit() {
+        let id = Name::new("crash-1").unwrap();
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            id.clone(),
+            Some(9),
+            InstanceState::Running,
+            BTreeMap::new(),
+        ));
+
+        assert_eq!(
+            NodeEntity::mark_instance_exited(&handle, &id, false),
+            Some(InstanceState::Failed)
+        );
+        assert_eq!(handle.read().instances()[0].state(), InstanceState::Failed);
+    }
+
+    #[test]
+    fn mark_instance_exited_is_noop_for_an_instance_being_stopped() {
+        let id = Name::new("stopping-1").unwrap();
+        let instance = TrackedNodeInstance::new(
+            id.clone(),
+            Some(11),
+            InstanceState::Running,
+            BTreeMap::new(),
+        );
+        // A stop path has claimed this instance; the watcher must not relabel
+        // the intentional exit as a self-exit.
+        instance.mark_stopping();
+        let handle = ready_entity_with(instance);
+
+        assert_eq!(NodeEntity::mark_instance_exited(&handle, &id, true), None);
+        assert_eq!(
+            handle.read().instances()[0].state(),
+            InstanceState::Running,
+            "a stopping instance stays Running so the stop path can remove it"
+        );
+    }
+
+    #[test]
+    fn stop_instance_removes_a_terminal_instance() {
+        // A one-shot node that already finished on its own can still be cleared
+        // by the stop path (and a self-exit that raced removal cannot leak).
+        let id = Name::new("done-1").unwrap();
+        let mut entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/tmp/sensor.sif")),
+            vec![TrackedNodeInstance::new(
+                id.clone(),
+                None,
+                InstanceState::Finished,
+                BTreeMap::new(),
+            )],
+        );
+        assert!(entity.stop_instance(&id), "terminal instance is removable");
+        assert!(entity.instances().is_empty());
     }
 }

@@ -59,8 +59,8 @@ A **Node Instance** represents a single running execution of a node. Each instan
 
 - **Instance ID**: A unique identifier for this running process
 - **PID**: The process ID (when running locally)
-- **State**: Its runtime lifecycle state, `starting` while it comes up and then `running`
-- **Health**: The result of the core node's latest liveness probe, `healthy` or `unhealthy`
+- **State**: Its runtime lifecycle state: `starting` while it comes up, `running` once started, then the terminal `finished` (clean exit) or `failed` (crash) if its process exits on its own
+- **Health**: The result of the core node's latest liveness probe against a running instance, `healthy` or `unhealthy` (not applicable once the instance is terminal)
 
 A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
 

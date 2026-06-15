@@ -1123,10 +1123,16 @@ async fn shutdown_existing_instances(
                 node_name, node_tag
             ));
         }
+        // Everything that is not `Starting` (rejected above): `Running`
+        // instances are cooperatively stopped, and terminal (`Finished`/
+        // `Failed`) instances of a one-shot node that already exited are cleared
+        // out the same way (their cooperative send is a no-op and `stop_instance`
+        // just removes them), so `push_config` does not later reject the
+        // overwrite for a node whose only instance has finished.
         guard
             .instances()
             .iter()
-            .filter(|instance| instance.state() == InstanceState::Running)
+            .filter(|instance| instance.state() != InstanceState::Starting)
             .map(|instance| instance.instance_id().clone())
             .collect::<Vec<_>>()
     };

@@ -96,7 +96,7 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 - `dot_graph`: an optional Graphviz DOT rendering, populated only when the second argument (`with_dot_graph`) is `true`. Pass `false` to skip the rendering when you only need the structured graph.
 
 Each node entry carries its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
-Each instance has an `instance_id` and a `state` (`starting` or `running`).
+Each instance has an `instance_id` and a `state` (`starting`, `running`, or the terminal `finished` / `failed`). A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
 The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [interface conformance](/advanced_guides/interface_conformance): a conformance edge carries a `via_interface` of `name:tag` (the interface it was resolved through), while a direct edge has none.
 
 Rust and Python expose the graph differently:
@@ -154,7 +154,7 @@ The example below uses `stack.list` to count the running instances of each node 
                     node.instances.len(),
                 );
                 for instance in &node.instances {
-                    // `state` displays as "starting" or "running".
+                    // `state` displays as "starting", "running", "finished", or "failed".
                     println!("  - {} ({})", instance.instance_id, instance.state);
                 }
             }

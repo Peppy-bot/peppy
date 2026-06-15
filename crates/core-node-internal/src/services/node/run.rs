@@ -8,9 +8,10 @@ use config::node::Name;
 use config::peppy_config::{Mode, PeerConfig, PeppyConfig};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
+use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use futures::FutureExt;
-use node_stack::{self, NodeStack};
+use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
@@ -956,7 +957,24 @@ async fn process_node_run(
             )
             .await;
             match commit_result {
-                Ok(_) => {
+                Ok(committed_child) => {
+                    // Cancelled by the exit watcher once the node's process
+                    // exits on its own, so the health monitor stops probing a
+                    // now-terminal instance instead of logging a spurious
+                    // "became unhealthy" on the way out.
+                    let instance_done = CancellationToken::new();
+
+                    spawn_exit_watcher(ExitWatcherParams {
+                        child: committed_child,
+                        entity_handle: Arc::clone(&entity_handle),
+                        to_node_name: runtime_config.node_name.as_str().to_owned(),
+                        node_tag: tag.clone(),
+                        target_instance_id: instance_id.clone(),
+                        peppy_dirs: ctx.action.peppy_dirs.clone(),
+                        instance_done: instance_done.clone(),
+                        shutdown_token: ctx.action.shutdown_token.clone(),
+                    });
+
                     spawn_health_monitor(HealthMonitorParams {
                         messenger: ctx.action.messenger.clone(),
                         core_node_name: ctx.action.core_node_name.clone(),
@@ -970,6 +988,7 @@ async fn process_node_run(
                         interval: ctx.action.health_monitor_interval,
                         timeout: ctx.action.health_monitor_timeout,
                         shutdown_token: ctx.action.shutdown_token.clone(),
+                        instance_done,
                     });
 
                     // Wait until the readers have drained the child's startup
@@ -1255,6 +1274,11 @@ struct HealthMonitorParams {
     interval: Duration,
     timeout: Duration,
     shutdown_token: CancellationToken,
+    /// Cancelled by the instance's exit watcher once its process exits on its
+    /// own, so the monitor stops the moment the instance goes terminal rather
+    /// than running one more probe (which would fail against the dead process
+    /// and log a misleading "became unhealthy" for a node that simply finished).
+    instance_done: CancellationToken,
 }
 
 /// Spawns a background task that periodically polls the node's health service
@@ -1265,9 +1289,11 @@ struct HealthMonitorParams {
 /// recovers or is stopped explicitly (e.g. `node stop`).
 ///
 /// The task exits when the instance is no longer found in the stack (stopped
-/// externally) or when `shutdown_token` is cancelled (the daemon is shutting
-/// down, so the monitored nodes are being torn down on purpose and must not be
-/// reported unhealthy for it).
+/// externally), when `instance_done` is cancelled (the instance's process
+/// exited on its own and the exit watcher has moved it to a terminal state), or
+/// when `shutdown_token` is cancelled (the daemon is shutting down, so the
+/// monitored nodes are being torn down on purpose and must not be reported
+/// unhealthy for it).
 fn spawn_health_monitor(p: HealthMonitorParams) {
     tokio::spawn(async move {
         let instance_id_str = p.target_instance_id.as_str().to_owned();
@@ -1295,6 +1321,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             // for the whole teardown window.
             tokio::select! {
                 _ = p.shutdown_token.cancelled() => return,
+                _ = p.instance_done.cancelled() => return,
                 _ = tokio::time::sleep(p.interval) => {}
             }
 
@@ -1324,6 +1351,7 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             // racing the session close cannot emit a teardown-time warning.
             let poll_result = tokio::select! {
                 _ = p.shutdown_token.cancelled() => return,
+                _ = p.instance_done.cancelled() => return,
                 result = ServiceMessenger::poll(
                     &p.messenger,
                     &p.core_node_name,
@@ -1338,6 +1366,14 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
 
             let probe_succeeded = poll_result.is_ok();
             let probe_error = poll_result.err();
+
+            // If the exit watcher cancelled us while this probe was in flight,
+            // the instance's process has exited and the watcher is moving it to a
+            // terminal state. Stop here without recording or logging, so a node
+            // that simply finished never produces a trailing "became unhealthy".
+            if p.instance_done.is_cancelled() {
+                return;
+            }
 
             // Record the probe result so `stack list` and `node info` can report
             // health without re-probing. A failed probe flags the instance
@@ -1400,6 +1436,124 @@ fn spawn_health_monitor(p: HealthMonitorParams) {
             }
 
             was_healthy = probe_succeeded;
+        }
+    });
+}
+
+struct ExitWatcherParams {
+    /// The committed node process, owned by the watcher from here on. `wait()`
+    /// observes its exit and reaps it.
+    child: Child,
+    /// Handle to the entity that owns this instance. Holding it keeps the entity
+    /// alive for the watcher's lifetime. The transition itself is guarded inside
+    /// `mark_instance_exited`, which under the entity write lock only acts on an
+    /// instance that is still `Running` and not being stopped — so a removal or
+    /// an explicit stop that raced the exit is a clean no-op, not a clobber.
+    entity_handle: EntityHandle,
+    to_node_name: String,
+    node_tag: String,
+    target_instance_id: Name,
+    peppy_dirs: PeppyDirs,
+    /// Cancelled once the process exits, to stop this instance's health monitor.
+    instance_done: CancellationToken,
+    shutdown_token: CancellationToken,
+}
+
+/// Spawns a background task that owns a committed node's [`Child`] and waits for
+/// its process to exit on its own. Closes the gap where a node that finishes its
+/// work and shuts itself down (a one-shot node) — or that crashes — would
+/// otherwise stay `Running` forever, with only the health monitor flipping it to
+/// a misleading `unhealthy`. On a self-exit the instance is moved to a terminal
+/// state: [`InstanceState::Finished`] for a clean exit (status code 0), or
+/// [`InstanceState::Failed`] for a non-zero / signal exit (a crash).
+///
+/// The watcher does nothing when the exit was the daemon's doing: it bails on
+/// `shutdown_token` (daemon teardown), and `mark_instance_exited` no-ops when the
+/// instance was marked `stopping` by an explicit `node stop` / stack clear, so an
+/// intentional force-kill is never relabeled as a crash. In those cases the stop
+/// path owns removal. Either way it cancels `instance_done` so the health monitor
+/// stops probing the now-dead process instead of logging a spurious "became
+/// unhealthy" for a node that simply finished.
+fn spawn_exit_watcher(p: ExitWatcherParams) {
+    let ExitWatcherParams {
+        mut child,
+        entity_handle,
+        to_node_name,
+        node_tag,
+        target_instance_id,
+        peppy_dirs,
+        instance_done,
+        shutdown_token,
+    } = p;
+
+    tokio::spawn(async move {
+        let instance_id_str = target_instance_id.as_str().to_owned();
+
+        // Wait for the process to exit, but abandon the wait the instant the
+        // daemon starts shutting down: the whole stack is being torn down on
+        // purpose, so its nodes must not be recorded as having crashed.
+        let status = tokio::select! {
+            biased;
+            _ = shutdown_token.cancelled() => return,
+            status = child.wait() => status,
+        };
+
+        // The process is gone. Stop the health monitor first, before any lock
+        // work, so it cannot squeeze in one more probe against the dead process
+        // and log a misleading "became unhealthy" for a node that just finished.
+        instance_done.cancel();
+
+        // A `wait()` error (the OS refused to report the status — vanishingly
+        // rare) is treated as an unclean exit, the conservative choice.
+        let exited_cleanly = matches!(&status, Ok(s) if s.success());
+
+        // Transition Running -> Finished/Failed. Returns None when a stop path
+        // already claimed this instance (it owns removal) or it is no longer
+        // Running, so an intentional stop is never relabeled as a self-exit.
+        let Some(new_state) =
+            NodeEntity::mark_instance_exited(&entity_handle, &target_instance_id, exited_cleanly)
+        else {
+            return;
+        };
+
+        match new_state {
+            InstanceState::Finished => {
+                tracing::info!(
+                    "Exit watcher: instance '{}' of node '{}:{}' finished (exited cleanly)",
+                    instance_id_str,
+                    to_node_name,
+                    node_tag
+                );
+                super::append_stack_log(
+                    &peppy_dirs,
+                    &format!(
+                        "Instance '{}' of node '{}:{}' finished: process exited cleanly",
+                        instance_id_str, to_node_name, node_tag,
+                    ),
+                );
+            }
+            InstanceState::Failed => {
+                let detail = match &status {
+                    Ok(s) => format!("exit status {s}"),
+                    Err(e) => format!("could not read exit status: {e}"),
+                };
+                tracing::warn!(
+                    "Exit watcher: instance '{}' of node '{}:{}' exited unexpectedly ({})",
+                    instance_id_str,
+                    to_node_name,
+                    node_tag,
+                    detail
+                );
+                super::append_stack_log(
+                    &peppy_dirs,
+                    &format!(
+                        "Instance '{}' of node '{}:{}' failed: process {}",
+                        instance_id_str, to_node_name, node_tag, detail,
+                    ),
+                );
+            }
+            // `mark_instance_exited` only ever returns a terminal state.
+            InstanceState::Starting | InstanceState::Running => {}
         }
     });
 }

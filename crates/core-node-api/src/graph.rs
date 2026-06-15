@@ -13,12 +13,23 @@ use config::runtime::SlotBinding;
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
-/// name (`"starting"`, `"running"`).
+/// name (`"starting"`, `"running"`, `"finished"`, `"failed"`).
+///
+/// `Starting` and `Running` are live states; `Finished` and `Failed` are
+/// terminal: the node's OS process has exited on its own (not via an explicit
+/// stop or daemon teardown) and the instance will not run again. `Finished` is
+/// a clean exit (status code 0), the expected end state of a one-shot node that
+/// completes its work and shuts itself down; `Failed` is a non-zero or
+/// signal-driven exit, i.e. the node crashed. Terminal instances stay visible
+/// in the stack until the stack is cleared or the instance is stopped, and the
+/// health monitor never probes them (a finished node has no health to report).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceState {
     Starting,
     Running,
+    Finished,
+    Failed,
 }
 
 impl InstanceState {
@@ -26,7 +37,17 @@ impl InstanceState {
         match self {
             InstanceState::Starting => "starting",
             InstanceState::Running => "running",
+            InstanceState::Finished => "finished",
+            InstanceState::Failed => "failed",
         }
+    }
+
+    /// `true` for the terminal states (`Finished`, `Failed`): the process has
+    /// exited and the instance will not transition again. Callers use this to
+    /// skip live-only work such as health probing and to render an exited
+    /// instance without a (meaningless) health verdict.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, InstanceState::Finished | InstanceState::Failed)
     }
 }
 
@@ -43,6 +64,8 @@ impl FromStr for InstanceState {
         match s {
             "starting" => Ok(InstanceState::Starting),
             "running" => Ok(InstanceState::Running),
+            "finished" => Ok(InstanceState::Finished),
+            "failed" => Ok(InstanceState::Failed),
             other => Err(UnknownInstanceState(other.to_owned())),
         }
     }
@@ -506,18 +529,33 @@ mod tests {
 
     #[test]
     fn instance_state_str_display_and_parse_round_trip() {
-        for state in [InstanceState::Starting, InstanceState::Running] {
+        for state in [
+            InstanceState::Starting,
+            InstanceState::Running,
+            InstanceState::Finished,
+            InstanceState::Failed,
+        ] {
             assert_eq!(state.to_string(), state.as_str());
             assert_eq!(state.as_str().parse::<InstanceState>(), Ok(state));
         }
         assert_eq!(InstanceState::Starting.as_str(), "starting");
         assert_eq!(InstanceState::Running.as_str(), "running");
+        assert_eq!(InstanceState::Finished.as_str(), "finished");
+        assert_eq!(InstanceState::Failed.as_str(), "failed");
 
         let err = "bogus"
             .parse::<InstanceState>()
             .expect_err("unknown must fail");
         assert_eq!(err, UnknownInstanceState("bogus".to_owned()));
         assert!(err.to_string().contains("bogus"), "got: {err}");
+    }
+
+    #[test]
+    fn instance_state_terminal_classification() {
+        assert!(!InstanceState::Starting.is_terminal());
+        assert!(!InstanceState::Running.is_terminal());
+        assert!(InstanceState::Finished.is_terminal());
+        assert!(InstanceState::Failed.is_terminal());
     }
 
     #[test]

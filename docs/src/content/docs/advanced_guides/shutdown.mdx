@@ -25,7 +25,7 @@ Every way a node can be asked to stop converges on the same cancellation token, 
 - **`SIGINT` / `SIGTERM` delivered to the node process**: the runtime installs its own signal handlers, so a plain `kill` (or `Ctrl+C` on a standalone node) is just another route to the token. Your node needs no signal handling of its own.
 - **Daemon-liveness loss**: the node's watchdog cancels the token after `daemon_grace_secs` without a daemon heartbeat, so an orphaned node tears itself down.
 - **A setup error**: if your setup function returns an error, the runtime still cancels the token and runs the hooks registered up to that point (so a lock acquired early in setup is released even when bringup fails halfway).
-- **Programmatic cancel**: your own code may cancel the token to request shutdown from inside the node.
+- **Programmatic cancel**: your own code may cancel the token to request shutdown from inside the node. This is how a one-shot node ends itself once its work is done. Unlike the daemon-driven paths above (which remove the instance from the stack), a node that exits on its own stays listed in a terminal state: `finished` for the clean exit that follows a cancel-and-return, or `failed` if it exits with an error. See [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle).
 
 ## The shutdown sequence
 
@@ -123,4 +123,4 @@ The runtime owns the whole lifecycle, so a node should contain none of the follo
 
 - **Signal handlers.** `SIGINT`/`SIGTERM` are routed to the cancellation token for you.
 - **Cleanup in a spawned task.** A task watching the token races the teardown in step 3 of [the sequence](#the-shutdown-sequence) and is not guaranteed to run again after the token fires; only `on_shutdown` hooks are awaited.
-- **`std::process::exit` / `sys.exit` after cleanup.** `run()` returns once the hooks finish and the process exits normally; an explicit exit skips the remaining teardown. To stop the node from inside, cancel the token and return.
+- **`std::process::exit` / `sys.exit` after cleanup.** `run()` returns once the hooks finish and the process exits normally; an explicit exit skips the remaining teardown. To stop the node from inside, cancel the token and return. Exiting cleanly this way has the daemon record the instance as terminal `finished`; a non-zero exit or crash is recorded as `failed` ([Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle)).

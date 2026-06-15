@@ -758,10 +758,15 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let pid = child.id().expect("child has pid");
     assert!(pid > 0, "spawned child should have a valid pid");
 
-    let returned_pid = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
-        .await
-        .expect("commit_started should succeed");
-    assert_eq!(returned_pid, pid);
+    let returned_child =
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+            .await
+            .expect("commit_started should succeed");
+    assert_eq!(
+        returned_child.id(),
+        Some(pid),
+        "commit_started hands back the same live child it committed"
+    );
 
     // Entity is still in Ready, but the instance is now Running.
     {
@@ -909,10 +914,15 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     }
 
     let new_pid = child.id().expect("child has pid");
-    let returned_pid = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
-        .await
-        .expect("commit_started should succeed");
-    assert_eq!(returned_pid, new_pid);
+    let returned_child =
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+            .await
+            .expect("commit_started should succeed");
+    assert_eq!(
+        returned_child.id(),
+        Some(new_pid),
+        "commit_started hands back the same live child it committed"
+    );
 
     // After commit, both instances are Running.
     {

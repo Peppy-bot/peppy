@@ -176,6 +176,13 @@ async fn handle_node_stop_request_inner(
             .map_err(Into::into);
     }
 
+    // Claim the instance for termination before signaling it, so its exit
+    // watcher treats the upcoming exit as an intentional stop (owned by this
+    // path's registry removal) rather than a self-exit, and never relabels a
+    // force-kill as a crash. The flag rides the shared `Arc`, so marking the
+    // resolved clone marks the tracked instance.
+    instance.mark_stopping();
+
     // Cooperative-then-force, identical to the SIGINT teardown for this one
     // instance: ask the node to shut down, give it a bounded grace window, then
     // SIGKILL its process group if it ignored us, and wait for it to be gone.
@@ -505,16 +512,23 @@ pub(super) async fn stop_instances(
             let is_container = guard.config().execution.container.is_some();
             instance_ids
                 .iter()
-                .map(|instance_id| DoomedInstance {
-                    node_name: node_name.to_owned(),
-                    node_tag: node_tag.to_owned(),
-                    instance_id: instance_id.clone(),
-                    pid: guard
+                .map(|instance_id| {
+                    // Claim each instance for termination before it is signaled,
+                    // so its exit watcher leaves the state to this path's removal
+                    // and does not record an intentional stop as a self-exit.
+                    let pid = guard
                         .instances()
                         .iter()
                         .find(|inst| inst.instance_id() == instance_id)
-                        .and_then(|inst| inst.pid()),
-                    is_container,
+                        .inspect(|inst| inst.mark_stopping())
+                        .and_then(|inst| inst.pid());
+                    DoomedInstance {
+                        node_name: node_name.to_owned(),
+                        node_tag: node_tag.to_owned(),
+                        instance_id: instance_id.clone(),
+                        pid,
+                        is_container,
+                    }
                 })
                 .collect()
         }
