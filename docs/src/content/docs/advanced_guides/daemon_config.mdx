@@ -54,7 +54,7 @@ A setting you delete from the file therefore comes back with its default on the 
     // stop` wait for a node to exit cooperatively before force-killing its
     // process group. Seconds; minimum 1. A robot node uses this window to park
     // actuators and release hardware before it is killed.
-    shutdown_grace_secs: 3,
+    shutdown_grace_secs: 5,
   },
 }
 ```
@@ -86,7 +86,7 @@ Both values must be greater than `0`; the daemon rejects a zero buffer size at s
 The `lifecycle` block tunes the two windows peppy uses to guarantee that no node outlives the daemon. The full mechanics are described in [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
 
 - **`daemon_grace_secs`** (default `180`, minimum `30`): every spawned node runs a watchdog that listens for the daemon's periodic heartbeat (published every 5 seconds). If the heartbeat goes silent for this many seconds, the node shuts itself down rather than lingering as an orphan. This only governs **unclean** daemon death (crash, OOM, `SIGKILL`); a clean shutdown does not wait for it. The minimum exists so a brief daemon blip or a quick restart never trips every node's watchdog.
-- **`shutdown_grace_secs`** (default `3`, minimum `1`): how long a clean daemon shutdown (`Ctrl+C`, `systemctl stop`) and `peppy node stop` wait for a node to exit cooperatively before force-killing its process group. Raise it for nodes that need longer to park actuators or release hardware before dying.
+- **`shutdown_grace_secs`** (default `5`, minimum `1`): the node's cooperative-cleanup budget. A clean daemon shutdown (`Ctrl+C`, `systemctl stop`) and `peppy node stop` wait this window, plus a fixed allowance for the node's runtime to finish tearing down (in Python, the event-loop join and interpreter finalize), before force-killing its process group. Raise it for nodes that need longer to park actuators or release hardware before dying; the force-kill deadline rises with it.
 
 ## Reference
 
@@ -96,6 +96,6 @@ The `lifecycle` block tunes the two windows peppy uses to guarantee that no node
 | `peer.standard_buffer_size` | `128` | `> 0` | Subscriber channel capacity (messages) for standard-QoS topics; also sizes service request/reply channels. |
 | `peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
-| `lifecycle.shutdown_grace_secs` | `3` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit before force-killing. |
+| `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 
 A value outside its constraint, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.

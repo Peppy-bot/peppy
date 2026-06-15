@@ -222,4 +222,4 @@ A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides
   </TabItem>
 </Tabs>
 
-The whole shutdown is bounded by a grace period (`shutdown_grace_secs`, 3 seconds by default): a node that exits within it is reported as a clean stop, one that ignores the ask is force-killed, and `peppy node stop` warns about the latter. The [shutdown lifecycle guide](/advanced_guides/shutdown/) covers the full contract: every stop path, hook ordering, the grace windows, and Python's task-teardown mechanics.
+The whole shutdown is bounded by a grace period (`shutdown_grace_secs`, 5 seconds by default) for your cleanup to run: a node that shuts down cooperatively is reported as a clean stop, one that ignores the ask is force-killed, and `peppy node stop` warns about the latter. The [shutdown lifecycle guide](/advanced_guides/shutdown/) covers the full contract: every stop path, hook ordering, the grace windows, and Python's task-teardown mechanics.

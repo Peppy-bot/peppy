@@ -34,7 +34,7 @@ Once any of those paths fires, the runtime drives one ordered sequence:
 1. **The cancellation token is cancelled.** Every `token.cancelled()` resolves; loops that select on it should stop doing work. Background tasks keep running for now; services (health, your own endpoints) remain reachable.
 2. **Shutdown hooks run**, sequentially, in **reverse registration order** (last registered, first run), all within **one shared grace window** (`lifecycle.shutdown_grace_secs`). The messenger is still connected, so hooks can use the [datastore](/advanced_guides/datastore/), services, and topics.
 3. **Task teardown.** In Python, the runtime now cancels the node's remaining asyncio tasks and waits for them to finish (their `try`/`finally` blocks run, best effort). In Rust, `run()` returns and the tokio runtime is dropped: spawned tasks are simply dropped wherever they last yielded, which is why cleanup must not live in them.
-4. **The process exits.** On the stop paths driven by the daemon, the daemon has been waiting in parallel since step 1: a node still alive when `shutdown_grace_secs` elapses is force-killed (process group `SIGKILL`) and reported as such.
+4. **The process exits.** On the stop paths driven by the daemon, the daemon has been waiting in parallel since step 1. It does not force-kill at the hook deadline: it allows for the node's whole cooperative exit (the hook grace window, then task teardown, and in Python the event-loop join and interpreter finalize) and only `SIGKILL`s the process group of a node still alive at that later force-kill deadline, reporting it as force-killed.
 
 Reverse registration order mirrors how resources are acquired: setup acquires the lock first and brings hardware up second, so teardown disables hardware first and releases the lock last, like destructors.
 
@@ -91,7 +91,7 @@ Inside a hook the token is already cancelled, so `token.is_cancelled()` is `true
 
 Two settings in `~/.peppy/conf/peppy_config.json5` bound the lifecycle (see [Daemon configuration](/advanced_guides/daemon_config/)); the daemon resolves both once and ships them to every node it spawns:
 
-- **`lifecycle.shutdown_grace_secs`** (default **3**, minimum 1) plays a dual role. Daemon-side, it is how long a stop path waits for the node to exit before force-killing it. Node-side, the runtime bounds the *entire hook phase* by the same value, so a stuck hook is abandoned at the deadline and the node still exits on its own. Raise it if your node legitimately needs longer to park actuators; both sides move together.
+- **`lifecycle.shutdown_grace_secs`** (default **5**, minimum 1) is the node's cooperative-cleanup budget, and it bounds two nested windows. Node-side, the runtime bounds the *entire hook phase* by this value, so a stuck hook is abandoned at the deadline and the node still exits on its own. Daemon-side, a stop path waits this window **plus** a fixed runtime-teardown allowance (the asyncio event-loop join, bounded by an internal 5s backstop, plus interpreter finalize) before force-killing, so a node that spends its full hook budget and then tears down cleanly is never mistaken for stuck. Raise it if your node legitimately needs longer to park actuators; the daemon's force-kill deadline rises with it.
 - **`lifecycle.daemon_grace_secs`** (default **180**, minimum 30) decides *when* shutdown starts on the daemon-death path (how long a node tolerates a silent daemon before tearing itself down). It does not change how long cleanup gets once shutdown starts.
 
 :::caution
@@ -114,7 +114,7 @@ Python nodes get the same sequence with a few extra mechanics:
 
 Cooperative shutdown is bounded at every level, so a misbehaving node can always be removed:
 
-- **Daemon force-kill**: any daemon-driven stop path `SIGKILL`s the node's whole process group once `shutdown_grace_secs` elapses. `peppy node stop` reports whether the instance exited gracefully or had to be force-killed.
+- **Daemon force-kill**: any daemon-driven stop path `SIGKILL`s the node's whole process group once the force-kill deadline (the grace window plus the runtime-teardown allowance, see [Grace windows](#grace-windows)) elapses. `peppy node stop` reports whether the instance exited gracefully or had to be force-killed.
 - **Second signal**: while a signal-initiated shutdown is in flight, a second `SIGINT`/`SIGTERM` makes the node exit immediately with the conventional `128 + signo` code (130 or 143), skipping the remaining cleanup. Pressing `Ctrl+C` twice always works.
 
 ## What a node never needs
