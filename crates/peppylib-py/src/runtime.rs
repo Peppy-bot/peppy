@@ -31,8 +31,12 @@ struct AsyncSetup {
 }
 
 /// How long the main thread waits for the asyncio event-loop thread to drain
-/// on shutdown before giving up and letting the process exit anyway.
-const EVENT_LOOP_JOIN_TIMEOUT_SECS: f64 = 5.0;
+/// on shutdown before giving up and letting the process exit anyway. Shared
+/// with the daemon (via `config`) so its force-kill deadline always allows for
+/// this join; see [`config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS`].
+fn event_loop_join_timeout_secs() -> f64 {
+    config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS as f64
+}
 
 /// Teardown handles for the persistent asyncio event-loop thread.
 ///
@@ -51,24 +55,24 @@ struct EventLoopShutdown {
 
 impl EventLoopShutdown {
     /// Cancel pending tasks, stop the loop, and join its thread (bounded by
-    /// [`EVENT_LOOP_JOIN_TIMEOUT_SECS`]). CPython releases the GIL while
+    /// [`event_loop_join_timeout_secs`]). CPython releases the GIL while
     /// joining, so the loop thread can observe the cancellation and exit.
     /// Best-effort: if a background task refuses to cancel within the timeout,
     /// shutdown proceeds rather than hanging process exit.
     fn quiesce(self) {
+        let join_timeout = event_loop_join_timeout_secs();
         let still_alive = Python::try_attach(|py| -> PyResult<bool> {
             // Best-effort cancellation; the join below must run even if the
             // trigger raises, so the daemon thread cannot outlive `run`.
             let _ = self.trigger.bind(py).call0();
             let thread = self.thread.bind(py);
-            thread.call_method1("join", (EVENT_LOOP_JOIN_TIMEOUT_SECS,))?;
+            thread.call_method1("join", (join_timeout,))?;
             thread.call_method0("is_alive")?.is_truthy()
         });
         if let Some(Ok(true)) = still_alive {
             eprintln!(
-                "peppy: asyncio event-loop thread did not stop within {:.0}s; \
-                 proceeding with shutdown (a background task may be ignoring cancellation)",
-                EVENT_LOOP_JOIN_TIMEOUT_SECS
+                "peppy: asyncio event-loop thread did not stop within {join_timeout:.0}s; \
+                 proceeding with shutdown (a background task may be ignoring cancellation)"
             );
         }
     }
@@ -362,7 +366,18 @@ def make_shutdown_trigger(event_loop, asyncio_mod):
             task.cancel()
         if pending:
             await asyncio_mod.gather(*pending, return_exceptions=True)
-        event_loop.stop()
+        # Defer the stop one scheduling hop instead of calling event_loop.stop()
+        # here. Per CPython's loop.stop() contract, stopping mid-iteration runs
+        # the current callback batch then exits, dropping callbacks scheduled by
+        # that batch. run_coroutine_threadsafe completes its concurrent.futures
+        # .Future from exactly such a freshly-scheduled callback (its internal
+        # set-state), so a direct stop() here orphans the future the drain hook
+        # awaits and the hook blocks for the whole grace window. call_soon lets
+        # the loop run one more full ready-queue drain, in which the set-state
+        # callback (and any trailing finally-cleanup from the gathered tasks)
+        # fire, before _stopping is observed at the top of the next iteration.
+        # See tests/test_shutdown_drain_deadlock.py.
+        event_loop.call_soon(event_loop.stop)
 
     def _trigger():
         # Cancel pending tasks and stop the loop so its thread can exit before

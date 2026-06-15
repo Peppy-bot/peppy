@@ -1259,6 +1259,114 @@ async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
     assert hook_markers == ["fourth:awaitable", "third:port_True", "second:raised", "first"]
 
 
+# A grace far larger than the join bound below: a node whose drain hook
+# deadlocks blocks for the whole grace and clearly blows the join, while a node
+# that drains promptly exits well within it. The gap is the discriminator, not a
+# tuned timeout.
+DEADLOCK_REGRESSION_GRACE_SECS = 30
+
+
+@pytest.mark.asyncio
+async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch):
+    """An async-setup node with a live background task must drain and exit
+    promptly on a cooperative shutdown, not block until the grace window ends.
+
+    Regression test for the asyncio drain-hook deadlock: the loop-teardown hook
+    awaited a `run_coroutine_threadsafe` future that the drain's final
+    `event_loop.stop()` orphaned, so shutdown hung for the entire grace window
+    and the daemon force-killed the node. We pin a long grace and assert the
+    node exits well inside it after a real SHUTDOWN_SERVICE request. This runs
+    end-to-end through the real `make_shutdown_trigger`; the asyncio mechanic is
+    pinned in isolation by `test_shutdown_drain_deadlock.py`.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = Path(temp_dir) / NODE_CONFIG_FILE
+            peppy_config_path.write_text(PEPPY_CONFIG)
+            create_codegen_fingerprint(str(peppy_config_path), PEPPYGEN_OUTPUT_PATH)
+
+            runtime_config_path = str(Path(temp_dir) / "peppy_runtime.json5")
+            create_runtime_config(
+                runtime_config_path,
+                router.host,
+                router.port,
+                TEST_NODE_NAME,
+                TEST_CORE_NODE,
+                TEST_INSTANCE_ID,
+                {"frequency_hz": TEST_FREQUENCY_HZ},
+                shutdown_grace_secs=DEADLOCK_REGRESSION_GRACE_SECS,
+            )
+
+            monkeypatch.setenv(RUNTIME_CONFIG_VAR_NAME, runtime_config_path)
+            monkeypatch.chdir(temp_dir)
+
+            setup_done_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+            cleanup_ran = threading.Event()
+
+            def run_node():
+                try:
+
+                    async def setup_fn(_params, node_runner):
+                        token = node_runner.cancellation_token()
+
+                        async def background_loop():
+                            # A long-lived task like a generated emit loop: the
+                            # pending asyncio task the drain hook must cancel and
+                            # gather before stopping the loop.
+                            while not token.is_cancelled():
+                                await asyncio.sleep(0.01)
+
+                        async def on_shutdown():
+                            # Cooperative cleanup; proves the hook phase ran
+                            # before the loop was torn down.
+                            cleanup_ran.set()
+
+                        node_runner.on_shutdown(on_shutdown)
+                        setup_done_queue.put(True)
+                        return [asyncio.create_task(background_loop())]
+
+                    NodeBuilder().run(setup_fn)
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            await asyncio.to_thread(setup_done_queue.get, timeout=5.0)
+
+            messenger = await MessengerHandle.from_host_port(router.host, router.port)
+            await _wait_for_service(
+                messenger,
+                SHUTDOWN_SERVICE,
+                runner_thread,
+                error_queue,
+            )
+
+            await ServiceMessenger.poll(
+                messenger,
+                TEST_CORE_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
+                SHUTDOWN_SERVICE,
+                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                b"shutdown",
+                2.0,
+            )
+
+            # Well below the grace: a deadlocked drain blocks the full
+            # DEADLOCK_REGRESSION_GRACE_SECS and leaves the thread alive here.
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), (
+        "node did not exit within 10s of a cooperative shutdown despite a "
+        f"{DEADLOCK_REGRESSION_GRACE_SECS}s grace: the drain hook likely "
+        "deadlocked and shutdown blocked until the grace window elapsed"
+    )
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+    assert cleanup_ran.is_set(), "cooperative on_shutdown hook did not run"
+
+
 @pytest.mark.asyncio
 async def test_sync_setup_shutdown_hooks_run(monkeypatch):
     """A node with synchronous setup has no persistent asyncio loop; sync

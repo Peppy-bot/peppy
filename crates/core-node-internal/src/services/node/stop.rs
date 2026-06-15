@@ -334,8 +334,13 @@ async fn force_stop_instances(
     graceful_budget: Duration,
 ) -> Vec<StopOutcome> {
     // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
-    // concurrently, then poll until they're all gone or the budget elapses.
-    let _ = tokio::time::timeout(graceful_budget, async {
+    // concurrently, then poll until they're all gone or the deadline elapses.
+    // The deadline is the node's full cooperative exit cost (hook grace +
+    // event-loop join + interpreter finalize), not just the hook grace, so a
+    // node that cleans up correctly is never force-killed; see
+    // `force_kill_deadline`.
+    let deadline = force_kill_deadline(graceful_budget);
+    let _ = tokio::time::timeout(deadline, async {
         let sends = doomed.iter().map(|d| async move {
             if let Err(e) = send_shutdown_signal(
                 messenger,
@@ -381,9 +386,11 @@ async fn force_stop_instances(
             };
             let outcome = if pid_running_in(&snapshot, pid) {
                 warn!(
-                    "Node instance '{}' did not exit within the {}s shutdown grace period; \
-                     force-killing its process group (pid {})",
+                    "Node instance '{}' did not exit within its {}s cooperative shutdown \
+                     window ({}s grace + runtime teardown); force-killing its process group \
+                     (pid {})",
                     d.instance_id.as_str(),
+                    deadline.as_secs(),
                     graceful_budget.as_secs(),
                     pid
                 );
@@ -539,6 +546,23 @@ pub(super) async fn stop_instances(
 /// derive its request timeout from the daemon's worst-case stop duration
 /// (configured grace + this reap) instead of guessing at it.
 pub const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
+
+/// How long the daemon waits for a cooperatively-stopping node's process to
+/// disappear before force-killing its group. Strictly larger than the node's
+/// real exit cost so a node that cleans up correctly is never SIGKILLed: after
+/// receiving the shutdown request a node runs its hooks (bounded by
+/// `shutdown_grace`), then a Python node joins its asyncio event-loop thread
+/// (bounded by [`config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS`]), then the
+/// interpreter finalizes ([`config::peppy_config::RUNTIME_FINALIZE_MARGIN_SECS`]
+/// of slack). The single source of this formula: the CLI request timeout and
+/// the `shutdown_grace_margin` regression test both derive from it.
+pub fn force_kill_deadline(shutdown_grace: Duration) -> Duration {
+    shutdown_grace
+        + Duration::from_secs(
+            config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS
+                + config::peppy_config::RUNTIME_FINALIZE_MARGIN_SECS,
+        )
+}
 
 /// A non-root node instance to terminate — the routing identity + process info
 /// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
