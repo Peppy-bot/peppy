@@ -987,6 +987,36 @@ fn lima_kill_pgid_argv_sigkills_the_whole_group() {
     assert_eq!(argv.len(), 5);
 }
 
+#[test]
+fn lima_terminate_pgid_argv_sigterms_without_removing_pgid_file() {
+    let argv = super::lima::lima_terminate_pgid_argv(Path::new("/tmp/peppy/pgids/buildkey.pgid"));
+    // Cooperative SIGTERM must leave the pgid file in place so the later
+    // force-kill path can still target the same in-VM process group if needed.
+    // It also must not SIGTERM the wrapper shell itself; signaling apptainer
+    // lets apptainer forward shutdown into the container while the wrapper keeps
+    // waiting and can remove the pgid file on a clean exit.
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+    assert_eq!(
+        argv[2],
+        "pgid=\"$(cat \"$1\" 2>/dev/null || true)\"; \
+         if [ -n \"$pgid\" ]; then \
+           children=\"$(cat \"/proc/$pgid/task/$pgid/children\" 2>/dev/null || true)\"; \
+           for child in $children; do kill -TERM \"$child\" 2>/dev/null || true; done; \
+         fi; \
+         true"
+    );
+    assert_eq!(
+        argv[3], "sh",
+        "the `$0` placeholder so the next value is `$1`"
+    );
+    assert_eq!(
+        argv[4], "/tmp/peppy/pgids/buildkey.pgid",
+        "`$1`: the pgid file"
+    );
+    assert_eq!(argv.len(), 5);
+}
+
 /// Builds a Native-backend facade for command-assembly tests without booting a
 /// VM. The apptainer path need not exist: these tests only inspect the assembled
 /// argv and the no-op kill path.
@@ -1208,6 +1238,11 @@ fn kill_guest_process_groups_best_effort_is_noop_for_empty_keys() {
     Apptainer::kill_guest_process_groups_best_effort(&[]);
 }
 
+#[test]
+fn terminate_guest_process_groups_best_effort_is_noop_for_empty_keys() {
+    Apptainer::terminate_guest_process_groups_best_effort(&[]);
+}
+
 /// On the native (Linux) backend the host process-group kill already reaped the
 /// shared-namespace workload, so this returns without resolving or touching Lima
 /// even for a non-empty key set.
@@ -1215,6 +1250,12 @@ fn kill_guest_process_groups_best_effort_is_noop_for_empty_keys() {
 #[test]
 fn kill_guest_process_groups_best_effort_is_noop_on_native() {
     Apptainer::kill_guest_process_groups_best_effort(&["some-instance-key".to_string()]);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn terminate_guest_process_groups_best_effort_is_noop_on_native() {
+    Apptainer::terminate_guest_process_groups_best_effort(&["some-instance-key".to_string()]);
 }
 
 /// On the native (Linux) backend `ensure_host_mounts` is a pure no-op: all host

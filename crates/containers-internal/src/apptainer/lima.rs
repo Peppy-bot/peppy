@@ -36,7 +36,11 @@ pub(crate) fn guest_pgid_path(key: &str) -> PathBuf {
 /// the same group (not via `exec`) so apptainer's children (a build's `%post`
 /// steps, a run's container workload) inherit the group and `sh` survives to
 /// remove the pgid file and forward apptainer's exit status on the normal path.
-/// On cancel, [`lima_kill_pgid_argv`] SIGKILLs the whole group from inside the VM.
+/// On cancel, [`lima_kill_pgid_argv`] SIGKILLs the whole group from inside the
+/// VM. On node stop/teardown, [`lima_terminate_pgid_argv`] first SIGTERMs the
+/// wrapped `apptainer` child without removing the pgid file, so the wrapper can
+/// keep waiting/cleaning up and a later SIGKILL can still find the group if the
+/// workload ignores SIGTERM.
 pub(crate) fn lima_guest_pgid_argv(
     apptainer_bin: &Path,
     apptainer_args: &[&str],
@@ -78,6 +82,29 @@ pub(crate) fn lima_guest_pgid_argv(
 pub(crate) fn lima_kill_pgid_argv(pgid_file: &Path) -> Vec<String> {
     let script = "kill -KILL -\"$(cat \"$1\" 2>/dev/null)\" 2>/dev/null; \
                   rm -f \"$1\" 2>/dev/null; true";
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        script.to_string(),
+        "sh".to_string(),
+        pgid_file.display().to_string(),
+    ]
+}
+
+/// Guest-side argv (after the `limactl shell ... --` separator) that SIGTERMs
+/// the direct child of the wrapper recorded at `pgid_file` by
+/// [`lima_guest_pgid_argv`]. That child is the `apptainer` process; signaling it
+/// matches a normal terminal/runtime TERM and lets apptainer forward shutdown to
+/// the container workload. Unlike [`lima_kill_pgid_argv`], this deliberately
+/// leaves the pgid file in place: if the workload ignores cooperative SIGTERM,
+/// the force phase still needs the same key to SIGKILL the group.
+pub(crate) fn lima_terminate_pgid_argv(pgid_file: &Path) -> Vec<String> {
+    let script = "pgid=\"$(cat \"$1\" 2>/dev/null || true)\"; \
+                  if [ -n \"$pgid\" ]; then \
+                    children=\"$(cat \"/proc/$pgid/task/$pgid/children\" 2>/dev/null || true)\"; \
+                    for child in $children; do kill -TERM \"$child\" 2>/dev/null || true; done; \
+                  fi; \
+                  true";
     vec![
         "sh".to_string(),
         "-c".to_string(),
