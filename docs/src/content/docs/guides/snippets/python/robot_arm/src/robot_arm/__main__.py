@@ -8,6 +8,8 @@ from peppygen.emitted_topics.joint_state_source.v1 import joint_states
 
 
 async def handle_commands(node_runner: NodeRunner):
+    # Declare the publisher once, then publish each state on it.
+    publisher = await joint_states.declare_publisher(node_runner)
     while True:
         producer, command = await controller_joint_commands.on_next_message_received(
             node_runner,
@@ -19,11 +21,12 @@ async def handle_commands(node_runner: NodeRunner):
         )
 
         # Drive the joints, then report the resulting state.
-        await joint_states.emit(
-            node_runner,
-            command.target_positions,
-            [0.0, 0.0, 0.0],
-            time.time(),
+        await publisher.publish(
+            joint_states.build_message(
+                command.target_positions,
+                [0.0, 0.0, 0.0],
+                time.time(),
+            )
         )
 
 

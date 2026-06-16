@@ -132,49 +132,12 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
-    /// or `SenderTarget.interface(name, tag)`.
-    #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload))]
-    #[allow(clippy::too_many_arguments)]
-    fn emit<'py>(
-        py: Python<'py>,
-        messenger: &PyMessengerHandle,
-        as_core_node: String,
-        as_instance_id: String,
-        as_target: PySenderTarget,
-        as_topic_name: String,
-        qos: PyQoSProfile,
-        payload: Vec<u8>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let handle = messenger.inner.clone();
-        let as_target = as_target.into_inner();
-        future_into_py_unit(py, async move {
-            TopicMessenger::emit(
-                &handle,
-                &as_core_node,
-                &as_instance_id,
-                as_target,
-                &as_topic_name,
-                qos.into(),
-                Payload::from(payload),
-            )
-            .await
-            .map_err(to_py_err)?;
-
-            Ok(())
-        })
-    }
-
     /// Declare a reusable publisher for a topic and return a [`PyTopicPublisher`].
     ///
-    /// The central messenger lock is taken ONCE here, at declaration. Every
-    /// subsequent `publisher.publish(...)` is lock-free, unlike [`Self::emit`]
-    /// which re-acquires that lock on every call. Use this for publish loops
-    /// (a camera streaming frames, a sensor at rate); use [`Self::emit`] only
-    /// for one-shot publishes. Mixing the two on the same topic is unsupported
-    /// (see `TopicMessenger::declare_publisher`), so a node should pick one path
-    /// per topic.
+    /// This is the only topic-publish path. The central messenger lock is taken
+    /// ONCE here, at declaration; every subsequent `publisher.publish(...)` is
+    /// lock-free. Declare once, then publish per message (a camera streaming
+    /// frames, a sensor at rate).
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos))]
     fn declare_publisher<'py>(

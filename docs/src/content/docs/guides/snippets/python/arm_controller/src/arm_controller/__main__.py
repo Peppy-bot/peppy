@@ -13,6 +13,8 @@ def compute_next_target(current: list[float]) -> list[float]:
 
 
 async def control_loop(node_runner: NodeRunner):
+    # Declare the publisher once, then publish each command on it.
+    publisher = await joint_commands.declare_publisher(node_runner)
     while True:
         try:
             producer, state = await arm_joint_states.on_next_message_received(
@@ -32,10 +34,11 @@ async def control_loop(node_runner: NodeRunner):
 
         # Compute the next target from the reported state, then command it.
         target = compute_next_target(state.positions)
-        await joint_commands.emit(
-            node_runner,
-            target,
-            1.0,  # max_velocity
+        await publisher.publish(
+            joint_commands.build_message(
+                target,
+                1.0,  # max_velocity
+            )
         )
 
 

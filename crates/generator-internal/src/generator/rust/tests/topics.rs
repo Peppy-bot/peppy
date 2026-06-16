@@ -140,24 +140,35 @@ fn emit_topic() {
         ],
     );
 
-    // Generated structs and function signature
+    // Generated structs and function signatures
     assert_contains_all(
         &rendered,
         &[
             "pub struct MessageHeader",
             "frame: Vec<u8>",
-            "pub async fn emit(",
+            "pub fn build_message(",
+            "pub async fn declare_publisher(",
+            "-> crate::Result<peppylib::TopicPublisher>",
         ],
     );
 
-    // Topic metadata
+    // Topic metadata. declare_publisher is the only publish path; build_message
+    // serializes off the messenger lock, and emit() is no longer generated.
     assert_contains_all(
         &rendered,
         &[
             "let as_topic = \"video_stream\";",
             "let qos = peppylib::config::QoSProfile::SensorData;",
-            "peppylib::TopicMessenger::emit(",
+            "peppylib::TopicMessenger::declare_publisher(",
         ],
+    );
+    assert!(
+        !rendered.contains("pub async fn emit("),
+        "emit() should no longer be generated; declare_publisher is the only publish path; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("TopicMessenger::emit"),
+        "TopicMessenger::emit should no longer be generated; got: {rendered}"
     );
 }
 
@@ -206,7 +217,7 @@ fn emit_topic_escapes_rust_keyword_fields() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn emit(",
+            "pub fn build_message(",
             "type_: u32",
             "match_: String",
             "root.set_type(type_);",

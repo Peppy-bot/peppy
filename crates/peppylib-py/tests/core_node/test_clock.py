@@ -79,15 +79,15 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
         await asyncio.sleep(0.05)
 
         canned = clock.ClockTick(time=1_700_000_000_123_456_789)
-        await TopicMessenger.emit(
+        publisher = await TopicMessenger.declare_publisher(
             server_handle,
             CORE_NODE,
             SERVER_INSTANCE,
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             "clock",
             QoSProfile.SensorData,
-            canned.encode(),
         )
+        await publisher.publish(canned.encode())
 
         tick = await asyncio.wait_for(sub.on_next_tick(), timeout=2.0)
     finally:

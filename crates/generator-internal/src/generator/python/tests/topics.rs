@@ -156,11 +156,12 @@ fn emit_topic() {
         ],
     );
 
-    // emit function signature with typed parameters
+    // build_message signature carries the typed message fields (no node_runner);
+    // declare_publisher takes the node_runner.
     assert_contains_all(
         &rendered,
         &[
-            "async def emit(",
+            "def build_message(",
             "node_runner: peppylib.NodeRunner",
             "header: MessageHeader",
             "encoding: str",
@@ -189,9 +190,8 @@ fn emit_topic() {
         ],
     );
 
-    // Pure serializer, declared (lock-free) publisher, and one-shot emit are all
-    // generated; emit delegates to build_message so the serialization is not
-    // duplicated.
+    // Pure serializer and a declared (lock-free) publisher are generated; the
+    // declared publisher is the only publish path (no one-shot emit).
     assert_contains_all(
         &rendered,
         &[
@@ -200,9 +200,15 @@ fn emit_topic() {
             "def build_message(",
             "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
             "peppylib.TopicMessenger.declare_publisher(",
-            "peppylib.TopicMessenger.emit(",
-            "build_message(header, encoding, width, height, frame),",
         ],
+    );
+    assert!(
+        !rendered.contains("async def emit("),
+        "emit() should no longer be generated; declare_publisher is the only publish path; rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("TopicMessenger.emit"),
+        "TopicMessenger.emit should no longer be generated; rendered:\n{rendered}"
     );
 }
 
@@ -285,7 +291,7 @@ fn emit_topic_escapes_python_keyword_fields() {
     assert_contains_all(
         &rendered,
         &[
-            "async def emit(",
+            "def build_message(",
             "class_: int",
             "from_: str",
             "setattr(capnp_msg, \"class\", class_)",

@@ -958,13 +958,15 @@ from peppygen.emitted_topics import telemetry_feed
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     async def emit_loop():
+        publisher = await telemetry_feed.declare_publisher(node_runner)
         while True:
-            await telemetry_feed.emit(
-                node_runner,
-                sequence=1,
-                status="nominal",
-                readings=[1.0, 2.0, 3.0],
-                timestamp=12345.6,
+            await publisher.publish(
+                telemetry_feed.build_message(
+                    sequence=1,
+                    status="nominal",
+                    readings=[1.0, 2.0, 3.0],
+                    timestamp=12345.6,
+                )
             )
             await asyncio.sleep(0.1)
     return [asyncio.create_task(emit_loop())]

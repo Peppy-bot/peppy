@@ -11,6 +11,14 @@ use peppygen::{NodeBuilder, Parameters, Result};
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
+            // Declare the publisher once; every publish below is then lock-free.
+            let publisher = match joint_commands::declare_publisher(&node_runner).await {
+                Ok(publisher) => publisher,
+                Err(e) => {
+                    eprintln!("Failed to declare joint_commands publisher: {e}");
+                    return;
+                }
+            };
             loop {
                 let (producer, state) =
                     match arm_joint_states::on_next_message_received(&node_runner).await {
@@ -28,7 +36,9 @@ fn main() -> Result<()> {
 
                 // Compute the next target from the reported state, then command it.
                 let target = compute_next_target(&state.positions);
-                let _ = joint_commands::emit(&node_runner, target, 1.0).await;
+                if let Ok(payload) = joint_commands::build_message(target, 1.0) {
+                    let _ = publisher.publish(payload).await;
+                }
             }
         });
 

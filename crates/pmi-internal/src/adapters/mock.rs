@@ -854,8 +854,8 @@ mod tests {
 
     #[test]
     fn test_key_exprs_intersect_topic_publisher_vs_subscriber() {
-        // The exact wire shape that motivated bidirectional matching:
-        // `emit_topic_message` hard-codes `*` into caller-identity slots, while a
+        // The exact wire shape that motivated bidirectional matching: the topic
+        // publish path hard-codes `*` into caller-identity slots, while a
         // subscriber identifies itself with concrete core/instance values. Both
         // sides must intersect or topic delivery against the mock breaks.
         let publisher = "*/core_node/*/responder_inst/topic/clock/clock";

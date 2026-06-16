@@ -89,20 +89,15 @@ pub fn build_emitted_topic(
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
 
-    // Field params shared by build_message and emit (emit also takes node_runner).
+    // Field params for build_message.
     let field_params: Vec<String> = fields
         .iter()
         .map(|field| format!("{}: {}", field.name, field.type_str))
         .collect();
     let field_params_str = field_params.join(", ");
-    let field_names = fields
-        .iter()
-        .map(|field| field.name.clone())
-        .collect::<Vec<_>>()
-        .join(", ");
 
-    // Module-level topic constants, shared by build_message, declare_publisher,
-    // and emit.
+    // Module-level topic constants, shared by build_message and
+    // declare_publisher.
     builder.line(&format!("TOPIC_NAME = \"{}\"", topic.name));
     builder.line(&format!("QOS = {qos}"));
     builder.blank_line();
@@ -130,9 +125,9 @@ pub fn build_emitted_topic(
     builder.blank_line();
 
     // declare_publisher: take the central messenger lock ONCE and return a
-    // lock-free publisher whose publish(payload) never re-takes that lock. Use
-    // this for publish loops (a camera streaming frames, a sensor at rate),
-    // paired with build_message; use emit for one-shot publishes.
+    // lock-free publisher whose publish(payload) never re-takes that lock.
+    // Declare once, then publish per message (a camera streaming frames, a
+    // sensor at rate), paired with build_message.
     builder.line(
         "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
     );
@@ -145,27 +140,6 @@ pub fn build_emitted_topic(
     builder.line(&format!("{target_expr},"));
     builder.line("TOPIC_NAME,");
     builder.line("QOS,");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
-    builder.blank_line();
-
-    // emit: one-shot publish convenience. Re-takes the central messenger lock on
-    // every call, so prefer declare_publisher for loops.
-    let mut emit_params = vec![String::from("node_runner: peppylib.NodeRunner")];
-    emit_params.extend(field_params.iter().cloned());
-    let emit_params_str = emit_params.join(", ");
-    builder.line(&format!("async def emit({emit_params_str}):"));
-    builder.indent();
-    builder.line("await peppylib.TopicMessenger.emit(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line(&format!("{target_expr},"));
-    builder.line("TOPIC_NAME,");
-    builder.line("QOS,");
-    builder.line(&format!("build_message({field_names}),"));
     builder.dedent();
     builder.line(")");
     builder.dedent();

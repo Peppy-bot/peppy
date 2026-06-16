@@ -205,10 +205,12 @@ fn main() -> Result<()> {
 
         let node_runner_clone = node_runner.clone();
         tokio::spawn(async move {
+            let publisher = video_stream::declare_publisher(&node_runner_clone)
+                .await
+                .expect("declare video_stream publisher");
             let mut frame_id = 0u32;
             loop {
-                let _ = video_stream::emit(
-                    &node_runner_clone,
+                if let Ok(payload) = video_stream::build_message(
                     video_stream::MessageHeader {
                         stamp: std::time::SystemTime::now(),
                         frame_id,
@@ -217,8 +219,9 @@ fn main() -> Result<()> {
                     640,
                     480,
                     vec![1, 2, 3],
-                )
-                .await;
+                ) {
+                    let _ = publisher.publish(payload).await;
+                }
 
                 frame_id = frame_id.wrapping_add(1);
                 tokio::time::sleep(interval).await;

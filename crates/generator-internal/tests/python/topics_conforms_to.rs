@@ -2,7 +2,7 @@
 //! scenario, but verifying the Python generator emits the corresponding
 //! `peppygen/emitted_topics/{iface_name}/{iface_tag}/{topic}.py` files with
 //! the right `__init__.py` chains and the matching `iface_name` / `iface_tag`
-//! strings inside each emit call.
+//! strings inside each declare_publisher call.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
@@ -63,15 +63,15 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 /// Realsense_d435 scenario for the Python generator: one native
-/// `video_stream` emit plus three resolved conformed interfaces
+/// `video_stream` publisher plus three resolved conformed interfaces
 /// (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`) each shaped as
 /// `video_stream` with a distinguishing marker field. Verifies that:
 ///   1. Conformed artifacts nest under
 ///      `emitted_topics/{iface_name}/{iface_tag}/{topic}.py` while the native
 ///      artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
-///   3. Each leaf's emit body passes the matching sender target to the
-///      messenger: `peppylib.SenderTarget.interface(...)` for conformed
+///   3. Each leaf's declare_publisher body passes the matching sender target to
+///      the messenger: `peppylib.SenderTarget.interface(...)` for conformed
 ///      leaves and `peppylib.SenderTarget.node(...)` for the native leaf.
 ///   4. The per-interface marker fields land in their own files — proof the
 ///      four artifacts weren't cross-wired during generation.
@@ -140,8 +140,8 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         "depth_camera/__init__.py should import v1 and v2:\n{depth_init}",
     );
 
-    // Each leaf's emit body passes a matching `peppylib.SenderTarget` expression
-    // to the messenger. Native gets `SenderTarget.node(...)`; conformed leaves
+    // Each leaf's declare_publisher body passes a matching `peppylib.SenderTarget`
+    // expression to the messenger. Native gets `SenderTarget.node(...)`; conformed leaves
     // pass `SenderTarget.interface("<name>", "<tag>")` with the producer's segments.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
@@ -180,7 +180,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     // for the flat native path but two levels short for nested conformed
     // artifacts at `peppygen/<category>/<iface>/<tag>/<leaf>.py`, which made
     // `capnp.load()` raise silently inside the asyncio loop and hung the
-    // consumer. All four files (native + three conformed) should now emit
+    // consumer. All four files (native + three conformed) should now produce
     // the same loader form.
     let expected_loader = "files(\"peppygen\") / \"capnp\" /";
     for (label, src) in [
@@ -204,8 +204,8 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
 /// Exercises hyphen-to-underscore normalization in the `iface_tag` for the
 /// Python generator: a tag `v1-beta` becomes the directory `v1_beta` (Python
 /// identifiers can't carry hyphens) while the literal `"v1-beta"` is still
-/// embedded in the emit body — the messaging layer normalizes hyphens at the
-/// wire boundary, so the generator keeps the raw value.
+/// embedded in the declare_publisher body; the messaging layer normalizes hyphens
+/// at the wire boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_tag_lands_in_underscore_directory() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
