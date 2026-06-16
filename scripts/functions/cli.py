@@ -56,6 +56,14 @@ def prompt_yn(label: str, default_yes: bool = False) -> bool:
     return Confirm.ask(label, default=default_yes)
 
 
+def prompt_choice(label: str, choices: Sequence[str], default: str) -> str:
+    """Prompt the user to pick one of a fixed set of choices.
+
+    Returns the chosen value. Empty input returns the default.
+    """
+    return Prompt.ask(label, choices=list(choices), default=default)
+
+
 def validate_release_environment(
     required_commands: Sequence[str] = ("git", "cargo", "rustc"),
     *,

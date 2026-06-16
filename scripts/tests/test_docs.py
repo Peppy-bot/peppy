@@ -8,15 +8,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from functions.claude import CLAUDE_EFFORT, CLAUDE_MODEL
 from functions.cli import ReleaseError
 from functions.docs import (
     CheckResult,
     RequiredChange,
-    _CLAUDE_EFFORT,
-    _CLAUDE_MODEL,
     _is_code_path,
     _parse_check_response,
-    _strip_code_fence,
     _truncate_diff,
     check_docs,
     update_docs,
@@ -64,28 +62,6 @@ def test_truncate_diff_long_truncated() -> None:
     out = _truncate_diff(diff)
     assert len(out) < len(diff)
     assert "diff truncated" in out
-
-
-# --- _strip_code_fence ---
-
-
-def test_strip_code_fence_no_fence() -> None:
-    assert _strip_code_fence('{"up_to_date": true}') == '{"up_to_date": true}'
-
-
-def test_strip_code_fence_with_lang() -> None:
-    text = '```json\n{"up_to_date": true}\n```'
-    assert _strip_code_fence(text) == '{"up_to_date": true}'
-
-
-def test_strip_code_fence_bare() -> None:
-    text = '```\n{"up_to_date": true}\n```'
-    assert _strip_code_fence(text) == '{"up_to_date": true}'
-
-
-def test_strip_code_fence_with_surrounding_whitespace() -> None:
-    text = '  \n```json\n{"up_to_date": true}\n```\n  '
-    assert _strip_code_fence(text) == '{"up_to_date": true}'
 
 
 # --- _parse_check_response ---
@@ -181,7 +157,7 @@ def _mock_subprocess_run_for_claude(
 def test_check_docs_short_circuits_on_no_code_changes(tmp_path: Path) -> None:
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch("functions.docs.get_code_diff", return_value=("", [])), \
-         patch("functions.docs.subprocess.run") as mock_run:
+         patch("functions.claude.subprocess.run") as mock_run:
         result = check_docs("BASE", "HEAD")
     assert result.up_to_date is True
     assert result.required_changes == ()
@@ -197,7 +173,7 @@ def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
              return_value=("diff", ["crates/foo.rs"]),
          ), \
          patch(
-             "functions.docs.subprocess.run",
+             "functions.claude.subprocess.run",
              _mock_subprocess_run_for_claude(verdict),
          ):
         result = check_docs("BASE", "HEAD")
@@ -217,7 +193,7 @@ def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
          ), \
-         patch("functions.docs.subprocess.run", return_value=mock):
+         patch("functions.claude.subprocess.run", return_value=mock):
         with pytest.raises(ReleaseError, match="claude CLI failed"):
             check_docs("BASE", "HEAD")
 
@@ -232,7 +208,7 @@ def test_check_docs_raises_on_invalid_outer_json(tmp_path: Path) -> None:
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
          ), \
-         patch("functions.docs.subprocess.run", return_value=mock):
+         patch("functions.claude.subprocess.run", return_value=mock):
         with pytest.raises(ReleaseError, match="not return valid JSON"):
             check_docs("BASE", "HEAD")
 
@@ -240,7 +216,7 @@ def test_check_docs_raises_on_invalid_outer_json(tmp_path: Path) -> None:
 def test_update_docs_short_circuits_on_no_code_changes(tmp_path: Path) -> None:
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch("functions.docs.get_code_diff", return_value=("", [])), \
-         patch("functions.docs.subprocess.run") as mock_run:
+         patch("functions.claude.subprocess.run") as mock_run:
         summary = update_docs("BASE", "HEAD")
     assert "nothing to update" in summary
     mock_run.assert_not_called()
@@ -262,7 +238,7 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> Non
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
          ), \
-         patch("functions.docs.subprocess.run", side_effect=_run):
+         patch("functions.claude.subprocess.run", side_effect=_run):
         summary = update_docs("BASE", "HEAD")
 
     assert summary == "edited 3 files"
@@ -299,7 +275,7 @@ def _capture_claude_cmd(
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
          ), \
-         patch("functions.docs.subprocess.run", side_effect=_run):
+         patch("functions.claude.subprocess.run", side_effect=_run):
         fn(base, head)
     return captured["cmd"]
 
@@ -309,21 +285,13 @@ def test_check_docs_pins_model_and_effort(tmp_path: Path) -> None:
         check_docs, "BASE", "HEAD", tmp_path,
         '{"up_to_date": true, "required_changes": []}',
     )
-    assert _flag_value(cmd, "--model") == _CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == _CLAUDE_EFFORT
+    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
     cmd = _capture_claude_cmd(
         update_docs, "BASE", "HEAD", tmp_path, "edited 1 file",
     )
-    assert _flag_value(cmd, "--model") == _CLAUDE_MODEL
-    assert _flag_value(cmd, "--effort") == _CLAUDE_EFFORT
-
-
-def test_claude_model_is_pinned_to_exact_id() -> None:
-    # A bare alias ("opus") would follow the moving "latest" pointer and
-    # defeat the reproducibility pin; require a full versioned id.
-    assert _CLAUDE_MODEL.startswith("claude-")
-    assert _CLAUDE_MODEL not in ("opus", "sonnet", "haiku")
-    assert _CLAUDE_EFFORT == "max"
+    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT

@@ -83,12 +83,15 @@ def github_api(
     *,
     json_data: dict[str, Any] | None = None,
     accept: str = _DEFAULT_ACCEPT,
-) -> dict[str, Any] | list[Any]:
+    none_on_404: bool = False,
+) -> dict[str, Any] | list[Any] | None:
     """Make an authenticated GitHub API request.
 
     Validates that the response is JSON, and returns the parsed body.
     For 204/205 responses with empty body, returns an empty dict.
-    Raises ReleaseError on HTTP errors, non-JSON responses, or empty bodies.
+    When none_on_404 is True, a 404 response returns None instead of raising
+    (used for "latest release" lookups, where 404 means "no release yet").
+    Raises ReleaseError on other HTTP errors, non-JSON responses, or empty bodies.
     """
     headers = {"Accept": accept}
     try:
@@ -99,6 +102,8 @@ def github_api(
 
         response.raise_for_status()
     except httpx.HTTPStatusError as e:
+        if none_on_404 and e.response.status_code == 404:
+            return None
         body_preview = e.response.text[:2000] if e.response.text else "(empty)"
         resp_headers = _format_response_headers(e.response.headers)
         raise ReleaseError(
@@ -328,7 +333,70 @@ def publish_release(
     client: httpx.Client,
     release_id: int,
     slug: RepoSlug,
-) -> dict[str, Any] | list[Any]:
+) -> dict[str, Any] | list[Any] | None:
     """Publish a draft release by setting draft=False."""
     url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
     return github_api(client, "PATCH", url, json_data={"draft": False})
+
+
+def get_latest_release(
+    client: httpx.Client,
+    slug: RepoSlug,
+) -> dict[str, Any] | None:
+    """Return the latest published release JSON, or None if there are none.
+
+    GitHub's releases/latest endpoint excludes drafts and prereleases and
+    returns 404 when the repository has no published release yet.
+    """
+    result = github_api(
+        client,
+        "GET",
+        f"https://api.github.com/repos/{slug.full}/releases/latest",
+        none_on_404=True,
+    )
+    if result is None:
+        return None
+    if not isinstance(result, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for latest release (expected JSON object)"
+        )
+    return result
+
+
+def generate_release_notes_preview(
+    client: httpx.Client,
+    slug: RepoSlug,
+    *,
+    tag_name: str,
+    target_commitish: str,
+    previous_tag_name: str | None = None,
+) -> str:
+    """Return GitHub's auto-generated "What's Changed" Markdown for a release.
+
+    Uses the generate-notes endpoint, which computes the changelog from the
+    pull requests merged between previous_tag_name (or the prior release when
+    omitted) and the given tag, without creating any release.
+    """
+    payload: dict[str, Any] = {
+        "tag_name": tag_name,
+        "target_commitish": target_commitish,
+    }
+    if previous_tag_name:
+        payload["previous_tag_name"] = previous_tag_name
+
+    result = github_api(
+        client,
+        "POST",
+        f"https://api.github.com/repos/{slug.full}/releases/generate-notes",
+        json_data=payload,
+    )
+    if not isinstance(result, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for generate-notes (expected JSON object)"
+        )
+    body = result.get("body")
+    if not isinstance(body, str):
+        raise ReleaseError(
+            f"generate-notes response missing 'body' string: {result!r}"
+        )
+    return body

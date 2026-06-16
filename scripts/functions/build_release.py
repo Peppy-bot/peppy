@@ -23,6 +23,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import httpx
+
 from .build import BuildArtifact, build_and_package
 from .cli import (
     ReleaseError,
@@ -30,13 +32,17 @@ from .cli import (
     get_targets_for_platform,
     is_macos_arm64,
     prompt,
+    prompt_choice,
     prompt_yn,
     run_with_error_handling,
     validate_release_environment,
 )
 from .github import (
+    RepoSlug,
     build_github_client,
     delete_release,
+    generate_release_notes_preview,
+    get_latest_release,
     github_api,
     github_repo_slug,
     parse_release_response,
@@ -50,6 +56,7 @@ from .release_notes import (
     fetch_release_body_html,
     generate_release_notes_file,
 )
+from .release_summary import ReleaseContent, generate_release_content
 from .docker import main as build_base_images_main
 from .repo import get_current_branch, get_repo_root, has_uncommitted_changes
 
@@ -82,47 +89,163 @@ def _open_editor(path: Path) -> None:
         raise ReleaseError(f"editor '{editor}' exited with code {result.returncode}")
 
 
-def _get_release_notes_via_editor() -> str:
-    """Open an editor for manual release notes, strip comment lines, return content."""
+_EDIT_HEADER = (
+    "# Review and edit the release content below.\n"
+    "# Lines starting with '#' are ignored.\n"
+    "# Keep the 'Title:' and 'Description:' labels on their own lines,\n"
+    "# and the 'Notes:' label on its own line above the Markdown body.\n"
+)
+
+
+def _print_release_content(content: ReleaseContent) -> None:
+    """Print the proposed release content to the console for review."""
+    console.print()
+    console.print("[bold]Proposed release content[/bold]")
+    console.print(f"  [bold]Title:[/bold] {content.title}")
+    console.print(f"  [bold]Description:[/bold] {content.description}")
+    console.print("  [bold]Notes:[/bold]")
+    for line in content.notes.splitlines():
+        console.print(f"    {line}")
+    console.print()
+
+
+def _render_editable(content: ReleaseContent) -> str:
+    """Render release content into the labeled text format opened in the editor."""
+    return (
+        f"{_EDIT_HEADER}"
+        f"Title: {content.title}\n"
+        f"Description: {content.description}\n"
+        f"Notes:\n"
+        f"{content.notes}\n"
+    )
+
+
+def _parse_editable(text: str) -> ReleaseContent:
+    """Parse the labeled editor text back into a ReleaseContent.
+
+    The '#' comment convention applies only to the header region (above the
+    'Notes:' label); everything below it is the body verbatim, because Markdown
+    headings also start with '#'. Raises ReleaseError if a label is missing or
+    a field is empty.
+    """
+    title: str | None = None
+    description: str | None = None
+    notes_lines: list[str] | None = None
+    for line in text.splitlines():
+        if notes_lines is not None:
+            notes_lines.append(line)
+        elif line.startswith("#"):
+            continue
+        elif title is None and line.startswith("Title:"):
+            title = line[len("Title:") :].strip()
+        elif description is None and line.startswith("Description:"):
+            description = line[len("Description:") :].strip()
+        elif line.strip() == "Notes:":
+            notes_lines = []
+
+    if title is None or description is None or notes_lines is None:
+        raise ReleaseError(
+            "edited content must keep the 'Title:', 'Description:' and 'Notes:' labels"
+        )
+    notes = "\n".join(notes_lines).strip()
+    if not title or not description or not notes:
+        raise ReleaseError("edited content has an empty title, description, or notes")
+    return ReleaseContent(title=title, description=description, notes=notes)
+
+
+def _edit_release_content(content: ReleaseContent) -> ReleaseContent:
+    """Open the editor seeded with the content and parse the result.
+
+    Returns the edited content, or the unchanged content if the edited text
+    cannot be parsed (the caller re-prompts so the user can try again).
+    """
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".md",
-        prefix="peppy_release_notes_",
+        prefix="peppy_release_",
         delete=False,
     ) as f:
-        f.write("# Write release notes below. Lines starting with # will be ignored.\n")
-        f.write("# Save and close the editor when you're done.\n")
-        f.write("\n")
+        f.write(_render_editable(content))
         notes_path = Path(f.name)
 
     try:
         _open_editor(notes_path)
         text = notes_path.read_text(encoding="utf-8")
-        lines = [line for line in text.splitlines() if not line.startswith("#")]
-        return "\n".join(lines).strip() + "\n" if any(lines) else ""
     finally:
         notes_path.unlink(missing_ok=True)
+
+    try:
+        return _parse_editable(text)
+    except ReleaseError as e:
+        console.print(f"[yellow]Keeping previous content: {e}[/yellow]")
+        return content
+
+
+def _confirm_release_content(content: ReleaseContent) -> ReleaseContent:
+    """Show the generated content and let the user accept, edit, or abort."""
+    while True:
+        _print_release_content(content)
+        choice = prompt_choice(
+            "Use these release notes? [y]es / [e]dit / [a]bort",
+            choices=("y", "e", "a"),
+            default="y",
+        )
+        if choice == "y":
+            return content
+        if choice == "a":
+            raise ReleaseError("release aborted by user")
+        content = _edit_release_content(content)
+
+
+def _prepare_release_content(
+    client: httpx.Client,
+    slug: RepoSlug,
+    tag: str,
+    target_commitish: str,
+    repo_root: Path,
+) -> ReleaseContent:
+    """Derive the release content from the changes since the last release.
+
+    Fetches GitHub's changelog (pull requests since the previous published
+    release), asks Claude to draft the title/description/notes, then lets the
+    user review, edit, or abort before anything is built or published.
+    """
+    latest = get_latest_release(client, slug)
+    previous_tag = latest.get("tag_name") if latest else None
+    if previous_tag:
+        console.print(f"Comparing against last release [bold]{previous_tag}[/bold]...")
+    else:
+        console.print(
+            "[yellow]No previous published release found; "
+            "summarizing the full history.[/yellow]"
+        )
+
+    changelog = generate_release_notes_preview(
+        client,
+        slug,
+        tag_name=tag,
+        target_commitish=target_commitish,
+        previous_tag_name=previous_tag,
+    )
+    console.print("Asking Claude to write the release notes...")
+    content = generate_release_content(changelog, tag, repo_root)
+    return _confirm_release_content(content)
 
 
 def _build_release_payload(
     tag: str,
     title: str,
     target_commitish: str,
-    generate_notes: bool,
-    notes_body: str | None,
+    notes_body: str,
 ) -> dict:
     """Build the JSON payload for POST /repos/{owner}/{repo}/releases."""
-    data: dict = {
+    return {
         "tag_name": tag,
         "name": title,
         "target_commitish": target_commitish,
         "draft": True,
+        "body": notes_body,
     }
-    if generate_notes:
-        data["generate_release_notes"] = True
-    else:
-        data["body"] = notes_body or ""
-    return data
 
 
 def _build_all_targets(
@@ -194,7 +317,9 @@ def _run_full() -> None:
             "macos-aarch64, linux-x86_64, linux-aarch64)"
         )
 
-    token = validate_release_environment()
+    token = validate_release_environment(
+        required_commands=("git", "cargo", "rustc", "claude")
+    )
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
@@ -212,38 +337,27 @@ def _run_full() -> None:
         if not prompt_yn("Working tree has uncommitted changes. Continue?"):
             sys.exit(1)
 
-    # Interactive prompts
+    # The tag is the only value typed by hand; Claude writes the rest.
     tag = prompt("Tag of the release (example: v0.0.1)")
     if not tag:
         raise ReleaseError("release tag cannot be empty")
 
-    title = prompt("Release title")
-    if not title:
-        raise ReleaseError("release title cannot be empty")
-
-    description = prompt("Docs release description (shows on changelog page)", title)
-    if not description:
-        raise ReleaseError("docs release description cannot be empty")
-
-    # Release notes method
-    generate_notes = prompt_yn(
-        "Generate release notes automatically?", default_yes=True
+    # Resolve the repo slug and client up front so the release notes can be
+    # drafted from the changes since the last release, and reviewed, before
+    # the long cross-compile starts.
+    slug = github_repo_slug()
+    client = build_github_client(token)
+    content = _prepare_release_content(
+        client, slug, tag, target_commitish, repo_root
     )
-    notes_body: str | None = None
-    if not generate_notes:
-        notes_body = _get_release_notes_via_editor()
 
     # Build and package all targets
     targets = get_targets_for_platform()
     artifacts = _build_all_targets(tag, targets, repo_root)
 
-    # Resolve repo slug and create client
-    slug = github_repo_slug()
-    client = build_github_client(token)
-
     # Create a draft release (invisible until all uploads succeed)
     payload = _build_release_payload(
-        tag, title, target_commitish, generate_notes, notes_body
+        tag, content.title, target_commitish, content.notes
     )
     console.print(f"Creating draft release [bold]{slug.full}@{tag}[/bold]...")
     release_response = github_api(
@@ -288,7 +402,7 @@ def _run_full() -> None:
 
     notes_input = ReleaseNotesInput(
         tag=tag,
-        description=description,
+        description=content.description,
         release_details=release_details,
         body_html=body_html,
     )

@@ -20,6 +20,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .claude import run_claude, strip_code_fence
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
 from .repo import get_repo_root
 
@@ -36,24 +37,6 @@ _EXCLUDE_PREFIXES: tuple[str, ...] = (
 )
 
 _MAX_DIFF_BYTES = 400_000
-
-# Pinned for reproducibility. The prompt and its inputs (the base..head diff)
-# are already deterministic for a given pair of refs, so the only sources of
-# run-to-run drift are *which* model answers and at *what* effort. Pinning both
-# removes that systematic drift: the same code change feeds the same model at
-# the same effort every time, instead of silently changing behaviour whenever
-# the CLI's default model or effort is bumped.
-#
-# This is not bit-for-bit determinism — that is unattainable with an LLM
-# (sampling is never fully reproducible and temperature is not even
-# configurable on Opus 4.7+). The pipeline is built to tolerate the residual
-# variance: the check step is advisory (continue-on-error) and a stale verdict
-# only changes whether a follow-up docs PR is opened, never a hard CI failure.
-#
-# Use the full model id (not the "opus" alias) so the pin does not follow the
-# moving "latest" pointer. "max" is the highest effort tier ("ultracode").
-_CLAUDE_MODEL = "claude-opus-4-8"
-_CLAUDE_EFFORT = "max"
 
 
 @dataclass(frozen=True)
@@ -164,65 +147,8 @@ Unified diff:
 """
 
 
-def _run_claude(
-    prompt: str,
-    *,
-    allowed_tools: str,
-    permission_mode: str,
-    cwd: Path,
-) -> str:
-    """Run ``claude -p`` and return the final assistant text."""
-    # Prompt is piped via stdin rather than passed as an argv element:
-    # diffs can approach _MAX_DIFF_BYTES (400KB), which exceeds ARG_MAX
-    # on Linux (~128KB) and triggers E2BIG.
-    cmd = [
-        "claude",
-        "-p",
-        "--model",
-        _CLAUDE_MODEL,
-        "--effort",
-        _CLAUDE_EFFORT,
-        "--output-format",
-        "json",
-        "--permission-mode",
-        permission_mode,
-        "--allowed-tools",
-        allowed_tools,
-    ]
-    result = subprocess.run(
-        cmd, cwd=cwd, input=prompt, capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"claude CLI failed (exit {result.returncode}): "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        raise ReleaseError(
-            f"claude did not return valid JSON ({e}); stdout={result.stdout[:500]!r}"
-        )
-    final_text = payload.get("result")
-    if not isinstance(final_text, str):
-        raise ReleaseError(
-            f"claude response missing 'result' string: {payload!r}"
-        )
-    return final_text
-
-
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    if not text.startswith("```"):
-        return text
-    lines = text.splitlines()[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
-
-
 def _parse_check_response(text: str) -> CheckResult:
-    stripped = _strip_code_fence(text)
+    stripped = strip_code_fence(text)
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError as e:
@@ -267,7 +193,7 @@ def check_docs(base: str, head: str) -> CheckResult:
         paths="\n".join(paths),
         diff=_truncate_diff(diff),
     )
-    text = _run_claude(
+    text = run_claude(
         prompt,
         allowed_tools="Read Grep Glob",
         permission_mode="bypassPermissions",
@@ -289,7 +215,7 @@ def update_docs(base: str, head: str) -> str:
         paths="\n".join(paths),
         diff=_truncate_diff(diff),
     )
-    return _run_claude(
+    return run_claude(
         prompt,
         allowed_tools="Read Edit Write Grep Glob",
         permission_mode="acceptEdits",

@@ -11,55 +11,42 @@ from functions.build import BuildArtifact
 from functions.build_release import (
     _build_all_targets,
     _build_release_payload,
+    _confirm_release_content,
+    _parse_editable,
+    _prepare_release_content,
+    _render_editable,
     _run_full,
     _run_local,
 )
 from functions.cli import ReleaseError
+from functions.release_summary import ReleaseContent
 
 
-def test_build_release_payload_auto_generated_notes() -> None:
-    payload = _build_release_payload(
-        tag="v0.1.0",
-        title="Release v0.1.0",
-        target_commitish="main",
-        generate_notes=True,
-        notes_body=None,
-    )
-    assert payload == {
-        "tag_name": "v0.1.0",
-        "name": "Release v0.1.0",
-        "target_commitish": "main",
-        "draft": True,
-        "generate_release_notes": True,
-    }
-
-
-def test_build_release_payload_manual_notes() -> None:
+def test_build_release_payload_includes_body_and_draft() -> None:
     payload = _build_release_payload(
         tag="v0.2.0",
-        title="Release v0.2.0",
+        title="Topics API hardening",
         target_commitish="main",
-        generate_notes=False,
-        notes_body="## Changes\n- Fixed bug\n",
+        notes_body="## What's Changed\n- Fixed bug\n",
     )
     assert payload == {
         "tag_name": "v0.2.0",
-        "name": "Release v0.2.0",
+        "name": "Topics API hardening",
         "target_commitish": "main",
         "draft": True,
-        "body": "## Changes\n- Fixed bug\n",
+        "body": "## What's Changed\n- Fixed bug\n",
     }
 
 
-def test_build_release_payload_empty_notes_body() -> None:
+def test_build_release_payload_is_always_a_draft() -> None:
+    # The release is created as a draft and only published after every asset
+    # uploads, so the payload must never request a non-draft release.
     payload = _build_release_payload(
         tag="v0.3.0",
         title="Release",
         target_commitish="develop",
-        generate_notes=False,
-        notes_body=None,
+        notes_body="notes",
     )
-    assert payload["body"] == ""
     assert payload["draft"] is True
 
 
@@ -186,6 +173,7 @@ def _setup_run_full_mocks(
     mock_repo_root: MagicMock,
     mock_prompt: MagicMock,
     mock_prompt_yn: MagicMock,
+    mock_prepare: MagicMock,
     mock_targets: MagicMock,
     mock_build_all: MagicMock,
     mock_slug: MagicMock,
@@ -197,8 +185,14 @@ def _setup_run_full_mocks(
     from functions.github import ReleaseInfo, RepoSlug
 
     mock_repo_root.return_value = tmp_path
-    mock_prompt.side_effect = ["v0.1.0", "Release v0.1.0", "First release"]
+    # The tag is the only typed prompt; Claude-drafted content is mocked.
+    mock_prompt.return_value = "v0.1.0"
     mock_prompt_yn.return_value = True
+    mock_prepare.return_value = ReleaseContent(
+        title="Topics API hardening",
+        description="Hardened the topics API against deadlocks.",
+        notes="## What's Changed\n- Fixed topics public API (#265)\n",
+    )
     mock_targets.return_value = [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
@@ -223,6 +217,7 @@ def _setup_run_full_mocks(
     )
 
 
+@patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.generate_release_notes_file")
 @patch("functions.build_release.fetch_release_body_html", return_value="<p>notes</p>")
 @patch("functions.build_release.publish_release")
@@ -260,6 +255,7 @@ def test_run_full_uploads_all_artifacts(
     mock_publish: MagicMock,
     mock_fetch_html: MagicMock,
     mock_gen_notes: MagicMock,
+    mock_prepare: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -268,6 +264,7 @@ def test_run_full_uploads_all_artifacts(
         mock_repo_root=mock_repo_root,
         mock_prompt=mock_prompt,
         mock_prompt_yn=mock_prompt_yn,
+        mock_prepare=mock_prepare,
         mock_targets=mock_targets,
         mock_build_all=mock_build_all,
         mock_slug=mock_slug,
@@ -282,6 +279,10 @@ def test_run_full_uploads_all_artifacts(
     assert mock_upload.call_count == 3
     mock_publish.assert_called_once_with(mock_client.return_value, 1, mock_slug.return_value)
     mock_gen_notes.assert_called_once()
+    # The draft is created with Claude's title and notes body.
+    create_payload = mock_api.call_args_list[0].kwargs["json_data"]
+    assert create_payload["name"] == "Topics API hardening"
+    assert create_payload["body"] == mock_prepare.return_value.notes
 
     # Verify the release is created as a draft
     create_call = mock_api.call_args_list[0]
@@ -294,6 +295,7 @@ def test_run_full_uploads_all_artifacts(
     assert "untagged" not in captured.err
 
 
+@patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.delete_release")
 @patch("functions.build_release.publish_release")
 @patch("functions.build_release.replace_and_upload_asset")
@@ -329,6 +331,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_upload: MagicMock,
     mock_publish: MagicMock,
     mock_delete_release: MagicMock,
+    mock_prepare: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -336,6 +339,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
         mock_repo_root=mock_repo_root,
         mock_prompt=mock_prompt,
         mock_prompt_yn=mock_prompt_yn,
+        mock_prepare=mock_prepare,
         mock_targets=mock_targets,
         mock_build_all=mock_build_all,
         mock_slug=mock_slug,
@@ -354,6 +358,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_publish.assert_not_called()
 
 
+@patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.delete_release")
 @patch("functions.build_release.publish_release")
 @patch("functions.build_release.replace_and_upload_asset")
@@ -389,6 +394,7 @@ def test_run_full_warns_on_cleanup_failure(
     mock_upload: MagicMock,
     mock_publish: MagicMock,
     mock_delete_release: MagicMock,
+    mock_prepare: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -396,6 +402,7 @@ def test_run_full_warns_on_cleanup_failure(
         mock_repo_root=mock_repo_root,
         mock_prompt=mock_prompt,
         mock_prompt_yn=mock_prompt_yn,
+        mock_prepare=mock_prepare,
         mock_targets=mock_targets,
         mock_build_all=mock_build_all,
         mock_slug=mock_slug,
@@ -412,3 +419,127 @@ def test_run_full_warns_on_cleanup_failure(
 
     mock_delete_release.assert_called_once()
     mock_publish.assert_not_called()
+
+
+# --- release content editing ---
+
+
+def test_parse_editable_round_trips_rendered_content() -> None:
+    content = ReleaseContent(
+        title="Topics API hardening",
+        description="Hardened the topics API against deadlocks.",
+        notes="## What's Changed\n- Fixed topics public API (#265)",
+    )
+    assert _parse_editable(_render_editable(content)) == content
+
+
+def test_parse_editable_strips_comment_lines() -> None:
+    text = (
+        "# this comment is ignored\n"
+        "Title: T\n"
+        "Description: D\n"
+        "Notes:\n"
+        "body line 1\n"
+        "body line 2\n"
+    )
+    assert _parse_editable(text) == ReleaseContent(
+        title="T", description="D", notes="body line 1\nbody line 2"
+    )
+
+
+def test_parse_editable_missing_label_raises() -> None:
+    # No 'Description:' label.
+    text = "Title: T\nNotes:\nbody\n"
+    with pytest.raises(ReleaseError, match="must keep the 'Title:'"):
+        _parse_editable(text)
+
+
+def test_parse_editable_empty_field_raises() -> None:
+    text = "Title: T\nDescription:\nNotes:\nbody\n"
+    with pytest.raises(ReleaseError, match="empty title, description, or notes"):
+        _parse_editable(text)
+
+
+def test_confirm_release_content_accepts() -> None:
+    content = ReleaseContent("T", "D", "N")
+    with patch("functions.build_release.prompt_choice", return_value="y"):
+        assert _confirm_release_content(content) is content
+
+
+def test_confirm_release_content_aborts() -> None:
+    content = ReleaseContent("T", "D", "N")
+    with patch("functions.build_release.prompt_choice", return_value="a"):
+        with pytest.raises(ReleaseError, match="aborted by user"):
+            _confirm_release_content(content)
+
+
+def test_confirm_release_content_edits_then_accepts() -> None:
+    original = ReleaseContent("T", "D", "N")
+    edited = ReleaseContent("T2", "D2", "N2")
+    with patch(
+        "functions.build_release.prompt_choice", side_effect=["e", "y"]
+    ), patch(
+        "functions.build_release._edit_release_content", return_value=edited
+    ) as mock_edit:
+        result = _confirm_release_content(original)
+    assert result == edited
+    mock_edit.assert_called_once_with(original)
+
+
+# --- _prepare_release_content ---
+
+
+@patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
+@patch("functions.build_release.generate_release_content")
+@patch("functions.build_release.generate_release_notes_preview")
+@patch("functions.build_release.get_latest_release")
+def test_prepare_release_content_uses_previous_release_tag(
+    mock_latest: MagicMock,
+    mock_preview: MagicMock,
+    mock_generate: MagicMock,
+    mock_confirm: MagicMock,
+    tmp_path: Path,
+) -> None:
+    from functions.github import RepoSlug
+
+    mock_latest.return_value = {"tag_name": "v0.11.1"}
+    mock_preview.return_value = "## What's Changed\n- x"
+    content = ReleaseContent("T", "D", "N")
+    mock_generate.return_value = content
+    client = MagicMock()
+    slug = RepoSlug(owner="o", repo="r")
+
+    result = _prepare_release_content(client, slug, "v0.12.0", "main", tmp_path)
+
+    assert result == content
+    mock_preview.assert_called_once_with(
+        client,
+        slug,
+        tag_name="v0.12.0",
+        target_commitish="main",
+        previous_tag_name="v0.11.1",
+    )
+    mock_generate.assert_called_once_with("## What's Changed\n- x", "v0.12.0", tmp_path)
+    mock_confirm.assert_called_once_with(content)
+
+
+@patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
+@patch("functions.build_release.generate_release_content")
+@patch("functions.build_release.generate_release_notes_preview")
+@patch("functions.build_release.get_latest_release", return_value=None)
+def test_prepare_release_content_handles_no_previous_release(
+    mock_latest: MagicMock,
+    mock_preview: MagicMock,
+    mock_generate: MagicMock,
+    mock_confirm: MagicMock,
+    tmp_path: Path,
+) -> None:
+    from functions.github import RepoSlug
+
+    mock_preview.return_value = "## What's Changed\n- x"
+    mock_generate.return_value = ReleaseContent("T", "D", "N")
+
+    _prepare_release_content(MagicMock(), RepoSlug("o", "r"), "v0.1.0", "main", tmp_path)
+
+    # With no prior release, previous_tag_name is None and GitHub picks the base.
+    assert mock_preview.call_args.kwargs["previous_tag_name"] is None
