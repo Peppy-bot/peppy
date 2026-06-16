@@ -34,12 +34,17 @@ fn main() -> Result<()> {
                 );
 
                 // Drive the joints, then report the resulting state.
-                if let Ok(payload) = joint_states::build_message(
+                match joint_states::build_message(
                     command.target_positions,
                     [0.0, 0.0, 0.0],
                     std::time::SystemTime::now(),
                 ) {
-                    let _ = publisher.publish(payload).await;
+                    Ok(payload) => {
+                        if let Err(e) = publisher.publish(payload).await {
+                            eprintln!("Failed to publish joint state: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to build joint_states message: {e}"),
                 }
             }
         });

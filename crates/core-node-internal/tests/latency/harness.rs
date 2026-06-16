@@ -880,7 +880,9 @@ fn main() -> Result<()> {
                 .await
                 .expect("declare pong publisher");
                 while let Some(msg) = sub.on_next_message().await {
-                    let _ = pong.publish(msg.payload().clone()).await;
+                    pong.publish(msg.payload().clone())
+                        .await
+                        .expect("publish pong");
                 }
             });
         }

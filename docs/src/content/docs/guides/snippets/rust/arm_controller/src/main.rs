@@ -36,8 +36,13 @@ fn main() -> Result<()> {
 
                 // Compute the next target from the reported state, then command it.
                 let target = compute_next_target(&state.positions);
-                if let Ok(payload) = joint_commands::build_message(target, 1.0) {
-                    let _ = publisher.publish(payload).await;
+                match joint_commands::build_message(target, 1.0) {
+                    Ok(payload) => {
+                        if let Err(e) = publisher.publish(payload).await {
+                            eprintln!("Failed to publish joint command: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to build joint_commands message: {e}"),
                 }
             }
         });

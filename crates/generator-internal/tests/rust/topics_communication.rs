@@ -210,7 +210,7 @@ fn main() -> Result<()> {
                 .expect("declare video_stream publisher");
             let mut frame_id = 0u32;
             loop {
-                if let Ok(payload) = video_stream::build_message(
+                let payload = video_stream::build_message(
                     video_stream::MessageHeader {
                         stamp: std::time::SystemTime::now(),
                         frame_id,
@@ -219,9 +219,12 @@ fn main() -> Result<()> {
                     640,
                     480,
                     vec![1, 2, 3],
-                ) {
-                    let _ = publisher.publish(payload).await;
-                }
+                )
+                .expect("build video_stream message");
+                publisher
+                    .publish(payload)
+                    .await
+                    .expect("publish video_stream message");
 
                 frame_id = frame_id.wrapping_add(1);
                 tokio::time::sleep(interval).await;

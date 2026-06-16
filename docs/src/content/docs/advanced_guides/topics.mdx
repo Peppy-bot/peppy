@@ -129,9 +129,8 @@ For a topic with a simple message format:
 use peppygen::emitted_topics::message_stream;
 
 let publisher = message_stream::declare_publisher(&node_runner).await?;
-publisher
-    .publish(message_stream::build_message("hello world".to_owned()))
-    .await?;
+let payload = message_stream::build_message("hello world".to_owned())?;
+publisher.publish(payload).await?;
 ```
 
 ## Consuming a topic
