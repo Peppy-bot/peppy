@@ -977,6 +977,27 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
+    /// Run with `--cleanenv`: the container does NOT inherit the host (daemon)
+    /// process environment. Only the explicit `--env` vars set on this command
+    /// and the image's own `%environment` are visible inside.
+    ///
+    /// Two reasons a spawned node wants this. First, hygiene and security: the
+    /// daemon's environment can hold secrets (ssh-agent sockets, tokens) and
+    /// host-specific noise that have no business inside a node. Second,
+    /// robustness: without it, apptainer folds the inherited environment into a
+    /// generated `/.inject-apptainer-env.sh` that the container sources at
+    /// startup, and a single host var whose name is not a shell identifier (for
+    /// example a bash exported function `BASH_FUNC_x%%`) makes that `source`
+    /// abort with "invalid var name", silently dropping every later var,
+    /// including `PEPPY_RUNTIME_CONFIG`. The node then falls back to its
+    /// standalone defaults instead of the daemon-provided parameters. Passing
+    /// the node's environment explicitly via `--env` (which still applies under
+    /// `--cleanenv`) keeps the curated set while removing both hazards.
+    pub fn clean_env(mut self) -> Self {
+        self.flags.push("--cleanenv".to_string());
+        self
+    }
+
     /// Add extra arguments passed to `limactl shell` (before the `--` separator).
     ///
     /// These are only effective when running under the Lima backend (macOS).

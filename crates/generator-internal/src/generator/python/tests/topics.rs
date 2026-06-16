@@ -185,19 +185,23 @@ fn emit_topic() {
             "capnp_msg.width = width",
             "capnp_msg.height = height",
             "capnp_msg.frame = frame",
-            "payload = capnp_msg.to_bytes()",
+            "return capnp_msg.to_bytes()",
         ],
     );
 
-    // Topic metadata and messenger call
+    // Pure serializer, declared (lock-free) publisher, and one-shot emit are all
+    // generated; emit delegates to build_message so the serialization is not
+    // duplicated.
     assert_contains_all(
         &rendered,
         &[
             "TOPIC_NAME = \"video_stream\"",
-            "peppylib.QoSProfile.SensorData",
+            "QOS = peppylib.QoSProfile.SensorData",
+            "def build_message(",
+            "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+            "peppylib.TopicMessenger.declare_publisher(",
             "peppylib.TopicMessenger.emit(",
-            "TOPIC_NAME,",
-            "payload,",
+            "build_message(header, encoding, width, height, frame),",
         ],
     );
 }
