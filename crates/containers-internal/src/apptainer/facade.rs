@@ -909,41 +909,60 @@ impl GuestKillChild for Child {
     }
 }
 
+/// Wait for `child` to exit, bounded by `timeout`, polling every `poll_interval`.
+///
+/// Returns `Ok(Some(status))` when the child exits before the deadline, or
+/// `Ok(None)` when the deadline elapses first (the child is killed and reaped
+/// before returning). `clock` and `sleep` are injected so the decision logic is
+/// unit-tested on a virtual clock with no real sleeping (production passes
+/// `Instant::now` and `thread::sleep`). Shared by [`await_guest_kill`] and the
+/// bounded VM-liveness probes in [`super::lima`], so every `limactl` invocation
+/// on a stop/teardown path carries the same kill-on-deadline guarantee.
+pub(crate) fn wait_for_child_bounded(
+    child: &mut impl GuestKillChild,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut clock: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Result<Option<ExitStatus>> {
+    let deadline = clock() + timeout;
+    loop {
+        if let Some(status) = child.poll_exit()? {
+            return Ok(Some(status));
+        }
+        if clock() >= deadline {
+            child.kill_and_reap();
+            return Ok(None);
+        }
+        sleep(poll_interval);
+    }
+}
+
 /// Wait for the guest-kill `limactl` child to exit, bounded by `timeout`.
 ///
-/// Polls `child` every `poll_interval` until it exits or `clock` passes the
-/// deadline. A clean exit returns `Ok(())`; a non-zero exit returns the
-/// limactl-failure error; a timeout kills and reaps the child and returns the
-/// timeout error. `clock` and `sleep` are injected so tests drive a virtual clock
-/// with no real sleeping (production passes `Instant::now` and `thread::sleep`).
+/// A clean exit returns `Ok(())`; a non-zero exit returns the limactl-failure
+/// error; a timeout kills and reaps the child and returns the timeout error. The
+/// bounded-wait mechanics live in [`wait_for_child_bounded`]; this only maps its
+/// outcome to the guest-kill result.
 pub(crate) fn await_guest_kill(
     child: &mut impl GuestKillChild,
     guest_pgid: &Path,
     timeout: Duration,
     poll_interval: Duration,
-    mut clock: impl FnMut() -> Instant,
-    mut sleep: impl FnMut(Duration),
+    clock: impl FnMut() -> Instant,
+    sleep: impl FnMut(Duration),
 ) -> Result<()> {
-    let deadline = clock() + timeout;
-    loop {
-        if let Some(status) = child.poll_exit()? {
-            if status.success() {
-                return Ok(());
-            }
-            return Err(Error::LimaInstanceError(format!(
-                "failed to kill guest process group (pgid file {}): limactl exited with {}",
-                guest_pgid.display(),
-                status
-            )));
-        }
-        if clock() >= deadline {
-            child.kill_and_reap();
-            return Err(Error::LimaInstanceError(format!(
-                "timed out after {timeout:?} killing guest process group (pgid file {})",
-                guest_pgid.display()
-            )));
-        }
-        sleep(poll_interval);
+    match wait_for_child_bounded(child, timeout, poll_interval, clock, sleep)? {
+        Some(status) if status.success() => Ok(()),
+        Some(status) => Err(Error::LimaInstanceError(format!(
+            "failed to kill guest process group (pgid file {}): limactl exited with {}",
+            guest_pgid.display(),
+            status
+        ))),
+        None => Err(Error::LimaInstanceError(format!(
+            "timed out after {timeout:?} killing guest process group (pgid file {})",
+            guest_pgid.display()
+        ))),
     }
 }
 

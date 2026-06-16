@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 #[cfg(unix)]
-use super::facade::{GuestKillChild, await_guest_kill};
+use super::facade::{GuestKillChild, await_guest_kill, wait_for_child_bounded};
 #[cfg(unix)]
 use std::process::ExitStatus;
 
@@ -1423,6 +1423,61 @@ fn await_guest_kill_times_out_and_reaps_a_wedged_child() {
         }
         other => panic!("expected LimaInstanceError, got {other:?}"),
     }
+    assert!(
+        child.killed,
+        "the timeout path must kill and reap the wedged child"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_for_child_bounded_returns_exit_status_on_clean_exit() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::{Duration, Instant};
+
+    let mut child = FakeKillChild {
+        exit: Some(ExitStatus::from_raw(0)),
+        killed: false,
+    };
+    let result = wait_for_child_bounded(
+        &mut child,
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(1)),
+        |_| panic!("must not sleep: the child has already exited"),
+    );
+    assert!(
+        matches!(result, Ok(Some(status)) if status.success()),
+        "a clean exit should yield Ok(Some(success)), got: {result:?}"
+    );
+    assert!(!child.killed, "a cleanly-exited child must not be killed");
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_for_child_bounded_returns_none_and_reaps_on_timeout() {
+    use std::time::{Duration, Instant};
+
+    // `exit: None` never reports an exit, so the deadline must fire. The clock
+    // jumps a full timeout per call, so the first deadline check after the first
+    // poll trips immediately (no real time passes). This `Ok(None)` timeout
+    // contract is what `is_ssh_alive` relies on to treat a wedged VM as
+    // unreachable rather than panic or park its blocking thread.
+    let mut child = FakeKillChild {
+        exit: None,
+        killed: false,
+    };
+    let result = wait_for_child_bounded(
+        &mut child,
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(10)),
+        |_| {},
+    );
+    assert!(
+        matches!(result, Ok(None)),
+        "a child that never exits should time out to Ok(None), got: {result:?}"
+    );
     assert!(
         child.killed,
         "the timeout path must kill and reap the wedged child"

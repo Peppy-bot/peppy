@@ -1,11 +1,23 @@
 use super::super::error::{Error, Result};
+use super::facade::wait_for_child_bounded;
 use config::node::is_blocked_mount_source;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
+
+/// Upper bound for a single `limactl` VM-liveness probe (`limactl list` and the
+/// `limactl shell ... true` SSH check) on the stop/teardown gate. Both reach the
+/// VM driver or SSH into the guest, which can wedge, and they run on a blocking
+/// thread that must not park indefinitely. Generous enough never to trip on a
+/// healthy VM: the probes are a local metadata read and a no-op `true`.
+const LIMA_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Poll cadence while waiting for a bounded `limactl` probe child to exit.
+const LIMA_PROBE_POLL: Duration = Duration::from_millis(50);
 
 /// Guest-native directory for guest PGID files. Lives under `/tmp/peppy` on the
 /// guest's own tmpfs (alongside the synced apptainer install), never the
@@ -193,27 +205,60 @@ fn validate_lima_version_output(
     Ok(())
 }
 
+/// Drain an already-exited child's captured pipe to a string, best effort. The
+/// bounded `limactl` probes produce tiny output, so reading after the child has
+/// exited cannot deadlock on a full pipe buffer.
+fn read_child_pipe(pipe: Option<impl Read>) -> String {
+    let mut buf = String::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_string(&mut buf);
+    }
+    buf
+}
+
 /// Query the status of a Lima instance (e.g. "Running", "Stopped").
 ///
 /// Returns `Ok(None)` if the instance does not exist or the output is empty.
 /// Returns `Err` if the command fails for reasons other than "instance not found".
+///
+/// Bounded ([`LIMA_PROBE_TIMEOUT`]): `limactl list` queries the VM driver and can
+/// wedge; the stop gate runs it on a blocking thread that must not park. stdout
+/// and stderr are piped so the output is read after the child exits (the output
+/// is tiny, so a post-exit read cannot deadlock on a full pipe buffer).
 fn query_instance_status(
     limactl: &Path,
     lima_home: &Path,
     instance: &str,
 ) -> Result<Option<String>> {
-    let output = Command::new(limactl)
+    let mut child = Command::new(limactl)
         .env("LIMA_HOME", lima_home)
         .args(["list", "--format", "{{.Status}}", instance])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| Error::LimaInstanceError(format!("failed to run limactl list: {e}")))?;
 
-    if output.status.success() {
-        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let status = match wait_for_child_bounded(
+        &mut child,
+        LIMA_PROBE_TIMEOUT,
+        LIMA_PROBE_POLL,
+        Instant::now,
+        std::thread::sleep,
+    )? {
+        Some(status) => status,
+        None => {
+            return Err(Error::LimaInstanceError(format!(
+                "limactl list timed out after {LIMA_PROBE_TIMEOUT:?} for instance '{instance}'"
+            )));
+        }
+    };
+
+    if status.success() {
+        let s = read_child_pipe(child.stdout.take()).trim().to_string();
         return Ok(if s.is_empty() { None } else { Some(s) });
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = read_child_pipe(child.stderr.take());
     if stderr.contains("No instance matching") {
         return Ok(None);
     }
@@ -319,13 +364,30 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
 
 /// Quick SSH liveness probe — returns true if we can reach the guest.
 fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
-    lima_shell_cmd(limactl, lima_home, instance)
+    // Bounded ([`LIMA_PROBE_TIMEOUT`]): `limactl shell ... true` SSHes into the
+    // guest, which can hang on a wedged VM. The stop gate runs this on a blocking
+    // thread, so a timeout is treated as "not reachable" (false) rather than
+    // parking the thread; the force phase still SIGKILLs the host-side `limactl`
+    // client.
+    let mut child = match lima_shell_cmd(limactl, lima_home, instance)
         .arg("true")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    matches!(
+        wait_for_child_bounded(
+            &mut child,
+            LIMA_PROBE_TIMEOUT,
+            LIMA_PROBE_POLL,
+            Instant::now,
+            std::thread::sleep,
+        ),
+        Ok(Some(status)) if status.success()
+    )
 }
 
 /// Disable AppArmor's user namespace restriction inside the Lima guest.

@@ -18,6 +18,14 @@ use tracing::{debug, warn};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Defensive latency cap on the macOS in-VM guest force-kill phase. The work is
+/// already internally bounded (the Lima VM liveness probe and each per-key guest
+/// SIGKILL carry their own `limactl` subprocess deadlines), so this only bounds
+/// the stop's completion latency if a `limactl` call wedges past those internal
+/// deadlines. It does not cancel the blocking closure (a `spawn_blocking` task
+/// runs to completion regardless); it only stops the stop path waiting on it.
+const GUEST_FORCE_KILL_BUDGET: Duration = Duration::from_secs(30);
+
 pub async fn listen_for_node_stop(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -450,9 +458,16 @@ async fn force_stop_instances(
     // not block a stop or teardown. Runs on a blocking thread because it shells
     // out to `limactl`.
     if !guest_kill_keys.is_empty() {
-        let _ = tokio::task::spawn_blocking(move || {
-            containers::Apptainer::kill_guest_process_groups_best_effort(&guest_kill_keys);
-        })
+        // Cap how long the stop waits on the in-VM guest kill. The kill is itself
+        // internally bounded (see `GUEST_FORCE_KILL_BUDGET`), so this only fires if
+        // a `limactl` call wedges past its own deadline; it does not cancel the
+        // blocking closure, which still runs to completion on the blocking pool.
+        let _ = tokio::time::timeout(
+            GUEST_FORCE_KILL_BUDGET,
+            tokio::task::spawn_blocking(move || {
+                containers::Apptainer::kill_guest_process_groups_best_effort(&guest_kill_keys);
+            }),
+        )
         .await;
     }
 
