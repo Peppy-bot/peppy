@@ -611,28 +611,32 @@ impl Apptainer {
     /// a no-op outside macOS/Lima, when no keys are provided, or when the VM is
     /// not running. Failures are logged at debug level, never returned; a failed
     /// cooperative signal still falls through to the existing SIGKILL phase.
+    /// Returns `true` when the Lima guest-signal path was available and attempted
+    /// for the provided keys; callers can use `false` to fall back to host-side
+    /// signaling on native Apptainer.
     ///
     /// Synchronous — it shells out to `limactl` — so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
-    pub fn terminate_guest_process_groups_best_effort(keys: &[String]) {
+    pub fn terminate_guest_process_groups_best_effort(keys: &[String]) -> bool {
         if !cfg!(target_os = "macos") || keys.is_empty() {
-            return;
+            return false;
         }
         let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
         {
             (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
             // No resolvable Lima installation means no VM, hence no guest
             // processes to signal.
-            _ => return,
+            _ => return false,
         };
         if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
-            return;
+            return false;
         }
         for key in keys {
             if let Err(e) = Self::terminate_guest_pgid(&limactl_path, &lima_home, key) {
                 tracing::debug!("In-VM guest group SIGTERM failed for '{key}': {e}");
             }
         }
+        true
     }
 
     /// Run `args` in the container runtime environment and capture its output.

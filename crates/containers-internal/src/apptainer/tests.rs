@@ -1240,7 +1240,7 @@ fn kill_guest_process_groups_best_effort_is_noop_for_empty_keys() {
 
 #[test]
 fn terminate_guest_process_groups_best_effort_is_noop_for_empty_keys() {
-    Apptainer::terminate_guest_process_groups_best_effort(&[]);
+    assert!(!Apptainer::terminate_guest_process_groups_best_effort(&[]));
 }
 
 /// On the native (Linux) backend the host process-group kill already reaped the
@@ -1255,7 +1255,9 @@ fn kill_guest_process_groups_best_effort_is_noop_on_native() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn terminate_guest_process_groups_best_effort_is_noop_on_native() {
-    Apptainer::terminate_guest_process_groups_best_effort(&["some-instance-key".to_string()]);
+    assert!(!Apptainer::terminate_guest_process_groups_best_effort(&[
+        "some-instance-key".to_string(),
+    ]));
 }
 
 /// On the native (Linux) backend `ensure_host_mounts` is a pure no-op: all host

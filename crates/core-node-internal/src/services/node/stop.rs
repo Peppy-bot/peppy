@@ -334,10 +334,10 @@ async fn force_stop_instance(
 ///    send is logged and ignored. A non-responsive node must still be
 ///    force-killed, never surfaced as an error (this is what makes a stuck node
 ///    a success, not a failure-with-the-process-left-alive).
-/// 2. If a container node's shutdown request failed, best-effort in-VM SIGTERM
-///    to its recorded guest process group. On macOS/Lima the host process is
-///    only the `limactl` client; the actual workload needs a guest-side signal
-///    to run normal signal-driven cleanup. This is a no-op on Linux/native.
+/// 2. If a container node's shutdown request failed, best-effort SIGTERM before
+///    the force window: in-VM SIGTERM on macOS/Lima, or host process-group
+///    SIGTERM on native Linux Apptainer. This gives both backends the same
+///    signal-driven cleanup chance before SIGKILL.
 /// 3. Bounded graceful wait (`graceful_budget`, from
 ///    `peppy_config.lifecycle.shutdown_grace_secs`, shared across the whole
 ///    batch) for the OS processes to exit on their own.
@@ -391,7 +391,7 @@ async fn force_stop_instances(
             .into_iter()
             .filter_map(|(d, result)| result.err().map(|_| d))
             .collect();
-        terminate_container_guest_groups_best_effort(&failed_shutdowns).await;
+        terminate_failed_container_instances_best_effort(&failed_shutdowns).await;
         wait_until_all_gone(doomed).await;
     })
     .await;
@@ -465,24 +465,37 @@ async fn force_stop_instances(
 }
 
 /// If the Peppy shutdown service could not be delivered to a container node,
-/// give its in-VM workload a normal SIGTERM before the force-kill deadline. This
-/// plugs the macOS/Lima split-brain case: the daemon can see and eventually kill
-/// the host `limactl` process group, but the Python/Rust node process that owns
-/// signal handlers is inside the VM. The container facade owns platform gating,
-/// so this is an inexpensive no-op outside Lima.
-async fn terminate_container_guest_groups_best_effort(doomed: &[&DoomedInstance]) {
-    let guest_term_keys: Vec<String> = doomed
+/// give it a normal SIGTERM before the force-kill deadline. On macOS/Lima the
+/// signal must be sent inside the guest because the host process group is only
+/// the `limactl` client. On Linux/native Apptainer there is no VM boundary, so
+/// the host process group is the cooperative signal target.
+async fn terminate_failed_container_instances_best_effort(doomed: &[&DoomedInstance]) {
+    let failed_containers: Vec<&DoomedInstance> = doomed
         .iter()
+        .copied()
         .filter(|d| d.is_container && d.pid.is_some())
-        .map(|d| d.instance_id.as_str().to_owned())
         .collect();
-    if guest_term_keys.is_empty() {
+    if failed_containers.is_empty() {
         return;
     }
-    let _ = tokio::task::spawn_blocking(move || {
-        containers::Apptainer::terminate_guest_process_groups_best_effort(&guest_term_keys);
+
+    let guest_term_keys: Vec<String> = failed_containers
+        .iter()
+        .map(|d| d.instance_id.as_str().to_owned())
+        .collect();
+    let guest_term_attempted = tokio::task::spawn_blocking(move || {
+        containers::Apptainer::terminate_guest_process_groups_best_effort(&guest_term_keys)
     })
-    .await;
+    .await
+    .unwrap_or(false);
+
+    if !guest_term_attempted {
+        for doomed in failed_containers {
+            if let Some(pid) = doomed.pid {
+                terminate_process_group(pid);
+            }
+        }
+    }
 }
 
 /// Removes a `Running` instance from the entity's registry. Called only
@@ -756,27 +769,40 @@ fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
 /// `setpgid`/`killpg` semantics are identical on Linux and macOS.
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
-    // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
-    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
-    // crate free of `unsafe`.
-    match nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    ) {
-        // An already-dead group yields ESRCH; the group is already gone, which
-        // is exactly the state we wanted, so treat it as success.
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        // Any other errno (e.g. EPERM) means the SIGKILL did not land and the
-        // node's process group may still be alive, so surface it.
-        Err(err) => warn!(
-            "Failed to SIGKILL node process group (pid {}): {}",
-            pid, err
-        ),
-    }
+    signal_process_group(pid, nix::sys::signal::Signal::SIGKILL, "SIGKILL");
 }
 
 #[cfg(not(unix))]
 fn kill_process_group(_pid: u32) {}
+
+/// SIGTERMs the entire process group led by `pid`. Used only as a cooperative
+/// fallback for native container runtimes when the Peppy shutdown RPC could not
+/// be delivered; the force phase still SIGKILLs any process group that remains.
+#[cfg(unix)]
+fn terminate_process_group(pid: u32) {
+    signal_process_group(pid, nix::sys::signal::Signal::SIGTERM, "SIGTERM");
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(_pid: u32) {}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: nix::sys::signal::Signal, signal_name: &str) {
+    // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
+    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
+    // crate free of `unsafe`.
+    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), signal) {
+        // An already-dead group yields ESRCH; the group is already gone, which
+        // is exactly the state we wanted, so treat it as success.
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        // Any other errno (e.g. EPERM) means the signal did not land and the
+        // node's process group may still be alive, so surface it.
+        Err(err) => warn!(
+            "Failed to {} node process group (pid {}): {}",
+            signal_name, pid, err
+        ),
+    }
+}
 
 /// Refreshes only `pids` in `system` (existence + status), reading just those
 /// `/proc` entries instead of rescanning every process on the machine. Dead
