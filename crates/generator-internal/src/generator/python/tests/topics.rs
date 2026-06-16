@@ -156,11 +156,12 @@ fn emit_topic() {
         ],
     );
 
-    // emit function signature with typed parameters
+    // build_message signature carries the typed message fields (no node_runner);
+    // declare_publisher takes the node_runner.
     assert_contains_all(
         &rendered,
         &[
-            "async def emit(",
+            "def build_message(",
             "node_runner: peppylib.NodeRunner",
             "header: MessageHeader",
             "encoding: str",
@@ -185,20 +186,29 @@ fn emit_topic() {
             "capnp_msg.width = width",
             "capnp_msg.height = height",
             "capnp_msg.frame = frame",
-            "payload = capnp_msg.to_bytes()",
+            "return capnp_msg.to_bytes()",
         ],
     );
 
-    // Topic metadata and messenger call
+    // Pure serializer and a declared (lock-free) publisher are generated; the
+    // declared publisher is the only publish path (no one-shot emit).
     assert_contains_all(
         &rendered,
         &[
             "TOPIC_NAME = \"video_stream\"",
-            "peppylib.QoSProfile.SensorData",
-            "peppylib.TopicMessenger.emit(",
-            "TOPIC_NAME,",
-            "payload,",
+            "QOS = peppylib.QoSProfile.SensorData",
+            "def build_message(",
+            "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+            "peppylib.TopicMessenger.declare_publisher(",
         ],
+    );
+    assert!(
+        !rendered.contains("async def emit("),
+        "emit() should no longer be generated; declare_publisher is the only publish path; rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("TopicMessenger.emit"),
+        "TopicMessenger.emit should no longer be generated; rendered:\n{rendered}"
     );
 }
 
@@ -281,7 +291,7 @@ fn emit_topic_escapes_python_keyword_fields() {
     assert_contains_all(
         &rendered,
         &[
-            "async def emit(",
+            "def build_message(",
             "class_: int",
             "from_: str",
             "setattr(capnp_msg, \"class\", class_)",

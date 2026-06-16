@@ -10,10 +10,10 @@
 //!      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while keeping the
 //!      native artifact at `emitted_topics/{topic}.rs`.
 //!   2. Each `mod.rs` declares the right children.
-//!   3. The rendered emit call inside each leaf passes the matching sender
-//!      target (`SenderTarget::interface("name", "tag")?` for conformed,
+//!   3. The rendered declare_publisher inside each leaf passes the matching
+//!      sender target (`SenderTarget::interface("name", "tag")?` for conformed,
 //!      `SenderTarget::node("name", "tag")?` for native) to
-//!      `peppylib::TopicMessenger::emit`.
+//!      `peppylib::TopicMessenger::declare_publisher`.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
@@ -76,7 +76,7 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 /// Realsense_d435 scenario for the Rust generator: one native `video_stream`
-/// emit plus three resolved conformed interfaces (`depth_camera:v1`,
+/// publisher plus three resolved conformed interfaces (`depth_camera:v1`,
 /// `depth_camera:v2`, `uvc_camera:v1`) each shaped as `video_stream` with a
 /// distinguishing marker field. Verifies that:
 ///   1. Conformed artifacts nest under
@@ -85,9 +85,9 @@ const NODE_CONFIG: &str = r#"{
 ///   2. Each container `mod.rs` declares its direct child modules, and the
 ///      top-level `emitted_topics.rs` lists the native leaf plus one entry per
 ///      conforming interface directory.
-///   3. Each leaf calls `peppylib::TopicMessenger::emit` with the matching
-///      sender target: `SenderTarget::interface("name", "tag")?` for conformed
-///      leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
+///   3. Each leaf calls `peppylib::TopicMessenger::declare_publisher` with the
+///      matching sender target: `SenderTarget::interface("name", "tag")?` for
+///      conformed leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
 ///   4. The per-interface marker fields land in their own files — proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
@@ -161,14 +161,14 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         );
     }
 
-    // Each leaf calls `peppylib::TopicMessenger::emit(...)` with the sender
-    // target threaded through. Conformed leaves splice in
+    // Each leaf calls `peppylib::TopicMessenger::declare_publisher(...)` with the
+    // sender target threaded through. Conformed leaves splice in
     // `SenderTarget::interface("name", "tag")?` while the native leaf passes
     // `SenderTarget::node("name", "tag")?`.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
-        native_src.contains("TopicMessenger::emit"),
-        "native source should call TopicMessenger::emit:\n{native_src}",
+        native_src.contains("TopicMessenger::declare_publisher"),
+        "native source should call TopicMessenger::declare_publisher:\n{native_src}",
     );
     assert!(
         native_src.contains("SenderTarget::node("),
@@ -221,7 +221,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
 /// Exercises hyphen-to-underscore normalization in the `iface_tag` for the
 /// Rust generator: a tag `v1-beta` becomes the directory `v1_beta` (Rust
 /// module names can't carry hyphens) while the literal `"v1-beta"` is still
-/// embedded in the emit body — messaging.rs normalizes hyphens at the wire
+/// embedded in the declare_publisher body; messaging.rs normalizes hyphens at the wire
 /// boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_tag_lands_in_underscore_directory() {

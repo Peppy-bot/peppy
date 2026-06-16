@@ -5,12 +5,14 @@ from peppygen.emitted_topics import message_stream
 
 
 async def emit_hello_world_loop(node_runner: NodeRunner, name: str):
+    # Declare the publisher once, then publish each message on it.
+    publisher = await message_stream.declare_publisher(node_runner)
     counter = 0
     while True:
         counter += 1
         message = f"hello {name} count {counter}"
         print(message, flush=True)
-        await message_stream.emit(node_runner, message)
+        await publisher.publish(message_stream.build_message(message))
         await asyncio.sleep(3)
 
 

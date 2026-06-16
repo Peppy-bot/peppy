@@ -997,16 +997,16 @@ async def test_shutdown_joins_event_loop_thread(monkeypatch):
 
                             async def emit_loop():
                                 started_queue.put("started")
+                                publisher = await TopicMessenger.declare_publisher(
+                                    messenger,
+                                    core_node,
+                                    instance_id,
+                                    SenderTarget.node(node_name, node_tag),
+                                    "regression_topic",
+                                    QoSProfile.Reliable,
+                                )
                                 while not token.is_cancelled():
-                                    await TopicMessenger.emit(
-                                        messenger,
-                                        core_node,
-                                        instance_id,
-                                        SenderTarget.node(node_name, node_tag),
-                                        "regression_topic",
-                                        QoSProfile.Reliable,
-                                        b"frame",
-                                    )
+                                    await publisher.publish(b"frame")
                                     await asyncio.sleep(0.001)
 
                             return [asyncio.create_task(emit_loop())]

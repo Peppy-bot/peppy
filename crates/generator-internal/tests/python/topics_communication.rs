@@ -228,16 +228,18 @@ async def setup(parameters, node_runner) -> list[asyncio.Task]:
     interval = 1.0 / frequency_hz
 
     async def emit_loop():
+        publisher = await video_stream.declare_publisher(node_runner)
         frame_id = 0
         print(f"emitter: starting emit loop with interval={interval}", flush=True)
         while True:
-            await video_stream.emit(
-                node_runner,
-                video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
-                "rgb8",
-                640,
-                480,
-                bytes([1, 2, 3]),
+            await publisher.publish(
+                video_stream.build_message(
+                    video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
+                    "rgb8",
+                    640,
+                    480,
+                    bytes([1, 2, 3]),
+                )
             )
             if frame_id == 0:
                 print("emitter: first emit succeeded", flush=True)

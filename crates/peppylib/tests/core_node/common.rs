@@ -6,12 +6,14 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use config::node::QoSProfile;
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
     MessengerHandle, ProducerRef, ServiceMessenger, ServiceTarget, TopicMessenger,
 };
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
+use peppylib::types::Payload;
 use pmi::{ZenohAdapter, ZenohdInstance};
 use tempfile::TempDir;
 
@@ -24,6 +26,32 @@ pub(crate) const SERVER_INSTANCE: &str = "test_server";
 /// these tests must mirror that tag to actually route through the wire.
 pub(crate) fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("test node target")
+}
+
+/// Declares a publisher and publishes a single payload. The publisher is the
+/// only topic-publish path, so a test that publishes once just declares then
+/// publishes; the arguments mirror the old one-shot emit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_once(
+    messenger: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    target: SenderTarget,
+    topic_name: &str,
+    qos: QoSProfile,
+    payload: Payload,
+) -> Result<(), peppylib::PeppyError> {
+    let publisher = TopicMessenger::declare_publisher(
+        messenger,
+        core_node,
+        instance_id,
+        target,
+        None,
+        topic_name,
+        qos,
+    )
+    .await?;
+    publisher.publish(payload).await
 }
 
 /// Writes a minimal `peppy.json5` into `dir` suitable for
@@ -69,11 +97,10 @@ pub(crate) async fn wait_until_reachable(client: &MessengerHandle, service_name:
 }
 
 /// Deterministically waits until `publisher`'s session sees a subscriber for
-/// `topic_name` before the test emits on it, replacing a fixed "settle for
-/// zenoh discovery" sleep. Peer-mode discovery is not instantaneous, so an emit
-/// sent before routing completes can be dropped. The arguments mirror the
-/// subsequent [`TopicMessenger::emit`] call. Panics if no subscriber routes
-/// within 2s.
+/// `topic_name` before the test publishes on it, replacing a fixed "settle for
+/// zenoh discovery" sleep. Peer-mode discovery is not instantaneous, so a
+/// publish sent before routing completes can be dropped. The arguments mirror
+/// the subsequent publish. Panics if no subscriber routes within 2s.
 pub(crate) async fn wait_for_topic_subscriber(
     publisher: &MessengerHandle,
     core_node: &str,

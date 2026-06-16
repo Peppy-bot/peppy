@@ -1,14 +1,16 @@
 #![allow(dead_code)]
 
+use config::node::QoSProfile;
 use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
+use peppylib::types::Payload;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// Deterministically wait until `publisher`'s session sees a subscriber for the
-/// topic it is about to emit on, replacing a fixed "settle for zenoh discovery"
-/// sleep. The arguments mirror the subsequent [`TopicMessenger::emit`] call.
+/// topic it is about to publish on, replacing a fixed "settle for zenoh
+/// discovery" sleep. The arguments mirror the subsequent publish.
 /// Panics if no subscriber routes within 2s.
 pub async fn wait_for_topic_subscriber(
     publisher: &MessengerHandle,
@@ -44,6 +46,32 @@ pub const TEST_NODE_TAG: &str = "v1";
 /// invalid names — tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
+/// Declares a publisher and publishes a single payload. The publisher is the
+/// only topic-publish path, so a test that publishes once just declares then
+/// publishes; the arguments mirror the old one-shot emit.
+#[allow(clippy::too_many_arguments)]
+pub async fn publish_once(
+    messenger: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    target: SenderTarget,
+    topic_name: &str,
+    qos: QoSProfile,
+    payload: Payload,
+) -> Result<(), peppylib::PeppyError> {
+    let publisher = TopicMessenger::declare_publisher(
+        messenger,
+        core_node,
+        instance_id,
+        target,
+        None,
+        topic_name,
+        qos,
+    )
+    .await?;
+    publisher.publish(payload).await
 }
 
 /// Client for sending requests to a test node.

@@ -1,12 +1,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use peppygen::emitted_topics::message_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 use peppylib::runtime::CancellationToken;
 
 /// Emits a "hello world count X" message every 3 seconds, starting immediately.
 /// The loop runs until the cancellation token is triggered.
 async fn emit_hello_world_loop(runner: Arc<NodeRunner>, token: CancellationToken) {
+    // Declare the publisher once; every publish below is then lock-free.
+    let publisher = match message_stream::declare_publisher(&runner).await {
+        Ok(publisher) => publisher,
+        Err(e) => {
+            eprintln!("Failed to declare message_stream publisher: {e}");
+            return;
+        }
+    };
     let mut counter: u64 = 0;
     let mut interval = tokio::time::interval(Duration::from_secs(3));
     loop {
@@ -16,8 +25,13 @@ async fn emit_hello_world_loop(runner: Arc<NodeRunner>, token: CancellationToken
                 counter += 1;
                 let message = format!("hello world count {counter}");
                 println!("{message}");
-                if let Err(e) = peppygen::emitted_topics::message_stream::emit(&runner, message).await {
-                    eprintln!("Failed to emit hello world: {e}");
+                match message_stream::build_message(message) {
+                    Ok(payload) => {
+                        if let Err(e) = publisher.publish(payload).await {
+                            eprintln!("Failed to publish hello world: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to build hello world message: {e}"),
                 }
             }
         }

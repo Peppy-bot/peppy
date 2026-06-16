@@ -11,6 +11,14 @@ use peppygen::{NodeBuilder, Parameters, Result};
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
+            // Declare the publisher once; every publish below is then lock-free.
+            let publisher = match joint_states::declare_publisher(&node_runner).await {
+                Ok(publisher) => publisher,
+                Err(e) => {
+                    eprintln!("Failed to declare joint_states publisher: {e}");
+                    return;
+                }
+            };
             loop {
                 let (producer, command) =
                     controller_joint_commands::on_next_message_received(&node_runner)
@@ -26,13 +34,18 @@ fn main() -> Result<()> {
                 );
 
                 // Drive the joints, then report the resulting state.
-                let _ = joint_states::emit(
-                    &node_runner,
+                match joint_states::build_message(
                     command.target_positions,
                     [0.0, 0.0, 0.0],
                     std::time::SystemTime::now(),
-                )
-                .await;
+                ) {
+                    Ok(payload) => {
+                        if let Err(e) = publisher.publish(payload).await {
+                            eprintln!("Failed to publish joint state: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to build joint_states message: {e}"),
+                }
             }
         });
 
