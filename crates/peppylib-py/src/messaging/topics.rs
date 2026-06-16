@@ -1,7 +1,7 @@
 use super::iface::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
-use peppylib::messaging::{Subscription, TopicMessenger};
+use peppylib::messaging::{Subscription, TopicMessenger, TopicPublisher};
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -132,12 +132,15 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Emit (publish) a message to a topic. Pass `SenderTarget.node(name, tag)`
-    /// or `SenderTarget.interface(name, tag)`.
+    /// Declare a reusable publisher for a topic and return a [`PyTopicPublisher`].
+    ///
+    /// This is the only topic-publish path. The central messenger lock is taken
+    /// ONCE here, at declaration; every subsequent `publisher.publish(...)` is
+    /// lock-free. Declare once, then publish per message (a camera streaming
+    /// frames, a sensor at rate).
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, payload))]
-    #[allow(clippy::too_many_arguments)]
-    fn emit<'py>(
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos))]
+    fn declare_publisher<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
@@ -145,23 +148,44 @@ impl PyTopicMessenger {
         as_target: PySenderTarget,
         as_topic_name: String,
         qos: PyQoSProfile,
-        payload: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_target = as_target.into_inner();
-        future_into_py_unit(py, async move {
-            TopicMessenger::emit(
+        crate::py_future::future_into_py(py, async move {
+            let publisher = TopicMessenger::declare_publisher(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 as_target,
+                None,
                 &as_topic_name,
                 qos.into(),
-                Payload::from(payload),
             )
             .await
             .map_err(to_py_err)?;
+            Ok(PyTopicPublisher { inner: publisher })
+        })
+    }
+}
 
+/// Python wrapper for a lock-free per-topic publisher, vended by
+/// [`PyTopicMessenger::declare_publisher`]. Holds the topic binding so each
+/// `publish` skips the central messenger lock; clone-cheap (an `Arc` bump).
+#[pyclass(name = "TopicPublisher")]
+pub struct PyTopicPublisher {
+    inner: TopicPublisher,
+}
+
+#[pymethods]
+impl PyTopicPublisher {
+    /// Publish a payload on the declared topic. Lock-free on the hot path.
+    fn publish<'py>(&self, py: Python<'py>, payload: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let publisher = self.inner.clone();
+        future_into_py_unit(py, async move {
+            publisher
+                .publish(Payload::from(payload))
+                .await
+                .map_err(to_py_err)?;
             Ok(())
         })
     }

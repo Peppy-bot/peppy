@@ -691,20 +691,21 @@ async fn run_topic(
     iters: u64,
 ) -> Result<Vec<u64>> {
     let messenger = node_runner.messenger();
+    let publisher = TopicMessenger::declare_publisher(
+        messenger,
+        core,
+        inst,
+        SenderTarget::node(DRIVER_NODE, TAG)?,
+        None,
+        "ping",
+        QoSProfile::Reliable,
+    )
+    .await?;
     let mut samples = Vec::with_capacity(iters as usize);
     for i in 0..(warmup + iters) {
         let payload = Payload::from(i.to_le_bytes().to_vec());
         let mut start = Instant::now();
-        TopicMessenger::emit(
-            messenger,
-            core,
-            inst,
-            SenderTarget::node(DRIVER_NODE, TAG)?,
-            "ping",
-            QoSProfile::Reliable,
-            payload.clone(),
-        )
-        .await?;
+        publisher.publish(payload.clone()).await?;
         loop {
             match tokio::time::timeout(PONG_TIMEOUT, sub.on_next_message()).await {
                 Ok(Some(msg)) => {
@@ -715,18 +716,9 @@ async fn run_topic(
                 }
                 Ok(None) => return Ok(samples),
                 Err(_) => {
-                    // Lost ping (warmup-phase propagation): re-emit, reset clock.
+                    // Lost ping (warmup-phase propagation): re-publish, reset clock.
                     start = Instant::now();
-                    TopicMessenger::emit(
-                        messenger,
-                        core,
-                        inst,
-                        SenderTarget::node(DRIVER_NODE, TAG)?,
-                        "ping",
-                        QoSProfile::Reliable,
-                        payload.clone(),
-                    )
-                    .await?;
+                    publisher.publish(payload.clone()).await?;
                 }
             }
         }
@@ -876,17 +868,21 @@ fn main() -> Result<()> {
                 )
                 .await
                 .expect("subscribe ping");
+                let pong = TopicMessenger::declare_publisher(
+                    runner.messenger(),
+                    &core,
+                    &inst,
+                    SenderTarget::node(RESPONDER_NODE, TAG).expect("responder target"),
+                    None,
+                    "pong",
+                    QoSProfile::Reliable,
+                )
+                .await
+                .expect("declare pong publisher");
                 while let Some(msg) = sub.on_next_message().await {
-                    let _ = TopicMessenger::emit(
-                        runner.messenger(),
-                        &core,
-                        &inst,
-                        SenderTarget::node(RESPONDER_NODE, TAG).expect("responder target"),
-                        "pong",
-                        QoSProfile::Reliable,
-                        msg.payload().clone(),
-                    )
-                    .await;
+                    pong.publish(msg.payload().clone())
+                        .await
+                        .expect("publish pong");
                 }
             });
         }
@@ -936,19 +932,19 @@ async def echo_topic(node_runner):
         None,
         QoSProfile.Reliable,
     )
+    pong = await TopicMessenger.declare_publisher(
+        handle,
+        core,
+        inst,
+        SenderTarget.node(RESPONDER_NODE, TAG),
+        "pong",
+        QoSProfile.Reliable,
+    )
     while True:
         message = await subscription.on_next_message()
         if message is None:
             break
-        await TopicMessenger.emit(
-            handle,
-            core,
-            inst,
-            SenderTarget.node(RESPONDER_NODE, TAG),
-            "pong",
-            QoSProfile.Reliable,
-            message.payload,
-        )
+        await pong.publish(message.payload)
 
 
 def abort_on_task_failure(task):

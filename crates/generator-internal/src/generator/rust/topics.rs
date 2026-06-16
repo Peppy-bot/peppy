@@ -19,7 +19,8 @@ pub struct ConsumedTopicCallbackSpec<'a> {
     pub dependency: &'a crate::generator::types::DependencyContext,
 }
 
-/// Specification for building an emit-style method (topic emit or action feedback emit).
+/// Specification for building an action-feedback emit-style method
+/// (publish_feedback / complete).
 pub struct EmitMethodSpec<'a> {
     pub method_name: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -37,7 +38,7 @@ pub struct EmitMethodSpec<'a> {
 
 /// Builds an emit-style async method that serializes params and publishes.
 ///
-/// Shared logic for both `build_topic_emit` and `build_action_feedback_emit`:
+/// Shared logic for the action `publish_feedback` / `complete` methods:
 /// filters instance_id from params, branches on encoding presence, and either
 /// serializes + publishes or returns `MessageFormatUnavailable`.
 pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
@@ -105,8 +106,14 @@ pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
     }
 }
 
-pub fn build_topic_emit(
-    method_ident: &Ident,
+/// Generates the publish-side API for an emitted topic: a pure `build_message`
+/// that serializes the message fields to a wire `peppylib::Payload`, and an
+/// async `declare_publisher` that takes the central messenger lock once and
+/// returns a lock-free `peppylib::TopicPublisher`. A publish loop declares the
+/// publisher once and then calls `publisher.publish(build_message(...)?)`, so
+/// per-message serialization never re-takes the messenger lock. This is the
+/// only topic-publish path.
+pub fn build_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     topic: &EmittedTopic,
@@ -118,32 +125,98 @@ pub fn build_topic_emit(
     let label_literal = Literal::string(label);
     let target_expr = sender_target_expression(origin);
 
-    build_emit_method(EmitMethodSpec {
-        method_name: method_ident,
-        params,
-        encoding,
-        receiver: quote!(node_runner: &crate::NodeRunner),
-        publish_body: quote! {
+    let build_message = build_topic_build_message(params, encoding, &label_literal);
+
+    quote! {
+        #build_message
+
+        /// Declares the topic publisher: takes the central messenger lock once
+        /// and returns a lock-free `peppylib::TopicPublisher`. Declare once,
+        /// then call `publisher.publish(build_message(...)?)` per message.
+        pub async fn declare_publisher(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<peppylib::TopicPublisher> {
             let qos = #qos_tokens;
             let as_topic = #topic_literal;
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
             let as_target = #target_expr;
 
-            peppylib::TopicMessenger::emit(
+            let publisher = peppylib::TopicMessenger::declare_publisher(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
                 as_target,
+                None,
                 as_topic,
                 qos,
-                payload,
             )
-                .await?;
-        },
-        error_context: quote!(String::from(#label_literal)),
-        suppress_unused: vec![quote!(let _ = node_runner;)],
-    })
+            .await?;
+            Ok(publisher)
+        }
+    }
+}
+
+/// `build_message(fields…)` for an emitted topic: serializes the message fields
+/// to a wire `peppylib::Payload` with no messenger access, so a publish loop can
+/// build the payload off any lock and hand the finished bytes to
+/// [`peppylib::TopicPublisher::publish`]. Filters the reserved `instance_id`
+/// from the params and returns `MessageFormatUnavailable` when the topic has no
+/// serializable message format.
+fn build_topic_build_message(
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    label_literal: &Literal,
+) -> TokenStream {
+    let instance_id_ident = Ident::new("instance_id", proc_macro2::Span::call_site());
+    let kept_params: Vec<&FunctionParam> = params
+        .iter()
+        .filter(|param| param.ident != instance_id_ident)
+        .collect();
+    let method_param_tokens: Vec<TokenStream> = kept_params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect();
+
+    let error_context = quote!(String::from(#label_literal));
+
+    match encoding {
+        Some(spec) => {
+            let serialize_block =
+                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
+
+            quote! {
+                #[allow(clippy::too_many_arguments)]
+                pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
+                    let payload = #serialize_block;
+                    Ok(payload)
+                }
+            }
+        }
+        None => {
+            let ignore_params: Vec<TokenStream> = kept_params
+                .iter()
+                .map(|param| {
+                    let ident = &param.ident;
+                    quote!(let _ = #ident;)
+                })
+                .collect();
+
+            quote! {
+                #[allow(clippy::too_many_arguments)]
+                pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
+                    #(#ignore_params)*
+                    Err(crate::Error::MessageFormatUnavailable {
+                        context: #error_context,
+                    })
+                }
+            }
+        }
+    }
 }
 
 /// Returns the `SenderTarget` constructor expression to splice into a

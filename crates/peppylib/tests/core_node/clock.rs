@@ -4,12 +4,12 @@ use config::node::QoSProfile;
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::names;
 use peppylib::clock;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use pmi::ZenohdInstance;
 use tempfile::TempDir;
 
 use super::common::{
-    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target,
+    CORE_NODE, SERVER_INSTANCE, publish_once, start_router_and_runner, test_node_target,
     wait_for_topic_subscriber, wait_until_reachable,
 };
 
@@ -95,7 +95,7 @@ async fn subscribe_clock_yields_typed_ticks() {
     .await;
 
     let canned = ClockTick::new(1_700_000_000_123_456_789);
-    TopicMessenger::emit(
+    publish_once(
         &server,
         CORE_NODE,
         SERVER_INSTANCE,

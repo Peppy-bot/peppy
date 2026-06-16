@@ -53,7 +53,7 @@ use services::{
     deserialize_fields_from_format,
 };
 use topics::{
-    ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit,
+    ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_publisher,
     consumed_to_target_expression,
 };
 use type_mapping::{render_tokens, unused_params_stmt};
@@ -663,15 +663,8 @@ impl LanguageGenerator for RustGenerator {
             &params,
         )?;
         let struct_tokens = context.into_tokens();
-        let method_ident = Ident::new("emit", Span::call_site());
-        let method_tokens = build_topic_emit(
-            &method_ident,
-            &params,
-            encoding.as_ref(),
-            topic,
-            &fn_name_str,
-            origin,
-        );
+        let method_tokens =
+            build_topic_publisher(&params, encoding.as_ref(), topic, &fn_name_str, origin);
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*

@@ -29,6 +29,32 @@ fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")
 }
 
+/// Declares a publisher and publishes a single payload. The publisher is the
+/// only topic-publish path, so a test that publishes once just declares then
+/// publishes; the arguments mirror the old one-shot emit.
+#[allow(clippy::too_many_arguments)]
+async fn publish_once(
+    messenger: &MessengerHandle,
+    as_core_node: &str,
+    as_instance_id: &str,
+    as_target: SenderTarget,
+    as_topic_name: &str,
+    qos: QoSProfile,
+    payload: Payload,
+) -> Result<(), Error> {
+    let publisher = TopicMessenger::declare_publisher(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        as_target,
+        None,
+        as_topic_name,
+        qos,
+    )
+    .await?;
+    publisher.publish(payload).await
+}
+
 #[derive(Clone)]
 struct ActionClientCase {
     client_id: String,
@@ -237,7 +263,7 @@ async fn topic_publish_subscribe_no_from_instance_id() {
     )
     .await
     .expect("subscriber should become reachable");
-    TopicMessenger::emit(
+    publish_once(
         &emitter_handle,
         emitter_core_node,
         emitter_instance_id,
@@ -327,7 +353,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     )
     .await
     .expect("subscriber should become reachable");
-    TopicMessenger::emit(
+    publish_once(
         &emitter_handle1,
         emitter_core_node,
         emitter_instance_id2,
@@ -427,7 +453,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
     )
     .await
     .expect("subscriber should become reachable");
-    TopicMessenger::emit(
+    publish_once(
         &emitter_handle1,
         emitter_core_node2,
         emitter_instance_id,
@@ -520,7 +546,7 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
         (p3, b"from-p3"),
         (p2, b"from-p2"),
     ] {
-        TopicMessenger::emit(
+        publish_once(
             &emitter_handle,
             core,
             producer,
@@ -622,7 +648,7 @@ async fn consumer_filter_any_except_drops_excluded_and_admits_rest() {
         (claimed, b"from-claimed".as_ref()),
         (unclaimed, b"from-unclaimed"),
     ] {
-        TopicMessenger::emit(
+        publish_once(
             &emitter_handle,
             core,
             producer,
@@ -711,7 +737,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     let emitter = tokio::spawn(async move {
         for &message_id in &emit_ids {
             let payload = Payload::from(message_id.to_le_bytes().to_vec());
-            TopicMessenger::emit(
+            publish_once(
                 &sender_handle,
                 emitter_core_node,
                 emitter_instance_id,
@@ -3155,7 +3181,7 @@ async fn topic_duplicate_from_any_subscription_is_rejected() {
     )
     .await
     .expect("subscriber should become reachable");
-    TopicMessenger::emit(
+    publish_once(
         &emitter_handle,
         "pub_core",
         "pub_inst",
@@ -4504,7 +4530,7 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
                     biased;
                     _ = stop_notified.as_mut() => break,
                     _ = ticker.tick() => {
-                        TopicMessenger::emit(
+                        publish_once(
                             &handle,
                             core,
                             shared_inst,

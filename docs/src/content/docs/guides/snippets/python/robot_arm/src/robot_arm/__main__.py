@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import time
 
 from peppygen import NodeBuilder, NodeRunner
@@ -8,6 +9,13 @@ from peppygen.emitted_topics.joint_state_source.v1 import joint_states
 
 
 async def handle_commands(node_runner: NodeRunner):
+    # Declare the publisher once, then publish each state on it.
+    try:
+        publisher = await joint_states.declare_publisher(node_runner)
+    except Exception as e:
+        print(f"Failed to declare joint_states publisher: {e}", file=sys.stderr)
+        return
+
     while True:
         producer, command = await controller_joint_commands.on_next_message_received(
             node_runner,
@@ -19,12 +27,16 @@ async def handle_commands(node_runner: NodeRunner):
         )
 
         # Drive the joints, then report the resulting state.
-        await joint_states.emit(
-            node_runner,
-            command.target_positions,
-            [0.0, 0.0, 0.0],
-            time.time(),
-        )
+        try:
+            await publisher.publish(
+                joint_states.build_message(
+                    command.target_positions,
+                    [0.0, 0.0, 0.0],
+                    time.time(),
+                )
+            )
+        except Exception as e:
+            print(f"Failed to publish joint state: {e}", file=sys.stderr)
 
 
 async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:

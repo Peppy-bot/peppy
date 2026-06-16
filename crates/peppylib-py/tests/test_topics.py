@@ -73,18 +73,19 @@ async def test_messenger_communication():
         # Allow subscription to propagate
         await asyncio.sleep(0.05)
 
-        # Emit a message. Void async bindings resolve to `None` (not the empty
-        # tuple a bare `Ok(())` would yield under PyO3 0.28).
-        emit_result = await TopicMessenger.emit(
+        # Declare the publisher (the only topic-publish path) and publish a
+        # message. Void async bindings resolve to `None` (not the empty tuple a
+        # bare `Ok(())` would yield under PyO3 0.28).
+        publisher = await TopicMessenger.declare_publisher(
             sender_handle,
             core_node,
             instance_id,
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
             qos,
-            payload,
         )
-        assert emit_result is None
+        publish_result = await publisher.publish(payload)
+        assert publish_result is None
 
         # Receive the message with a timeout
         message = await asyncio.wait_for(

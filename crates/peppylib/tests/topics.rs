@@ -1,6 +1,6 @@
 mod common;
 
-use common::{test_node_target, wait_for_topic_subscriber};
+use common::{publish_once, test_node_target, wait_for_topic_subscriber};
 use config::node::QoSProfile;
 use peppylib::messaging::{ConsumerFilter, MessengerHandle, TopicMessenger};
 use peppylib::types::Payload;
@@ -52,7 +52,7 @@ async fn topic_messenger_communication() {
     .await;
 
     // Emit a message
-    TopicMessenger::emit(
+    publish_once(
         &sender_handle,
         core_node,
         instance_id,
@@ -122,7 +122,7 @@ async fn node_session_recovers_after_router_restart() {
             topic_name,
         )
         .await;
-        TopicMessenger::emit(
+        publish_once(
             &sender_handle,
             core_node,
             instance_id,
@@ -169,7 +169,7 @@ async fn node_session_recovers_after_router_restart() {
     let mut recovered = false;
     while std::time::Instant::now() < deadline {
         // Ignore emit errors: the publisher link may still be settling.
-        let _ = TopicMessenger::emit(
+        let _ = publish_once(
             &sender_handle,
             core_node,
             instance_id,
@@ -274,7 +274,7 @@ async fn bidirectional_from_any_topics_with_late_producer() {
 
     // Direction 1: robot_arm (arm_1) -> arm_controller.
     let state_payload = Payload::from_static(b"joint_states@arm_1");
-    TopicMessenger::emit(
+    publish_once(
         &arm_handle,
         core_node,
         "arm_1",
@@ -297,7 +297,7 @@ async fn bidirectional_from_any_topics_with_late_producer() {
     // Direction 2: arm_controller (ctrl_1) -> robot_arm. The reverse stream
     // flows independently; nothing bound the two nodes to each other.
     let command_payload = Payload::from_static(b"joint_commands@ctrl_1");
-    TopicMessenger::emit(
+    publish_once(
         &controller_handle,
         core_node,
         "ctrl_1",
@@ -333,7 +333,7 @@ async fn bidirectional_from_any_topics_with_late_producer() {
     .await;
 
     let late_payload = Payload::from_static(b"joint_states@arm_2");
-    TopicMessenger::emit(
+    publish_once(
         &late_arm_handle,
         core_node,
         "arm_2",

@@ -370,7 +370,13 @@ pub(super) async fn build_container_command(
     // whole guest group via `kill_guest_process_group` (same key). A no-op on the
     // native backend (Linux), where the host group kill already reaches the
     // shared-namespace container directly.
-    let mut apptainer_cmd = apptainer.run(sif_str).cancel_pgid(instance_id);
+    // `clean_env`: the node must not inherit the daemon's process environment.
+    // Its parameters arrive via the explicit `--env` vars below (chiefly
+    // PEPPY_RUNTIME_CONFIG); inheriting the daemon env leaks secrets into the
+    // node and, worse, a host var with a shell-invalid name silently breaks
+    // apptainer's env-injection script and drops PEPPY_RUNTIME_CONFIG, making
+    // the node fall back to standalone defaults. See `ApptainerCommand::clean_env`.
+    let mut apptainer_cmd = apptainer.run(sif_str).cancel_pgid(instance_id).clean_env();
     for arg in apptainer_run_extra_args {
         apptainer_cmd = apptainer_cmd.raw_flag(arg);
     }

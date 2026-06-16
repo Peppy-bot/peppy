@@ -180,33 +180,12 @@ impl TopicMessenger {
         Ok(subscription)
     }
 
-    /// Publishes a payload to a topic. The producer advertises under the
-    /// reserved default `_` segment; consumers pin a specific producer by
-    /// the `(core_node, instance_id)` pair derived from the consumer's
-    /// binding map.
-    pub async fn emit(
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        as_target: SenderTarget,
-        as_topic_name: &str,
-        qos: QoSProfile,
-        payload: Payload,
-    ) -> Result<()> {
-        let sender =
-            TopicWireSender::new(as_core_node, as_instance_id, as_target, None, as_topic_name)?;
-        messenger
-            .emit_topic_message(&sender, qos, payload, true)
-            .await?;
-        Ok(())
-    }
-
     /// Waits until a subscriber for this topic is known to the publisher's
     /// session, or `timeout` elapses; returns whether a match was observed.
     ///
     /// In peer mode a freshly-connected publisher learns about existing
     /// subscribers through gossip, which is not instantaneous, so its first
-    /// [`emit`](Self::emit) can be dropped before discovery propagates. Call
+    /// publish can be dropped before discovery propagates. Call
     /// this first when the very first publish must reach an already-running
     /// subscriber; it returns as soon as a match is observed (no fixed sleep).
     /// A `false` return means no subscriber appeared within `timeout`.
@@ -225,17 +204,13 @@ impl TopicMessenger {
             .await
     }
 
-    /// Pre-binds a topic publisher under a single producer-side link_id,
+    /// Declares a topic publisher bound under a single producer-side link_id,
     /// bypassing the central `Messenger` mutex on every subsequent publish.
-    /// Use this in publish loops; use [`emit`] for one-shot publishes.
     /// `link_id` `None` falls back to the reserved default `_` segment.
     ///
-    /// A pre-bound publisher always tags its publishes as primary on the
-    /// wire (it can't know about a parallel multi-link `emit` loop), so
-    /// mixing this with [`emit`] on the *same* topic isn't supported — a
-    /// wildcard subscriber would observe the pre-bound publish and the
-    /// `emit`'s primary publish as two separate deliveries. Pick one
-    /// publication path per topic.
+    /// This is the only topic-publish path: declare a publisher once, then
+    /// call [`TopicPublisher::publish`] per message. The publisher always tags
+    /// its publishes as primary on the wire.
     #[allow(clippy::too_many_arguments)]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,

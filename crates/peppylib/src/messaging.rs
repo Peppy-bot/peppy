@@ -324,20 +324,6 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    async fn emit_topic_message(
-        &self,
-        sender: &TopicWireSender,
-        qos: QoSProfile,
-        payload: Payload,
-        is_primary: bool,
-    ) -> Result<()> {
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish_topic(sender, payload.into_inner().into(), qos.into(), is_primary)
-            .await
-            .map_err(Error::PeppyMessagingInterface)
-    }
-
     /// Waits (deterministically, via Zenoh matching status) until a subscriber
     /// for `sender`'s topic is known to this session, or `timeout` elapses;
     /// returns whether a match was observed. A freshly-connected peer learns
