@@ -105,6 +105,42 @@ def test_run_claude_pins_model_effort_and_pipes_prompt_via_stdin(
     assert "the-prompt" not in cmd
 
 
+def test_run_claude_disables_tools_when_tools_empty(tmp_path: Path) -> None:
+    capture: dict[str, Any] = {}
+    with patch(
+        "functions.claude.subprocess.run",
+        side_effect=_mock_run("ok", capture=capture),
+    ):
+        run_claude(
+            "p",
+            allowed_tools="",
+            permission_mode="bypassPermissions",
+            cwd=tmp_path,
+            tools="",
+        )
+    cmd = capture["cmd"]
+    # `--tools ""` disables all tools; an empty allowlist is omitted entirely.
+    assert _flag_value(cmd, "--tools") == ""
+    assert "--allowed-tools" not in cmd
+
+
+def test_run_claude_omits_tools_flag_by_default(tmp_path: Path) -> None:
+    capture: dict[str, Any] = {}
+    with patch(
+        "functions.claude.subprocess.run",
+        side_effect=_mock_run("ok", capture=capture),
+    ):
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="default",
+            cwd=tmp_path,
+        )
+    cmd = capture["cmd"]
+    assert "--tools" not in cmd
+    assert _flag_value(cmd, "--allowed-tools") == "Read"
+
+
 def test_run_claude_raises_on_nonzero_exit(tmp_path: Path) -> None:
     mock = MagicMock()
     mock.returncode = 2

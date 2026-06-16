@@ -40,8 +40,15 @@ def run_claude(
     allowed_tools: str,
     permission_mode: str,
     cwd: Path,
+    tools: str | None = None,
 ) -> str:
-    """Run ``claude -p`` and return the final assistant text."""
+    """Run ``claude -p`` and return the final assistant text.
+
+    ``tools`` controls which built-in tools exist for the run: pass "" to
+    disable all tools (a pure text transformation), or a space/comma list to
+    restrict them. When None, the CLI's default tool set is available.
+    ``allowed_tools`` is the auto-approve allowlist and is omitted when empty.
+    """
     # Prompt is piped via stdin rather than passed as an argv element: prompts
     # can embed large diffs or changelogs that exceed ARG_MAX on Linux
     # (~128KB) and would trigger E2BIG.
@@ -56,9 +63,11 @@ def run_claude(
         "json",
         "--permission-mode",
         permission_mode,
-        "--allowed-tools",
-        allowed_tools,
     ]
+    if tools is not None:
+        cmd += ["--tools", tools]
+    if allowed_tools:
+        cmd += ["--allowed-tools", allowed_tools]
     result = subprocess.run(
         cmd, cwd=cwd, input=prompt, capture_output=True, text=True
     )

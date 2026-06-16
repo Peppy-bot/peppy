@@ -76,29 +76,49 @@ def test_parse_release_content_non_string_field() -> None:
         _parse_release_content(json.dumps(payload))
 
 
+def test_parse_release_content_tolerates_preamble() -> None:
+    # Claude occasionally prefixes the object with a sentence; extract anyway.
+    text = 'Here are the notes:\n{"title": "T", "description": "D", "notes": "N"}'
+    assert _parse_release_content(text) == ReleaseContent("T", "D", "N")
+
+
+def test_parse_release_content_extracts_object_with_braces_in_notes() -> None:
+    # Braces inside the notes string must not unbalance the extraction.
+    notes = "Use `cfg{}` blocks"
+    text = "noise " + json.dumps(
+        {"title": "T", "description": "D", "notes": notes}
+    )
+    assert _parse_release_content(text) == ReleaseContent("T", "D", notes)
+
+
 # --- generate_release_content (mocked run_claude) ---
 
 
-def test_generate_release_content_invokes_claude_read_only(tmp_path: Path) -> None:
+def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     def _fake_run_claude(
-        prompt: str, *, allowed_tools: str, permission_mode: str, cwd: Path
+        prompt: str,
+        *,
+        allowed_tools: str,
+        permission_mode: str,
+        cwd: Path,
+        tools: str | None = None,
     ) -> str:
         captured["prompt"] = prompt
         captured["allowed_tools"] = allowed_tools
         captured["permission_mode"] = permission_mode
         captured["cwd"] = cwd
+        captured["tools"] = tools
         return json.dumps({"title": "T", "description": "D", "notes": "N"})
 
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
         result = generate_release_content("## What's Changed\n- x", "v0.12.0", tmp_path)
 
     assert result == ReleaseContent("T", "D", "N")
-    # Claude runs read-only: no Edit/Write, and bypassPermissions for unattended use.
-    assert captured["permission_mode"] == "bypassPermissions"
-    assert "Edit" not in captured["allowed_tools"]
-    assert "Write" not in captured["allowed_tools"]
+    # Pure transformation: tools disabled so Claude cannot explore and ramble.
+    assert captured["tools"] == ""
+    assert captured["allowed_tools"] == ""
     assert captured["cwd"] == tmp_path
     # The changelog and tag are interpolated into the prompt.
     assert "## What's Changed" in captured["prompt"]
