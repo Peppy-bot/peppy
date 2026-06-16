@@ -1069,7 +1069,7 @@ fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
 ///
 /// After resolution, the source (host) portion of each mount path is validated
 /// against the blocked system directories list.
-fn resolve_mount_path_parameters(
+pub(crate) fn resolve_mount_path_parameters(
     mount_paths: &[String],
     arguments: &BTreeMap<String, AnyType>,
 ) -> std::result::Result<Vec<String>, String> {
