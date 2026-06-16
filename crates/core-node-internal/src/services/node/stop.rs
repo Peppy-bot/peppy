@@ -18,6 +18,14 @@ use tracing::{debug, warn};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Defensive latency cap on the macOS in-VM guest force-kill phase. The work is
+/// already internally bounded (the Lima VM liveness probe and each per-key guest
+/// SIGKILL carry their own `limactl` subprocess deadlines), so this only bounds
+/// the stop's completion latency if a `limactl` call wedges past those internal
+/// deadlines. It does not cancel the blocking closure (a `spawn_blocking` task
+/// runs to completion regardless); it only stops the stop path waiting on it.
+const GUEST_FORCE_KILL_BUDGET: Duration = Duration::from_secs(30);
+
 pub async fn listen_for_node_stop(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -334,13 +342,17 @@ async fn force_stop_instance(
 ///    send is logged and ignored. A non-responsive node must still be
 ///    force-killed, never surfaced as an error (this is what makes a stuck node
 ///    a success, not a failure-with-the-process-left-alive).
-/// 2. Bounded graceful wait (`graceful_budget`, from
+/// 2. If a container node's shutdown request failed, best-effort SIGTERM before
+///    the force window: in-VM SIGTERM on macOS/Lima, or host process-group
+///    SIGTERM on native Linux Apptainer. This gives both backends the same
+///    signal-driven cleanup chance before SIGKILL.
+/// 3. Bounded graceful wait (`graceful_budget`, from
 ///    `peppy_config.lifecycle.shutdown_grace_secs`, shared across the whole
 ///    batch) for the OS processes to exit on their own.
-/// 3. `kill_process_group(pid)` for each instance (SIGKILL the whole group —
+/// 4. `kill_process_group(pid)` for each instance (SIGKILL the whole group —
 ///    nodes are spawned as group leaders) plus, on macOS for container nodes,
 ///    the in-VM guest group kill.
-/// 4. Bounded reap ([`TEARDOWN_REAP_BUDGET`]) so the SIGKILLed groups are gone
+/// 5. Bounded reap ([`TEARDOWN_REAP_BUDGET`]) so the SIGKILLed groups are gone
 ///    before we return.
 ///
 /// Returns one [`StopOutcome`] per input, in order, so callers can tell the
@@ -363,7 +375,7 @@ async fn force_stop_instances(
     let deadline = force_kill_deadline(graceful_budget);
     let _ = tokio::time::timeout(deadline, async {
         let sends = doomed.iter().map(|d| async move {
-            if let Err(e) = send_shutdown_signal(
+            let result = send_shutdown_signal(
                 messenger,
                 core_node_node,
                 core_instance_id,
@@ -371,17 +383,23 @@ async fn force_stop_instances(
                 &d.node_tag,
                 &d.instance_id,
             )
-            .await
-            {
+            .await;
+            if let Err(e) = &result {
                 debug!(
                     "Cooperative shutdown of node instance '{}' failed; \
-                     falling through to force-kill: {}",
+                     trying container signal fallback before force-kill: {}",
                     d.instance_id.as_str(),
                     e
                 );
             }
+            (d, result)
         });
-        futures::future::join_all(sends).await;
+        let failed_shutdowns: Vec<&DoomedInstance> = futures::future::join_all(sends)
+            .await
+            .into_iter()
+            .filter_map(|(d, result)| result.err().map(|_| d))
+            .collect();
+        terminate_failed_container_instances_best_effort(&failed_shutdowns).await;
         wait_until_all_gone(doomed).await;
     })
     .await;
@@ -440,9 +458,16 @@ async fn force_stop_instances(
     // not block a stop or teardown. Runs on a blocking thread because it shells
     // out to `limactl`.
     if !guest_kill_keys.is_empty() {
-        let _ = tokio::task::spawn_blocking(move || {
-            containers::Apptainer::kill_guest_process_groups_best_effort(&guest_kill_keys);
-        })
+        // Cap how long the stop waits on the in-VM guest kill. The kill is itself
+        // internally bounded (see `GUEST_FORCE_KILL_BUDGET`), so this only fires if
+        // a `limactl` call wedges past its own deadline; it does not cancel the
+        // blocking closure, which still runs to completion on the blocking pool.
+        let _ = tokio::time::timeout(
+            GUEST_FORCE_KILL_BUDGET,
+            tokio::task::spawn_blocking(move || {
+                containers::Apptainer::kill_guest_process_groups_best_effort(&guest_kill_keys);
+            }),
+        )
         .await;
     }
 
@@ -452,6 +477,40 @@ async fn force_stop_instances(
     let _ = tokio::time::timeout(TEARDOWN_REAP_BUDGET, wait_until_all_gone(doomed)).await;
 
     outcomes
+}
+
+/// If the Peppy shutdown service could not be delivered to a container node,
+/// give it a normal SIGTERM before the force-kill deadline. On macOS/Lima the
+/// signal must be sent inside the guest because the host process group is only
+/// the `limactl` client. On Linux/native Apptainer there is no VM boundary, so
+/// the host process group is the cooperative signal target.
+async fn terminate_failed_container_instances_best_effort(doomed: &[&DoomedInstance]) {
+    let failed_containers: Vec<&DoomedInstance> = doomed
+        .iter()
+        .copied()
+        .filter(|d| d.is_container && d.pid.is_some())
+        .collect();
+    if failed_containers.is_empty() {
+        return;
+    }
+
+    let guest_term_keys: Vec<String> = failed_containers
+        .iter()
+        .map(|d| d.instance_id.as_str().to_owned())
+        .collect();
+    let guest_term_attempted = tokio::task::spawn_blocking(move || {
+        containers::Apptainer::terminate_guest_process_groups_best_effort(&guest_term_keys)
+    })
+    .await
+    .unwrap_or(false);
+
+    if !guest_term_attempted {
+        for doomed in failed_containers {
+            if let Some(pid) = doomed.pid {
+                terminate_process_group(pid);
+            }
+        }
+    }
 }
 
 /// Removes a `Running` instance from the entity's registry. Called only
@@ -602,10 +661,11 @@ struct DoomedInstance {
     instance_id: Name,
     pid: Option<u32>,
     /// `true` when this instance is a container node. On macOS the workload runs
-    /// inside the Lima VM, so the host process-group SIGKILL only reaches the
-    /// `limactl` client; the force phase additionally SIGKILLs the in-VM group
-    /// keyed by `instance_id`. Always `false` for process nodes (the host group
-    /// kill covers them) and a no-op for containers on Linux.
+    /// inside the Lima VM, so host process-group signals only reach the
+    /// `limactl` client; the stop path also signals the in-VM group keyed by
+    /// `instance_id` (SIGTERM after a failed shutdown request, SIGKILL in the
+    /// force phase). Always `false` for process nodes (the host group kill
+    /// covers them) and a no-op for containers on Linux.
     is_container: bool,
 }
 
@@ -724,27 +784,40 @@ fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
 /// `setpgid`/`killpg` semantics are identical on Linux and macOS.
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
-    // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
-    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
-    // crate free of `unsafe`.
-    match nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    ) {
-        // An already-dead group yields ESRCH; the group is already gone, which
-        // is exactly the state we wanted, so treat it as success.
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        // Any other errno (e.g. EPERM) means the SIGKILL did not land and the
-        // node's process group may still be alive, so surface it.
-        Err(err) => warn!(
-            "Failed to SIGKILL node process group (pid {}): {}",
-            pid, err
-        ),
-    }
+    signal_process_group(pid, nix::sys::signal::Signal::SIGKILL, "SIGKILL");
 }
 
 #[cfg(not(unix))]
 fn kill_process_group(_pid: u32) {}
+
+/// SIGTERMs the entire process group led by `pid`. Used only as a cooperative
+/// fallback for native container runtimes when the Peppy shutdown RPC could not
+/// be delivered; the force phase still SIGKILLs any process group that remains.
+#[cfg(unix)]
+fn terminate_process_group(pid: u32) {
+    signal_process_group(pid, nix::sys::signal::Signal::SIGTERM, "SIGTERM");
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(_pid: u32) {}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: nix::sys::signal::Signal, signal_name: &str) {
+    // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
+    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
+    // crate free of `unsafe`.
+    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), signal) {
+        // An already-dead group yields ESRCH; the group is already gone, which
+        // is exactly the state we wanted, so treat it as success.
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        // Any other errno (e.g. EPERM) means the signal did not land and the
+        // node's process group may still be alive, so surface it.
+        Err(err) => warn!(
+            "Failed to {} node process group (pid {}): {}",
+            signal_name, pid, err
+        ),
+    }
+}
 
 /// Refreshes only `pids` in `system` (existence + status), reading just those
 /// `/proc` entries instead of rescanning every process on the machine. Dead

@@ -543,6 +543,34 @@ impl Apptainer {
         )
     }
 
+    /// Issues a cooperative in-VM SIGTERM for `key` via `limactl shell`. The
+    /// guest pgid file is left in place so the force phase can still SIGKILL the
+    /// same group if it ignores SIGTERM.
+    ///
+    /// Bounded for the same reason as [`kill_guest_pgid`](Self::kill_guest_pgid):
+    /// stop/teardown paths cannot block indefinitely on a wedged VM or SSH
+    /// channel.
+    fn terminate_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
+        /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
+        const TERMINATE_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
+        /// Poll cadence while waiting for the `limactl` child to exit.
+        const TERMINATE_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
+
+        let guest_pgid = lima::guest_pgid_path(key);
+        let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
+            .args(lima::lima_terminate_pgid_argv(&guest_pgid))
+            .spawn()
+            .map_err(Error::from)?;
+        await_guest_kill(
+            &mut child,
+            &guest_pgid,
+            TERMINATE_GUEST_PGID_TIMEOUT,
+            TERMINATE_GUEST_PGID_POLL,
+            Instant::now,
+            std::thread::sleep,
+        )
+    }
+
     /// Best-effort batch form of
     /// [`kill_guest_process_group`](Self::kill_guest_process_group) for node
     /// stop / daemon teardown. Owns the platform gate so callers need no
@@ -574,6 +602,41 @@ impl Apptainer {
                 tracing::debug!("In-VM guest group kill failed for '{key}': {e}");
             }
         }
+    }
+
+    /// Best-effort batch form of the guest-side cooperative SIGTERM used by
+    /// node stop / daemon teardown before the force-kill phase. Owns the same
+    /// platform gate as
+    /// [`kill_guest_process_groups_best_effort`](Self::kill_guest_process_groups_best_effort):
+    /// a no-op outside macOS/Lima, when no keys are provided, or when the VM is
+    /// not running. Failures are logged at debug level, never returned; a failed
+    /// cooperative signal still falls through to the existing SIGKILL phase.
+    /// Returns `true` when the Lima guest-signal path was available and attempted
+    /// for the provided keys; callers can use `false` to fall back to host-side
+    /// signaling on native Apptainer.
+    ///
+    /// Synchronous — it shells out to `limactl` — so call it from a blocking
+    /// context (e.g. `tokio::task::spawn_blocking`).
+    pub fn terminate_guest_process_groups_best_effort(keys: &[String]) -> bool {
+        if !cfg!(target_os = "macos") || keys.is_empty() {
+            return false;
+        }
+        let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
+        {
+            (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
+            // No resolvable Lima installation means no VM, hence no guest
+            // processes to signal.
+            _ => return false,
+        };
+        if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
+            return false;
+        }
+        for key in keys {
+            if let Err(e) = Self::terminate_guest_pgid(&limactl_path, &lima_home, key) {
+                tracing::debug!("In-VM guest group SIGTERM failed for '{key}': {e}");
+            }
+        }
+        true
     }
 
     /// Run `args` in the container runtime environment and capture its output.
@@ -846,41 +909,60 @@ impl GuestKillChild for Child {
     }
 }
 
+/// Wait for `child` to exit, bounded by `timeout`, polling every `poll_interval`.
+///
+/// Returns `Ok(Some(status))` when the child exits before the deadline, or
+/// `Ok(None)` when the deadline elapses first (the child is killed and reaped
+/// before returning). `clock` and `sleep` are injected so the decision logic is
+/// unit-tested on a virtual clock with no real sleeping (production passes
+/// `Instant::now` and `thread::sleep`). Shared by [`await_guest_kill`] and the
+/// bounded VM-liveness probes in [`super::lima`], so every `limactl` invocation
+/// on a stop/teardown path carries the same kill-on-deadline guarantee.
+pub(crate) fn wait_for_child_bounded(
+    child: &mut impl GuestKillChild,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut clock: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Result<Option<ExitStatus>> {
+    let deadline = clock() + timeout;
+    loop {
+        if let Some(status) = child.poll_exit()? {
+            return Ok(Some(status));
+        }
+        if clock() >= deadline {
+            child.kill_and_reap();
+            return Ok(None);
+        }
+        sleep(poll_interval);
+    }
+}
+
 /// Wait for the guest-kill `limactl` child to exit, bounded by `timeout`.
 ///
-/// Polls `child` every `poll_interval` until it exits or `clock` passes the
-/// deadline. A clean exit returns `Ok(())`; a non-zero exit returns the
-/// limactl-failure error; a timeout kills and reaps the child and returns the
-/// timeout error. `clock` and `sleep` are injected so tests drive a virtual clock
-/// with no real sleeping (production passes `Instant::now` and `thread::sleep`).
+/// A clean exit returns `Ok(())`; a non-zero exit returns the limactl-failure
+/// error; a timeout kills and reaps the child and returns the timeout error. The
+/// bounded-wait mechanics live in [`wait_for_child_bounded`]; this only maps its
+/// outcome to the guest-kill result.
 pub(crate) fn await_guest_kill(
     child: &mut impl GuestKillChild,
     guest_pgid: &Path,
     timeout: Duration,
     poll_interval: Duration,
-    mut clock: impl FnMut() -> Instant,
-    mut sleep: impl FnMut(Duration),
+    clock: impl FnMut() -> Instant,
+    sleep: impl FnMut(Duration),
 ) -> Result<()> {
-    let deadline = clock() + timeout;
-    loop {
-        if let Some(status) = child.poll_exit()? {
-            if status.success() {
-                return Ok(());
-            }
-            return Err(Error::LimaInstanceError(format!(
-                "failed to kill guest process group (pgid file {}): limactl exited with {}",
-                guest_pgid.display(),
-                status
-            )));
-        }
-        if clock() >= deadline {
-            child.kill_and_reap();
-            return Err(Error::LimaInstanceError(format!(
-                "timed out after {timeout:?} killing guest process group (pgid file {})",
-                guest_pgid.display()
-            )));
-        }
-        sleep(poll_interval);
+    match wait_for_child_bounded(child, timeout, poll_interval, clock, sleep)? {
+        Some(status) if status.success() => Ok(()),
+        Some(status) => Err(Error::LimaInstanceError(format!(
+            "failed to kill guest process group (pgid file {}): limactl exited with {}",
+            guest_pgid.display(),
+            status
+        ))),
+        None => Err(Error::LimaInstanceError(format!(
+            "timed out after {timeout:?} killing guest process group (pgid file {})",
+            guest_pgid.display()
+        ))),
     }
 }
 

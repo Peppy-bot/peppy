@@ -5,11 +5,12 @@ use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::services::node::{
     DaemonDefaults, FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
-    NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
-    run_node_add, run_node_build_for_entity, run_node_run, teardown_all_instances,
-    write_error_to_log,
+    NodeRunActionContext, create_action_log_file, log_label_from_source,
+    resolve_mount_path_parameters, resolve_node_config, run_node_add, run_node_build_for_entity,
+    run_node_run, teardown_all_instances, write_error_to_log,
 };
 use chrono::Local;
+use config::apply_parameter_defaults;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
@@ -1309,7 +1310,177 @@ async fn add_nodes_to_stack(
     Ok(())
 }
 
-/// Step 6: Start every instance in dependency order.
+/// Step 6: Prepare all host paths that containers in this stack will bind.
+async fn prepare_container_host_mounts(
+    ctx: &ProcessLaunchContext,
+    ordered: &[NodeKey],
+    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+) -> std::result::Result<(), LaunchResult> {
+    let mount_sources = match collect_container_mount_sources(ordered, planned_by_key) {
+        Ok(paths) => paths,
+        Err(reason) => return Err(fail_and_clear_stack(ctx, reason).await),
+    };
+    if mount_sources.is_empty() {
+        return Ok(());
+    }
+
+    if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
+        return Err(fail_and_clear_stack(ctx, reason).await);
+    }
+
+    let lima_mount_sources = external_lima_mount_sources(&mount_sources);
+    if lima_mount_sources.is_empty() {
+        return Ok(());
+    }
+
+    publish_stdout(
+        ctx,
+        "Preparing container host mounts",
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut apptainer = containers::Apptainer::new()
+            .map_err(|e| format!("Failed to initialize Apptainer: {e}"))?;
+        let refs = lima_mount_sources
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        apptainer
+            .ensure_host_mounts(&refs)
+            .map_err(|e| format!("Failed to prepare container host mounts: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Failed to prepare container host mounts: {e}"))
+    .and_then(|result| result);
+
+    if let Err(reason) = result {
+        return Err(fail_and_clear_stack(ctx, reason).await);
+    }
+
+    Ok(())
+}
+
+fn collect_container_mount_sources(
+    ordered: &[NodeKey],
+    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+) -> std::result::Result<Vec<String>, String> {
+    let mut seen = HashSet::new();
+    let mut mount_sources = Vec::new();
+
+    for key in ordered {
+        let Some(item) = planned_by_key.get(key) else {
+            continue;
+        };
+        let Some(container) = item.config.execution.container.as_ref() else {
+            continue;
+        };
+        let raw_mount_paths = container.mount_paths.as_deref().unwrap_or_default();
+        if raw_mount_paths.is_empty() {
+            continue;
+        }
+
+        for instance in &item.deployment.instances {
+            let mut arguments = instance.arguments.clone();
+            let missing =
+                apply_parameter_defaults(&mut arguments, &item.config.execution.parameters);
+            if !missing.is_empty() {
+                return Err(format!(
+                    "failed to prepare container mounts for {} instance {}: Missing required parameters: {}",
+                    key.label(),
+                    instance.instance_id,
+                    missing.join(", ")
+                ));
+            }
+
+            let resolved_mount_paths =
+                match resolve_mount_path_parameters(raw_mount_paths, &arguments) {
+                    Ok(paths) => paths,
+                    Err(msg) => {
+                        return Err(format!(
+                            "failed to prepare container mounts for {} instance {}: {msg}",
+                            key.label(),
+                            instance.instance_id,
+                        ));
+                    }
+                };
+            for mount in resolved_mount_paths {
+                let src = mount_source(&mount).to_string();
+                if seen.insert(src.clone()) {
+                    mount_sources.push(src);
+                }
+            }
+        }
+    }
+
+    Ok(mount_sources)
+}
+
+async fn ensure_launch_bind_sources(
+    ctx: &ProcessLaunchContext,
+    mount_sources: &[String],
+) -> std::result::Result<(), String> {
+    for src in mount_sources {
+        let src_path = Path::new(src);
+        if src_path.exists() || is_kernel_managed_mount_source(src_path) {
+            continue;
+        }
+
+        std::fs::create_dir_all(src_path)
+            .map_err(|e| format!("failed to create bind mount source {src}: {e}"))?;
+        publish_stderr(
+            ctx,
+            format!(
+                "auto-created missing bind mount source: {src} (if you intended to bind an existing file, this is a typo)"
+            ),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
+    }
+
+    Ok(())
+}
+
+fn external_lima_mount_sources(mount_sources: &[String]) -> Vec<String> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    mount_sources
+        .iter()
+        .filter(|src| {
+            let src_path = absolute_mount_source(src);
+            !is_kernel_managed_mount_source(&src_path)
+                && home
+                    .as_ref()
+                    .is_none_or(|home_path| !src_path.starts_with(home_path))
+        })
+        .cloned()
+        .collect()
+}
+
+fn absolute_mount_source(src: &str) -> PathBuf {
+    let path = Path::new(src);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+fn mount_source(mount: &str) -> &str {
+    mount.split(':').next().unwrap_or(mount)
+}
+
+fn is_kernel_managed_mount_source(path: &Path) -> bool {
+    path.starts_with("/dev") || path.starts_with("/proc") || path.starts_with("/sys")
+}
+
+/// Step 7: Start every instance in dependency order.
 async fn start_node_instances(
     ctx: &ProcessLaunchContext,
     ordered: &[NodeKey],
@@ -1599,7 +1770,8 @@ async fn handle_goal_request(
 /// 3. Validate dependencies and compute order
 /// 4. Snapshot and clear stack
 /// 5. Add nodes in dependency order
-/// 6. Start instances in dependency order
+/// 6. Prepare stack-wide container host mounts
+/// 7. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse launcher configuration
     let (deployments, nodes_directory) = match parse_launcher_config(&ctx, &goal).await {
@@ -1645,8 +1817,19 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     )
     .await;
 
-    // Step 6: Start instances in dependency order (only if add succeeded)
-    let start_result = if add_result.is_ok() {
+    // Step 6: Prepare any Lima host mounts before the first container starts.
+    // Updating Lima's mount table can restart the VM; doing it lazily during
+    // a later instance start would kill containers already launched by this
+    // stack operation.
+    let mount_result = if add_result.is_ok() {
+        Some(prepare_container_host_mounts(&ctx, &ordered, &planned_by_key).await)
+    } else {
+        None
+    };
+
+    // Step 7: Start instances in dependency order (only if add and mount
+    // preparation succeeded)
+    let start_result = if add_result.is_ok() && mount_result.as_ref().is_none_or(|r| r.is_ok()) {
         Some(
             start_node_instances(
                 &ctx,
@@ -1662,6 +1845,11 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     };
 
     if let Err(mut launch_result) = add_result {
+        launch_result.node_add_logs = add_log_paths;
+        launch_result.node_build_logs = build_log_paths;
+        return launch_result;
+    }
+    if let Some(Err(mut launch_result)) = mount_result {
         launch_result.node_add_logs = add_log_paths;
         launch_result.node_build_logs = build_log_paths;
         return launch_result;
@@ -1691,6 +1879,8 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::AnyType;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Builds a phase future that signals `cleanup_ran` if it observes the
@@ -1818,5 +2008,39 @@ mod tests {
         let none = config::launcher::FrameworkOverrides::default();
         assert!(!resolve_framework(&none, false).use_sim_time);
         assert!(resolve_framework(&none, true).use_sim_time);
+    }
+
+    #[test]
+    fn launch_mount_preflight_resolves_parameterized_sources() {
+        let mut video = BTreeMap::new();
+        video.insert(
+            "output_dir".to_string(),
+            AnyType::String("/tmp/video_reconstruction".to_string()),
+        );
+        let mut arguments = BTreeMap::new();
+        arguments.insert("video".to_string(), AnyType::Object(video));
+
+        let resolved = resolve_mount_path_parameters(
+            &["${parameters:video.output_dir}:/frames:rw".to_string()],
+            &arguments,
+        )
+        .expect("parameterized mount should resolve");
+
+        assert_eq!(resolved, vec!["/tmp/video_reconstruction:/frames:rw"]);
+        assert_eq!(mount_source(&resolved[0]), "/tmp/video_reconstruction");
+    }
+
+    #[test]
+    fn launch_mount_preflight_rejects_non_string_parameter_sources() {
+        let mut arguments = BTreeMap::new();
+        arguments.insert("frame_rate".to_string(), AnyType::UInt(30));
+
+        let err = resolve_mount_path_parameters(
+            &["${parameters:frame_rate}:/frames:rw".to_string()],
+            &arguments,
+        )
+        .expect_err("non-string mount parameter should be rejected");
+
+        assert!(err.contains("must be a string"));
     }
 }

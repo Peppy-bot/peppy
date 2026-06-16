@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 #[cfg(unix)]
-use super::facade::{GuestKillChild, await_guest_kill};
+use super::facade::{GuestKillChild, await_guest_kill, wait_for_child_bounded};
 #[cfg(unix)]
 use std::process::ExitStatus;
 
@@ -987,6 +987,36 @@ fn lima_kill_pgid_argv_sigkills_the_whole_group() {
     assert_eq!(argv.len(), 5);
 }
 
+#[test]
+fn lima_terminate_pgid_argv_sigterms_without_removing_pgid_file() {
+    let argv = super::lima::lima_terminate_pgid_argv(Path::new("/tmp/peppy/pgids/buildkey.pgid"));
+    // Cooperative SIGTERM must leave the pgid file in place so the later
+    // force-kill path can still target the same in-VM process group if needed.
+    // It also must not SIGTERM the wrapper shell itself; signaling apptainer
+    // lets apptainer forward shutdown into the container while the wrapper keeps
+    // waiting and can remove the pgid file on a clean exit.
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+    assert_eq!(
+        argv[2],
+        "pgid=\"$(cat \"$1\" 2>/dev/null || true)\"; \
+         if [ -n \"$pgid\" ]; then \
+           children=\"$(cat \"/proc/$pgid/task/$pgid/children\" 2>/dev/null || true)\"; \
+           for child in $children; do kill -TERM \"$child\" 2>/dev/null || true; done; \
+         fi; \
+         true"
+    );
+    assert_eq!(
+        argv[3], "sh",
+        "the `$0` placeholder so the next value is `$1`"
+    );
+    assert_eq!(
+        argv[4], "/tmp/peppy/pgids/buildkey.pgid",
+        "`$1`: the pgid file"
+    );
+    assert_eq!(argv.len(), 5);
+}
+
 /// Builds a Native-backend facade for command-assembly tests without booting a
 /// VM. The apptainer path need not exist: these tests only inspect the assembled
 /// argv and the no-op kill path.
@@ -1208,6 +1238,11 @@ fn kill_guest_process_groups_best_effort_is_noop_for_empty_keys() {
     Apptainer::kill_guest_process_groups_best_effort(&[]);
 }
 
+#[test]
+fn terminate_guest_process_groups_best_effort_is_noop_for_empty_keys() {
+    assert!(!Apptainer::terminate_guest_process_groups_best_effort(&[]));
+}
+
 /// On the native (Linux) backend the host process-group kill already reaped the
 /// shared-namespace workload, so this returns without resolving or touching Lima
 /// even for a non-empty key set.
@@ -1215,6 +1250,14 @@ fn kill_guest_process_groups_best_effort_is_noop_for_empty_keys() {
 #[test]
 fn kill_guest_process_groups_best_effort_is_noop_on_native() {
     Apptainer::kill_guest_process_groups_best_effort(&["some-instance-key".to_string()]);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn terminate_guest_process_groups_best_effort_is_noop_on_native() {
+    assert!(!Apptainer::terminate_guest_process_groups_best_effort(&[
+        "some-instance-key".to_string(),
+    ]));
 }
 
 /// On the native (Linux) backend `ensure_host_mounts` is a pure no-op: all host
@@ -1380,6 +1423,61 @@ fn await_guest_kill_times_out_and_reaps_a_wedged_child() {
         }
         other => panic!("expected LimaInstanceError, got {other:?}"),
     }
+    assert!(
+        child.killed,
+        "the timeout path must kill and reap the wedged child"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_for_child_bounded_returns_exit_status_on_clean_exit() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::{Duration, Instant};
+
+    let mut child = FakeKillChild {
+        exit: Some(ExitStatus::from_raw(0)),
+        killed: false,
+    };
+    let result = wait_for_child_bounded(
+        &mut child,
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(1)),
+        |_| panic!("must not sleep: the child has already exited"),
+    );
+    assert!(
+        matches!(result, Ok(Some(status)) if status.success()),
+        "a clean exit should yield Ok(Some(success)), got: {result:?}"
+    );
+    assert!(!child.killed, "a cleanly-exited child must not be killed");
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_for_child_bounded_returns_none_and_reaps_on_timeout() {
+    use std::time::{Duration, Instant};
+
+    // `exit: None` never reports an exit, so the deadline must fire. The clock
+    // jumps a full timeout per call, so the first deadline check after the first
+    // poll trips immediately (no real time passes). This `Ok(None)` timeout
+    // contract is what `is_ssh_alive` relies on to treat a wedged VM as
+    // unreachable rather than panic or park its blocking thread.
+    let mut child = FakeKillChild {
+        exit: None,
+        killed: false,
+    };
+    let result = wait_for_child_bounded(
+        &mut child,
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        stepping_clock(Instant::now(), Duration::from_secs(10)),
+        |_| {},
+    );
+    assert!(
+        matches!(result, Ok(None)),
+        "a child that never exits should time out to Ok(None), got: {result:?}"
+    );
     assert!(
         child.killed,
         "the timeout path must kill and reap the wedged child"
