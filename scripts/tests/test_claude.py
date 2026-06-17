@@ -124,6 +124,34 @@ def test_run_claude_disables_tools_when_tools_empty(tmp_path: Path) -> None:
     assert "--allowed-tools" not in cmd
 
 
+def test_run_claude_effort_override(tmp_path: Path) -> None:
+    capture: dict[str, Any] = {}
+    with patch(
+        "functions.claude.subprocess.run",
+        side_effect=_mock_run("ok", capture=capture),
+    ):
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="default",
+            cwd=tmp_path,
+            effort="low",
+        )
+    assert _flag_value(capture["cmd"], "--effort") == "low"
+
+
+def test_run_claude_defaults_to_pinned_effort(tmp_path: Path) -> None:
+    capture: dict[str, Any] = {}
+    with patch(
+        "functions.claude.subprocess.run",
+        side_effect=_mock_run("ok", capture=capture),
+    ):
+        run_claude(
+            "p", allowed_tools="Read", permission_mode="default", cwd=tmp_path
+        )
+    assert _flag_value(capture["cmd"], "--effort") == CLAUDE_EFFORT
+
+
 def test_run_claude_omits_tools_flag_by_default(tmp_path: Path) -> None:
     capture: dict[str, Any] = {}
     with patch(
@@ -194,4 +222,4 @@ def test_claude_model_is_pinned_to_exact_id() -> None:
     # defeat the reproducibility pin; require a full versioned id.
     assert CLAUDE_MODEL.startswith("claude-")
     assert CLAUDE_MODEL not in ("opus", "sonnet", "haiku")
-    assert CLAUDE_EFFORT == "max"
+    assert CLAUDE_EFFORT == "xhigh"

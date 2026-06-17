@@ -84,6 +84,7 @@ def generate_release_content(
         permission_mode="bypassPermissions",
         cwd=repo_root,
         tools="",
+        effort="xhigh",
     )
     return _parse_release_content(text)
 

@@ -104,12 +104,14 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         permission_mode: str,
         cwd: Path,
         tools: str | None = None,
+        effort: str = "max",
     ) -> str:
         captured["prompt"] = prompt
         captured["allowed_tools"] = allowed_tools
         captured["permission_mode"] = permission_mode
         captured["cwd"] = cwd
         captured["tools"] = tools
+        captured["effort"] = effort
         return json.dumps({"title": "T", "description": "D", "notes": "N"})
 
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
@@ -123,6 +125,7 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
     # Pure transformation: tools disabled so Claude cannot explore and ramble.
     assert captured["tools"] == ""
     assert captured["allowed_tools"] == ""
+    assert captured["effort"] == "xhigh"
     assert captured["cwd"] == tmp_path
     # The commit subjects and tag are interpolated into the prompt.
     assert "- fix(apptainer): pre-flight bind mounts" in captured["prompt"]

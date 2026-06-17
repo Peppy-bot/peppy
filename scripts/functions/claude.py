@@ -29,9 +29,10 @@ from .cli import ReleaseError
 # Callers are built to tolerate the residual variance.
 #
 # Use the full model id (not the "opus" alias) so the pin does not follow the
-# moving "latest" pointer. "max" is the highest effort tier ("ultracode").
+# moving "latest" pointer. "xhigh" is a high effort tier, just below "max" (the
+# "ultracode" tier).
 CLAUDE_MODEL = "claude-opus-4-8"
-CLAUDE_EFFORT = "max"
+CLAUDE_EFFORT = "xhigh"
 
 
 def run_claude(
@@ -41,6 +42,7 @@ def run_claude(
     permission_mode: str,
     cwd: Path,
     tools: str | None = None,
+    effort: str = CLAUDE_EFFORT,
 ) -> str:
     """Run ``claude -p`` and return the final assistant text.
 
@@ -48,6 +50,8 @@ def run_claude(
     disable all tools (a pure text transformation), or a space/comma list to
     restrict them. When None, the CLI's default tool set is available.
     ``allowed_tools`` is the auto-approve allowlist and is omitted when empty.
+    ``effort`` defaults to the pinned CLAUDE_EFFORT; callers may pass a lower
+    tier (for example "low") for latency-sensitive, low-complexity tasks.
     """
     # Prompt is piped via stdin rather than passed as an argv element: prompts
     # can embed large diffs or changelogs that exceed ARG_MAX on Linux
@@ -58,7 +62,7 @@ def run_claude(
         "--model",
         CLAUDE_MODEL,
         "--effort",
-        CLAUDE_EFFORT,
+        effort,
         "--output-format",
         "json",
         "--permission-mode",

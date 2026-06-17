@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,12 +84,20 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _open_editor(path: Path) -> None:
-    """Open the user's preferred editor on the given file."""
-    editor = os.environ.get("EDITOR", "")
+    """Open the user's preferred editor on the given file.
+
+    EDITOR may include flags (for example "nano -c" or "code --wait"), so the
+    command is split into argv rather than treated as a single executable name.
+    """
+    editor = os.environ.get("EDITOR", "").strip()
     if not editor:
         editor = "nano" if shutil.which("nano") else "vi"
 
-    result = subprocess.run([editor, str(path)])
+    argv = shlex.split(editor) + [str(path)]
+    try:
+        result = subprocess.run(argv)
+    except FileNotFoundError as e:
+        raise ReleaseError(f"editor command not found: {editor!r} ({e})")
     if result.returncode != 0:
         raise ReleaseError(f"editor '{editor}' exited with code {result.returncode}")
 

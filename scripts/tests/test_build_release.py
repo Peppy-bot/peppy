@@ -12,6 +12,7 @@ from functions.build_release import (
     _build_all_targets,
     _build_release_payload,
     _confirm_release_content,
+    _open_editor,
     _parse_editable,
     _prepare_release_content,
     _render_editable,
@@ -458,6 +459,38 @@ def test_parse_editable_empty_field_raises() -> None:
     text = "Title: T\nDescription:\nNotes:\nbody\n"
     with pytest.raises(ReleaseError, match="empty title, description, or notes"):
         _parse_editable(text)
+
+
+@patch("functions.build_release.subprocess.run")
+def test_open_editor_splits_editor_with_flags(
+    mock_run: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # EDITOR may carry flags (e.g. "nano -c"); they must become separate argv
+    # elements, not part of the executable name.
+    monkeypatch.setenv("EDITOR", "nano -c")
+    mock_run.return_value = MagicMock(returncode=0)
+    notes = tmp_path / "notes.md"
+
+    _open_editor(notes)
+
+    argv = mock_run.call_args.args[0]
+    assert argv == ["nano", "-c", str(notes)]
+
+
+@patch(
+    "functions.build_release.subprocess.run",
+    side_effect=FileNotFoundError(2, "No such file or directory"),
+)
+def test_open_editor_missing_command_raises(
+    mock_run: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EDITOR", "definitely-not-an-editor")
+    with pytest.raises(ReleaseError, match="editor command not found"):
+        _open_editor(tmp_path / "notes.md")
 
 
 def test_confirm_release_content_accepts() -> None:
