@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,7 +13,6 @@ from functions.cli import ReleaseError
 from functions.github import (
     RepoSlug,
     delete_release,
-    generate_release_notes_preview,
     get_latest_release,
     github_api,
     github_upload_asset,
@@ -259,58 +257,3 @@ def test_get_latest_release_returns_none_when_no_releases(
         return_value=httpx.Response(404, json={"message": "Not Found"})
     )
     assert get_latest_release(github_client, SLUG) is None
-
-
-# --- generate_release_notes_preview ---
-
-
-def test_generate_release_notes_preview_returns_body_and_sends_previous_tag(
-    mock_api: respx.MockRouter,
-    github_client: httpx.Client,
-) -> None:
-    route = mock_api.post(f"{API_BASE}/releases/generate-notes").mock(
-        return_value=httpx.Response(
-            200, json={"name": "v0.2.0", "body": "## What's Changed\n- x"}
-        )
-    )
-    body = generate_release_notes_preview(
-        github_client,
-        SLUG,
-        tag_name="v0.2.0",
-        target_commitish="main",
-        previous_tag_name="v0.1.0",
-    )
-    assert body == "## What's Changed\n- x"
-    sent = json.loads(route.calls[0].request.content)
-    assert sent == {
-        "tag_name": "v0.2.0",
-        "target_commitish": "main",
-        "previous_tag_name": "v0.1.0",
-    }
-
-
-def test_generate_release_notes_preview_omits_previous_tag_when_none(
-    mock_api: respx.MockRouter,
-    github_client: httpx.Client,
-) -> None:
-    route = mock_api.post(f"{API_BASE}/releases/generate-notes").mock(
-        return_value=httpx.Response(200, json={"body": "notes"})
-    )
-    generate_release_notes_preview(
-        github_client, SLUG, tag_name="v0.1.0", target_commitish="main"
-    )
-    sent = json.loads(route.calls[0].request.content)
-    assert "previous_tag_name" not in sent
-
-
-def test_generate_release_notes_preview_missing_body_raises(
-    mock_api: respx.MockRouter,
-    github_client: httpx.Client,
-) -> None:
-    mock_api.post(f"{API_BASE}/releases/generate-notes").mock(
-        return_value=httpx.Response(200, json={"name": "v0.1.0"})
-    )
-    with pytest.raises(ReleaseError, match="missing 'body'"):
-        generate_release_notes_preview(
-            github_client, SLUG, tag_name="v0.1.0", target_commitish="main"
-        )

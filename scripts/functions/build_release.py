@@ -41,7 +41,6 @@ from .github import (
     RepoSlug,
     build_github_client,
     delete_release,
-    generate_release_notes_preview,
     get_latest_release,
     github_api,
     github_repo_slug,
@@ -58,7 +57,12 @@ from .release_notes import (
 )
 from .release_summary import ReleaseContent, generate_release_content
 from .docker import main as build_base_images_main
-from .repo import get_current_branch, get_repo_root, has_uncommitted_changes
+from .repo import (
+    get_commit_subjects,
+    get_current_branch,
+    get_repo_root,
+    has_uncommitted_changes,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -186,7 +190,7 @@ def _confirm_release_content(content: ReleaseContent) -> ReleaseContent:
     while True:
         _print_release_content(content)
         choice = prompt_choice(
-            "Use these release notes? [y]es / [e]dit / [a]bort",
+            "Use these release notes? (y)es, (e)dit, (a)bort",
             choices=("y", "e", "a"),
             default="y",
         )
@@ -201,34 +205,28 @@ def _prepare_release_content(
     client: httpx.Client,
     slug: RepoSlug,
     tag: str,
-    target_commitish: str,
     repo_root: Path,
 ) -> ReleaseContent:
     """Derive the release content from the changes since the last release.
 
-    Fetches GitHub's changelog (pull requests since the previous published
-    release), asks Claude to draft the title/description/notes, then lets the
-    user review, edit, or abort before anything is built or published.
+    Collects the commit subjects since the previous published release, asks
+    Claude to draft the title/description/notes as a self-contained list of
+    changes (no external links), then lets the user review, edit, or abort
+    before anything is built or published.
     """
     latest = get_latest_release(client, slug)
     previous_tag = latest.get("tag_name") if latest else None
     if previous_tag:
-        console.print(f"Comparing against last release [bold]{previous_tag}[/bold]...")
+        console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
     else:
         console.print(
             "[yellow]No previous published release found; "
-            "summarizing the full history.[/yellow]"
+            "listing the full history.[/yellow]"
         )
 
-    changelog = generate_release_notes_preview(
-        client,
-        slug,
-        tag_name=tag,
-        target_commitish=target_commitish,
-        previous_tag_name=previous_tag,
-    )
+    commits = get_commit_subjects(previous_tag)
     console.print("Asking Claude to write the release notes...")
-    content = generate_release_content(changelog, tag, repo_root)
+    content = generate_release_content(commits, tag, repo_root)
     return _confirm_release_content(content)
 
 
@@ -347,9 +345,7 @@ def _run_full() -> None:
     # the long cross-compile starts.
     slug = github_repo_slug()
     client = build_github_client(token)
-    content = _prepare_release_content(
-        client, slug, tag, target_commitish, repo_root
-    )
+    content = _prepare_release_content(client, slug, tag, repo_root)
 
     # Build and package all targets
     targets = get_targets_for_platform()

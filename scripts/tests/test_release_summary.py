@@ -113,19 +113,23 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         return json.dumps({"title": "T", "description": "D", "notes": "N"})
 
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
-        result = generate_release_content("## What's Changed\n- x", "v0.12.0", tmp_path)
+        result = generate_release_content(
+            ["fix(apptainer): pre-flight bind mounts", "refactor: extract helper"],
+            "v0.12.0",
+            tmp_path,
+        )
 
     assert result == ReleaseContent("T", "D", "N")
     # Pure transformation: tools disabled so Claude cannot explore and ramble.
     assert captured["tools"] == ""
     assert captured["allowed_tools"] == ""
     assert captured["cwd"] == tmp_path
-    # The changelog and tag are interpolated into the prompt.
-    assert "## What's Changed" in captured["prompt"]
+    # The commit subjects and tag are interpolated into the prompt.
+    assert "- fix(apptainer): pre-flight bind mounts" in captured["prompt"]
     assert "v0.12.0" in captured["prompt"]
 
 
-def test_generate_release_content_handles_empty_changelog(tmp_path: Path) -> None:
+def test_generate_release_content_handles_no_commits(tmp_path: Path) -> None:
     captured: dict[str, str] = {}
 
     def _fake_run_claude(prompt: str, **kwargs: object) -> str:
@@ -133,6 +137,6 @@ def test_generate_release_content_handles_empty_changelog(tmp_path: Path) -> Non
         return json.dumps({"title": "T", "description": "D", "notes": "N"})
 
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
-        generate_release_content("   ", "v0.1.0", tmp_path)
+        generate_release_content([], "v0.1.0", tmp_path)
 
-    assert "no merged pull requests" in captured["prompt"]
+    assert "no commits since the last release" in captured["prompt"]

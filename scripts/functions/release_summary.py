@@ -1,9 +1,9 @@
-"""Have Claude write the human-facing release content from a changelog.
+"""Have Claude write the human-facing release content from the commit log.
 
-Given GitHub's auto-generated "What's Changed" changelog for a release (the
-merged pull requests since the previous release, with author and PR links),
-ask Claude to produce a short headline, a one-line summary, and a polished
-Markdown body that keeps the original pull-request list intact.
+Given the list of commit subjects since the previous release, ask Claude to
+produce a short headline, a one-line summary, and a self-contained Markdown
+body: an exhaustive, readable list of the changes with no external links,
+pull-request numbers, or author mentions.
 """
 
 from __future__ import annotations
@@ -22,9 +22,9 @@ You are writing the public release notes for "peppy", a developer tool shipped
 as Rust crates with an Astro Starlight documentation site. This is release
 {tag}.
 
-Below is GitHub's auto-generated changelog for this release: the pull requests
-merged since the previous release, with their authors and links. It is the only
-source of truth. Do not invent changes that are not listed.
+Below is the exhaustive list of commits merged since the previous release
+(commit subjects, one per line). It is the only source of truth. Do not invent
+changes that are not listed.
 
 Respond with a single JSON object and nothing else. Do not explain your
 reasoning, do not narrate, do not add any text before or after the object, and
@@ -36,21 +36,23 @@ strict parser accepts, exactly this shape:
 Field requirements:
 - "title": a concise, human headline for the release theme (max ~70 chars),
   without the version number; it is shown separately.
-- "description": a single sentence (max ~120 chars) summarizing the release for
-  the changelog page.
-- "notes": the release body in Markdown. Begin with a short paragraph (one to
-  three sentences) summarizing the most important changes, then include the
-  provided "What's Changed" list verbatim, preserving every pull-request link,
-  author mention, and the "Full Changelog" line.
+- "description": a single sentence (max ~120 chars) summarizing the release.
+- "notes": the release body in Markdown, as an exhaustive bulleted list of the
+  changes, one bullet per meaningful change, each rewritten as a clear,
+  self-contained sentence. Group related changes under short "### " subheadings
+  when it improves readability. Do NOT include any links, URLs, pull-request or
+  issue numbers (for example "#123"), commit hashes, author or "@" mentions, or
+  a "Full Changelog" line. Omit purely mechanical commits such as version bumps,
+  release commits, merge commits, and changes that only touch CI or formatting.
 
-GitHub changelog:
-{changelog}
+Commits since the previous release:
+{changes}
 """
 
 
 @dataclass(frozen=True)
 class ReleaseContent:
-    """The release fields Claude writes from the changelog."""
+    """The release fields Claude writes from the commit log."""
 
     title: str
     description: str
@@ -58,18 +60,22 @@ class ReleaseContent:
 
 
 def generate_release_content(
-    changelog_markdown: str,
+    commit_subjects: list[str],
     tag: str,
     repo_root: Path,
 ) -> ReleaseContent:
     """Ask Claude to draft the release title, description, and notes.
 
-    ``changelog_markdown`` is GitHub's generate-notes output for the release.
-    Claude runs read-only (it may inspect the repo but cannot edit it).
+    ``commit_subjects`` are the git commit subjects since the previous release.
+    Claude runs with no tools (a pure transformation) and is instructed to emit
+    a self-contained list of changes with no links, pull-request numbers, or
+    author mentions.
     """
-    changelog = changelog_markdown.strip() or "(no merged pull requests since the last release)"
-    prompt = _PROMPT.format(tag=tag, changelog=changelog)
-    # No tools: this is a pure transformation of the changelog. Giving Claude
+    changes = "\n".join(f"- {subject}" for subject in commit_subjects) or (
+        "(no commits since the last release)"
+    )
+    prompt = _PROMPT.format(tag=tag, changes=changes)
+    # No tools: this is a pure transformation of the commit list. Giving Claude
     # repository access leads it to explore git history and answer with an
     # analysis narrative instead of the JSON object.
     text = run_claude(

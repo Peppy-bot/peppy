@@ -491,11 +491,11 @@ def test_confirm_release_content_edits_then_accepts() -> None:
 
 @patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
 @patch("functions.build_release.generate_release_content")
-@patch("functions.build_release.generate_release_notes_preview")
+@patch("functions.build_release.get_commit_subjects")
 @patch("functions.build_release.get_latest_release")
 def test_prepare_release_content_uses_previous_release_tag(
     mock_latest: MagicMock,
-    mock_preview: MagicMock,
+    mock_commits: MagicMock,
     mock_generate: MagicMock,
     mock_confirm: MagicMock,
     tmp_path: Path,
@@ -503,43 +503,39 @@ def test_prepare_release_content_uses_previous_release_tag(
     from functions.github import RepoSlug
 
     mock_latest.return_value = {"tag_name": "v0.11.1"}
-    mock_preview.return_value = "## What's Changed\n- x"
+    subjects = ["fix(x): do thing", "feat(y): add y"]
+    mock_commits.return_value = subjects
     content = ReleaseContent("T", "D", "N")
     mock_generate.return_value = content
     client = MagicMock()
     slug = RepoSlug(owner="o", repo="r")
 
-    result = _prepare_release_content(client, slug, "v0.12.0", "main", tmp_path)
+    result = _prepare_release_content(client, slug, "v0.12.0", tmp_path)
 
     assert result == content
-    mock_preview.assert_called_once_with(
-        client,
-        slug,
-        tag_name="v0.12.0",
-        target_commitish="main",
-        previous_tag_name="v0.11.1",
-    )
-    mock_generate.assert_called_once_with("## What's Changed\n- x", "v0.12.0", tmp_path)
+    # Commits are listed from the previous release tag, not via the GitHub API.
+    mock_commits.assert_called_once_with("v0.11.1")
+    mock_generate.assert_called_once_with(subjects, "v0.12.0", tmp_path)
     mock_confirm.assert_called_once_with(content)
 
 
 @patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
 @patch("functions.build_release.generate_release_content")
-@patch("functions.build_release.generate_release_notes_preview")
+@patch("functions.build_release.get_commit_subjects")
 @patch("functions.build_release.get_latest_release", return_value=None)
 def test_prepare_release_content_handles_no_previous_release(
     mock_latest: MagicMock,
-    mock_preview: MagicMock,
+    mock_commits: MagicMock,
     mock_generate: MagicMock,
     mock_confirm: MagicMock,
     tmp_path: Path,
 ) -> None:
     from functions.github import RepoSlug
 
-    mock_preview.return_value = "## What's Changed\n- x"
+    mock_commits.return_value = ["initial commit"]
     mock_generate.return_value = ReleaseContent("T", "D", "N")
 
-    _prepare_release_content(MagicMock(), RepoSlug("o", "r"), "v0.1.0", "main", tmp_path)
+    _prepare_release_content(MagicMock(), RepoSlug("o", "r"), "v0.1.0", tmp_path)
 
-    # With no prior release, previous_tag_name is None and GitHub picks the base.
-    assert mock_preview.call_args.kwargs["previous_tag_name"] is None
+    # With no prior release, the commit range falls back to the full history.
+    mock_commits.assert_called_once_with(None)

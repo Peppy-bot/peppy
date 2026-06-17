@@ -81,6 +81,30 @@ def get_head_commit() -> str:
     return result.stdout.strip()
 
 
+def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
+    """Return the commit subjects between base and head (newest first).
+
+    When base is None (no prior release), returns the full history up to head.
+    Merge commits are excluded, so the list reflects the actual changes rather
+    than pull-request merge noise.
+
+    Raises ReleaseError if the revision range cannot be read (for example, when
+    the base tag has not been fetched locally).
+    """
+    rev_range = f"{base}..{head}" if base else head
+    result = subprocess.run(
+        ["git", "log", "--no-merges", "--format=%s", rev_range],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to read commit log for '{rev_range}': "
+            f"{result.stderr.strip()} (try 'git fetch --tags')"
+        )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def checkout(ref: str) -> None:
     """Checkout a git ref (tag, branch, or commit).
 
