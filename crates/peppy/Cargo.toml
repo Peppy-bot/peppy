@@ -31,7 +31,7 @@ derive_more = { version = "2", features = ["from"] }
 rayon = "1.11.0"
 service-manager = "0.11"
 ipnet = "2.11"
-netdev = "0.44"
+netdev = "0.45"
 # Safe wrappers over the libc syscalls peppy needs (getuid/geteuid and the
 # kill(pid, 0) liveness probe), so the crate carries no `unsafe` for them.
 rustix = { version = "1", features = ["process"] }

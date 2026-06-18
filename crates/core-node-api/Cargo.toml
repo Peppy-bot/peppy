@@ -7,7 +7,7 @@ edition.workspace = true
 [dependencies]
 # This is the only crate that is allowed to be imported to avoid future circular dependencies
 config = { path = "../config-internal" }
-capnp = "0.25"
+capnp = "0.26"
 bytes = "1.10"
 chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -18,7 +18,7 @@ gix-url = "0.36"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
-capnpc = "0.25"
+capnpc = "0.26"
 
 [dev-dependencies]
 tempfile = "3.10"

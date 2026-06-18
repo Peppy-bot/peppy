@@ -24,14 +24,14 @@ schemars = "1.2"
 jsonschema = "0.46"
 tokio-util = "0.7"
 tempfile = { version = "3.10", optional = true }
-capnp = "0.25"
+capnp = "0.26"
 # `Subscription::rx` is a `flume::Receiver` (see the type doc in pmi);
 # peppylib's `TryRecvError` converts from flume's matching error.
 flume = "0.12"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
-capnpc = "0.25"
+capnpc = "0.26"
 
 [dev-dependencies]
 libc = "0.2"
