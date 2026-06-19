@@ -2,10 +2,13 @@ mod action_poll;
 mod confirm;
 pub mod container;
 pub mod info;
+pub mod login;
+pub mod logout;
 pub mod node;
 pub mod repo;
 pub mod service;
 pub mod stack;
+pub mod whoami;
 
 use std::future::Future;
 use std::sync::Arc;

@@ -7,7 +7,7 @@ use tracing::error;
 
 use config::consts::AppEnv;
 use peppy::{
-    commands::{Command, container, info, node, repo, service, stack},
+    commands::{Command, container, info, login, logout, node, repo, service, stack, whoami},
     context::AppContext,
 };
 
@@ -50,6 +50,36 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         command: repo::RepoCommands,
+    },
+    /// Log in to Peppy via the browser (OAuth device flow)
+    Login {
+        /// Profile to log into (e.g. `dev`/`prod`); defaults per build.
+        #[arg(long)]
+        env: Option<String>,
+        /// Override the backend base URL (else profile default / PEPPY_API_URL).
+        #[arg(long = "api-url")]
+        api_url: Option<String>,
+        /// Print the verification URL/code instead of opening a browser.
+        #[arg(long = "no-browser")]
+        no_browser: bool,
+    },
+    /// Log out: revoke the access token on the backend and clear local credentials
+    Logout {
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long = "api-url")]
+        api_url: Option<String>,
+    },
+    /// Show the current Peppy identity, profile, and token status
+    #[command(visible_alias = "status")]
+    Whoami {
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long = "api-url")]
+        api_url: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Display peppy version information
     Info {},
@@ -94,6 +124,30 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
+        Commands::Login {
+            env,
+            api_url,
+            no_browser,
+        } => login::LoginCommand {
+            env,
+            api_url,
+            no_browser,
+            credentials_file: None,
+        }
+        .execute(&app_ctx),
+        Commands::Logout { env, api_url } => logout::LogoutCommand {
+            env,
+            api_url,
+            credentials_file: None,
+        }
+        .execute(&app_ctx),
+        Commands::Whoami { env, api_url, json } => whoami::WhoamiCommand {
+            env,
+            api_url,
+            json,
+            credentials_file: None,
+        }
+        .execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 

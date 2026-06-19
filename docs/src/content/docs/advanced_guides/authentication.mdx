@@ -1,0 +1,108 @@
+---
+title: Authentication
+description: Log in to the Peppy backend with peppy login (OAuth device flow), stay logged in across runs, and authenticate CI with a PEPPY_API_KEY.
+sidebar:
+  order: 15
+---
+
+`peppy login` authenticates the CLI against the Peppy backend. Peppy is a public
+OAuth client of the project's identity provider (Zitadel): the CLI obtains a
+bearer token through the browser and sends it to the backend, which validates it.
+The CLI never sees your Google/passkey credentials — those stay in the browser.
+
+## Commands
+
+| Command | What it does |
+|---------|--------------|
+| `peppy login [--env <name>] [--no-browser]` | Logs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
+| `peppy whoami` (alias `status`) | Shows the current identity, profile, and token validity. `--json` for machine-readable output. |
+| `peppy logout` | Revokes the access token on the backend (across replicas) and deletes the local credentials. |
+
+## Logging in
+
+```
+peppy login
+```
+
+On a terminal this prints a verification URL and a user code, then opens your
+browser at that URL (with the code pre-filled). Approve the request in the
+browser and the CLI stores the tokens. Subsequent commands reuse them — you log
+in once and stay logged in until the refresh token expires; expired access
+tokens are refreshed automatically.
+
+Over SSH or anywhere without a browser, use `--no-browser`: the CLI prints the
+URL and code and waits for you to approve them on another device.
+
+```
+peppy login --no-browser
+```
+
+### How it works
+
+1. The CLI fetches the public `GET {api_url}/cli-config`, which returns the
+   `issuer`, the `client_id`, and the exact `scopes` to request.
+2. It runs OIDC discovery against the `issuer`
+   (`{issuer}/.well-known/openid-configuration`) to find the device and token
+   endpoints.
+3. It starts the device flow, opens the browser, and polls until you approve.
+4. It caches the tokens (and the `issuer`/`client_id`, so refresh works offline)
+   under `~/.peppy/conf/credentials.json5`.
+
+## Profiles
+
+A profile is a named backend URL. The default follows the build (`dev` for a
+debug build, `prod` for a release build) and can be overridden at runtime:
+
+| Profile | Backend (`api_url`) |
+|---------|---------------------|
+| `dev`   | `http://127.0.0.1:3000` |
+| `prod`  | `https://api.peppy.bot` |
+
+Select a profile with `--env`, `PEPPY_PROFILE`/`PEPPY_ENV`, or point at any
+backend with `--api-url` / `PEPPY_API_URL`. Credentials are stored per profile,
+so `dev` and `prod` never collide. Plain `http` is allowed only for local
+backends (loopback / `*.localhost`); anything else must be `https`.
+
+## CI and automation
+
+For non-interactive use, set `PEPPY_API_KEY` to a Zitadel service-user personal
+access token (PAT). It is used directly as the bearer — no browser, no refresh,
+and it is never written to disk. A PAT short-circuits every other credential
+source, so CI never opens a browser. If the PAT is revoked, requests start
+failing with 401 and you must rotate it. A PAT principal shows up as
+`kind: "machine"` under `peppy whoami`.
+
+## Credential storage
+
+Tokens live at `~/.peppy/conf/credentials.json5`, written owner-only (`0600`).
+The root honours `PEPPY_HOME`.
+
+:::caution
+A debug `cargo run` build stores credentials under `/tmp/.peppy` (wiped on
+reboot), so "remembered across runs" only holds for the installed release binary
+or when `PEPPY_HOME` is set. This does not affect installed binaries.
+:::
+
+Tokens are never printed and `Authorization` headers are redacted in verbose
+output.
+
+## Logging out
+
+```
+peppy logout
+```
+
+This calls `POST {api_url}/logout`, which denylists the presented access token
+across all backend replicas (sub-second), then deletes the local credentials.
+The effect is near-immediate for the logged-out token. It revokes only the
+token you presented — a session on another device keeps working.
+
+## Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `PEPPY_API_KEY` | PAT for non-interactive auth (highest-priority credential). |
+| `PEPPY_PROFILE` / `PEPPY_ENV` | Select the active profile (`dev`/`prod`). |
+| `PEPPY_API_URL` | Override the backend base URL. |
+| `PEPPY_HOME` | Override the `~/.peppy` data root (also moves the credentials file). |
+| `NO_COLOR` | Disable coloured output. |
