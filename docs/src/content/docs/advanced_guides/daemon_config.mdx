@@ -5,10 +5,10 @@ sidebar:
   order: 9
 ---
 
-The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, and the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns.
+The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, and the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
 
 :::note
-The file is read **once, at daemon startup**. Editing it has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes.
+The daemon reads its settings (`mode`, `peer`, `lifecycle`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy login` without a daemon restart.
 :::
 
 ## How the file is managed
@@ -56,6 +56,13 @@ A setting you delete from the file therefore comes back with its default on the 
     // actuators and release hardware before it is killed.
     shutdown_grace_secs: 5,
   },
+
+  // Backend resource-server URL the `peppy login` / `whoami` / `logout`
+  // commands talk to. Baked in at compile time (the dev backend in debug
+  // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
+  resource_servers: {
+    api: "https://api.peppy.bot",
+  },
 }
 ```
 
@@ -88,6 +95,14 @@ The `lifecycle` block tunes the two windows peppy uses to guarantee that no node
 - **`daemon_grace_secs`** (default `180`, minimum `30`): every spawned node runs a watchdog that listens for the daemon's periodic heartbeat (published every 5 seconds). If the heartbeat goes silent for this many seconds, the node shuts itself down rather than lingering as an orphan. This only governs **unclean** daemon death (crash, OOM, `SIGKILL`); a clean shutdown does not wait for it. The minimum exists so a brief daemon blip or a quick restart never trips every node's watchdog.
 - **`shutdown_grace_secs`** (default `5`, minimum `1`): the node's cooperative-cleanup budget. A clean daemon shutdown (`Ctrl+C`, `systemctl stop`) and `peppy node stop` wait this window, plus a fixed allowance for the node's runtime to finish tearing down (in Python, the event-loop join and interpreter finalize), before force-killing its process group. Raise it for nodes that need longer to park actuators or release hardware before dying; the force-kill deadline rises with it.
 
+## `resource_servers`: backend URL
+
+This block holds the platform-backend base URL the CLI auth commands talk to. The daemon ignores it; the `peppy login` / `whoami` / `logout` commands read it. See [Authentication](/advanced_guides/authentication/) for the full login flow.
+
+- **`api`** (default `https://api.peppy.bot` in release builds, `http://127.0.0.1:3000` in debug): the backend the auth commands talk to. There is no dev/prod selection at runtime; the file stores exactly the build's backend.
+
+The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then `api` here. An empty block falls back to the build's default backend. Plain `http` is accepted only for local backends (loopback / `*.localhost`); any other host must be `https`, validated when the command runs.
+
 ## Reference
 
 | Setting | Default | Constraint | Effect |
@@ -97,5 +112,6 @@ The `lifecycle` block tunes the two windows peppy uses to guarantee that no node
 | `peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
+| `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
 
 A value outside its constraint, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.

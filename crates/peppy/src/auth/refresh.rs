@@ -5,7 +5,7 @@
 use serde::Deserialize;
 
 use super::device::TokenSet;
-use super::http;
+use super::http::HttpClient;
 use super::storage::now_unix;
 use crate::error::{Error, Result};
 
@@ -24,13 +24,12 @@ struct TokenResponse {
 
 /// Exchanges `refresh_token` for a fresh access token at `token_endpoint`.
 pub fn refresh(
-    agent: &ureq::Agent,
+    http: &HttpClient,
     token_endpoint: &str,
     client_id: &str,
     refresh_token: &str,
 ) -> Result<TokenSet> {
-    let resp = http::post_form(
-        agent,
+    let resp = http.post_form(
         token_endpoint,
         &[
             ("grant_type", "refresh_token"),
@@ -47,8 +46,7 @@ pub fn refresh(
         )));
     }
 
-    let token: TokenResponse = serde_json::from_str(&resp.body)
-        .map_err(|e| Error::Auth(format!("invalid refresh response: {e}")))?;
+    let token: TokenResponse = resp.json("refresh")?;
     let now = now_unix();
     let next_refresh = token
         .refresh_token

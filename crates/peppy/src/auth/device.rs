@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use super::discovery::OidcEndpoints;
-use super::http;
+use super::http::HttpClient;
 use super::storage::now_unix;
 use crate::error::{Error, Result};
 
@@ -110,14 +110,13 @@ fn classify(error: &str) -> PollOutcome {
 
 /// Runs the full device flow against `endpoints`, requesting `scopes` verbatim.
 pub fn run(
-    agent: &ureq::Agent,
+    http: &HttpClient,
     endpoints: &OidcEndpoints,
     client_id: &str,
     scopes: &str,
     opts: &DeviceFlowOptions,
 ) -> Result<TokenSet> {
-    let start = http::post_form(
-        agent,
+    let start = http.post_form(
         &endpoints.device_authorization_endpoint,
         &[("client_id", client_id), ("scope", scopes)],
         None,
@@ -128,8 +127,7 @@ pub fn run(
             start.status, start.body
         )));
     }
-    let da: DeviceAuthResponse = serde_json::from_str(&start.body)
-        .map_err(|e| Error::Auth(format!("invalid device authorization response: {e}")))?;
+    let da: DeviceAuthResponse = start.json("device authorization")?;
 
     let complete = da
         .verification_uri_complete
@@ -146,11 +144,11 @@ pub fn run(
         }
     }
 
-    poll_for_token(agent, &endpoints.token_endpoint, client_id, &da)
+    poll_for_token(http, &endpoints.token_endpoint, client_id, &da)
 }
 
 fn poll_for_token(
-    agent: &ureq::Agent,
+    http: &HttpClient,
     token_endpoint: &str,
     client_id: &str,
     da: &DeviceAuthResponse,
@@ -160,8 +158,7 @@ fn poll_for_token(
     let mut interval = da.interval.max(1);
 
     let result = loop {
-        let resp = http::post_form(
-            agent,
+        let resp = http.post_form(
             token_endpoint,
             &[
                 ("grant_type", DEVICE_CODE_GRANT),
@@ -172,8 +169,7 @@ fn poll_for_token(
         )?;
 
         if resp.is_success() {
-            let token: TokenResponse = serde_json::from_str(&resp.body)
-                .map_err(|e| Error::Auth(format!("invalid token response: {e}")))?;
+            let token: TokenResponse = resp.json("token")?;
             break Ok(token.into_set(now_unix(), None));
         }
 

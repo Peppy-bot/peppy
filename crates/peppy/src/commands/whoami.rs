@@ -1,38 +1,42 @@
-//! `peppy whoami` (alias `status`) — resolve the active credential, call
-//! `GET /me`, and print the identity, profile, and token validity. `--json`
+//! `peppy whoami` (alias `status`) — resolve the cached credential, call
+//! `GET /me`, and print the identity, backend, and token validity. `--json`
 //! emits a machine-readable object (never including raw tokens).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
+
+use config::consts::PeppyDirs;
 
 use super::Command;
 use crate::auth::client::Principal;
-use crate::auth::{client, http, profile, resolver, storage};
+use crate::auth::{client, http::HttpClient, profile::Profile, resolver, storage};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 pub struct WhoamiCommand {
-    pub env: Option<String>,
     pub api_url: Option<String>,
     /// Emit machine-readable JSON instead of human text.
     pub json: bool,
-    /// Test seam: override the credentials file.
-    pub credentials_file: Option<PathBuf>,
+    /// Test seam: override the peppy data dirs (the credentials file and
+    /// `peppy_config.json5` both derive from it).
+    pub peppy_dirs: Option<PeppyDirs>,
 }
 
 impl Command for WhoamiCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
-        let profile = profile::resolve(self.env.as_deref(), self.api_url.as_deref())?;
-        let creds_path = self.credentials_file.unwrap_or_else(storage::default_path);
-        let agent = http::agent();
+        let dirs = self.peppy_dirs.unwrap_or_default();
+        let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
+        let profile = Profile::resolve(self.api_url.as_deref(), &config.resource_servers)?;
+        let creds_path = storage::credentials_path(&dirs);
+        let http = HttpClient::new();
         let pat = std::env::var("PEPPY_API_KEY")
             .ok()
             .filter(|v| !v.is_empty());
 
-        match resolver::resolve(&profile, &creds_path, &agent, pat) {
+        match resolver::resolve(&creds_path, &http, pat) {
             Ok(mut cred) => {
-                let principal = client::get_me(&agent, &profile.api_url, &mut cred)?;
-                let expires_at = session_expiry(&creds_path, &profile.name);
+                let principal = client::get_me(&http, &profile.api_url, &mut cred)?;
+                let expires_at = session_expiry(&creds_path);
                 if self.json {
                     print_json(&profile.name, &profile.api_url, &principal, expires_at);
                 } else {
@@ -58,13 +62,12 @@ impl Command for WhoamiCommand {
     }
 }
 
-/// Reads the stored access-token expiry (unix seconds) for a session profile, if
-/// any. A PAT has no stored expiry, so this returns `None`.
-fn session_expiry(creds_path: &Path, profile: &str) -> Option<i64> {
+/// Reads the cached session's access-token expiry (unix seconds), if any. A PAT
+/// has no stored expiry, so this returns `None`.
+fn session_expiry(creds_path: &Path) -> Option<i64> {
     storage::load(creds_path)
         .ok()?
-        .profiles
-        .get(profile)
+        .session
         .map(|pc| pc.expires_at)
 }
 

@@ -53,10 +53,7 @@ enum Commands {
     },
     /// Log in to Peppy via the browser (OAuth device flow)
     Login {
-        /// Profile to log into (e.g. `dev`/`prod`); defaults per build.
-        #[arg(long)]
-        env: Option<String>,
-        /// Override the backend base URL (else profile default / PEPPY_API_URL).
+        /// Override the backend base URL (else the build default / PEPPY_API_URL).
         #[arg(long = "api-url")]
         api_url: Option<String>,
         /// Print the verification URL/code instead of opening a browser.
@@ -65,16 +62,12 @@ enum Commands {
     },
     /// Log out: revoke the access token on the backend and clear local credentials
     Logout {
-        #[arg(long)]
-        env: Option<String>,
         #[arg(long = "api-url")]
         api_url: Option<String>,
     },
-    /// Show the current Peppy identity, profile, and token status
+    /// Show the current Peppy identity, backend, and token status
     #[command(visible_alias = "status")]
     Whoami {
-        #[arg(long)]
-        env: Option<String>,
         #[arg(long = "api-url")]
         api_url: Option<String>,
         /// Emit machine-readable JSON.
@@ -125,27 +118,23 @@ fn main() {
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
         Commands::Login {
-            env,
             api_url,
             no_browser,
         } => login::LoginCommand {
-            env,
             api_url,
             no_browser,
-            credentials_file: None,
+            peppy_dirs: None,
         }
         .execute(&app_ctx),
-        Commands::Logout { env, api_url } => logout::LogoutCommand {
-            env,
+        Commands::Logout { api_url } => logout::LogoutCommand {
             api_url,
-            credentials_file: None,
+            peppy_dirs: None,
         }
         .execute(&app_ctx),
-        Commands::Whoami { env, api_url, json } => whoami::WhoamiCommand {
-            env,
+        Commands::Whoami { api_url, json } => whoami::WhoamiCommand {
             api_url,
             json,
-            credentials_file: None,
+            peppy_dirs: None,
         }
         .execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),

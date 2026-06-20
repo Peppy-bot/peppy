@@ -119,10 +119,10 @@ pub mod runtime {
 // -- peppy_config --
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
-        DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_DAEMON_GRACE_SECS,
+        DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_DAEMON_GRACE_SECS,
         DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
         DEFAULT_STANDARD_BUFFER_SIZE, EVENT_LOOP_JOIN_BUDGET_SECS, LifecycleConfig, Mode,
-        PeerConfig, PeppyConfig, RUNTIME_FINALIZE_MARGIN_SECS, load_or_create,
+        PeerConfig, PeppyConfig, RUNTIME_FINALIZE_MARGIN_SECS, ResourceServers, load_or_create,
     };
 }
 

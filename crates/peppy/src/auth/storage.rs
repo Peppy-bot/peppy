@@ -6,11 +6,10 @@
 //! surface in `Debug`/log output; they are serialized through an explicit
 //! expose helper — the single intentional exposure point — and never logged.
 //!
-//! Credentials are keyed by **profile** (`dev`/`prod`/…) so the two never
-//! collide. `issuer`/`client_id` are cached alongside the tokens so a refresh
-//! does not need to re-hit `/cli-config`.
+//! The backend is fixed by the build, so there is exactly one cached session.
+//! `issuer`/`client_id` are cached alongside the tokens so a refresh does not
+//! need to re-hit `/cli-config`.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
@@ -18,11 +17,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::{Error, Result};
 
-/// Whole `credentials.json5` document.
+/// Whole `credentials.json5` document: a single cached session, or empty when
+/// not logged in.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
     #[serde(default)]
-    pub profiles: BTreeMap<String, ProfileCreds>,
+    pub session: Option<ProfileCreds>,
 }
 
 /// Cached credentials for one profile. The display-only `subject`/`username`
@@ -88,12 +88,19 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
     Ok(secret(String::deserialize(de)?))
 }
 
+/// Credentials path under a given peppy root: `<root>/conf/credentials.json5`.
+/// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
+/// both auth files from one [`PeppyDirs`].
+pub fn credentials_path(dirs: &config::consts::PeppyDirs) -> PathBuf {
+    dirs.conf_dir().join(config::consts::CREDENTIALS_FILE)
+}
+
 /// Default credentials path: `<peppy root>/conf/credentials.json5`, honouring
 /// `PEPPY_HOME`. The root is the global peppy data dir, never the cwd.
 pub fn default_path() -> PathBuf {
-    config::consts::PeppyDirs::new(config::consts::peppy_root_dir())
-        .conf_dir()
-        .join(config::consts::CREDENTIALS_FILE)
+    credentials_path(&config::consts::PeppyDirs::new(
+        config::consts::peppy_root_dir(),
+    ))
 }
 
 /// Loads the credentials document, returning an empty one when the file does
@@ -183,12 +190,13 @@ mod tests {
     fn round_trips_through_json5_and_keeps_tokens() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
-        let mut creds = Credentials::default();
-        creds.profiles.insert("dev".into(), sample());
+        let creds = Credentials {
+            session: Some(sample()),
+        };
 
         save(&path, &creds).expect("save");
         let loaded = load(&path).expect("load");
-        let pc = loaded.profiles.get("dev").expect("dev profile");
+        let pc = loaded.session.as_ref().expect("session");
         assert_eq!(pc.access_token.expose_secret(), ACCESS);
         assert_eq!(pc.refresh_token.expose_secret(), REFRESH);
         assert_eq!(pc.username, "alice");
@@ -209,7 +217,7 @@ mod tests {
     fn missing_file_loads_empty() {
         let dir = tempfile::tempdir().expect("temp dir");
         let creds = load(&dir.path().join("nope.json5")).expect("load missing");
-        assert!(creds.profiles.is_empty());
+        assert!(creds.session.is_none());
     }
 
     #[test]

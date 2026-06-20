@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use super::http;
+use super::http::HttpClient;
 use crate::error::{Error, Result};
 
 /// The four fields the backend serves to the CLI (no endpoint URLs — those come
@@ -20,12 +20,11 @@ pub struct CliConfig {
 
 /// Fetches `/cli-config`. A `503` means the deployment hasn't provisioned the
 /// CLI client yet (`PEPPY_CLI_CLIENT_ID` / `PEPPY_INTROSPECT_AUDIENCE` unset).
-pub fn fetch(agent: &ureq::Agent, api_url: &str) -> Result<CliConfig> {
+pub fn fetch(http: &HttpClient, api_url: &str) -> Result<CliConfig> {
     let url = format!("{}/cli-config", api_url.trim_end_matches('/'));
-    let resp = http::get(agent, &url, None)?;
+    let resp = http.get(&url, None)?;
     match resp.status {
-        200 => serde_json::from_str(&resp.body)
-            .map_err(|e| Error::Auth(format!("invalid /cli-config response: {e}"))),
+        200 => resp.json("/cli-config"),
         503 => Err(Error::Auth(
             "CLI login isn't configured on this backend yet (the deployment hasn't provisioned the CLI client).".to_string(),
         )),

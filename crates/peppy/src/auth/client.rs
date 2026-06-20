@@ -7,6 +7,7 @@
 use secrecy::ExposeSecret;
 use serde::Deserialize;
 
+use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, CredentialKind};
 use super::storage::{self, ProfileCreds};
 use super::{discovery, refresh};
@@ -44,12 +45,11 @@ impl Principal {
 }
 
 /// `GET {api_url}/me`, refreshing once on a 401 for session credentials.
-pub fn get_me(agent: &ureq::Agent, api_url: &str, cred: &mut Credential) -> Result<Principal> {
+pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result<Principal> {
     let url = format!("{}/me", api_url.trim_end_matches('/'));
-    let resp = authed_get(agent, &url, cred)?;
+    let resp = authed_get(http, &url, cred)?;
     match resp.status {
-        200 => serde_json::from_str(&resp.body)
-            .map_err(|e| Error::Auth(format!("invalid /me response: {e}"))),
+        200 => resp.json("/me"),
         401 => Err(unauthorized_error(cred)),
         502 => Err(Error::Auth(
             "the backend's introspection credentials were rejected (server-side problem)"
@@ -65,23 +65,19 @@ pub fn get_me(agent: &ureq::Agent, api_url: &str, cred: &mut Credential) -> Resu
 /// `POST {api_url}/logout` with the current access token. Returns the status code
 /// so the caller can decide what to print; never refreshes (the token is being
 /// thrown away regardless).
-pub fn logout(agent: &ureq::Agent, api_url: &str, access_token: &str) -> Result<u16> {
+pub fn logout(http: &HttpClient, api_url: &str, access_token: &str) -> Result<u16> {
     let url = format!("{}/logout", api_url.trim_end_matches('/'));
-    let resp = super::http::post_empty(agent, &url, Some(access_token))?;
+    let resp = http.post_empty(&url, Some(access_token))?;
     Ok(resp.status)
 }
 
 /// A GET that, on 401 with a session credential, refreshes (and persists) the
 /// token and retries exactly once.
-fn authed_get(
-    agent: &ureq::Agent,
-    url: &str,
-    cred: &mut Credential,
-) -> Result<super::http::HttpResponse> {
-    let resp = super::http::get(agent, url, Some(cred.token.expose_secret()))?;
+fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<HttpResponse> {
+    let resp = http.get(url, Some(cred.token.expose_secret()))?;
     if resp.status == 401 && cred.is_refreshable() {
-        refresh_in_place(agent, cred)?;
-        return super::http::get(agent, url, Some(cred.token.expose_secret()));
+        refresh_in_place(http, cred)?;
+        return http.get(url, Some(cred.token.expose_secret()));
     }
     Ok(resp)
 }
@@ -89,23 +85,23 @@ fn authed_get(
 /// Refreshes a session credential in place: discovers the token endpoint from the
 /// cached issuer, exchanges the refresh token, updates the credential, and
 /// persists the rotation to the credentials file.
-fn refresh_in_place(agent: &ureq::Agent, cred: &mut Credential) -> Result<()> {
+fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
     let CredentialKind::Session(ctx) = &cred.kind else {
         return Ok(());
     };
-    let endpoints = discovery::discover(agent, &ctx.issuer)?;
+    let endpoints = discovery::discover(http, &ctx.issuer)?;
     let tokens = refresh::refresh(
-        agent,
+        http,
         &endpoints.token_endpoint,
         &ctx.client_id,
         ctx.refresh_token.expose_secret(),
     )?;
 
-    // Persist the rotation against the stored profile (if still present).
+    // Persist the rotation against the stored session (if still present).
     let mut creds = storage::load(&ctx.creds_path)?;
-    if let Some(existing) = creds.profiles.get(&cred.profile) {
+    if let Some(existing) = creds.session.as_ref() {
         let updated = super::resolver::apply_tokens(existing, &tokens);
-        creds.profiles.insert(cred.profile.clone(), updated);
+        creds.session = Some(updated);
         storage::save(&ctx.creds_path, &creds)?;
     }
 

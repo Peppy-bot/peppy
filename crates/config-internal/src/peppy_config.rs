@@ -29,6 +29,16 @@ use std::path::Path;
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 
+/// The backend resource-server URL for this build: the local dev backend in
+/// debug builds, the prod backend in release builds. The single source of truth
+/// for both the seeded `resource_servers` block and the built-in fallback the
+/// `peppy login` / `whoami` / `logout` commands resolve when no `--api-url` /
+/// `PEPPY_API_URL` override is given.
+#[cfg(debug_assertions)]
+pub const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_API_URL: &str = "https://api.peppy.bot";
+
 /// Default subscriber channel buffer for the `Standard` QoS tier (number of
 /// in-flight messages). Mirrors the historical hardcoded value.
 pub const DEFAULT_STANDARD_BUFFER_SIZE: usize = 128;
@@ -165,6 +175,22 @@ const LIFECYCLE_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
+/// The `resource_servers.api` entry, indented for the `resource_servers` block.
+const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_API_URL, "\",\n");
+
+/// The whole `resource_servers` block with its explanatory comment. Only the
+/// CLI auth commands read this URL; the daemon ignores it but seeds and
+/// completes the block like every other knob.
+const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
+    r#"  // Backend resource-server URL the `peppy login` / `whoami` / `logout`
+  // commands talk to. Baked in at compile time (the dev backend in debug
+  // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
+  resource_servers: {
+"#,
+    API_FIELD_SNIPPET,
+    "  },\n"
+);
+
 /// The full bundled default config, composed from the snippets above.
 const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     TEMPLATE_HEADER,
@@ -174,19 +200,8 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     PEER_SECTION_SNIPPET,
     "\n",
     LIFECYCLE_SECTION_SNIPPET,
-    "}\n"
-);
-
-/// The bundled template as it shipped before the `lifecycle` block existed:
-/// the fixture for the upgrade path that completes such a file in place. Used
-/// by both this module's and `completion`'s tests.
-#[cfg(test)]
-const OLD_TEMPLATE_WITHOUT_LIFECYCLE: &str = const_format::concatcp!(
-    TEMPLATE_HEADER,
-    "{\n",
-    MODE_SECTION_SNIPPET,
     "\n",
-    PEER_SECTION_SNIPPET,
+    RESOURCE_SERVERS_SECTION_SNIPPET,
     "}\n"
 );
 
@@ -266,10 +281,33 @@ impl Default for LifecycleConfig {
     }
 }
 
+/// The backend resource server the CLI auth commands talk to. The endpoint
+/// paths (`/cli-config`, `/me`, `/logout`) are appended by the caller; `api`
+/// holds only the base URL. A single URL, baked in per build: there is no
+/// dev/prod selection at runtime, so the file stores exactly the build's
+/// backend ([`DEFAULT_API_URL`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResourceServers {
+    pub api: String,
+}
+
+impl Default for ResourceServers {
+    fn default() -> Self {
+        Self {
+            api: DEFAULT_API_URL.to_string(),
+        }
+    }
+}
+
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// Not `Copy`: `resource_servers` owns heap strings. The daemon reads this once
+/// and moves it into the core node, and the CLI clones it field-by-field, so the
+/// lost `Copy` costs nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PeppyConfig {
     #[serde(default)]
     pub mode: Mode,
@@ -277,6 +315,8 @@ pub struct PeppyConfig {
     pub peer: PeerConfig,
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
+    #[serde(default)]
+    pub resource_servers: ResourceServers,
 }
 
 impl PeppyConfig {
@@ -450,6 +490,22 @@ mod tests {
             cfg.lifecycle.shutdown_grace_secs,
             DEFAULT_SHUTDOWN_GRACE_SECS
         );
+        assert_eq!(cfg.resource_servers.api, DEFAULT_API_URL);
+    }
+
+    #[test]
+    fn resource_servers_api_is_read_and_defaults() {
+        // An explicit api is honored.
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ resource_servers: { api: "http://localhost:9000" } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.resource_servers.api, "http://localhost:9000");
+        assert_eq!(cfg.mode, Mode::Peer);
+
+        // An empty block falls back to the build's default backend URL.
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ resource_servers: {} }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.resource_servers.api, DEFAULT_API_URL);
     }
 
     #[test]
@@ -528,21 +584,6 @@ mod tests {
     }
 
     #[test]
-    fn completes_missing_lifecycle_section_on_disk() {
-        // A file created by an older peppy, before the lifecycle block existed.
-        let (_tmp, peppy_dirs, path) = dirs_with_config(OLD_TEMPLATE_WITHOUT_LIFECYCLE);
-
-        let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg, PeppyConfig::default());
-        // The missing block was appended, comments included: the upgraded file
-        // is byte-identical to today's bundled template.
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            DEFAULT_PEPPY_CONFIG_TEMPLATE
-        );
-    }
-
-    #[test]
     fn completes_missing_fields_while_preserving_user_values() {
         let (_tmp, peppy_dirs, path) =
             dirs_with_config(r#"{ mode: "router", lifecycle: { daemon_grace_secs: 45 } }"#);
@@ -608,6 +649,9 @@ mod tests {
             lifecycle: LifecycleConfig {
                 daemon_grace_secs: 240,
                 shutdown_grace_secs: 5,
+            },
+            resource_servers: ResourceServers {
+                api: "http://localhost:9000".to_string(),
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();

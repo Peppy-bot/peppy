@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use super::http;
+use super::http::HttpClient;
 use crate::error::Result;
 
 /// The endpoints the device flow needs, plus the (optional) revocation endpoint.
@@ -20,11 +20,11 @@ pub struct OidcEndpoints {
 /// Discovers the endpoints for `issuer`. On any non-200 / parse failure / missing
 /// device endpoint, returns the Zitadel `oauth/v2` fallback so a flaky discovery
 /// document doesn't block login.
-pub fn discover(agent: &ureq::Agent, issuer: &str) -> Result<OidcEndpoints> {
+pub fn discover(http: &HttpClient, issuer: &str) -> Result<OidcEndpoints> {
     let issuer = issuer.trim_end_matches('/');
     let url = format!("{issuer}/.well-known/openid-configuration");
 
-    if let Ok(resp) = http::get(agent, &url, None)
+    if let Ok(resp) = http.get(&url, None)
         && resp.status == 200
         && let Ok(ep) = serde_json::from_str::<OidcEndpoints>(&resp.body)
         && !ep.device_authorization_endpoint.is_empty()

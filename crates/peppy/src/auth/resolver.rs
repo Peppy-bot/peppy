@@ -4,16 +4,18 @@
 //! command, not the resolver — `whoami`/`logout` never auto-open a browser):
 //!
 //! 1. `PEPPY_API_KEY` PAT → bearer, no refresh (CI / automation).
-//! 2. cached token for the active profile, valid → use it.
-//! 3. cached token expired but refreshable → refresh, persist rotation, use it.
+//! 2. cached session token, valid → use it.
+//! 3. cached session token expired but refreshable → refresh, persist rotation,
+//!    use it.
 //! 4. otherwise → [`Error::NotAuthenticated`].
 
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
 
+use super::http::HttpClient;
 use super::storage::{self, ProfileCreds};
-use super::{discovery, profile::Profile, refresh};
+use super::{discovery, refresh};
 use crate::error::{Error, Result};
 
 /// Refresh slightly before the real expiry to avoid racing a just-expired token.
@@ -23,7 +25,6 @@ const EXPIRY_SKEW_SECS: i64 = 30;
 pub struct Credential {
     pub token: SecretString,
     pub kind: CredentialKind,
-    pub profile: String,
 }
 
 impl Credential {
@@ -48,38 +49,28 @@ pub struct SessionContext {
     pub creds_path: PathBuf,
 }
 
-/// Resolves a usable credential for `profile`. `pat` is the injected
-/// `PEPPY_API_KEY` value (production passes the env var; tests pass it
+/// Resolves a usable credential from the single cached session. `pat` is the
+/// injected `PEPPY_API_KEY` value (production passes the env var; tests pass it
 /// explicitly to avoid env races).
-pub fn resolve(
-    profile: &Profile,
-    creds_path: &Path,
-    agent: &ureq::Agent,
-    pat: Option<String>,
-) -> Result<Credential> {
+pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Result<Credential> {
     if let Some(pat) = pat.filter(|v| !v.is_empty()) {
         return Ok(Credential {
             token: storage::secret(pat),
             kind: CredentialKind::Pat,
-            profile: profile.name.clone(),
         });
     }
 
     let mut creds = storage::load(creds_path)?;
-    let pc = creds
-        .profiles
-        .get(&profile.name)
-        .cloned()
-        .ok_or(Error::NotAuthenticated)?;
+    let pc = creds.session.clone().ok_or(Error::NotAuthenticated)?;
 
     if !pc.is_expired(storage::now_unix(), EXPIRY_SKEW_SECS) {
-        return Ok(session_credential(profile, creds_path, &pc));
+        return Ok(session_credential(creds_path, &pc));
     }
 
     // Expired: refresh proactively and persist the rotation.
-    let endpoints = discovery::discover(agent, &pc.issuer)?;
+    let endpoints = discovery::discover(http, &pc.issuer)?;
     let tokens = refresh::refresh(
-        agent,
+        http,
         &endpoints.token_endpoint,
         &pc.client_id,
         pc.refresh_token.expose_secret(),
@@ -91,9 +82,22 @@ pub fn resolve(
     })?;
 
     let updated = apply_tokens(&pc, &tokens);
-    creds.profiles.insert(profile.name.clone(), updated.clone());
+    creds.session = Some(updated.clone());
     storage::save(creds_path, &creds)?;
-    Ok(session_credential(profile, creds_path, &updated))
+    Ok(session_credential(creds_path, &updated))
+}
+
+/// Builds a refreshable session [`Credential`] from the cached `pc`.
+fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
+    Credential {
+        token: storage::secret(pc.access_token.expose_secret().to_string()),
+        kind: CredentialKind::Session(SessionContext {
+            issuer: pc.issuer.clone(),
+            client_id: pc.client_id.clone(),
+            refresh_token: storage::secret(pc.refresh_token.expose_secret().to_string()),
+            creds_path: creds_path.to_path_buf(),
+        }),
+    }
 }
 
 /// Returns a [`ProfileCreds`] with the token fields replaced by `tokens`,
@@ -110,18 +114,5 @@ pub fn apply_tokens(pc: &ProfileCreds, tokens: &super::device::TokenSet) -> Prof
         scope: tokens.scope.clone(),
         subject: pc.subject.clone(),
         username: pc.username.clone(),
-    }
-}
-
-fn session_credential(profile: &Profile, creds_path: &Path, pc: &ProfileCreds) -> Credential {
-    Credential {
-        token: storage::secret(pc.access_token.expose_secret().to_string()),
-        kind: CredentialKind::Session(SessionContext {
-            issuer: pc.issuer.clone(),
-            client_id: pc.client_id.clone(),
-            refresh_token: storage::secret(pc.refresh_token.expose_secret().to_string()),
-            creds_path: creds_path.to_path_buf(),
-        }),
-        profile: profile.name.clone(),
     }
 }

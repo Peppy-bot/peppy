@@ -1,20 +1,20 @@
 //! End-to-end auth tests with every HTTP endpoint mocked (`httpmock`): the
 //! public `/cli-config`, OIDC discovery, the Zitadel device/token endpoints, and
-//! the backend `/me` + `/logout`. The credentials file is isolated per test via
-//! the `credentials_file` seam (no `PEPPY_HOME` mutation, so tests run in
-//! parallel).
+//! the backend `/me` + `/logout`. All auth state is isolated per test via the
+//! `peppy_dirs` seam pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run
+//! in parallel); the credentials file and `peppy_config.json5` both land there.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use config::consts::PeppyDirs;
 use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use peppy::auth::profile::Profile;
 use peppy::auth::resolver::CredentialKind;
 use peppy::auth::storage::{self, Credentials, ProfileCreds};
-use peppy::auth::{client, http, resolver};
+use peppy::auth::{client, http::HttpClient, resolver};
 use peppy::commands::Command;
 use peppy::commands::login::LoginCommand;
 use peppy::commands::logout::LogoutCommand;
@@ -105,17 +105,16 @@ fn login_persists_credentials_and_resolves_identity() {
     let path = creds_path(&dir);
 
     LoginCommand {
-        env: Some("dev".to_string()),
         api_url: Some(server.base_url()),
         no_browser: true,
-        credentials_file: Some(path.clone()),
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
     .expect("login should succeed against the mock backend");
 
-    // Credentials persisted for the `dev` profile, with identity cached.
+    // The single session is persisted, with identity cached.
     let creds = storage::load(&path).expect("load creds");
-    let pc = creds.profiles.get("dev").expect("dev profile present");
+    let pc = creds.session.as_ref().expect("session present");
     assert_eq!(pc.access_token.expose_secret(), "access-token-1");
     assert_eq!(pc.refresh_token.expose_secret(), "the-refresh-token");
     assert_eq!(pc.subject, "user-123");
@@ -125,6 +124,37 @@ fn login_persists_credentials_and_resolves_identity() {
 
     // `/me` was consulted (the tolerant parse succeeded).
     assert!(me.hits() >= 1, "GET /me should have been called");
+}
+
+#[test]
+fn login_seeds_peppy_config_with_resource_servers_block() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-3");
+    let _me = mock_me(&server);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("login");
+
+    // A login on a machine that never ran the daemon still seeds
+    // peppy_config.json5 with the resource_servers block (build's default URL,
+    // which is the dev backend in this debug test build).
+    let config = std::fs::read_to_string(dir.path().join("conf").join("peppy_config.json5"))
+        .expect("peppy_config.json5 was created by the CLI");
+    assert!(
+        config.contains("resource_servers:"),
+        "resource_servers block missing:\n{config}"
+    );
+    assert!(
+        config.contains(r#"api: "http://127.0.0.1:3000""#),
+        "default api URL missing:\n{config}"
+    );
 }
 
 #[cfg(unix)]
@@ -140,10 +170,9 @@ fn login_writes_credentials_file_0600() {
     let path = creds_path(&dir);
 
     LoginCommand {
-        env: Some("dev".to_string()),
         api_url: Some(server.base_url()),
         no_browser: true,
-        credentials_file: Some(path.clone()),
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
     .expect("login");
@@ -163,17 +192,15 @@ fn logout_calls_backend_and_clears_local_credentials() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
 
-    // Seed a logged-in profile.
-    let mut creds = Credentials::default();
-    creds
-        .profiles
-        .insert("dev".to_string(), seeded_creds(&server, 9_999_999_999));
+    // Seed a logged-in session.
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+    };
     storage::save(&path, &creds).expect("seed creds");
 
     LogoutCommand {
-        env: Some("dev".to_string()),
         api_url: Some(server.base_url()),
-        credentials_file: Some(path.clone()),
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
     .expect("logout");
@@ -181,25 +208,19 @@ fn logout_calls_backend_and_clears_local_credentials() {
     assert!(logout.hits() >= 1, "POST /logout should have been called");
     let after = storage::load(&path).expect("load creds");
     assert!(
-        !after.profiles.contains_key("dev"),
+        after.session.is_none(),
         "local credentials must be removed after logout"
     );
 }
 
 #[test]
 fn resolver_prefers_pat_env_over_files() {
-    let server = MockServer::start();
-    let profile = Profile {
-        name: "dev".to_string(),
-        api_url: server.base_url(),
-    };
-    let agent = http::agent();
+    let http = HttpClient::new();
 
     // Nonexistent path: a PAT must short-circuit before any file is read.
     let cred = resolver::resolve(
-        &profile,
         &PathBuf::from("/nonexistent/credentials.json5"),
-        &agent,
+        &http,
         Some("pat-secret".to_string()),
     )
     .expect("PAT resolves");
@@ -234,19 +255,14 @@ fn resolver_refreshes_an_expired_session_token() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
-    let mut creds = Credentials::default();
     // expires_at in the past → resolver must refresh.
-    creds
-        .profiles
-        .insert("dev".to_string(), seeded_creds(&server, 1));
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 1)),
+    };
     storage::save(&path, &creds).expect("seed creds");
 
-    let profile = Profile {
-        name: "dev".to_string(),
-        api_url: base.clone(),
-    };
-    let agent = http::agent();
-    let cred = resolver::resolve(&profile, &path, &agent, None).expect("refresh resolves");
+    let http = HttpClient::new();
+    let cred = resolver::resolve(&path, &http, None).expect("refresh resolves");
 
     assert!(
         token.hits() >= 1,
@@ -256,7 +272,7 @@ fn resolver_refreshes_an_expired_session_token() {
 
     // Rotation persisted to disk.
     let after = storage::load(&path).expect("reload");
-    let pc = after.profiles.get("dev").expect("dev still present");
+    let pc = after.session.as_ref().expect("session still present");
     assert_eq!(pc.access_token.expose_secret(), "refreshed-access");
     assert_eq!(pc.refresh_token.expose_secret(), "rotated-refresh");
     assert!(pc.expires_at > storage::now_unix(), "expiry refreshed");
@@ -266,15 +282,14 @@ fn resolver_refreshes_an_expired_session_token() {
 fn get_me_parses_principal_with_unknown_fields() {
     let server = MockServer::start();
     let _me = mock_me(&server);
-    let agent = http::agent();
+    let http = HttpClient::new();
 
     // A PAT-style credential is fine here: `/me` returns 200, no refresh needed.
     let mut cred = peppy::auth::Credential {
         token: storage::secret("any-token".to_string()),
         kind: CredentialKind::Pat,
-        profile: "dev".to_string(),
     };
-    let principal = client::get_me(&agent, &server.base_url(), &mut cred).expect("get_me");
+    let principal = client::get_me(&http, &server.base_url(), &mut cred).expect("get_me");
     assert_eq!(principal.sub, "user-123");
     assert_eq!(principal.kind.as_deref(), Some("human"));
     assert_eq!(principal.display_name(), "alice");
@@ -287,19 +302,17 @@ fn whoami_runs_against_a_seeded_session() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
-    let mut creds = Credentials::default();
-    creds
-        .profiles
-        .insert("dev".to_string(), seeded_creds(&server, 9_999_999_999));
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+    };
     storage::save(&path, &creds).expect("seed creds");
 
     // Both the human and the --json formatter must run without error.
     for json in [false, true] {
         WhoamiCommand {
-            env: Some("dev".to_string()),
             api_url: Some(server.base_url()),
             json,
-            credentials_file: Some(path.clone()),
+            peppy_dirs: Some(PeppyDirs::new(dir.path())),
         }
         .execute(&ctx())
         .expect("whoami");

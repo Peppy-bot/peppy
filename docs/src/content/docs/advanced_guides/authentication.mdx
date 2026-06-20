@@ -14,8 +14,8 @@ The CLI never sees your Google/passkey credentials — those stay in the browser
 
 | Command | What it does |
 |---------|--------------|
-| `peppy login [--env <name>] [--no-browser]` | Logs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
-| `peppy whoami` (alias `status`) | Shows the current identity, profile, and token validity. `--json` for machine-readable output. |
+| `peppy login [--api-url <url>] [--no-browser]` | Logs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
+| `peppy whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
 | `peppy logout` | Revokes the access token on the backend (across replicas) and deletes the local credentials. |
 
 ## Logging in
@@ -48,20 +48,23 @@ peppy login --no-browser
 4. It caches the tokens (and the `issuer`/`client_id`, so refresh works offline)
    under `~/.peppy/conf/credentials.json5`.
 
-## Profiles
+## Backend
 
-A profile is a named backend URL. The default follows the build (`dev` for a
-debug build, `prod` for a release build) and can be overridden at runtime:
+The backend is fixed by the build: a debug build talks to the local dev backend,
+a release build to prod.
 
-| Profile | Backend (`api_url`) |
-|---------|---------------------|
-| `dev`   | `http://127.0.0.1:3000` |
-| `prod`  | `https://api.peppy.bot` |
+| Build     | Backend (`api`) |
+|-----------|-----------------|
+| debug     | `http://127.0.0.1:3000` |
+| release   | `https://api.peppy.bot` |
 
-Select a profile with `--env`, `PEPPY_PROFILE`/`PEPPY_ENV`, or point at any
-backend with `--api-url` / `PEPPY_API_URL`. Credentials are stored per profile,
-so `dev` and `prod` never collide. Plain `http` is allowed only for local
-backends (loopback / `*.localhost`); anything else must be `https`.
+That URL is stored in the `resource_servers` block of
+`~/.peppy/conf/peppy_config.json5` (see [Daemon configuration](/advanced_guides/daemon_config/)),
+seeded with the build default on first run and editable in place. To point at a
+different backend without editing the file, use `--api-url` or `PEPPY_API_URL`.
+The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
+`resource_servers.api`. Plain `http` is allowed only for local backends (loopback
+/ `*.localhost`); anything else must be `https`.
 
 ## CI and automation
 
@@ -102,7 +105,6 @@ token you presented — a session on another device keeps working.
 | Variable | Purpose |
 |----------|---------|
 | `PEPPY_API_KEY` | PAT for non-interactive auth (highest-priority credential). |
-| `PEPPY_PROFILE` / `PEPPY_ENV` | Select the active profile (`dev`/`prod`). |
 | `PEPPY_API_URL` | Override the backend base URL. |
 | `PEPPY_HOME` | Override the `~/.peppy` data root (also moves the credentials file). |
 | `NO_COLOR` | Disable coloured output. |
