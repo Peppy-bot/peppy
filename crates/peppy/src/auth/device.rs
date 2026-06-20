@@ -47,8 +47,14 @@ fn default_interval() -> u64 {
     5
 }
 
+/// The JSON body of a successful token-endpoint response (device or refresh
+/// grant). Shared by [`device::run`] and [`refresh::refresh`] so the parsing and
+/// [`TokenSet`] materialization live in one place.
+///
+/// [`device::run`]: super::device::run
+/// [`refresh::refresh`]: super::refresh::refresh
 #[derive(Deserialize)]
-struct TokenResponse {
+pub(crate) struct TokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
@@ -70,7 +76,7 @@ impl TokenResponse {
     /// Materializes a [`TokenSet`], carrying `prev_refresh` forward when the
     /// response omits a rotated refresh token (refresh grants may not re-issue
     /// one).
-    fn into_set(self, now: i64, prev_refresh: Option<&str>) -> TokenSet {
+    pub(crate) fn into_set(self, now: i64, prev_refresh: Option<&str>) -> TokenSet {
         let refresh_token = self
             .refresh_token
             .filter(|t| !t.is_empty())

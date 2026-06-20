@@ -1,26 +1,14 @@
 //! `refresh_token` grant. Zitadel may rotate the refresh token, so the caller
 //! must persist whatever comes back; [`device::TokenResponse::into_set`] carries
 //! the previous refresh token forward when the response omits a new one.
+//!
+//! [`device::TokenResponse`] and its `into_set` are shared with [`device`] so
+//! the token-response parsing and `TokenSet` materialization live in one place.
 
-use serde::Deserialize;
-
-use super::device::TokenSet;
+use super::device::{TokenResponse, TokenSet};
 use super::http::HttpClient;
 use super::storage::now_unix;
 use crate::error::{Error, Result};
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    expires_in: i64,
-    #[serde(default)]
-    token_type: Option<String>,
-    #[serde(default)]
-    scope: Option<String>,
-}
 
 /// Exchanges `refresh_token` for a fresh access token at `token_endpoint`.
 pub fn refresh(
@@ -47,17 +35,5 @@ pub fn refresh(
     }
 
     let token: TokenResponse = resp.json("refresh")?;
-    let now = now_unix();
-    let next_refresh = token
-        .refresh_token
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| refresh_token.to_string());
-
-    Ok(TokenSet {
-        access_token: token.access_token,
-        refresh_token: next_refresh,
-        expires_at: now + token.expires_in,
-        token_type: token.token_type.unwrap_or_else(|| "Bearer".to_string()),
-        scope: token.scope.unwrap_or_default(),
-    })
+    Ok(token.into_set(now_unix(), Some(refresh_token)))
 }

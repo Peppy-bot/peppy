@@ -8,9 +8,8 @@ use secrecy::ExposeSecret;
 use serde::Deserialize;
 
 use super::http::{HttpClient, HttpResponse};
-use super::resolver::{Credential, CredentialKind};
+use super::resolver::{Credential, CredentialKind, refresh_and_persist};
 use super::storage::{self, ProfileCreds};
-use super::{discovery, refresh};
 use crate::error::{Error, Result};
 
 /// The identity the backend reports for the current token. Deserialized
@@ -82,34 +81,27 @@ fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<Htt
     Ok(resp)
 }
 
-/// Refreshes a session credential in place: discovers the token endpoint from the
-/// cached issuer, exchanges the refresh token, updates the credential, and
-/// persists the rotation to the credentials file.
+/// Refreshes a session credential in place via the shared refresh-and-persist
+/// pipeline, then rebuilds the [`Credential`] from the rotated tokens.
 fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
     let CredentialKind::Session(ctx) = &cred.kind else {
         return Ok(());
     };
-    let endpoints = discovery::discover(http, &ctx.issuer)?;
-    let tokens = refresh::refresh(
-        http,
-        &endpoints.token_endpoint,
-        &ctx.client_id,
-        ctx.refresh_token.expose_secret(),
-    )?;
 
-    // Persist the rotation against the stored session (if still present).
-    let mut creds = storage::load(&ctx.creds_path)?;
-    if let Some(existing) = creds.session.as_ref() {
-        let updated = super::resolver::apply_tokens(existing, &tokens);
-        creds.session = Some(updated);
-        storage::save(&ctx.creds_path, &creds)?;
-    }
+    // Load the stored session to refresh from (it may have changed since the
+    // credential was built, e.g. another command refreshed in parallel).
+    let creds = storage::load(&ctx.creds_path)?;
+    let Some(pc) = creds.session.as_ref() else {
+        return Ok(());
+    };
 
-    cred.token = storage::secret(tokens.access_token.clone());
+    let updated = refresh_and_persist(http, &ctx.creds_path, pc)?;
+
+    cred.token = storage::secret(updated.access_token.expose_secret().to_string());
     cred.kind = CredentialKind::Session(super::resolver::SessionContext {
-        issuer: ctx.issuer.clone(),
-        client_id: ctx.client_id.clone(),
-        refresh_token: storage::secret(tokens.refresh_token.clone()),
+        issuer: updated.issuer.clone(),
+        client_id: updated.client_id.clone(),
+        refresh_token: storage::secret(updated.refresh_token.expose_secret().to_string()),
         creds_path: ctx.creds_path.clone(),
     });
     Ok(())

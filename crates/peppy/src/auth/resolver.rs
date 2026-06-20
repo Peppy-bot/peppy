@@ -60,7 +60,7 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
         });
     }
 
-    let mut creds = storage::load(creds_path)?;
+    let creds = storage::load(creds_path)?;
     let pc = creds.session.clone().ok_or(Error::NotAuthenticated)?;
 
     if !pc.is_expired(storage::now_unix(), EXPIRY_SKEW_SECS) {
@@ -68,22 +68,11 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
     }
 
     // Expired: refresh proactively and persist the rotation.
-    let endpoints = discovery::discover(http, &pc.issuer)?;
-    let tokens = refresh::refresh(
-        http,
-        &endpoints.token_endpoint,
-        &pc.client_id,
-        pc.refresh_token.expose_secret(),
-    )
-    .map_err(|e| {
+    let updated = refresh_and_persist(http, creds_path, &pc).map_err(|e| {
         Error::Auth(format!(
-            "{e}\nYour session may have expired — run `peppy login`."
+            "{e}\nYour session may have expired, run `peppy login`."
         ))
     })?;
-
-    let updated = apply_tokens(&pc, &tokens);
-    creds.session = Some(updated.clone());
-    storage::save(creds_path, &creds)?;
     Ok(session_credential(creds_path, &updated))
 }
 
@@ -98,6 +87,36 @@ fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
             creds_path: creds_path.to_path_buf(),
         }),
     }
+}
+
+/// The single implementation of the refresh pipeline: discovers the token
+/// endpoint from the cached issuer, exchanges the refresh token, applies the
+/// rotated tokens to the stored session, and persists the result. Returns the
+/// updated [`ProfileCreds`] so the caller can build a [`Credential`] from it.
+///
+/// Both proactive refresh (resolver, on expired-at-load) and reactive refresh
+/// (client, on `401`) funnel through here so the discover-refresh-persist
+/// contract has one definition.
+pub(crate) fn refresh_and_persist(
+    http: &HttpClient,
+    creds_path: &Path,
+    pc: &ProfileCreds,
+) -> Result<ProfileCreds> {
+    let endpoints = discovery::discover(http, &pc.issuer)?;
+    let tokens = refresh::refresh(
+        http,
+        &endpoints.token_endpoint,
+        &pc.client_id,
+        pc.refresh_token.expose_secret(),
+    )?;
+
+    let updated = apply_tokens(pc, &tokens);
+    let mut creds = storage::load(creds_path)?;
+    if creds.session.is_some() {
+        creds.session = Some(updated.clone());
+        storage::save(creds_path, &creds)?;
+    }
+    Ok(updated)
 }
 
 /// Returns a [`ProfileCreds`] with the token fields replaced by `tokens`,
