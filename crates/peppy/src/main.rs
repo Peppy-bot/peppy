@@ -7,7 +7,7 @@ use tracing::error;
 
 use config::consts::AppEnv;
 use peppy::{
-    commands::{Command, container, info, login, logout, node, repo, service, stack, whoami},
+    commands::{Command, auth, container, info, node, repo, service, stack},
     context::AppContext,
 };
 
@@ -51,28 +51,10 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Log in to Peppy via the browser (OAuth device flow)
-    Login {
-        /// Override the backend base URL (else the build default / PEPPY_API_URL).
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
-        /// Print the verification URL/code instead of opening a browser.
-        #[arg(long = "no-browser")]
-        no_browser: bool,
-    },
-    /// Log out: revoke the access token on the backend and clear local credentials
-    Logout {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
-    },
-    /// Show the current Peppy identity, backend, and token status
-    #[command(visible_alias = "status")]
-    Whoami {
-        #[arg(long = "api-url")]
-        api_url: Option<String>,
-        /// Emit machine-readable JSON.
-        #[arg(long)]
-        json: bool,
+    /// Authentication: log in, log out, and show the current identity
+    Auth {
+        #[command(subcommand)]
+        command: auth::AuthCommands,
     },
     /// Display peppy version information
     Info {},
@@ -117,26 +99,7 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
-        Commands::Login {
-            api_url,
-            no_browser,
-        } => login::LoginCommand {
-            api_url,
-            no_browser,
-            peppy_dirs: None,
-        }
-        .execute(&app_ctx),
-        Commands::Logout { api_url } => logout::LogoutCommand {
-            api_url,
-            peppy_dirs: None,
-        }
-        .execute(&app_ctx),
-        Commands::Whoami { api_url, json } => whoami::WhoamiCommand {
-            api_url,
-            json,
-            peppy_dirs: None,
-        }
-        .execute(&app_ctx),
+        Commands::Auth { command } => auth::AuthCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 

@@ -5,10 +5,10 @@ sidebar:
   order: 9
 ---
 
-The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, and the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
+The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, and the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
 
 :::note
-The daemon reads its settings (`mode`, `peer`, `lifecycle`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy login` without a daemon restart.
+The daemon reads its settings (`mode`, `peer`, `lifecycle`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
 :::
 
 ## How the file is managed
@@ -57,7 +57,7 @@ A setting you delete from the file therefore comes back with its default on the 
     shutdown_grace_secs: 5,
   },
 
-  // Backend resource-server URL the `peppy login` / `whoami` / `logout`
+  // Backend resource-server URL the `peppy auth login` / `whoami` / `logout`
   // commands talk to. Baked in at compile time (the dev backend in debug
   // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
   resource_servers: {
@@ -97,7 +97,7 @@ The `lifecycle` block tunes the two windows peppy uses to guarantee that no node
 
 ## `resource_servers`: backend URL
 
-This block holds the platform-backend base URL the CLI auth commands talk to. The daemon ignores it; the `peppy login` / `whoami` / `logout` commands read it. See [Authentication](/advanced_guides/authentication/) for the full login flow.
+This block holds the platform-backend base URL the CLI auth commands talk to. The daemon ignores it; the `peppy auth login` / `whoami` / `logout` commands read it. See [Authentication](/advanced_guides/authentication/) for the full login flow.
 
 - **`api`** (default `https://api.peppy.bot` in release builds, `http://127.0.0.1:3000` in debug): the backend the auth commands talk to. There is no dev/prod selection at runtime; the file stores exactly the build's backend.
 

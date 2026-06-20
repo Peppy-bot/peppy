@@ -66,7 +66,7 @@ impl Display for Error {
             Error::Auth(msg) => write!(fmt, "{msg}"),
             Error::NotAuthenticated => write!(
                 fmt,
-                "Not authenticated. Run `peppy login` or set PEPPY_API_KEY."
+                "Not authenticated. Run `peppy auth login` or set PEPPY_API_KEY."
             ),
             Error::Peppy(e) => write!(fmt, "{e}"),
         }

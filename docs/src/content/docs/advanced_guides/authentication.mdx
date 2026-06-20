@@ -1,11 +1,11 @@
 ---
 title: Authentication
-description: Log in to the Peppy backend with peppy login (OAuth device flow), stay logged in across runs, and authenticate CI with a PEPPY_API_KEY.
+description: Log in to the Peppy backend with peppy auth login (OAuth device flow), stay logged in across runs, and authenticate CI with a PEPPY_API_KEY.
 sidebar:
   order: 15
 ---
 
-`peppy login` authenticates the CLI against the Peppy backend. Peppy is a public
+`peppy auth login` authenticates the CLI against the Peppy backend. Peppy is a public
 OAuth client of the project's identity provider (Zitadel): the CLI obtains a
 bearer token through the browser and sends it to the backend, which validates it.
 The CLI never sees your Google/passkey credentials — those stay in the browser.
@@ -14,14 +14,14 @@ The CLI never sees your Google/passkey credentials — those stay in the browser
 
 | Command | What it does |
 |---------|--------------|
-| `peppy login [--api-url <url>] [--no-browser]` | Logs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
-| `peppy whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
-| `peppy logout` | Revokes the access token on the backend (across replicas) and deletes the local credentials. |
+| `peppy auth login [--api-url <url>] [--no-browser]` | Logs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
+| `peppy auth whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
+| `peppy auth logout` | Revokes the access token on the backend (across replicas) and deletes the local credentials. |
 
 ## Logging in
 
 ```
-peppy login
+peppy auth login
 ```
 
 On a terminal this prints a verification URL and a user code, then opens your
@@ -34,7 +34,7 @@ Over SSH or anywhere without a browser, use `--no-browser`: the CLI prints the
 URL and code and waits for you to approve them on another device.
 
 ```
-peppy login --no-browser
+peppy auth login --no-browser
 ```
 
 ### How it works
@@ -73,7 +73,7 @@ access token (PAT). It is used directly as the bearer — no browser, no refresh
 and it is never written to disk. A PAT short-circuits every other credential
 source, so CI never opens a browser. If the PAT is revoked, requests start
 failing with 401 and you must rotate it. A PAT principal shows up as
-`kind: "machine"` under `peppy whoami`.
+`kind: "machine"` under `peppy auth whoami`.
 
 ## Credential storage
 
@@ -92,7 +92,7 @@ output.
 ## Logging out
 
 ```
-peppy logout
+peppy auth logout
 ```
 
 This calls `POST {api_url}/logout`, which denylists the presented access token

@@ -1,4 +1,4 @@
-//! `peppy whoami` (alias `status`): resolve the cached credential, call
+//! `peppy auth whoami` (alias `status`): resolve the cached credential, call
 //! `GET /me`, and print the identity, backend, and token validity. `--json`
 //! emits a machine-readable object (never including raw tokens).
 
@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use config::consts::PeppyDirs;
 
-use super::Command;
 use crate::auth::client::Principal;
 use crate::auth::{client, http::HttpClient, profile, resolver, storage};
+use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -55,7 +55,7 @@ impl Command for WhoamiCommand {
                     println!("{doc}");
                 } else {
                     println!(
-                        "Not authenticated ({}). Run `peppy login`.",
+                        "Not authenticated ({}). Run `peppy auth login`.",
                         profile::build_env_name()
                     );
                 }

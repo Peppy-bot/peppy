@@ -108,7 +108,7 @@ fn classify(error: &str) -> PollOutcome {
             "authorization denied in the browser".to_string(),
         )),
         "expired_token" => PollOutcome::Fatal(Error::Auth(
-            "login timed out, run `peppy login` again".to_string(),
+            "login timed out, run `peppy auth login` again".to_string(),
         )),
         other => PollOutcome::Fatal(Error::Auth(format!("device login failed: {other}"))),
     }
@@ -190,7 +190,7 @@ fn poll_for_token(
 
         if now_unix() >= deadline {
             break Err(Error::Auth(
-                "login timed out, run `peppy login` again".to_string(),
+                "login timed out, run `peppy auth login` again".to_string(),
             ));
         }
         std::thread::sleep(Duration::from_secs(interval));

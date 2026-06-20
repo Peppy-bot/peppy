@@ -16,9 +16,9 @@ use peppy::auth::resolver::CredentialKind;
 use peppy::auth::storage::{self, Credentials, ProfileCreds};
 use peppy::auth::{client, http::HttpClient, resolver};
 use peppy::commands::Command;
-use peppy::commands::login::LoginCommand;
-use peppy::commands::logout::LogoutCommand;
-use peppy::commands::whoami::WhoamiCommand;
+use peppy::commands::auth::login::LoginCommand;
+use peppy::commands::auth::logout::LogoutCommand;
+use peppy::commands::auth::whoami::WhoamiCommand;
 use peppy::context::AppContext;
 
 /// Builds the cli-config + OIDC discovery + device-authorization + token mocks

@@ -1,4 +1,4 @@
-//! Authentication engine for `peppy login` / `logout` / `whoami`.
+//! Authentication engine for `peppy auth login` / `logout` / `whoami`.
 //!
 //! `peppy` is a public OAuth client of the project's Zitadel instance and a
 //! caller of the `platform-backend` resource server. The login flow is:

@@ -70,7 +70,7 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
     // Expired: refresh proactively and persist the rotation.
     let updated = refresh_and_persist(http, creds_path, &pc).map_err(|e| {
         Error::Auth(format!(
-            "{e}\nYour session may have expired, run `peppy login`."
+            "{e}\nYour session may have expired, run `peppy auth login`."
         ))
     })?;
     Ok(session_credential(creds_path, &updated))

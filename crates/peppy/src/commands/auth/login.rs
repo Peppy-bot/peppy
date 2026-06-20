@@ -1,4 +1,4 @@
-//! `peppy login`: OAuth 2.0 device-authorization login (RFC 8628).
+//! `peppy auth login`: OAuth 2.0 device-authorization login (RFC 8628).
 //!
 //! Fetches the public `/cli-config`, runs OIDC discovery against the returned
 //! issuer, performs the device flow (opening the browser on a TTY), caches the
@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use config::consts::PeppyDirs;
 
-use super::Command;
 use crate::auth::device::DeviceFlowOptions;
 use crate::auth::{
     cli_config, client, device, discovery, http::HttpClient, profile, resolver, storage,
 };
+use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 

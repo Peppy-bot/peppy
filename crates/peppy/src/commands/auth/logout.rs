@@ -1,4 +1,4 @@
-//! `peppy logout`: kill the access token on the backend (cross-replica) and
+//! `peppy auth logout`: kill the access token on the backend (cross-replica) and
 //! delete the local session credentials. Does not revoke the refresh token at
 //! Zitadel (out of scope for v1); a backend that's unreachable or returns
 //! 401/503 still results in the local credentials being cleared.
@@ -9,8 +9,8 @@ use secrecy::ExposeSecret;
 
 use config::consts::PeppyDirs;
 
-use super::Command;
 use crate::auth::{client, http::HttpClient, profile, storage};
+use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
