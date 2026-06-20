@@ -124,18 +124,14 @@ pub fn creds_from_login(
     tokens: &super::device::TokenSet,
     principal: Option<&Principal>,
 ) -> ProfileCreds {
-    ProfileCreds {
-        api_url: api_url.trim_end_matches('/').to_string(),
-        issuer: cfg.issuer.clone(),
-        client_id: cfg.client_id.clone(),
-        access_token: storage::secret(tokens.access_token.clone()),
-        refresh_token: storage::secret(tokens.refresh_token.clone()),
-        expires_at: tokens.expires_at,
-        token_type: tokens.token_type.clone(),
-        scope: tokens.scope.clone(),
-        subject: principal.map(|p| p.sub.clone()).unwrap_or_default(),
-        username: principal
+    ProfileCreds::with_tokens(
+        api_url.trim_end_matches('/').to_string(),
+        cfg.issuer.clone(),
+        cfg.client_id.clone(),
+        principal.map(|p| p.sub.clone()).unwrap_or_default(),
+        principal
             .map(|p| p.display_name().to_string())
             .unwrap_or_default(),
-    }
+        tokens,
+    )
 }

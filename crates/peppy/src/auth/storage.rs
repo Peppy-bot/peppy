@@ -56,6 +56,31 @@ impl ProfileCreds {
     pub fn is_expired(&self, now_unix: i64, skew_secs: i64) -> bool {
         now_unix + skew_secs >= self.expires_at
     }
+
+    /// Builds a [`ProfileCreds`] from the non-token identity fields plus a
+    /// [`TokenSet`], centralizing the token-field mapping so `creds_from_login`
+    /// and `apply_tokens` cannot drift.
+    pub fn with_tokens(
+        api_url: String,
+        issuer: String,
+        client_id: String,
+        subject: String,
+        username: String,
+        tokens: &super::device::TokenSet,
+    ) -> Self {
+        Self {
+            api_url,
+            issuer,
+            client_id,
+            access_token: secret(tokens.access_token.clone()),
+            refresh_token: secret(tokens.refresh_token.clone()),
+            expires_at: tokens.expires_at,
+            token_type: tokens.token_type.clone(),
+            scope: tokens.scope.clone(),
+            subject,
+            username,
+        }
+    }
 }
 
 impl Clone for ProfileCreds {
