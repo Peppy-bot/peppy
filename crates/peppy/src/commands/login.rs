@@ -1,4 +1,4 @@
-//! `peppy login` — OAuth 2.0 device-authorization login (RFC 8628).
+//! `peppy login`: OAuth 2.0 device-authorization login (RFC 8628).
 //!
 //! Fetches the public `/cli-config`, runs OIDC discovery against the returned
 //! issuer, performs the device flow (opening the browser on a TTY), caches the
@@ -11,7 +11,7 @@ use config::consts::PeppyDirs;
 use super::Command;
 use crate::auth::device::DeviceFlowOptions;
 use crate::auth::{
-    cli_config, client, device, discovery, http::HttpClient, profile::Profile, resolver, storage,
+    cli_config, client, device, discovery, http::HttpClient, profile, resolver, storage,
 };
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -36,11 +36,11 @@ impl Command for LoginCommand {
         // fail-loud semantics the daemon uses; resource_servers supplies the
         // per-profile URL fallback.
         let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
-        let profile = Profile::resolve(self.api_url.as_deref(), &config.resource_servers)?;
+        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
 
-        let cfg = cli_config::fetch(&http, &profile.api_url)?;
+        let cfg = cli_config::fetch(&http, &api_url)?;
         let endpoints = discovery::discover(&http, &cfg.issuer)?;
         let tokens = device::run(
             &http,
@@ -54,7 +54,7 @@ impl Command for LoginCommand {
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
         let mut creds = storage::load(&creds_path)?;
-        let pc = client::creds_from_login(&cfg, &profile.api_url, &tokens, None);
+        let pc = client::creds_from_login(&cfg, &api_url, &tokens);
         creds.session = Some(pc.clone());
         storage::save(&creds_path, &creds)?;
 
@@ -62,7 +62,7 @@ impl Command for LoginCommand {
         // seconds ago, so there's no need to reload from disk or proactively
         // refresh via the resolver).
         let mut cred = resolver::session_credential(&creds_path, &pc);
-        match client::get_me(&http, &profile.api_url, &mut cred) {
+        match client::get_me(&http, &api_url, &mut cred) {
             Ok(principal) => {
                 // Cache display identity against the stored session.
                 if let Some(session) = creds.session.as_mut() {
@@ -73,14 +73,14 @@ impl Command for LoginCommand {
                 println!(
                     "Logged in as {} ({})",
                     principal.display_name(),
-                    profile.name
+                    profile::build_env_name()
                 );
             }
             Err(e) => {
                 // The tokens are valid and stored; only the identity lookup failed.
                 println!(
                     "Logged in ({}). Could not fetch identity: {e}",
-                    profile.name
+                    profile::build_env_name()
                 );
             }
         }

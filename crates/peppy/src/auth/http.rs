@@ -2,7 +2,7 @@
 //!
 //! The client is configured with `http_status_as_error(false)` so non-2xx
 //! responses come back as [`HttpResponse`] (status + body) rather than an opaque
-//! `ureq::Error` — the device flow and `/cli-config` need to read 4xx/5xx bodies
+//! `ureq::Error`: the device flow and `/cli-config` need to read 4xx/5xx bodies
 //! (`authorization_pending`, `slow_down`, the 503 "not configured" case). Bearer
 //! tokens are never included in error strings (only the URL, with its query
 //! stripped), so a verbose log can't leak them.

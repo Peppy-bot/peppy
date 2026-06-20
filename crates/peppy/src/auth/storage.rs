@@ -4,7 +4,7 @@
 //! chmodded `0600` and its parent `conf/` `0700` (secrets must not be
 //! world-readable). Tokens are held as [`secrecy::SecretString`] so they never
 //! surface in `Debug`/log output; they are serialized through an explicit
-//! expose helper — the single intentional exposure point — and never logged.
+//! expose helper (the single intentional exposure point) and never logged.
 //!
 //! The backend is fixed by the build, so there is exactly one cached session.
 //! `issuer`/`client_id` are cached alongside the tokens so a refresh does not

@@ -1,7 +1,7 @@
 //! Credential resolution for authenticated commands.
 //!
 //! Precedence (the interactive device-login step is owned by the `login`
-//! command, not the resolver — `whoami`/`logout` never auto-open a browser):
+//! command, not the resolver (`whoami`/`logout` never auto-open a browser):
 //!
 //! 1. `PEPPY_API_KEY` PAT → bearer, no refresh (CI / automation).
 //! 2. cached session token, valid → use it.
@@ -35,7 +35,7 @@ impl Credential {
 
 /// Whether the bearer can be refreshed.
 pub enum CredentialKind {
-    /// A `PEPPY_API_KEY` PAT — long-lived, not refreshable.
+    /// A `PEPPY_API_KEY` PAT (long-lived, not refreshable).
     Pat,
     /// A cached session token, refreshable via the carried OIDC context.
     Session(SessionContext),

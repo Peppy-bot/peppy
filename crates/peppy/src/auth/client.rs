@@ -111,7 +111,7 @@ fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
 fn unauthorized_error(cred: &Credential) -> Error {
     match cred.kind {
         CredentialKind::Pat => {
-            Error::Auth("API key rejected (revoked or expired?) — cannot refresh".to_string())
+            Error::Auth("API key rejected (revoked or expired?), cannot refresh".to_string())
         }
         CredentialKind::Session(_) => Error::NotAuthenticated,
     }
@@ -122,16 +122,13 @@ pub fn creds_from_login(
     cfg: &super::cli_config::CliConfig,
     api_url: &str,
     tokens: &super::device::TokenSet,
-    principal: Option<&Principal>,
 ) -> ProfileCreds {
     ProfileCreds::with_tokens(
         api_url.trim_end_matches('/').to_string(),
         cfg.issuer.clone(),
         cfg.client_id.clone(),
-        principal.map(|p| p.sub.clone()).unwrap_or_default(),
-        principal
-            .map(|p| p.display_name().to_string())
-            .unwrap_or_default(),
+        String::new(),
+        String::new(),
         tokens,
     )
 }

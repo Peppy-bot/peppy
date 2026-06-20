@@ -1,4 +1,4 @@
-//! `peppy whoami` (alias `status`) — resolve the cached credential, call
+//! `peppy whoami` (alias `status`): resolve the cached credential, call
 //! `GET /me`, and print the identity, backend, and token validity. `--json`
 //! emits a machine-readable object (never including raw tokens).
 
@@ -9,7 +9,7 @@ use config::consts::PeppyDirs;
 
 use super::Command;
 use crate::auth::client::Principal;
-use crate::auth::{client, http::HttpClient, profile::Profile, resolver, storage};
+use crate::auth::{client, http::HttpClient, profile, resolver, storage};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -26,7 +26,7 @@ impl Command for WhoamiCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
         let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
-        let profile = Profile::resolve(self.api_url.as_deref(), &config.resource_servers)?;
+        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
         let pat = std::env::var("PEPPY_API_KEY")
@@ -35,12 +35,13 @@ impl Command for WhoamiCommand {
 
         match resolver::resolve(&creds_path, &http, pat) {
             Ok(mut cred) => {
-                let principal = client::get_me(&http, &profile.api_url, &mut cred)?;
+                let principal = client::get_me(&http, &api_url, &mut cred)?;
                 let expires_at = session_expiry(&creds_path);
+                let env_name = profile::build_env_name();
                 if self.json {
-                    print_json(&profile.name, &profile.api_url, &principal, expires_at);
+                    print_json(env_name, &api_url, &principal, expires_at);
                 } else {
-                    print_human(&profile.name, &profile.api_url, &principal, expires_at);
+                    print_human(env_name, &api_url, &principal, expires_at);
                 }
                 Ok(())
             }
@@ -48,12 +49,15 @@ impl Command for WhoamiCommand {
                 if self.json {
                     let doc = serde_json::json!({
                         "authenticated": false,
-                        "profile": profile.name,
-                        "api_url": profile.api_url,
+                        "profile": profile::build_env_name(),
+                        "api_url": api_url,
                     });
                     println!("{doc}");
                 } else {
-                    println!("Not authenticated ({}). Run `peppy login`.", profile.name);
+                    println!(
+                        "Not authenticated ({}). Run `peppy login`.",
+                        profile::build_env_name()
+                    );
                 }
                 Ok(())
             }
@@ -73,14 +77,19 @@ fn session_expiry(creds_path: &Path) -> Option<i64> {
 
 fn token_is_valid(expires_at: Option<i64>) -> bool {
     // No stored expiry (PAT) but `/me` succeeded → treat as valid.
+    // This is a display heuristic for `whoami` output; the authoritative
+    // expiry check (with a 30s skew) lives in `ProfileCreds::is_expired` and
+    // is used by the resolver to decide when to refresh. A token may read as
+    // "valid" here for up to 30s after the resolver would already consider it
+    // expired.
     match expires_at {
         None => true,
         Some(exp) => storage::now_unix() < exp,
     }
 }
 
-fn print_human(profile: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
-    println!("Logged in as {} ({profile})", p.display_name());
+fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
+    println!("Logged in as {} ({env_name})", p.display_name());
     println!("  subject : {}", p.sub);
     if let Some(kind) = &p.kind {
         println!("  type    : {kind}");
@@ -100,10 +109,10 @@ fn print_human(profile: &str, api_url: &str, p: &Principal, expires_at: Option<i
     println!("  token   : {token}");
 }
 
-fn print_json(profile: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
+fn print_json(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
     let doc = serde_json::json!({
         "authenticated": true,
-        "profile": profile,
+        "profile": env_name,
         "api_url": api_url,
         "principal": {
             "id": p.id,
