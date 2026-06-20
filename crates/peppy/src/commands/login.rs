@@ -54,23 +54,20 @@ impl Command for LoginCommand {
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
         let mut creds = storage::load(&creds_path)?;
-        creds.session = Some(client::creds_from_login(
-            &cfg,
-            &profile.api_url,
-            &tokens,
-            None,
-        ));
+        let pc = client::creds_from_login(&cfg, &profile.api_url, &tokens, None);
+        creds.session = Some(pc.clone());
         storage::save(&creds_path, &creds)?;
 
-        // Resolve identity for the confirmation line (reuses the cached token).
-        let mut cred = resolver::resolve(&creds_path, &http, None)?;
+        // Fetch identity using the in-memory credential (the token was minted
+        // seconds ago, so there's no need to reload from disk or proactively
+        // refresh via the resolver).
+        let mut cred = resolver::session_credential(&creds_path, &pc);
         match client::get_me(&http, &profile.api_url, &mut cred) {
             Ok(principal) => {
-                // Cache display identity against the (possibly refreshed) stored creds.
-                let mut creds = storage::load(&creds_path)?;
-                if let Some(pc) = creds.session.as_mut() {
-                    pc.subject = principal.sub.clone();
-                    pc.username = principal.display_name().to_string();
+                // Cache display identity against the stored session.
+                if let Some(session) = creds.session.as_mut() {
+                    session.subject = principal.sub.clone();
+                    session.username = principal.display_name().to_string();
                     storage::save(&creds_path, &creds)?;
                 }
                 println!(

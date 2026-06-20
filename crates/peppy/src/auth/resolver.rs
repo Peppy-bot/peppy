@@ -77,7 +77,7 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
 }
 
 /// Builds a refreshable session [`Credential`] from the cached `pc`.
-fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
+pub(crate) fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {
         token: storage::secret(pc.access_token.expose_secret().to_string()),
         kind: CredentialKind::Session(SessionContext {
