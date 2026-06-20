@@ -4,7 +4,7 @@
 //! caller of the `platform-backend` resource server. The login flow is:
 //!
 //! 1. [`cli_config::fetch`] — `GET {api_url}/cli-config` (public) → `issuer`,
-//!    `client_id`, `project_id`, `scopes` (sent to Zitadel verbatim).
+//!    `client_id`, `scopes` (sent to Zitadel verbatim).
 //! 2. [`discovery::discover`] — OIDC discovery against the `issuer` to learn the
 //!    `device_authorization` and `token` endpoints.
 //! 3. [`device`] — RFC 8628 device grant: open the browser, poll for the token.

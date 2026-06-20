@@ -32,7 +32,6 @@ fn mock_login_endpoints(server: &MockServer, access_token: &str) {
         then.status(200).json_body(json!({
             "issuer": base,
             "client_id": "cli-client-id",
-            "project_id": "proj-id",
             "scopes": "openid profile email offline_access urn:zitadel:iam:org:project:id:proj-id:aud",
         }));
     });

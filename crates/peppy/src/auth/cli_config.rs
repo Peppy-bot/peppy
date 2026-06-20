@@ -1,20 +1,19 @@
 //! `GET {api_url}/cli-config` — the public bootstrap endpoint that hands the CLI
-//! the Zitadel `issuer`, the Native app `client_id`, the `project_id`, and the
-//! exact `scopes` string to request (already including `offline_access` and the
-//! project-audience scope — sent to Zitadel **verbatim**, never reassembled).
+//! the Zitadel `issuer`, the Native app `client_id`, and the exact `scopes`
+//! string to request (already including `offline_access` and the project-audience
+//! scope — sent to Zitadel **verbatim**, never reassembled).
 
 use serde::Deserialize;
 
 use super::http::HttpClient;
 use crate::error::{Error, Result};
 
-/// The four fields the backend serves to the CLI (no endpoint URLs — those come
+/// The three fields the backend serves to the CLI (no endpoint URLs — those come
 /// from OIDC discovery against `issuer`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CliConfig {
     pub issuer: String,
     pub client_id: String,
-    pub project_id: String,
     pub scopes: String,
 }
 

@@ -13,12 +13,10 @@ use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
 
-/// A fully-read HTTP response: status code, body text, and the parsed
-/// `Retry-After` (seconds) when present.
+/// A fully-read HTTP response: status code and body text.
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
-    pub retry_after: Option<u64>,
 }
 
 impl HttpResponse {
@@ -114,21 +112,12 @@ fn with_bearer<B>(req: ureq::RequestBuilder<B>, bearer: Option<&str>) -> ureq::R
 
 fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Result<HttpResponse> {
     let status = resp.status().as_u16();
-    let retry_after = resp
-        .headers()
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<u64>().ok());
     let mut resp = resp;
     let body = resp
         .body_mut()
         .read_to_string()
         .map_err(|e| Error::Http(format!("{method} {} failed reading body: {e}", redact(url))))?;
-    Ok(HttpResponse {
-        status,
-        body,
-        retry_after,
-    })
+    Ok(HttpResponse { status, body })
 }
 
 #[cfg(test)]
