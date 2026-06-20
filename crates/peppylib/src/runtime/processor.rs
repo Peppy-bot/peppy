@@ -308,7 +308,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         // Create a peppy config file with type specifications matching runtime parameters
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: {
@@ -409,7 +409,7 @@ mod tests {
     fn fails_when_codegen_fingerprint_mismatch() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "v1" },
@@ -460,7 +460,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         // Compiled config only has 'value' parameter
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "v1" },
@@ -513,7 +513,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         // Compiled config expects 'value' to be i64
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "v1" },
@@ -566,7 +566,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         // Compiled config expects nested object with specific types
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "v1" },
@@ -629,7 +629,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         // Compiled config expects array of strings
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "v1" },
@@ -692,7 +692,7 @@ mod tests {
 
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
-        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node_v1",
             manifest: { name: "test_node", tag: "v1" },

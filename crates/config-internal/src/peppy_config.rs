@@ -706,7 +706,7 @@ mod tests {
         std::fs::create_dir_all(&conf_dir).unwrap();
         // A dotfiles-style setup: the file under conf/ is a symlink to a
         // config managed elsewhere.
-        let real = tmp.path().join("dotfiles_peppy_config.json5");
+        let real = tmp.path().join("dotfiles_peppy.json5");
         std::fs::write(&real, r#"{ mode: "router" }"#).unwrap();
         let link = conf_dir.join(PEPPY_CONFIG_FILE);
         std::os::unix::fs::symlink(&real, &link).unwrap();
