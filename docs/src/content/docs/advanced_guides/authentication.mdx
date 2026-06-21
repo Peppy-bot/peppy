@@ -8,7 +8,7 @@ sidebar:
 `peppy auth login` authenticates the CLI against the Peppy backend. Peppy is a public
 OAuth client of the project's identity provider (Zitadel): the CLI obtains a
 bearer token through the browser and sends it to the backend, which validates it.
-The CLI never sees your Google/passkey credentials — those stay in the browser.
+The CLI never sees your Google/passkey credentials. Those stay in the browser.
 
 ## Commands
 
@@ -26,7 +26,7 @@ peppy auth login
 
 On a terminal this prints a verification URL and a user code, then opens your
 browser at that URL (with the code pre-filled). Approve the request in the
-browser and the CLI stores the tokens. Subsequent commands reuse them — you log
+browser and the CLI stores the tokens. Subsequent commands reuse them: you log
 in once and stay logged in until the refresh token expires; expired access
 tokens are refreshed automatically.
 
@@ -69,7 +69,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 ## CI and automation
 
 For non-interactive use, set `PEPPY_API_KEY` to a Zitadel service-user personal
-access token (PAT). It is used directly as the bearer — no browser, no refresh,
+access token (PAT). It is used directly as the bearer: no browser, no refresh,
 and it is never written to disk. A PAT short-circuits every other credential
 source, so CI never opens a browser. If the PAT is revoked, requests start
 failing with 401 and you must rotate it. A PAT principal shows up as
@@ -98,7 +98,7 @@ peppy auth logout
 This calls `POST {api_url}/logout`, which denylists the presented access token
 across all backend replicas (sub-second), then deletes the local credentials.
 The effect is near-immediate for the logged-out token. It revokes only the
-token you presented — a session on another device keeps working.
+token you presented; a session on another device keeps working.
 
 ## Environment variables
 
