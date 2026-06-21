@@ -50,18 +50,11 @@ peppy auth login --no-browser
 
 ## Backend
 
-The backend is fixed by the build: a debug build talks to the local dev backend,
-a release build to prod.
-
-| Build     | Backend (`api`) |
-|-----------|-----------------|
-| debug     | `http://127.0.0.1:3000` |
-| release   | `https://api.peppy.bot` |
-
-That URL is stored in the `resource_servers` block of
+By default the CLI talks to the prod backend, `https://api.peppy.bot`. That URL
+is stored in the `resource_servers` block of
 `~/.peppy/conf/peppy_config.json5` (see [Daemon configuration](/advanced_guides/daemon_config/)),
-seeded with the build default on first run and editable in place. To point at a
-different backend without editing the file, use `--api-url` or `PEPPY_API_URL`.
+seeded on first run and editable in place. To point at a different backend
+without editing the file, use `--api-url` or `PEPPY_API_URL`.
 The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 `resource_servers.api`. Plain `http` is allowed only for local backends (loopback
 / `*.localhost`); anything else must be `https`.
@@ -79,12 +72,6 @@ failing with 401 and you must rotate it. A PAT principal shows up as
 
 Tokens live at `~/.peppy/conf/credentials.json5`, written owner-only (`0600`).
 The root honours `PEPPY_HOME`.
-
-:::caution
-A debug `cargo run` build stores credentials under `/tmp/.peppy` (wiped on
-reboot), so "remembered across runs" only holds for the installed release binary
-or when `PEPPY_HOME` is set. This does not affect installed binaries.
-:::
 
 Tokens are never printed and `Authorization` headers are redacted in verbose
 output.

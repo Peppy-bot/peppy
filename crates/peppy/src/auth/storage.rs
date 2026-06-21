@@ -6,9 +6,10 @@
 //! surface in `Debug`/log output; they are serialized through an explicit
 //! expose helper (the single intentional exposure point) and never logged.
 //!
-//! The backend is fixed by the build, so there is exactly one cached session.
-//! `issuer`/`client_id` are cached alongside the tokens so a refresh does not
-//! need to re-hit `/cli-config`.
+//! The data model holds a single session (`Credentials::session` is one
+//! `Option`), so logging in against a different backend overwrites it rather
+//! than adding a second entry. `issuer`/`client_id` are cached alongside the
+//! tokens so a refresh does not need to re-hit `/cli-config`.
 
 use std::path::{Path, PathBuf};
 
