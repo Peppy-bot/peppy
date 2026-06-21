@@ -1,3 +1,4 @@
+mod auth_flow;
 mod common;
 mod container;
 mod daemon_lifecycle_e2e;

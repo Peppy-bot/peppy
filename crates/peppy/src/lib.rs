@@ -7,6 +7,10 @@
 //! The supported surface is intentionally small:
 //! - [`commands`]: the [`commands::Command`] trait plus the per-group command
 //!   and subcommand types that `main.rs` dispatches to.
+//! - [`auth`]: the `peppy auth login`/`logout`/`whoami` engine (OAuth device
+//!   flow, token storage, credential resolution, authenticated backend client).
+//!   It is the engine behind the [`commands::auth`] command group, kept separate
+//!   from the CLI plumbing.
 //! - [`context::AppContext`]: the explicit construction seam (`new`,
 //!   `from_current_dir`, `with_daemon_state_file`, `with_messenger`).
 //! - [`error`]: the crate error type, surfaced through `Command::execute`.
@@ -18,6 +22,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod auth;
 pub mod commands;
 pub mod context;
 mod daemon_state;

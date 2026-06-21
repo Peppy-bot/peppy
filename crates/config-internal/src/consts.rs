@@ -7,6 +7,11 @@ pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
 
+/// Filename of the CLI's cached OAuth credentials, stored under `~/.peppy/conf`
+/// (i.e. `conf_dir().join(CREDENTIALS_FILE)`). Written `0600` by the `peppy
+/// login` flow; never committed and never world-readable.
+pub const CREDENTIALS_FILE: &str = "credentials.json5";
+
 /// Overrides the peppy data root (the `.peppy` directory itself). Mirrors the
 /// `PEPPY_HOME` install prefix from scripts/install.sh. When set and non-empty,
 /// it is used verbatim as `PeppyDirs::root`.

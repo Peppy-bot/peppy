@@ -43,6 +43,17 @@ walkdir = "2.5"
 # Terminal display width for aligning `stack list` table columns when a cell
 # (e.g. a Unicode filesystem path) contains wide or zero-width glyphs.
 unicode-width = "0.2"
+# Auth (`peppy login`): blocking HTTP for the sequential cli-config -> OIDC
+# discovery -> device-poll -> refresh -> /logout chain (matches the workspace's
+# existing ureq 3.1 in core-node-internal; no async runtime needed).
+ureq = "3.1"
+# Auto-open the browser at the device-flow verification URL on a TTY.
+open = "5"
+# Spinner shown while polling the token endpoint for device-flow approval.
+indicatif = "0.18"
+# Keep OAuth tokens out of `Debug`/log output; the on-disk struct serializes
+# them through explicit expose helpers (the one place we intentionally expose).
+secrecy = "0.10"
 tempfile = { version = "3.8", optional = true }
 parking_lot = { workspace = true, optional = true }
 
@@ -62,6 +73,9 @@ test-support = ["dep:tempfile", "dep:parking_lot", "config/test_helpers"]
 
 [dev-dependencies]
 tempfile = "3.8"
+# In-process HTTP mock server for the auth integration tests (cli-config, OIDC
+# discovery, device/token endpoints, /me, /logout) — blocking API, fits ureq.
+httpmock = "0.8"
 # Only the daemon-lifecycle e2e test needs raw `kill(2)` to signal a spawned
 # child process; the library itself uses `rustix` and carries no `libc`.
 libc = "0.2"
