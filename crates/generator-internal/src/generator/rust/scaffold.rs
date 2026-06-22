@@ -126,8 +126,11 @@ fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
     return std::os::unix::fs::symlink(original, link);
 }
 
-/// Replaces workspace-inherited fields (`version.workspace = true`, etc.)
-/// in a `Cargo.toml` with concrete values from the given metadata.
+/// Normalizes a vendored crate's `Cargo.toml` for the flat `.peppy/libs` layout:
+/// replaces workspace-inherited fields (`version.workspace = true`, etc.) with
+/// concrete values, renames the `peppylib-rs` source package back to `peppylib`
+/// (the name every generated node depends on), and flattens inter-crate `path`
+/// dependencies to flat siblings.
 fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
     if !cargo_toml_path.exists() {
         return Ok(());
@@ -168,10 +171,72 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         {
             package.remove("authors");
         }
+
+        // The crate is named `peppylib-rs` in the peppyos-shared workspace, but it
+        // is vendored into `.peppy/libs/peppylib` (lib name already `peppylib`).
+        // Rename the package back to `peppylib` so every generated node's
+        // `peppylib = { path = ".peppy/libs/peppylib" }` resolves unchanged.
+        if package.get("name").and_then(|n| n.as_str()) == Some("peppylib-rs") {
+            package.insert("name", value("peppylib"));
+        }
     }
+
+    normalize_vendored_path_deps(&mut doc);
 
     fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
+}
+
+/// Crate directories the vendored `.peppy/libs` cache lays out as flat siblings.
+/// A `path` dependency whose final component is one of these is rewritten to
+/// `../<crate>` so it resolves in the flat cache regardless of whether the source
+/// manifest used a flat path (`../config-internal`) or a reverse path into another
+/// submodule (`../../../peppyos/crates/config-internal`, as `peppylib-rs` does).
+const VENDORED_SIBLING_CRATES: &[&str] = &[
+    "peppylib",
+    "pmi-internal",
+    "config-internal",
+    "core-node-api",
+    "build-helpers-internal",
+];
+
+/// Returns the flattened `../<crate>` path for `current` if its final component
+/// names a vendored sibling crate, otherwise `None` (leave it untouched).
+fn flatten_vendored_path(current: &str) -> Option<String> {
+    let final_component = current.rsplit('/').next().unwrap_or(current);
+    VENDORED_SIBLING_CRATES
+        .contains(&final_component)
+        .then(|| format!("../{final_component}"))
+}
+
+/// Rewrites every intra-vendor `path` dependency in `doc` to a flat sibling so the
+/// deployed flat-cache layout resolves even when the source manifest pointed across
+/// submodule boundaries. Registry deps and non-vendored path deps are left alone;
+/// `features` and other keys on the dependency are preserved. Idempotent on the
+/// already-flat crates that have not been moved out of the peppyos workspace.
+fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(deps) = doc.get_mut(table_name).and_then(|t| t.as_table_mut()) else {
+            continue;
+        };
+        for (_dep_name, item) in deps.iter_mut() {
+            // Inline form: `dep = { path = "...", features = [...] }`.
+            if let Some(inline) = item.as_inline_table_mut() {
+                if let Some(path_val) = inline.get_mut("path") {
+                    if let Some(flat) = path_val.as_str().and_then(flatten_vendored_path) {
+                        *path_val = flat.as_str().into();
+                    }
+                }
+            // Full-table form: `[dependencies.dep]\npath = "..."`.
+            } else if let Some(table) = item.as_table_mut() {
+                if let Some(path_item) = table.get_mut("path") {
+                    if let Some(flat) = path_item.as_str().and_then(flatten_vendored_path) {
+                        *path_item = value(flat);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Copies all files from an embedded crate into `vendored_root/crate_dir`,

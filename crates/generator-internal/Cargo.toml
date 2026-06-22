@@ -29,6 +29,6 @@ config = { path = "../config-internal", features = ["test_helpers"] }
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
-peppylib = { path = "../peppylib" }
+peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 rstest = { workspace = true }

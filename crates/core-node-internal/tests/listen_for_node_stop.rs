@@ -451,7 +451,7 @@ async fn node_stop_force_kills_whole_process_group() {
 ///
 /// This closes the loop between the daemon-side tests above (which simulate
 /// the node's shutdown listener in-process) and the node-side tests in
-/// `crates/peppylib/tests/runner.rs` (which simulate the daemon's shutdown
+/// `nodes_shared_code/peppyos-shared/peppylib-rs/tests/runner.rs` (which simulate the daemon's shutdown
 /// send): here both halves are the production code.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_reports_graceful_for_real_node_builder_node() {

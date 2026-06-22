@@ -141,7 +141,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]
-#[folder = "../peppylib/"]
+#[folder = "../../../nodes_shared_code/peppyos-shared/peppylib-rs/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]

@@ -453,7 +453,9 @@ mod peppylib_build {
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
-        ("peppylib", false),
+        // peppylib now lives in peppyos-shared (package `peppylib-rs`); reach it via
+        // a reverse path from the peppyos crates root. The other deps stay siblings.
+        ("../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
         ("config-internal", true),
         ("pmi-internal", false),
         ("core-node-api", false),
@@ -475,10 +477,11 @@ mod peppylib_build {
             }
         }
 
-        // The `.so` dependency crates still live in the peppyos workspace, even
-        // though peppylib-py now lives in nodes_shared_code/peppyos-shared.
-        // Resolve them from this generator crate's own manifest dir
-        // (peppyos/crates), not from peppylib_py_dir's parent.
+        // Resolve the `.so` dependency crates from this generator crate's own
+        // manifest dir (peppyos/crates), not from peppylib_py_dir's parent. Most
+        // still live as siblings in the peppyos workspace; peppylib has moved to
+        // nodes_shared_code/peppyos-shared and is reached via a reverse path entry
+        // in SO_DEP_CRATES.
         let crates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         for (crate_name, is_config) in SO_DEP_CRATES {
             files.extend(super::collect_crate_source_files(
@@ -748,7 +751,9 @@ mod rust_crates_build {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
         let crate_dirs = [
-            ("../peppylib", false),
+            // peppylib was moved out of the peppyos workspace into peppyos-shared
+            // (package `peppylib-rs`); reach it via the superproject reverse path.
+            ("../../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
             ("../pmi-internal", false),
             ("../config-internal", true),
             ("../core-node-api", false),

@@ -2,9 +2,6 @@
 
 [workspace]
 members = ["crates/*", "docs/tests/integration"]
-
-# Those ones are examples that use user facing libraries as if they were uploaded to crates.io
-exclude = ["crates/peppylib/examples/*"]
 resolver = "3"
 
 # Only build/test the main crates by default (integration tests are slow).
