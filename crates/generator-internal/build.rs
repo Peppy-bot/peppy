@@ -453,12 +453,12 @@ mod peppylib_build {
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
-        // peppylib now lives in peppyos-shared (package `peppylib-rs`); reach it via
-        // a reverse path from the peppyos crates root. The other deps stay siblings.
+        // peppylib and core-node-api now live in peppyos-shared; reach them via a
+        // reverse path from the peppyos crates root. The other deps stay siblings.
         ("../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
         ("config-internal", true),
         ("pmi-internal", false),
-        ("core-node-api", false),
+        ("../../nodes_shared_code/peppyos-shared/core-node-api", false),
     ];
 
     /// Every existing file whose contents are compiled into the `.so`: peppylib-py's
@@ -751,12 +751,12 @@ mod rust_crates_build {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
         let crate_dirs = [
-            // peppylib was moved out of the peppyos workspace into peppyos-shared
-            // (package `peppylib-rs`); reach it via the superproject reverse path.
+            // peppylib and core-node-api were moved out of the peppyos workspace into
+            // peppyos-shared; reach them via the superproject reverse path.
             ("../../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
             ("../pmi-internal", false),
             ("../config-internal", true),
-            ("../core-node-api", false),
+            ("../../../nodes_shared_code/peppyos-shared/core-node-api", false),
             ("../build-helpers-internal", false),
         ];
 

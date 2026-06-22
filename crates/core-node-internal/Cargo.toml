@@ -9,7 +9,7 @@ pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 config = { path = "../config-internal" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
-core-node-api = { path = "../core-node-api" }
+core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-api" }
 generator = { path = "../generator-internal" }
 latency-report = { path = "../latency-report" }
 containers = { path = "../containers-internal" }

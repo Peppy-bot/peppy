@@ -770,9 +770,7 @@ dependencies = [
  "config",
  "gix-url",
  "serde",
- "serde_json",
  "serde_json5",
- "tempfile",
  "thiserror 2.0.18",
  "url",
 ]

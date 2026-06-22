@@ -182,7 +182,7 @@ pub(crate) struct EmbeddedConfigInternal;
 pub(crate) struct EmbeddedBuildHelpers;
 
 #[derive(Embed)]
-#[folder = "../core-node-api/"]
+#[folder = "../../../nodes_shared_code/peppyos-shared/core-node-api/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]

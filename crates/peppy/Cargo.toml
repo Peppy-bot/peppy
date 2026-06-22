@@ -10,7 +10,7 @@ config = { path = "../config-internal" }
 containers = { path = "../containers-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
 core-node = { path = "../core-node-internal" }
-core-node-api = { path = "../core-node-api" }
+core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-api" }
 node-stack = { path = "../node-stack-internal" }
 latency-report = { path = "../latency-report" }
 bytes = "1"
