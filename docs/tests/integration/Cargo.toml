@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 peppy = { path = "../../../crates/peppy", features = ["test-support"] }
-pmi = { path = "../../../crates/pmi-internal" }
 config = { path = "../../../crates/config-internal" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
