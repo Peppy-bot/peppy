@@ -18,7 +18,7 @@ fn main() {
         .unwrap()
         .join("config-internal")
         .join("tools");
-    let capnp_path = build_helpers::find_bundled_capnp(&tools_dir).expect(
+    let capnp_path = build_helpers_shared::find_bundled_capnp(&tools_dir).expect(
         "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
     );
 

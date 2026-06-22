@@ -161,7 +161,7 @@ mod ruff_build {
         // The cache key is profile-independent: the downloaded ruff binary is the
         // same regardless of debug/release, and `cargo install` always builds in
         // release mode.
-        let cache_dir = build_helpers::cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
+        let cache_dir = build_helpers_shared::cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
         let cached_ruff_path = cache_dir.join(format!("ruff-{target}"));
 
         let out_dir = env::var("OUT_DIR").unwrap();
@@ -173,7 +173,7 @@ mod ruff_build {
                 "cargo:warning=Using cached ruff binary from {:?}",
                 cached_ruff_path
             );
-            build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
+            build_helpers_shared::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
             return;
         }
 
@@ -183,7 +183,7 @@ mod ruff_build {
             println!(
                 "cargo:warning=Pre-built ruff not available for {target}, compiling from source..."
             );
-            match build_helpers::cargo_install_binary(
+            match build_helpers_shared::cargo_install_binary(
                 "ruff",
                 super::RUFF_VERSION,
                 &target,
@@ -203,7 +203,7 @@ mod ruff_build {
             }
         }
 
-        build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
+        build_helpers_shared::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
     }
 }
 
@@ -367,7 +367,7 @@ mod peppylib_build {
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
         // when multiple build scripts run pixi on the same environment.
         let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
-        let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
+        let _pixi_lock = build_helpers_shared::acquire_file_lock(&lock_path);
 
         println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
         run_pixi_task(peppylib_py_dir, pixi_task, target_dir);
@@ -645,7 +645,7 @@ mod peppylib_build {
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
-        let target_dir = build_helpers::cache_dir("peppylib-py").join("target");
+        let target_dir = build_helpers_shared::cache_dir("peppylib-py").join("target");
         let mut state = read_build_state(&peppylib_dir);
         let force = std::env::var(REBUILD_ENV_VAR).is_ok_and(|v| !v.is_empty() && v != "0");
 

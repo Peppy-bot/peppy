@@ -27,7 +27,7 @@ tempfile = "3"
 zenoh = { version = "=1.9.0", optional = true }
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-shared" }
 
 [dev-dependencies]
 tokio = { version = "1", features = [

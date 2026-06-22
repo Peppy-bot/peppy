@@ -1,3 +1,3 @@
 fn main() {
-    build_helpers::embed_git_tag();
+    build_helpers_shared::embed_git_tag();
 }

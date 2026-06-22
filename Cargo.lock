@@ -412,6 +412,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-helpers-shared"
+version = "0.0.1"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -610,6 +614,7 @@ version = "0.0.1"
 dependencies = [
  "askama",
  "build-helpers",
+ "build-helpers-shared",
  "capnp",
  "capnpc",
  "clap",
@@ -679,6 +684,7 @@ name = "containers"
 version = "0.0.1"
 dependencies = [
  "build-helpers",
+ "build-helpers-shared",
  "config",
  "serde",
  "serde_yaml",
@@ -717,7 +723,7 @@ name = "core-node"
 version = "0.0.1"
 dependencies = [
  "askama",
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "chrono",
  "config",
@@ -762,7 +768,7 @@ dependencies = [
 name = "core-node-api"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "capnp",
  "capnpc",
@@ -1472,6 +1478,7 @@ version = "0.0.1"
 dependencies = [
  "askama",
  "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "config",
  "indexmap 2.14.0",
@@ -3114,7 +3121,7 @@ name = "peppy"
 version = "0.0.1"
 dependencies = [
  "askama",
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "clap",
  "config",
@@ -3163,7 +3170,7 @@ name = "peppylib"
 version = "0.0.1"
 dependencies = [
  "askama",
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "capnp",
  "capnpc",
@@ -3194,7 +3201,7 @@ dependencies = [
 name = "peppylib-py"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "config",
  "core-node-api",
@@ -3365,7 +3372,7 @@ dependencies = [
 name = "pmi"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "config",
  "derive_more",

@@ -30,7 +30,7 @@ capnp = "0.26"
 flume = "0.12"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-shared" }
 capnpc = "0.26"
 
 [dev-dependencies]

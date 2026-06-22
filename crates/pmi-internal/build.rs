@@ -156,14 +156,14 @@ mod zenoh_build {
             }
 
             let target = env::var("TARGET").expect("TARGET not set");
-            let cache_dir = build_helpers::cache_dir("zenoh");
+            let cache_dir = build_helpers_shared::cache_dir("zenoh");
 
             let out_dir = env::var("OUT_DIR").unwrap();
             let zenoh_binary_path = format!("{}/zenohd", out_dir);
 
-            match build_helpers::cargo_install_binary("zenohd", release_tag, &target, &cache_dir) {
+            match build_helpers_shared::cargo_install_binary("zenohd", release_tag, &target, &cache_dir) {
                 Some(compiled) => {
-                    build_helpers::copy_if_changed(&compiled, zenoh_binary_path.as_ref());
+                    build_helpers_shared::copy_if_changed(&compiled, zenoh_binary_path.as_ref());
                 }
                 None => panic!(
                     "Failed to compile zenohd {} for target '{}'. \
@@ -177,7 +177,7 @@ mod zenoh_build {
 
             // Ensure the binary is executable (std::fs::copy preserves the
             // source's mode, but the cache may predate the executable bit).
-            build_helpers::set_executable(Path::new(&zenoh_binary_path));
+            build_helpers_shared::set_executable(Path::new(&zenoh_binary_path));
 
             println!("cargo:rustc-env=ZENOHD_BINARY_PATH={}", zenoh_binary_path);
         }

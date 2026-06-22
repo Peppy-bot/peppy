@@ -17,7 +17,7 @@ url = "2"
 gix-url = "0.36"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-shared" }
 capnpc = "0.26"
 
 [dev-dependencies]

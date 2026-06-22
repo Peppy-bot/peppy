@@ -20,7 +20,7 @@ mod capnp_build {
             "Debug"
         };
 
-        let cache_dir = build_helpers::cache_dir("capnp");
+        let cache_dir = build_helpers_shared::cache_dir("capnp");
         let cache_key = format!("capnp-{release_tag}-{profile}");
         let cached_capnp_path = cache_dir.join(&cache_key);
 

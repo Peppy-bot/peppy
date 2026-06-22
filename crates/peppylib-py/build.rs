@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    build_helpers::embed_git_tag();
+    build_helpers_shared::embed_git_tag();
 
     check_pixi_installed();
     // pixi is installed, configure Python path if not already set
@@ -81,7 +81,7 @@ fn configure_python_from_pixi() {
     // Serialize concurrent pixi invocations to avoid "Text file busy" races
     // when multiple build scripts run pixi on the same environment.
     let lock_path = manifest_dir.join(".pixi/.build.lock");
-    let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
+    let _pixi_lock = build_helpers_shared::acquire_file_lock(&lock_path);
 
     let output = Command::new("pixi")
         .args(["run", "--manifest-path"])

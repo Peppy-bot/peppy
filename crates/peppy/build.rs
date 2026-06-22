@@ -7,7 +7,7 @@ fn main() {
     embed_git_hash();
 
     // Embed the git tag if provided (set by build_release.sh)
-    build_helpers::embed_git_tag();
+    build_helpers_shared::embed_git_tag();
 }
 
 fn embed_git_hash() {

@@ -47,7 +47,7 @@ mod apptainer_build {
     }
 
     fn apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
-        build_helpers::cache_dir(&format!("apptainer-{}-{}-nosuid", version, arch))
+        build_helpers_shared::cache_dir(&format!("apptainer-{}-{}-nosuid", version, arch))
     }
 
     /// Remove a directory tree, falling back to `rm -rf` if `std::fs`
@@ -194,7 +194,7 @@ mod apptainer_build {
     /// Download and cache the Lima installation. Returns the path to the cache
     /// directory containing `bin/limactl` on success.
     fn ensure_lima_cached(version: &str, os: &str, arch: &str) -> Option<PathBuf> {
-        let cache_dir = build_helpers::cache_dir(&format!("lima-{version}-{os}-{arch}"));
+        let cache_dir = build_helpers_shared::cache_dir(&format!("lima-{version}-{os}-{arch}"));
         let cached_limactl = cache_dir.join("bin/limactl");
 
         if cached_limactl.exists() {
@@ -218,7 +218,7 @@ mod apptainer_build {
             return None;
         };
 
-        let downloads_dir = build_helpers::cache_dir("downloads");
+        let downloads_dir = build_helpers_shared::cache_dir("downloads");
         let archive_path = downloads_dir.join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
         if !download_lima_archive(&archive_path, version, os, arch, expected_sha256) {
             return None;
@@ -451,7 +451,7 @@ mod apptainer_build {
             GOCRYPTFS_VERSION, arch, bin_dir
         );
 
-        let downloads_dir = build_helpers::cache_dir("downloads");
+        let downloads_dir = build_helpers_shared::cache_dir("downloads");
         let archive_path = downloads_dir.join(format!(
             "gocryptfs_v{}_linux-static_{}.tar.gz",
             GOCRYPTFS_VERSION, arch
@@ -460,7 +460,7 @@ mod apptainer_build {
         // Serialize concurrent download/extract attempts so parallel target
         // builds don't race on the shared archive in the downloads cache.
         let lock_path = downloads_dir.join(format!(".gocryptfs-{}.lock", arch));
-        let _lock = build_helpers::acquire_file_lock(&lock_path);
+        let _lock = build_helpers_shared::acquire_file_lock(&lock_path);
 
         if !download_gocryptfs_archive(&archive_path, GOCRYPTFS_VERSION, arch, expected_sha256) {
             return false;
@@ -590,12 +590,12 @@ mod apptainer_build {
             version
         );
 
-        let source_cache = build_helpers::cache_dir("apptainer-source");
+        let source_cache = build_helpers_shared::cache_dir("apptainer-source");
 
         // Serialize concurrent build invocations to prevent one build from
         // deleting the source tree while another is compiling inside it.
         let lock_path = source_cache.join(".build.lock");
-        let _build_lock = build_helpers::acquire_file_lock(&lock_path);
+        let _build_lock = build_helpers_shared::acquire_file_lock(&lock_path);
 
         let tarball_url = format!(
             "https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz"

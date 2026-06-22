@@ -20,6 +20,7 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-shared" }
 sha2 = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
