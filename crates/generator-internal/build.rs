@@ -449,7 +449,8 @@ mod peppylib_build {
     /// Dependency crates compiled into the `.so`, paired with whether the crate
     /// is config-internal (which embeds extra `tools/capnp_*` helpers). This list
     /// MUST stay in sync with peppylib-py's path dependencies in
-    /// `crates/peppylib-py/Cargo.toml`; a crate missing here means edits to it
+    /// `nodes_shared_code/peppyos-shared/peppylib-py/Cargo.toml`; a crate
+    /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
         ("peppylib", false),
@@ -474,7 +475,11 @@ mod peppylib_build {
             }
         }
 
-        let crates_root = peppylib_py_dir.join("..");
+        // The `.so` dependency crates still live in the peppyos workspace, even
+        // though peppylib-py now lives in nodes_shared_code/peppyos-shared.
+        // Resolve them from this generator crate's own manifest dir
+        // (peppyos/crates), not from peppylib_py_dir's parent.
+        let crates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         for (crate_name, is_config) in SO_DEP_CRATES {
             files.extend(super::collect_crate_source_files(
                 &crates_root.join(crate_name),
@@ -492,7 +497,12 @@ mod peppylib_build {
     fn compute_source_hash(peppylib_py_dir: &Path) -> String {
         use sha2::{Digest, Sha256};
 
-        let crates_root = peppylib_py_dir.join("..");
+        // Key each file by its path relative to the peppyos crates root (where
+        // the dependency crates live). peppylib-py's own files now live outside
+        // this root and fall back to their absolute path, which is fine: the
+        // `.so-build-state` marker is per-checkout and gitignored, so keys only
+        // need to be stable and collision-free within a single checkout.
+        let crates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut hasher = Sha256::new();
         for file in so_rebuild_input_files(peppylib_py_dir) {
             let rel = file.strip_prefix(&crates_root).unwrap_or(&file);
@@ -597,7 +607,12 @@ mod peppylib_build {
 
     pub fn run() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
+        // peppylib-py was moved out of the peppyos workspace into
+        // nodes_shared_code/peppyos-shared. Its `.so` dependency crates still
+        // live in peppyos/crates (see so_rebuild_input_files), so only this path
+        // crosses the submodule boundary. Valid only in the superproject checkout.
+        let peppylib_py_dir =
+            manifest_dir.join("../../../nodes_shared_code/peppyos-shared/peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 

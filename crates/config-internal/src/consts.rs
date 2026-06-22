@@ -269,7 +269,10 @@ mod tests {
     #[test]
     fn python_version_consistency_in_static_files() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
+        // peppylib-py was moved out of the peppyos workspace into
+        // nodes_shared_code/peppyos-shared (resolves only in the superproject checkout).
+        let peppylib_py_dir =
+            manifest_dir.join("../../../nodes_shared_code/peppyos-shared/peppylib-py");
 
         let pyproject_path = peppylib_py_dir.join("pyproject.toml");
         let pyproject_contents = std::fs::read_to_string(&pyproject_path)

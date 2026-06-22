@@ -20,7 +20,10 @@ use std::path::Path;
 /// `_peppylib.abi3.linux-aarch64.so`). During deployment, the correct platform's
 /// `.so` is selected and renamed to `_peppylib.abi3.so`.
 #[derive(Embed)]
-#[folder = "../peppylib-py/peppylib/"]
+// peppylib-py was moved out of the peppyos workspace into
+// nodes_shared_code/peppyos-shared. rust_embed resolves this folder relative to
+// this crate's manifest dir at compile time; valid only in the superproject checkout.
+#[folder = "../../../nodes_shared_code/peppyos-shared/peppylib-py/peppylib/"]
 #[include = "*.py"]
 #[include = "*.so"]
 #[exclude = "__pycache__/*"]
