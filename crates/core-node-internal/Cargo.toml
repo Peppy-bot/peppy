@@ -5,8 +5,8 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
-config = { path = "../config-internal" }
+pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal", features = ["zenoh", "build_zenoh"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
 core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-api" }
@@ -57,7 +57,7 @@ build-helpers = { path = "../build-helpers-internal" }
 
 [dev-dependencies]
 node-stack = { path = "../node-stack-internal" }
-config = { path = "../config-internal", features = ["test_helpers"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
 rstest = { workspace = true }

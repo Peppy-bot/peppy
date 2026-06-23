@@ -5,8 +5,8 @@ edition.workspace = true
 autotests = false
 
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
-config = { path = "../config-internal" }
+pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal", features = ["zenoh", "build_zenoh"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 containers = { path = "../containers-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
 core-node = { path = "../core-node-internal" }

@@ -3318,11 +3318,9 @@ dependencies = [
  "derive_more",
  "flume 0.12.0",
  "serde_json",
- "serde_json5",
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "zenoh",
 ]
 

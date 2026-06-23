@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal" }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 containers = { path = "../containers-internal" }
 core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-api" }
 petgraph = "0.8.3"

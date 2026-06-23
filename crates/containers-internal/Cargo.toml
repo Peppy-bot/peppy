@@ -5,14 +5,14 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal" }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
-config = { path = "../config-internal", features = ["test_helpers"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
 tempfile = "3"
 
 [build-dependencies]
