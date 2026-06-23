@@ -53,7 +53,7 @@ ignore = "0.4"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }
 
 [dev-dependencies]
 node-stack = { path = "../node-stack-internal" }

@@ -16,4 +16,4 @@ config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", f
 tempfile = "3"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }

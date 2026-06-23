@@ -175,7 +175,7 @@ pub(crate) struct EmbeddedPmiInternal;
 pub(crate) struct EmbeddedConfigInternal;
 
 #[derive(Embed)]
-#[folder = "../build-helpers-internal/"]
+#[folder = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[exclude = "target/*"]

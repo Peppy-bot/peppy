@@ -408,7 +408,6 @@ name = "build-helpers"
 version = "0.0.1"
 dependencies = [
  "sha2 0.11.0",
- "tempfile",
 ]
 
 [[package]]
@@ -1462,6 +1461,7 @@ dependencies = [
  "bytes",
  "config",
  "indexmap 2.14.0",
+ "peppylib-build-policy",
  "peppylib-rs",
  "pmi",
  "prettyplease",
@@ -3132,6 +3132,10 @@ dependencies = [
  "url",
  "walkdir",
 ]
+
+[[package]]
+name = "peppylib-build-policy"
+version = "0.0.1"
 
 [[package]]
 name = "peppylib-rs"

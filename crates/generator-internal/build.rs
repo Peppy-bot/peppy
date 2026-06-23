@@ -457,9 +457,15 @@ mod peppylib_build {
         // peppyos-shared; reach them via a reverse path from the peppyos crates
         // root. The remaining deps stay siblings.
         ("../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
-        ("../../nodes_shared_code/peppyos-shared/config-internal", true),
+        (
+            "../../nodes_shared_code/peppyos-shared/config-internal",
+            true,
+        ),
         ("../../nodes_shared_code/peppyos-shared/pmi-internal", false),
-        ("../../nodes_shared_code/peppyos-shared/core-node-api", false),
+        (
+            "../../nodes_shared_code/peppyos-shared/core-node-api",
+            false,
+        ),
     ];
 
     /// Every existing file whose contents are compiled into the `.so`: peppylib-py's
@@ -622,7 +628,7 @@ mod peppylib_build {
 
         register_rerun_triggers(&peppylib_py_dir);
 
-        let profile = build_helpers::BuildProfile::from_env();
+        let profile = peppylib_build_policy::BuildProfile::from_env();
         let current_hash = compute_source_hash(&peppylib_py_dir);
         let host = host_platform_suffix();
 
@@ -674,7 +680,7 @@ mod peppylib_build {
         let host_so = peppylib_dir.join(format!("_peppylib.abi3.{host}.so"));
         let host_state = (current_hash.clone(), profile.tag().to_string());
         let host_current = state.get(&host) == Some(&host_state);
-        if build_helpers::should_build_host(host_so.exists(), host_current, force) {
+        if peppylib_build_policy::should_build_host(host_so.exists(), host_current, force) {
             build_native_so(
                 &peppylib_py_dir,
                 &peppylib_dir,
@@ -697,7 +703,12 @@ mod peppylib_build {
                 let target_so = peppylib_dir.join(format!("_peppylib.abi3.{suffix}.so"));
                 let target_state = (current_hash.clone(), "release".to_string());
                 let stale = state.get(suffix) != Some(&target_state);
-                if build_helpers::should_cross_compile(profile, target_so.exists(), stale, force) {
+                if peppylib_build_policy::should_cross_compile(
+                    profile,
+                    target_so.exists(),
+                    stale,
+                    force,
+                ) {
                     cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
                     state.insert(suffix.to_string(), target_state);
                 } else if stale {
@@ -752,14 +763,29 @@ mod rust_crates_build {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
         let crate_dirs = [
-            // peppylib, core-node-api, pmi-internal and config-internal were moved
-            // out of the peppyos workspace into peppyos-shared; reach them via the
-            // superproject reverse path. build-helpers-internal stays a sibling.
-            ("../../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
-            ("../../../nodes_shared_code/peppyos-shared/pmi-internal", false),
-            ("../../../nodes_shared_code/peppyos-shared/config-internal", true),
-            ("../../../nodes_shared_code/peppyos-shared/core-node-api", false),
-            ("../build-helpers-internal", false),
+            // peppylib, core-node-api, pmi-internal, config-internal and
+            // build-helpers-internal were moved out of the peppyos workspace into
+            // peppyos-shared; reach them all via the superproject reverse path.
+            (
+                "../../../nodes_shared_code/peppyos-shared/peppylib-rs",
+                false,
+            ),
+            (
+                "../../../nodes_shared_code/peppyos-shared/pmi-internal",
+                false,
+            ),
+            (
+                "../../../nodes_shared_code/peppyos-shared/config-internal",
+                true,
+            ),
+            (
+                "../../../nodes_shared_code/peppyos-shared/core-node-api",
+                false,
+            ),
+            (
+                "../../../nodes_shared_code/peppyos-shared/build-helpers-internal",
+                false,
+            ),
         ];
 
         let mut hasher = Sha256::new();

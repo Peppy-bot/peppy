@@ -19,7 +19,8 @@ indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }
+peppylib-build-policy = { path = "../peppylib-build-policy" }
 sha2 = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
