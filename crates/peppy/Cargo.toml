@@ -6,6 +6,10 @@ autotests = false
 
 [dependencies]
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal", features = ["zenoh", "build_zenoh"] }
+# The router watchdog (commands/service/router_health.rs) opens a throwaway zenoh
+# session against the probe config rendered by `pmi::ZenohAdapter::router_probe_config`.
+# Exact-pinned to match pmi so `zenoh::config::Config` is the same type across the dep.
+zenoh = "=1.9.0"
 config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 containers = { path = "../containers-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
@@ -23,7 +27,7 @@ gix-url = "0.36"
 url = "2"
 # https://docs.rs/quote/latest/quote/
 clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1", features = ["signal"] }
+tokio = { version = "1", features = ["signal", "time"] }
 tokio-util = "0.7"
 futures = "0.3"
 tracing = "0.1"

@@ -3155,6 +3155,7 @@ dependencies = [
  "ureq",
  "url",
  "walkdir",
+ "zenoh",
 ]
 
 [[package]]

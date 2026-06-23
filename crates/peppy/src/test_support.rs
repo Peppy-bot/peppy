@@ -2,7 +2,7 @@ use crate::daemon_state::DaemonState;
 use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::NodeConfigParser;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
-use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
+use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -120,6 +120,52 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
     );
 }
 
+/// Test-only RAII wrapper around a mock-backed [`Messenger`] with its in-process
+/// router started. Mirrors [`ZenohdInstance`]'s shape so `with_mock` and
+/// `with_zenoh` share the same setup path. Lives in peppy (not `pmi`) because the
+/// mock router lifecycle is a peppy test concern.
+struct MockInstance {
+    messenger: Option<Messenger>,
+}
+
+impl MockInstance {
+    /// Builds a mock adapter, wraps it in a [`Messenger`], and starts the
+    /// in-process router. Mirrors `ZenohAdapter::start_router_ephemeral`.
+    async fn start() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger.start_router().await?;
+        Ok(Self {
+            messenger: Some(messenger),
+        })
+    }
+
+    /// Returns a mutable reference to the messenger.
+    fn messenger(&mut self) -> &mut Messenger {
+        self.messenger
+            .as_mut()
+            .expect("messenger was already taken")
+    }
+
+    /// Takes ownership of the messenger, preventing automatic cleanup on drop.
+    fn take_messenger(&mut self) -> Messenger {
+        self.messenger.take().expect("messenger was already taken")
+    }
+}
+
+impl Drop for MockInstance {
+    fn drop(&mut self) {
+        let Some(mut messenger) = self.messenger.take() else {
+            return;
+        };
+        let _ = thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                let _ = rt.block_on(async move { messenger.stop_router().await });
+            }
+        })
+        .join();
+    }
+}
+
 // Held only to keep the messaging router (a child process or in-process task)
 // alive for the emulation's lifetime: the variants are constructed and stored in
 // `_instance`, then dropped with the emulation, but never read. The dead-code
@@ -142,7 +188,7 @@ pub struct ServeCommandEmulation {
 
 impl ServeCommandEmulation {
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let mut instance = MockAdapter::start_router().await?;
+        let mut instance = MockInstance::start().await?;
         instance.messenger().start_session().await?;
         let messenger = instance.take_messenger();
         let port = messenger.get_host().port();
