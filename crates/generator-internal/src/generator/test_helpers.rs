@@ -7,7 +7,7 @@ macro_rules! assert_rendered {
     };
 }
 
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -71,8 +71,13 @@ pub use config_test_support::assert_contains_all;
 
 /// Returns a stable, shared target directory for test compilations so that
 /// dependencies are compiled once and reused across all clippy/build tests.
+///
+/// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
+/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
+/// mid-link.
 fn stable_test_target_dir() -> PathBuf {
-    PeppyDirs::default().root().join("cache/rust/test-targets")
+    config_test_support::test_data_root().join("cache/rust/test-targets")
 }
 
 /// Runs `cargo clippy` on a generated crate, using a shared target directory

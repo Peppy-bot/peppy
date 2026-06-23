@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
 core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-api" }
@@ -54,13 +54,13 @@ ignore = "0.4"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }
 
 [dev-dependencies]
 node-stack = { path = "../node-stack-internal" }
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["fingerprint_test_helpers"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config", features = ["fingerprint_test_helpers"] }
 # git_fixtures: this crate's tests use the libgit2-backed `create_nodes_git_repo`.
-config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support-internal", features = ["git_fixtures"] }
+config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support", features = ["git_fixtures"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
 rstest = { workspace = true }

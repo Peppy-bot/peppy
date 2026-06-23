@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface" }
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config" }
 encoding = { path = "../encoding-internal" }
 quote = "1.0"
 proc-macro2 = "1.0"
@@ -20,17 +20,17 @@ indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }
 peppylib-build-policy = { path = "../peppylib-build-policy" }
 sha2 = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["fingerprint_test_helpers"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config", features = ["fingerprint_test_helpers"] }
 # Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
 # no `git_fixtures` feature — keeps libgit2 out of the generator test build.
-config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support-internal" }
+config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support" }
 json5-pretty = { path = "../../../nodes_shared_code/peppyos-shared/json5-pretty" }
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"

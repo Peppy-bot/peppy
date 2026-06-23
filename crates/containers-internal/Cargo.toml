@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 thiserror = "2.0"
@@ -13,8 +13,8 @@ tracing = "0.1"
 
 [dev-dependencies]
 # Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.
-config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support-internal" }
+config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support" }
 tempfile = "3"
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }

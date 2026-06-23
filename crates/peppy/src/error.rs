@@ -29,7 +29,7 @@ pub enum Error {
     #[from]
     PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
-    // -- config-internal
+    // -- config
     PeppyConfig(config::ConfigError),
 
     // -- auth: transport/HTTP failures (unreachable backend, unexpected status)

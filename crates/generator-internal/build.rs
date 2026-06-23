@@ -31,7 +31,7 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Returns true if a file inside a Rust crate is source that affects the crate's
-/// compiled output: `.rs`, `.toml`, `.capnp`, `.j2`, plus config-internal's
+/// compiled output: `.rs`, `.toml`, `.capnp`, `.j2`, plus config's
 /// `tools/capnp_*` helpers. `relative_path` is relative to the crate root.
 /// Mirrors the rust-embed include/exclude rules used when embedding crate source
 /// for node scaffolding, so the staleness hash and the embed stay in agreement.
@@ -447,20 +447,17 @@ mod peppylib_build {
     const REBUILD_ENV_VAR: &str = "PEPPYLIB_REBUILD";
 
     /// Dependency crates compiled into the `.so`, paired with whether the crate
-    /// is config-internal (which embeds extra `tools/capnp_*` helpers). This list
+    /// is config (which embeds extra `tools/capnp_*` helpers). This list
     /// MUST stay in sync with peppylib-py's path dependencies in
     /// `nodes_shared_code/peppyos-shared/peppylib-py/Cargo.toml`; a crate
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
-        // peppylib, core-node-api, config-internal and peppy-messaging-interface now live in
+        // peppylib, core-node-api, config and peppy-messaging-interface now live in
         // peppyos-shared; reach them via a reverse path from the peppyos crates
         // root. The remaining deps stay siblings.
         ("../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
-        (
-            "../../nodes_shared_code/peppyos-shared/config-internal",
-            true,
-        ),
+        ("../../nodes_shared_code/peppyos-shared/config", true),
         (
             "../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
             false,
@@ -766,8 +763,8 @@ mod rust_crates_build {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
         let crate_dirs = [
-            // peppylib, core-node-api, peppy-messaging-interface, config-internal and
-            // build-helpers-internal were moved out of the peppyos workspace into
+            // peppylib, core-node-api, peppy-messaging-interface, config and
+            // build-helpers were moved out of the peppyos workspace into
             // peppyos-shared; reach them all via the superproject reverse path.
             (
                 "../../../nodes_shared_code/peppyos-shared/peppylib-rs",
@@ -777,16 +774,13 @@ mod rust_crates_build {
                 "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
                 false,
             ),
-            (
-                "../../../nodes_shared_code/peppyos-shared/config-internal",
-                true,
-            ),
+            ("../../../nodes_shared_code/peppyos-shared/config", true),
             (
                 "../../../nodes_shared_code/peppyos-shared/core-node-api",
                 false,
             ),
             (
-                "../../../nodes_shared_code/peppyos-shared/build-helpers-internal",
+                "../../../nodes_shared_code/peppyos-shared/build-helpers",
                 false,
             ),
         ];

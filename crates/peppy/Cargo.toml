@@ -6,7 +6,7 @@ autotests = false
 
 [dependencies]
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config" }
 containers = { path = "../containers-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
 core-node = { path = "../core-node-internal" }
@@ -59,7 +59,7 @@ tempfile = { version = "3.8", optional = true }
 parking_lot = { workspace = true, optional = true }
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal" }
+build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }
 
 [features]
 # The shipped CLI carries no test scaffolding by default. `test-support` is

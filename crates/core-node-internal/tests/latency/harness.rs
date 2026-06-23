@@ -222,10 +222,13 @@ fn ensure_peppylib_dep(user_node: &Path) {
 
 /// Shared incremental target dir for node builds (so the vendored
 /// peppylib/zenoh stack is compiled once and reused across scenarios).
+///
+/// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
+/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
+/// mid-link.
 fn shared_target_dir() -> PathBuf {
-    config::consts::PeppyDirs::default()
-        .root()
-        .join("cache/rust/test-targets")
+    config_test_support::test_data_root().join("cache/rust/test-targets")
 }
 
 /// Build a node crate in **release**. This is deliberate: production peppy nodes

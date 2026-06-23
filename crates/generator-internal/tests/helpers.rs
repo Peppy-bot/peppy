@@ -425,9 +425,14 @@ pub fn wait_for_child(
 }
 
 /// Returns a stable, shared target directory for test compilations so that sccache can
-/// reuse the same dir across runs
+/// reuse the same dir across runs.
+///
+/// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
+/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
+/// mid-link.
 fn stable_test_target_dir() -> std::path::PathBuf {
-    PeppyDirs::default().root().join("cache/rust/test-targets")
+    config_test_support::test_data_root().join("cache/rust/test-targets")
 }
 
 pub fn compile_project(dir: impl AsRef<Path>) {

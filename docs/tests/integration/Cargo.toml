@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 peppy = { path = "../../../crates/peppy", features = ["test-support"] }
-config = { path = "../../../../nodes_shared_code/peppyos-shared/config-internal" }
+config = { path = "../../../../nodes_shared_code/peppyos-shared/config" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tempfile = "3"

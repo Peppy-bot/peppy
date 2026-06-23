@@ -163,7 +163,7 @@ pub(crate) struct EmbeddedPeppylib;
 pub(crate) struct EmbeddedPeppyMessagingInterface;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/config-internal/"]
+#[folder = "../../../nodes_shared_code/peppyos-shared/config/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -172,10 +172,10 @@ pub(crate) struct EmbeddedPeppyMessagingInterface;
 #[exclude = "target/*"]
 #[exclude = "tests/*"]
 #[exclude = "examples/*"]
-pub(crate) struct EmbeddedConfigInternal;
+pub(crate) struct EmbeddedConfig;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/build-helpers-internal/"]
+#[folder = "../../../nodes_shared_code/peppyos-shared/build-helpers/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[exclude = "target/*"]
