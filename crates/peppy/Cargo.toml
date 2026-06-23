@@ -67,10 +67,9 @@ build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helper
 # self-reference below, so `cargo test` works without extra flags while a plain
 # `cargo build`/`cargo install` stays lean.
 default = []
-# Gate test-only helpers (including config's fingerprint helpers and
-# their git2 transitive dep) behind this feature so a release build doesn't
-# carry them.
-test-support = ["dep:tempfile", "dep:parking_lot", "config/test_helpers"]
+# Gate test-only helpers (including config's fingerprint helpers) behind this
+# feature so a release build doesn't carry them.
+test-support = ["dep:tempfile", "dep:parking_lot", "config/fingerprint_test_helpers"]
 
 [dev-dependencies]
 tempfile = "3.8"

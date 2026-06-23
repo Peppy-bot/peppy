@@ -607,12 +607,10 @@ dependencies = [
 name = "config"
 version = "0.0.1"
 dependencies = [
- "askama",
  "capnp",
  "clap",
  "const_format",
  "dirs 6.0.0",
- "git2",
  "indexmap 2.14.0",
  "serde",
  "serde_json",
@@ -623,6 +621,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "config-test-support"
+version = "0.0.1"
+dependencies = [
+ "askama",
+ "config",
+ "git2",
 ]
 
 [[package]]
@@ -676,6 +683,7 @@ version = "0.0.1"
 dependencies = [
  "build-helpers",
  "config",
+ "config-test-support",
  "serde",
  "serde_yaml",
  "tempfile",
@@ -717,6 +725,7 @@ dependencies = [
  "bytes",
  "chrono",
  "config",
+ "config-test-support",
  "containers",
  "core-node-api",
  "dirs 6.0.0",
@@ -1475,6 +1484,7 @@ dependencies = [
  "build-helpers",
  "bytes",
  "config",
+ "config-test-support",
  "encoding",
  "indexmap 2.14.0",
  "json5-pretty",

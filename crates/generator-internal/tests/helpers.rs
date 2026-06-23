@@ -28,13 +28,13 @@ pub fn test_peppy_dirs() -> PeppyDirs {
 }
 
 /// Root for per-test scratch directories. Thin re-export of the shared
-/// [`config::test_helpers::test_tmp_root`] so the many generator test files can
+/// [`config_test_support::test_tmp_root`] so the many generator test files can
 /// keep calling `crate::helpers::test_tmp_root()`.
 ///
 /// Note: the shared `peppylib` `.so` cache itself still lives under
 /// [`test_peppy_dirs`] (the global `.peppy`); only the per-test copies move here.
 pub fn test_tmp_root() -> PathBuf {
-    config::test_helpers::test_tmp_root()
+    config_test_support::test_tmp_root()
 }
 
 pub const TEST_NODE_TAG: &str = "v1";

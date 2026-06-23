@@ -58,7 +58,9 @@ build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helper
 
 [dev-dependencies]
 node-stack = { path = "../node-stack-internal" }
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["fingerprint_test_helpers"] }
+# git_fixtures: this crate's tests use the libgit2-backed `create_nodes_git_repo`.
+config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support-internal", features = ["git_fixtures"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
 rstest = { workspace = true }

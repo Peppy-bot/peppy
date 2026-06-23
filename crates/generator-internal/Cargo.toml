@@ -27,7 +27,10 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
+config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["fingerprint_test_helpers"] }
+# Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
+# no `git_fixtures` feature — keeps libgit2 out of the generator test build.
+config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support-internal" }
 json5-pretty = { path = "../../../nodes_shared_code/peppyos-shared/json5-pretty" }
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"

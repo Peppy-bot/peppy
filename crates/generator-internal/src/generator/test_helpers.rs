@@ -67,7 +67,7 @@ pub fn render_artifacts(artifacts: Vec<InterfaceArtifact>) -> Vec<String> {
         .collect()
 }
 
-pub use config::test_helpers::assert_contains_all;
+pub use config_test_support::assert_contains_all;
 
 /// Returns a stable, shared target directory for test compilations so that
 /// dependencies are compiled once and reused across all clippy/build tests.

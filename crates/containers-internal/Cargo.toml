@@ -12,7 +12,8 @@ thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
-config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
+# Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.
+config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support-internal" }
 tempfile = "3"
 
 [build-dependencies]
