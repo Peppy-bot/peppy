@@ -143,7 +143,7 @@ pub fn load(path: &Path) -> Result<Credentials> {
 /// Atomically writes the credentials document, setting `conf/` to `0700` and the
 /// file to `0600` so the secrets are owner-only.
 pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
-    let content = config::json5_pretty::to_string_pretty(creds)
+    let content = json5_pretty::to_string_pretty(creds)
         .map_err(|e| Error::Auth(format!("failed to serialize credentials: {e}")))?;
 
     if let Some(parent) = path.parent() {

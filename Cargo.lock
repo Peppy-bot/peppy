@@ -608,15 +608,12 @@ name = "config"
 version = "0.0.1"
 dependencies = [
  "askama",
- "build-helpers",
  "capnp",
- "capnpc",
  "clap",
  "const_format",
  "dirs 6.0.0",
  "git2",
  "indexmap 2.14.0",
- "proc-macro2",
  "serde",
  "serde_json",
  "serde_json5",
@@ -730,6 +727,7 @@ dependencies = [
  "hostname",
  "httptest",
  "ignore",
+ "json5-pretty",
  "latency-report",
  "machine-uid",
  "names-generator2",
@@ -1159,6 +1157,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
+name = "encoding"
+version = "0.0.1"
+dependencies = [
+ "build-helpers",
+ "capnp",
+ "capnpc",
+ "config",
+ "indexmap 2.14.0",
+ "proc-macro2",
+ "serde_json5",
+ "tempfile",
+]
+
+[[package]]
 name = "encoding-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1460,7 +1472,9 @@ dependencies = [
  "build-helpers",
  "bytes",
  "config",
+ "encoding",
  "indexmap 2.14.0",
+ "json5-pretty",
  "peppylib-build-policy",
  "peppylib-rs",
  "pmi",
@@ -2288,6 +2302,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "json5-pretty"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_json5",
+]
+
+[[package]]
 name = "jsonschema"
 version = "0.46.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3104,6 +3127,7 @@ dependencies = [
  "httpmock",
  "indicatif",
  "ipnet",
+ "json5-pretty",
  "latency-report",
  "libc",
  "names-generator2",

@@ -13,6 +13,7 @@ core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-ap
 generator = { path = "../generator-internal" }
 latency-report = { path = "../latency-report" }
 containers = { path = "../containers-internal" }
+json5-pretty = { path = "../json5-pretty" }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"

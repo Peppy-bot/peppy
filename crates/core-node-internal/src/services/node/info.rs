@@ -158,7 +158,7 @@ async fn handle_node_info_request_inner(
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let config_json = config::json5_pretty::to_string_pretty(&node_config)
+    let config_json = json5_pretty::to_string_pretty(&node_config)
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 

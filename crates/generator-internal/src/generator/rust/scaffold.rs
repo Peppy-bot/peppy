@@ -15,7 +15,7 @@ use crate::{
         types::{CapnpSchema, InterfaceArtifact, ModuleCategory},
     },
 };
-use config::encoding::compile_capnp;
+use encoding::compile_capnp;
 use proc_macro2::Span;
 use rust_embed::Embed;
 use std::io;
@@ -222,18 +222,17 @@ fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
         for (_dep_name, item) in deps.iter_mut() {
             // Inline form: `dep = { path = "...", features = [...] }`.
             if let Some(inline) = item.as_inline_table_mut() {
-                if let Some(path_val) = inline.get_mut("path") {
-                    if let Some(flat) = path_val.as_str().and_then(flatten_vendored_path) {
-                        *path_val = flat.as_str().into();
-                    }
+                if let Some(path_val) = inline.get_mut("path")
+                    && let Some(flat) = path_val.as_str().and_then(flatten_vendored_path)
+                {
+                    *path_val = flat.as_str().into();
                 }
             // Full-table form: `[dependencies.dep]\npath = "..."`.
-            } else if let Some(table) = item.as_table_mut() {
-                if let Some(path_item) = table.get_mut("path") {
-                    if let Some(flat) = path_item.as_str().and_then(flatten_vendored_path) {
-                        *path_item = value(flat);
-                    }
-                }
+            } else if let Some(table) = item.as_table_mut()
+                && let Some(path_item) = table.get_mut("path")
+                && let Some(flat) = path_item.as_str().and_then(flatten_vendored_path)
+            {
+                *path_item = value(flat);
             }
         }
     }

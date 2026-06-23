@@ -2,8 +2,8 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
-use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{ConsumedTopic, EmittedTopic, QoSProfile};
+use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 

@@ -24,11 +24,11 @@ use crate::generator::naming::{
     module_name_from_components, non_empty_str, raw_module_label, resolve_schema_file_stem,
     sanitize_component, sanitize_node_display_name, to_camel_case,
 };
-use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat,
 };
+use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;

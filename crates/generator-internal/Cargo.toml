@@ -7,6 +7,7 @@ edition.workspace = true
 [dependencies]
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal" }
 config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
+encoding = { path = "../encoding-internal" }
 quote = "1.0"
 proc-macro2 = "1.0"
 prettyplease = "0.2"
@@ -27,6 +28,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 bytes = "1"
 config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
+json5-pretty = { path = "../json5-pretty" }
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal", features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"

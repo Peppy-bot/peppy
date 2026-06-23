@@ -6,8 +6,8 @@ use crate::generator::types::{
     is_scalar_copy_type, type_token_name, validate_fixed_length_array_items,
     validate_generated_type_name_collisions, validate_message_format_field_names,
 };
-use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
+use encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;

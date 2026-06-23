@@ -122,7 +122,7 @@ fn login_persists_credentials_and_resolves_identity() {
     assert_eq!(pc.client_id, "cli-client-id");
 
     // `/me` was consulted (the tolerant parse succeeded).
-    assert!(me.hits() >= 1, "GET /me should have been called");
+    assert!(me.calls() >= 1, "GET /me should have been called");
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn logout_calls_backend_and_clears_local_credentials() {
     .execute(&ctx())
     .expect("logout");
 
-    assert!(logout.hits() >= 1, "POST /logout should have been called");
+    assert!(logout.calls() >= 1, "POST /logout should have been called");
     let after = storage::load(&path).expect("load creds");
     assert!(
         after.session.is_none(),
@@ -264,7 +264,7 @@ fn resolver_refreshes_an_expired_session_token() {
     let cred = resolver::resolve(&path, &http, None).expect("refresh resolves");
 
     assert!(
-        token.hits() >= 1,
+        token.calls() >= 1,
         "token endpoint should be hit for refresh"
     );
     assert_eq!(cred.token.expose_secret(), "refreshed-access");
