@@ -1101,11 +1101,14 @@ version = "0.1.0"
 dependencies = [
  "config",
  "peppy",
+ "serde",
+ "serde_json5",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]
