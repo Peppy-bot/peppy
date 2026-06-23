@@ -461,7 +461,10 @@ mod peppylib_build {
             "../../nodes_shared_code/peppyos-shared/config-internal",
             true,
         ),
-        ("../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", false),
+        (
+            "../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
+            false,
+        ),
         (
             "../../nodes_shared_code/peppyos-shared/core-node-api",
             false,

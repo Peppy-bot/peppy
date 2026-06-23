@@ -10,6 +10,8 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -107,55 +109,65 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::
     destination
 }
 
+const USER_NODE_LAUNCH_BIN: &str = "user_node";
+
+fn test_wrapper_crate_name(crate_dir: &Path) -> String {
+    let stable_identity = crate_dir
+        .canonicalize()
+        .unwrap_or_else(|_| crate_dir.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    stable_identity.hash(&mut hasher);
+    format!("user_node_{:016x}", hasher.finish())
+}
+
+fn executable_filename(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
 pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     let crate_dir = to_dir.as_ref();
     fs::create_dir_all(crate_dir).expect("failed to create user node directory");
+    let src_dir = crate_dir.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create user node src directory");
+    let main_rs = src_dir.join("main.rs");
+    if !main_rs.exists() {
+        fs::write(&main_rs, "fn main() {}\n").expect("failed to write default user node main.rs");
+    }
+
     let cargo_toml_path = crate_dir.join("Cargo.toml");
+    let crate_name = test_wrapper_crate_name(crate_dir);
+    let manifest = format!(
+        r#"[package]
+name = "{crate_name}"
+version = "0.1.0"
+edition = "2024"
 
-    if !cargo_toml_path.exists() {
-        Command::new("cargo")
-            .arg("init")
-            .arg("--bin")
-            .arg("--vcs")
-            .arg("none")
-            .current_dir(crate_dir)
-            .stdin(Stdio::null())
-            .output()
-            .expect("failed to invoke cargo init for user node");
-    }
+[[bin]]
+name = "{crate_name}"
+path = "src/main.rs"
 
-    let manifest_contents =
-        fs::read_to_string(&cargo_toml_path).expect("failed to read user node Cargo.toml");
+[dependencies]
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
+peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
+"#
+    );
 
-    let mut updated_manifest = manifest_contents.clone();
-
-    if !updated_manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("tokio"))
-    {
-        let tokio_dependency_line =
-            "tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }\n";
-        updated_manifest = insert_dependency_line(&updated_manifest, tokio_dependency_line);
-    }
-
-    if !updated_manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("peppygen"))
-    {
-        let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", PEPPYGEN_OUTPUT_PATH);
-        updated_manifest = insert_dependency_line(&updated_manifest, &dependency_line);
-    }
-
-    if updated_manifest != manifest_contents {
-        fs::write(&cargo_toml_path, updated_manifest)
-            .expect("failed to write user node Cargo.toml");
+    let should_write_manifest = match fs::read_to_string(&cargo_toml_path) {
+        Ok(existing) => existing != manifest,
+        Err(_) => true,
+    };
+    if should_write_manifest {
+        fs::write(&cargo_toml_path, manifest).expect("failed to write user node Cargo.toml");
     }
 }
 
 pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     // Run the compiled binary directly to avoid cargo's global package-cache lock contention.
     // `compile_project` must be called beforehand to ensure the binary exists.
-    let binary_path = dir.join("target").join("debug").join("user_node");
+    let binary_path = dir
+        .join("target")
+        .join("debug")
+        .join(executable_filename(USER_NODE_LAUNCH_BIN));
     let use_binary = binary_path.exists();
     let mut command = if use_binary {
         Command::new(&binary_path)
@@ -423,13 +435,6 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
 
-    // Hold an exclusive file lock across both the cargo build and the binary copy.
-    // This prevents a parallel test's build from overwriting the `user_node` binary
-    // in the shared target dir between our build finishing and the copy completing.
-    let lock_file = fs::File::create(target_dir.join(".compile.lock"))
-        .expect("failed to create compile lock file");
-    lock_file.lock().expect("failed to acquire compile lock");
-
     let cargo_output = Command::new("cargo")
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
@@ -446,16 +451,25 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         String::from_utf8_lossy(&cargo_output.stderr)
     );
 
-    // Copy the binary to the project's local target dir so that spawn_cargo_run
-    // can execute it directly without cargo, avoiding lock contention at runtime.
-    let binary = target_dir.join("debug").join("user_node");
-    if binary.exists() {
-        let local_bin_dir = dir.join("target").join("debug");
-        fs::create_dir_all(&local_bin_dir).expect("failed to create local target/debug dir");
-        fs::copy(&binary, local_bin_dir.join("user_node"))
-            .expect("failed to copy compiled binary to local target dir");
-    }
-    // Lock released on drop
+    // The shared target dir is still useful for dependency reuse, but each test
+    // wrapper has a unique package + binary name. That gives Cargo disjoint
+    // fingerprints and output artifact paths while preserving the fixed local
+    // launch path that `spawn_cargo_run` expects.
+    let shared_binary = target_dir
+        .join("debug")
+        .join(executable_filename(&test_wrapper_crate_name(dir)));
+    assert!(
+        shared_binary.exists(),
+        "cargo build succeeded but expected binary was not found at {}",
+        shared_binary.display()
+    );
+    let local_bin_dir = dir.join("target").join("debug");
+    fs::create_dir_all(&local_bin_dir).expect("failed to create local target/debug dir");
+    fs::copy(
+        &shared_binary,
+        local_bin_dir.join(executable_filename(USER_NODE_LAUNCH_BIN)),
+    )
+    .expect("failed to copy compiled binary to local target dir");
 }
 
 pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {

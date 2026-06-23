@@ -1,8 +1,8 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
     CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedCoreNodeApi,
-    EmbeddedPeppylib, EmbeddedPeppyMessagingInterface, WorkspacePackageMetadata, cache_sibling_path,
-    copy_dir_recursive,
+    EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
+    cache_sibling_path, copy_dir_recursive,
 };
 use crate::{
     error::{Error, Result},
@@ -322,7 +322,11 @@ fn deploy_rust_crates_to_shared_cache(
 
         let metadata = WorkspacePackageMetadata::embedded();
         copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedPeppyMessagingInterface>("peppy-messaging-interface", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedPeppyMessagingInterface>(
+            "peppy-messaging-interface",
+            &staging_dir,
+            &metadata,
+        )?;
         copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedBuildHelpers>(
