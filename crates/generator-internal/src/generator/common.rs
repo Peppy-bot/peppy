@@ -152,7 +152,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 pub(crate) struct EmbeddedPeppylib;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/pmi-internal/"]
+#[folder = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -160,7 +160,7 @@ pub(crate) struct EmbeddedPeppylib;
 #[exclude = "target/*"]
 #[exclude = "tests/*"]
 #[exclude = "examples/*"]
-pub(crate) struct EmbeddedPmiInternal;
+pub(crate) struct EmbeddedPeppyMessagingInterface;
 
 #[derive(Embed)]
 #[folder = "../../../nodes_shared_code/peppyos-shared/config-internal/"]

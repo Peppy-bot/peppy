@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal" }
+pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface" }
 config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 encoding = { path = "../encoding-internal" }
 quote = "1.0"
@@ -29,7 +29,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 bytes = "1"
 config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal", features = ["test_helpers"] }
 json5-pretty = { path = "../json5-pretty" }
-pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal", features = ["zenoh", "build_zenoh"] }
+pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }

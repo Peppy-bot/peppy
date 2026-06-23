@@ -1,7 +1,7 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
     CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedCoreNodeApi,
-    EmbeddedPeppylib, EmbeddedPmiInternal, WorkspacePackageMetadata, cache_sibling_path,
+    EmbeddedPeppylib, EmbeddedPeppyMessagingInterface, WorkspacePackageMetadata, cache_sibling_path,
     copy_dir_recursive,
 };
 use crate::{
@@ -194,7 +194,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
 /// submodule (`../../../peppyos/crates/config-internal`, as `peppylib-rs` does).
 const VENDORED_SIBLING_CRATES: &[&str] = &[
     "peppylib",
-    "pmi-internal",
+    "peppy-messaging-interface",
     "config-internal",
     "core-node-api",
     "build-helpers-internal",
@@ -280,7 +280,7 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
-/// Deploys the vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api,
+/// Deploys the vendored Rust crates (peppylib, peppy-messaging-interface, config-internal, core-node-api,
 /// build-helpers-internal) to a shared cache directory, then links or
 /// copies them into `node_libs_dir`.
 ///
@@ -322,7 +322,7 @@ fn deploy_rust_crates_to_shared_cache(
 
         let metadata = WorkspacePackageMetadata::embedded();
         copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedPeppyMessagingInterface>("peppy-messaging-interface", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedBuildHelpers>(
@@ -339,7 +339,7 @@ fn deploy_rust_crates_to_shared_cache(
     }
     drop(lock_file);
 
-    // Link or copy all vendored crates (peppylib, pmi-internal, config-internal,
+    // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config-internal,
     // core-node-api, build-helpers-internal) into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
     // paths (e.g., peppylib has `config = { path = "../config-internal" }` and
@@ -347,7 +347,7 @@ fn deploy_rust_crates_to_shared_cache(
     // location, not the target.
     for crate_name in &[
         "peppylib",
-        "pmi-internal",
+        "peppy-messaging-interface",
         "config-internal",
         "core-node-api",
         "build-helpers-internal",

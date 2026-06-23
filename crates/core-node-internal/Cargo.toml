@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../../../nodes_shared_code/peppyos-shared/pmi-internal", features = ["zenoh", "build_zenoh"] }
+pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
 config = { path = "../../../nodes_shared_code/peppyos-shared/config-internal" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }

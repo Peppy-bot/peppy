@@ -25,7 +25,7 @@ pub enum Error {
     // -- NodeWatcher
     NodeWatcher(String),
 
-    // -- pmi-internal
+    // -- peppy-messaging-interface
     #[from]
     PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
