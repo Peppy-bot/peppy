@@ -1,7 +1,6 @@
-use super::router_health::{MessengerRouterExt, RouterHealthChecker};
 use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
-use pmi::{Messenger, MessengerBackend};
+use pmi::{Messenger, MessengerBackend, RouterHealthChecker};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot, watch};
