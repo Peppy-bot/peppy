@@ -18,6 +18,7 @@ use crate::{
 use encoding::compile_capnp;
 use proc_macro2::Span;
 use rust_embed::Embed;
+use sha2::{Digest, Sha256};
 use std::io;
 use std::io::ErrorKind;
 use std::{
@@ -280,6 +281,58 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
+/// Mixes every file of one embedded crate into `hasher` in a deterministic
+/// (sorted-by-path) order. A per-crate `label` and NUL domain separators keep
+/// identically named files in different crates from colliding.
+fn hash_embedded_crate<E: Embed>(hasher: &mut Sha256, label: &str) {
+    hasher.update(label.as_bytes());
+    hasher.update([0u8]);
+    let mut names: Vec<String> = E::iter().map(|name| name.as_ref().to_string()).collect();
+    names.sort();
+    for name in names {
+        // `get` cannot legitimately miss a name just returned by `iter`; skip
+        // defensively rather than poison the whole key on a transient race.
+        if let Some(file) = E::get(&name) {
+            hasher.update(name.as_bytes());
+            hasher.update([0u8]);
+            hasher.update(file.data.as_ref());
+            hasher.update([0u8]);
+        }
+    }
+}
+
+/// Cache key for the vendored Rust crates, derived from the **actual embedded
+/// bytes that are about to be deployed** rather than the compile-time
+/// `RUST_CRATES_HASH`.
+///
+/// In debug builds `rust-embed` (no `debug-embed` feature) reads each crate's
+/// source live from disk at call time, so this hash reflects the current
+/// working tree — never a stale snapshot baked into the generator binary at its
+/// last compile. That makes the shared cache self-invalidating: any source
+/// change yields a new key and therefore a fresh deploy, even when cargo did not
+/// rebuild the generator (e.g. a submodule checkout whose mtimes did not advance,
+/// or a newly added file the build script's `rerun-if-changed` list never
+/// watched). Keying on the deployed bytes also means the hash can never drift
+/// out of agreement with the embed's own include/exclude rules.
+///
+/// In release builds the embed is compile-time, so `get` returns the embedded
+/// bytes and this stays in lockstep with them (the build script's
+/// `rerun-if-changed` registration keeps those embedded bytes fresh).
+fn vendored_crates_cache_key() -> String {
+    let mut hasher = Sha256::new();
+    hash_embedded_crate::<EmbeddedPeppylib>(&mut hasher, "peppylib");
+    hash_embedded_crate::<EmbeddedPeppyMessagingInterface>(
+        &mut hasher,
+        "peppy-messaging-interface",
+    );
+    hash_embedded_crate::<EmbeddedConfig>(&mut hasher, "peppy-config-model");
+    hash_embedded_crate::<EmbeddedCoreNodeApi>(&mut hasher, "core-node-api");
+    hash_embedded_crate::<EmbeddedBuildHelpers>(&mut hasher, "build-helpers");
+    let hash = hasher.finalize();
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}", &hex[..16], env!("CARGO_PKG_VERSION"))
+}
+
 /// Deploys the vendored Rust crates (peppylib, peppy-messaging-interface, config, core-node-api,
 /// build-helpers) to a shared cache directory, then links or
 /// copies them into `node_libs_dir`.
@@ -290,14 +343,15 @@ fn copy_embedded_crate<E: Embed>(
 /// In `Copy` mode, copies the crate sources directly into `node_libs_dir`.
 /// This is needed for container builds where symlinks to host paths would break.
 ///
-/// The cache is keyed by content hash + version, and uses file locking with a
+/// The cache is keyed by a content hash of the embedded crate bytes
+/// ([`vendored_crates_cache_key`]) + version, and uses file locking with a
 /// staging directory for concurrent-safe deployment.
 fn deploy_rust_crates_to_shared_cache(
     node_libs_dir: &Path,
     peppy_dirs: &config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
 ) -> Result<()> {
-    let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
+    let cache_key = vendored_crates_cache_key();
     let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
 
     let parent = cache_dir

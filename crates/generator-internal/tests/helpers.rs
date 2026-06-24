@@ -111,13 +111,54 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::
 
 const USER_NODE_LAUNCH_BIN: &str = "user_node";
 
-fn test_wrapper_crate_name(crate_dir: &Path) -> String {
+/// Stable per-crate-dir hash used to derive the unique `user_node` and
+/// `peppygen` package names. Canonicalizes so the same directory always hashes
+/// identically regardless of how the path was spelled.
+fn crate_identity_hash(crate_dir: &Path) -> u64 {
     let stable_identity = crate_dir
         .canonicalize()
         .unwrap_or_else(|_| crate_dir.to_path_buf());
     let mut hasher = DefaultHasher::new();
     stable_identity.hash(&mut hasher);
-    format!("user_node_{:016x}", hasher.finish())
+    hasher.finish()
+}
+
+fn test_wrapper_crate_name(crate_dir: &Path) -> String {
+    format!("user_node_{:016x}", crate_identity_hash(crate_dir))
+}
+
+/// Per-test-unique package name for a node's generated `peppygen` library. The
+/// generator names every node's library `peppygen`; that collision lets the
+/// shared test target dir link one test's cached `peppygen` rlib into another
+/// test's `user_node`. A unique name per crate dir keeps each test's peppygen a
+/// distinct cargo unit. See [`rename_peppygen_package`] and [`compile_project`].
+fn peppygen_crate_name(crate_dir: &Path) -> String {
+    format!("peppygen_{:016x}", crate_identity_hash(crate_dir))
+}
+
+/// Rewrites the generated `peppygen` crate's `Cargo.toml` `package.name` to the
+/// per-test-unique [`peppygen_crate_name`]. The matching `user_node` manifest
+/// (written by [`init_cargo_user_node`]) aliases the dependency back to
+/// `peppygen` via `package = "..."`, so generated `use peppygen::…` code is
+/// unaffected. Idempotent. No-op if the peppygen crate was not generated.
+fn rename_peppygen_package(user_node_dir: &Path) {
+    let unique = peppygen_crate_name(user_node_dir);
+    let peppygen_cargo = user_node_dir.join(PEPPYGEN_OUTPUT_PATH).join("Cargo.toml");
+    let Ok(contents) = fs::read_to_string(&peppygen_cargo) else {
+        return;
+    };
+    if contents.contains(&format!("name = \"{unique}\"")) {
+        return;
+    }
+    let renamed = contents.replacen("name = \"peppygen\"", &format!("name = \"{unique}\""), 1);
+    assert_ne!(
+        renamed,
+        contents,
+        "expected `name = \"peppygen\"` in generated peppygen Cargo.toml at {}",
+        peppygen_cargo.display()
+    );
+    fs::write(&peppygen_cargo, renamed)
+        .expect("failed to rewrite peppygen Cargo.toml package name");
 }
 
 fn executable_filename(name: &str) -> String {
@@ -136,6 +177,10 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
 
     let cargo_toml_path = crate_dir.join("Cargo.toml");
     let crate_name = test_wrapper_crate_name(crate_dir);
+    // Depend on the per-test-unique peppygen package, aliased back to `peppygen`
+    // so the generated `use peppygen::…` code is unchanged. `compile_project`
+    // renames the peppygen crate to match before building.
+    let peppygen_name = peppygen_crate_name(crate_dir);
     let manifest = format!(
         r#"[package]
 name = "{crate_name}"
@@ -148,7 +193,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
-peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
+peppygen = {{ package = "{peppygen_name}", path = "{PEPPYGEN_OUTPUT_PATH}" }}
 "#
     );
 
@@ -439,6 +484,17 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
+
+    // Give this node's generated `peppygen` crate a per-test-unique package name
+    // before building. The generator names every node's library `peppygen`, so in
+    // the shared target dir cargo treats them as one interchangeable
+    // `peppygen v0.1.0` unit and may link a *different* test's cached rlib into
+    // this `user_node` — e.g. a pinned consumer silently getting another test's
+    // unpinned `fire_goal`, which then discovers instead of pinning. A unique
+    // name forces cargo to compile (and link) the peppygen this test just
+    // generated. Mirrors the unique `user_node` wrapper name; the heavy shared
+    // dependencies (peppylib, zenoh, …) are still reused across builds.
+    rename_peppygen_package(dir);
 
     let cargo_output = Command::new("cargo")
         .arg("build")
