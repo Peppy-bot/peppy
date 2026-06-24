@@ -22,6 +22,35 @@ parking_lot = "0.12"
 # router mode via `#[case]` (see crates/*/tests). Test-only.
 rstest = "0.26"
 
+# Shared, public-facing crates consumed from the `nodes_shared_code` repo (the
+# `peppyos-shared` virtual workspace) as git dependencies, so `peppyos` holds no
+# path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
+# crate follows the repo's default branch (`main`); the resolved revision is
+# recorded in Cargo.lock and moved forward with `cargo update`. `config` and
+# `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
+# and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
+# directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
+# `git_fixtures`) are added at each use site with `{ workspace = true, features = [...] }`.
+config = { git = "https://github.com/Peppy-bot/nodes_shared_code", package = "peppy-config-model" }
+peppylib = { git = "https://github.com/Peppy-bot/nodes_shared_code", package = "peppylib-rs" }
+pmi = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
+core-node-api = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
+json5-pretty = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
+config-test-support = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
+build-helpers = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
+
+# Internal workspace crates (members under `crates/`). Centralized here so each
+# member references them with `{ workspace = true }` instead of repeating a
+# relative `path`; paths are resolved relative to this workspace root. Per-crate
+# features are still added at the use site with `{ workspace = true, features = [...] }`.
+containers = { path = "crates/containers-internal" }
+core-node = { path = "crates/core-node-internal" }
+encoding = { path = "crates/encoding-internal" }
+generator = { path = "crates/generator-internal" }
+latency-report = { path = "crates/latency-report" }
+node-stack = { path = "crates/node-stack-internal" }
+peppylib-build-policy = { path = "crates/peppylib-build-policy" }
+
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]
 # unused_extern_crates = "deny"

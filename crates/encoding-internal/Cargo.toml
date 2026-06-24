@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model" }
+config = { workspace = true }
 capnp = "0.26"
 capnpc = "0.26"
 proc-macro2 = "1.0"
@@ -13,7 +13,7 @@ tempfile = "3.8"
 indexmap = "2.2"
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }
+build-helpers = { workspace = true }
 
 [dev-dependencies]
 serde_json5 = "0.2"

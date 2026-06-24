@@ -5,15 +5,15 @@ edition.workspace = true
 autotests = false
 
 [dependencies]
-pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
-config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model" }
-containers = { path = "../containers-internal" }
-peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
-core-node = { path = "../core-node-internal" }
-core-node-api = { path = "../../../nodes_shared_code/peppyos-shared/core-node-api" }
-node-stack = { path = "../node-stack-internal" }
-latency-report = { path = "../latency-report" }
-json5-pretty = { path = "../../../nodes_shared_code/peppyos-shared/json5-pretty" }
+pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
+config = { workspace = true }
+containers = { workspace = true }
+peppylib = { workspace = true }
+core-node = { workspace = true }
+core-node-api = { workspace = true }
+node-stack = { workspace = true }
+latency-report = { workspace = true }
+json5-pretty = { workspace = true }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -59,7 +59,7 @@ tempfile = { version = "3.8", optional = true }
 parking_lot = { workspace = true, optional = true }
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }
+build-helpers = { workspace = true }
 
 [features]
 # The shipped CLI carries no test scaffolding by default. `test-support` is

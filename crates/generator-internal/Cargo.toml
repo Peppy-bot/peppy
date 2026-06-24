@@ -5,9 +5,9 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface" }
-config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model" }
-encoding = { path = "../encoding-internal" }
+pmi = { workspace = true }
+config = { workspace = true }
+encoding = { workspace = true }
 quote = "1.0"
 proc-macro2 = "1.0"
 prettyplease = "0.2"
@@ -21,21 +21,21 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 sha2 = "0.11"
 
 [build-dependencies]
-build-helpers = { path = "../../../nodes_shared_code/peppyos-shared/build-helpers" }
-peppylib-build-policy = { path = "../peppylib-build-policy" }
+build-helpers = { workspace = true }
+peppylib-build-policy = { workspace = true }
 sha2 = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"
-config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model", features = ["fingerprint_test_helpers"] }
+config = { workspace = true, features = ["fingerprint_test_helpers"] }
 # Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
 # no `git_fixtures` feature — keeps libgit2 out of the generator test build.
-config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support" }
-json5-pretty = { path = "../../../nodes_shared_code/peppyos-shared/json5-pretty" }
-pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
+config-test-support = { workspace = true }
+json5-pretty = { workspace = true }
+pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
-peppylib = { package = "peppylib-rs", path = "../../../nodes_shared_code/peppyos-shared/peppylib-rs" }
+peppylib = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 rstest = { workspace = true }
