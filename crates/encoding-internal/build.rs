@@ -147,14 +147,14 @@ mod capnp_build {
             _ => return false,
         };
 
-        // The bundled capnp binaries live in `config/tools` over in
+        // The bundled capnp binaries live in `peppy-config-model/tools` over in
         // peppyos-shared, because peppyos-shared build scripts (core-node-api,
         // peppylib-rs) compile their own schemas with them too. This crate
         // reaches back into the shared workspace to embed the binary for runtime
         // schema generation. Candidates cover the dev superproject layout and a
         // flat-sibling deployed cache; the first that has the binary wins.
         let tools_candidates = [
-            manifest_dir.join("../../../nodes_shared_code/peppyos-shared/config/tools"),
+            manifest_dir.join("../../../nodes_shared_code/peppyos-shared/peppy-config-model/tools"),
             manifest_dir.join("../config/tools"),
             manifest_dir.join("tools"),
         ];

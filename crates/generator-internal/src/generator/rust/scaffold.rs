@@ -190,12 +190,12 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
 /// Crate directories the vendored `.peppy/libs` cache lays out as flat siblings.
 /// A `path` dependency whose final component is one of these is rewritten to
 /// `../<crate>` so it resolves in the flat cache regardless of whether the source
-/// manifest used a flat path (`../config`) or a reverse path into another
+/// manifest used a flat path (`../peppy-config-model`) or a reverse path into another
 /// submodule (`../../../peppyos/crates/config`, as `peppylib-rs` does).
 const VENDORED_SIBLING_CRATES: &[&str] = &[
     "peppylib",
     "peppy-messaging-interface",
-    "config",
+    "peppy-config-model",
     "core-node-api",
     "build-helpers",
 ];
@@ -327,7 +327,7 @@ fn deploy_rust_crates_to_shared_cache(
             &staging_dir,
             &metadata,
         )?;
-        copy_embedded_crate::<EmbeddedConfig>("config", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", &staging_dir, &metadata)?;
 
@@ -342,13 +342,13 @@ fn deploy_rust_crates_to_shared_cache(
     // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config,
     // core-node-api, build-helpers) into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
-    // paths (e.g., peppylib has `config = { path = "../config" }` and
+    // paths (e.g., peppylib has `config = { package = "peppy-config-model", path = "../peppy-config-model" }` and
     // build-dependencies), and Cargo resolves these paths relative to the symlink
     // location, not the target.
     for crate_name in &[
         "peppylib",
         "peppy-messaging-interface",
-        "config",
+        "peppy-config-model",
         "core-node-api",
         "build-helpers",
     ] {

@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../../../nodes_shared_code/peppyos-shared/config" }
+config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model" }
 capnp = "0.26"
 capnpc = "0.26"
 proc-macro2 = "1.0"

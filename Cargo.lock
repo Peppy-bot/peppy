@@ -604,32 +604,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "config"
-version = "0.0.1"
-dependencies = [
- "capnp",
- "clap",
- "const_format",
- "dirs 6.0.0",
- "indexmap 2.14.0",
- "serde",
- "serde_json",
- "serde_json5",
- "serde_path_to_error",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "walkdir",
-]
-
-[[package]]
 name = "config-test-support"
 version = "0.0.1"
 dependencies = [
  "askama",
- "config",
  "git2",
+ "peppy-config-model",
 ]
 
 [[package]]
@@ -682,8 +662,8 @@ name = "containers"
 version = "0.0.1"
 dependencies = [
  "build-helpers",
- "config",
  "config-test-support",
+ "peppy-config-model",
  "serde",
  "serde_yaml",
  "tempfile",
@@ -724,7 +704,6 @@ dependencies = [
  "build-helpers",
  "bytes",
  "chrono",
- "config",
  "config-test-support",
  "containers",
  "core-node-api",
@@ -743,6 +722,7 @@ dependencies = [
  "nix 0.31.3",
  "node-stack",
  "parking_lot",
+ "peppy-config-model",
  "peppylib-rs",
  "pmi",
  "rand 0.10.1",
@@ -773,8 +753,8 @@ dependencies = [
  "capnp",
  "capnpc",
  "chrono",
- "config",
  "gix-url",
+ "peppy-config-model",
  "serde",
  "serde_json5",
  "thiserror 2.0.18",
@@ -1108,8 +1088,8 @@ dependencies = [
 name = "docs-integration-tests"
 version = "0.1.0"
 dependencies = [
- "config",
  "peppy",
+ "peppy-config-model",
  "serde",
  "serde_json5",
  "tempfile",
@@ -1175,8 +1155,8 @@ dependencies = [
  "build-helpers",
  "capnp",
  "capnpc",
- "config",
  "indexmap 2.14.0",
+ "peppy-config-model",
  "proc-macro2",
  "serde_json5",
  "tempfile",
@@ -1483,11 +1463,11 @@ dependencies = [
  "askama",
  "build-helpers",
  "bytes",
- "config",
  "config-test-support",
  "encoding",
  "indexmap 2.14.0",
  "json5-pretty",
+ "peppy-config-model",
  "peppylib-build-policy",
  "peppylib-rs",
  "pmi",
@@ -2697,11 +2677,11 @@ name = "node-stack"
 version = "0.0.1"
 dependencies = [
  "chrono",
- "config",
  "containers",
  "core-node-api",
  "names-generator2",
  "parking_lot",
+ "peppy-config-model",
  "petgraph",
  "process-wrap",
  "rand 0.10.1",
@@ -3127,7 +3107,6 @@ dependencies = [
  "build-helpers",
  "bytes",
  "clap",
- "config",
  "containers",
  "core-node",
  "core-node-api",
@@ -3148,6 +3127,7 @@ dependencies = [
  "open",
  "parking_lot",
  "peppy",
+ "peppy-config-model",
  "peppylib-rs",
  "pmi",
  "rand 0.10.1",
@@ -3170,6 +3150,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "peppy-config-model"
+version = "0.0.1"
+dependencies = [
+ "capnp",
+ "clap",
+ "const_format",
+ "dirs 6.0.0",
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "serde_path_to_error",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "peppylib-build-policy"
 version = "0.0.1"
 
@@ -3181,11 +3181,11 @@ dependencies = [
  "bytes",
  "capnp",
  "capnpc",
- "config",
  "core-node-api",
  "flume 0.12.0",
  "futures",
  "jsonschema",
+ "peppy-config-model",
  "pmi",
  "schemars 1.2.1",
  "serde",
@@ -3354,9 +3354,9 @@ version = "0.0.1"
 dependencies = [
  "build-helpers",
  "bytes",
- "config",
  "derive_more",
  "flume 0.12.0",
+ "peppy-config-model",
  "serde_json",
  "tempfile",
  "tokio",

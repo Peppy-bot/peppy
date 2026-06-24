@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 pmi = { path = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface" }
-config = { path = "../../../nodes_shared_code/peppyos-shared/config" }
+config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model" }
 encoding = { path = "../encoding-internal" }
 quote = "1.0"
 proc-macro2 = "1.0"
@@ -27,7 +27,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"
-config = { path = "../../../nodes_shared_code/peppyos-shared/config", features = ["fingerprint_test_helpers"] }
+config = { package = "peppy-config-model", path = "../../../nodes_shared_code/peppyos-shared/peppy-config-model", features = ["fingerprint_test_helpers"] }
 # Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
 # no `git_fixtures` feature — keeps libgit2 out of the generator test build.
 config-test-support = { path = "../../../nodes_shared_code/peppyos-shared/config-test-support" }

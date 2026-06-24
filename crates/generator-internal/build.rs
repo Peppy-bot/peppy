@@ -457,7 +457,10 @@ mod peppylib_build {
         // peppyos-shared; reach them via a reverse path from the peppyos crates
         // root. The remaining deps stay siblings.
         ("../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
-        ("../../nodes_shared_code/peppyos-shared/config", true),
+        (
+            "../../nodes_shared_code/peppyos-shared/peppy-config-model",
+            true,
+        ),
         (
             "../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
             false,
@@ -774,7 +777,10 @@ mod rust_crates_build {
                 "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
                 false,
             ),
-            ("../../../nodes_shared_code/peppyos-shared/config", true),
+            (
+                "../../../nodes_shared_code/peppyos-shared/peppy-config-model",
+                true,
+            ),
             (
                 "../../../nodes_shared_code/peppyos-shared/core-node-api",
                 false,
