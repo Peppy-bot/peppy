@@ -138,10 +138,16 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 
 // ---------------------------------------------------------------------------
 // Embedded crate sources for Rust dependency vendoring
+//
+// The `$PEPPYOS_SHARED_DIR` in each `#[folder]` is expanded at compile time by
+// rust-embed (the `interpolate-folder-path` feature). generator's build script
+// sets it to the `peppyos-shared` directory located via build-helpers, so these
+// resolve to the real source trees whether peppyos builds in the superproject or
+// from a cargo git checkout of nodes_shared_code — no `../../../` reach required.
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/peppylib-rs/"]
+#[folder = "$PEPPYOS_SHARED_DIR/peppylib-rs/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -152,7 +158,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 pub(crate) struct EmbeddedPeppylib;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface/"]
+#[folder = "$PEPPYOS_SHARED_DIR/peppy-messaging-interface/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -163,7 +169,7 @@ pub(crate) struct EmbeddedPeppylib;
 pub(crate) struct EmbeddedPeppyMessagingInterface;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/peppy-config-model/"]
+#[folder = "$PEPPYOS_SHARED_DIR/peppy-config-model/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -175,14 +181,14 @@ pub(crate) struct EmbeddedPeppyMessagingInterface;
 pub(crate) struct EmbeddedConfig;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/build-helpers/"]
+#[folder = "$PEPPYOS_SHARED_DIR/build-helpers/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[exclude = "target/*"]
 pub(crate) struct EmbeddedBuildHelpers;
 
 #[derive(Embed)]
-#[folder = "../../../nodes_shared_code/peppyos-shared/core-node-api/"]
+#[folder = "$PEPPYOS_SHARED_DIR/core-node-api/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]

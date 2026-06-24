@@ -17,7 +17,7 @@ askama = "0.16"
 toml = "1"
 toml_edit = "0.25"
 indexmap = "2.2"
-rust-embed = { version = "8", features = ["include-exclude"] }
+rust-embed = { version = "8", features = ["include-exclude", "interpolate-folder-path"] }
 sha2 = "0.11"
 
 [build-dependencies]

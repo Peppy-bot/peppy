@@ -453,22 +453,12 @@ mod peppylib_build {
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
-        // peppylib, core-node-api, config and peppy-messaging-interface now live in
-        // peppyos-shared; reach them via a reverse path from the peppyos crates
-        // root. The remaining deps stay siblings.
-        ("../../nodes_shared_code/peppyos-shared/peppylib-rs", false),
-        (
-            "../../nodes_shared_code/peppyos-shared/peppy-config-model",
-            true,
-        ),
-        (
-            "../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
-            false,
-        ),
-        (
-            "../../nodes_shared_code/peppyos-shared/core-node-api",
-            false,
-        ),
+        // Resolved against `peppyos-shared` (located via build-helpers); all are
+        // siblings of peppylib-py in that shared workspace.
+        ("peppylib-rs", false),
+        ("peppy-config-model", true),
+        ("peppy-messaging-interface", false),
+        ("core-node-api", false),
     ];
 
     /// Every existing file whose contents are compiled into the `.so`: peppylib-py's
@@ -487,12 +477,10 @@ mod peppylib_build {
             }
         }
 
-        // Resolve the `.so` dependency crates from this generator crate's own
-        // manifest dir (peppyos/crates), not from peppylib_py_dir's parent. Most
-        // still live as siblings in the peppyos workspace; peppylib has moved to
-        // nodes_shared_code/peppyos-shared and is reached via a reverse path entry
-        // in SO_DEP_CRATES.
-        let crates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        // Resolve the `.so` dependency crates against `peppyos-shared`, located
+        // via build-helpers so it works in the superproject and from a cargo git
+        // checkout of nodes_shared_code alike.
+        let crates_root = build_helpers::peppyos_shared_dir();
         for (crate_name, is_config) in SO_DEP_CRATES {
             files.extend(super::collect_crate_source_files(
                 &crates_root.join(crate_name),
@@ -510,12 +498,11 @@ mod peppylib_build {
     fn compute_source_hash(peppylib_py_dir: &Path) -> String {
         use sha2::{Digest, Sha256};
 
-        // Key each file by its path relative to the peppyos crates root (where
-        // the dependency crates live). peppylib-py's own files now live outside
-        // this root and fall back to their absolute path, which is fine: the
+        // Key each file by its path relative to `peppyos-shared` (where every
+        // input — the dependency crates and peppylib-py itself — lives). The
         // `.so-build-state` marker is per-checkout and gitignored, so keys only
         // need to be stable and collision-free within a single checkout.
-        let crates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let crates_root = build_helpers::peppyos_shared_dir();
         let mut hasher = Sha256::new();
         for file in so_rebuild_input_files(peppylib_py_dir) {
             let rel = file.strip_prefix(&crates_root).unwrap_or(&file);
@@ -619,13 +606,11 @@ mod peppylib_build {
     }
 
     pub fn run() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // peppylib-py was moved out of the peppyos workspace into
-        // nodes_shared_code/peppyos-shared. Its `.so` dependency crates still
-        // live in peppyos/crates (see so_rebuild_input_files), so only this path
-        // crosses the submodule boundary. Valid only in the superproject checkout.
-        let peppylib_py_dir =
-            manifest_dir.join("../../../nodes_shared_code/peppyos-shared/peppylib-py");
+        // peppylib-py and all its `.so` dependency crates live in the shared
+        // workspace (peppyos-shared), located via build-helpers so every path
+        // resolves in the superproject and from a cargo git checkout of
+        // nodes_shared_code alike — no reach across a submodule boundary.
+        let peppylib_py_dir = build_helpers::peppyos_shared_dir().join("peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
@@ -758,72 +743,18 @@ fn embed_ruff_binary() {
     build_helpers::write_if_changed(&generated, content.as_bytes());
 }
 
-mod rust_crates_build {
-    use sha2::{Digest, Sha256};
-    use std::path::PathBuf;
-
-    pub fn run() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-        let crate_dirs = [
-            // peppylib, core-node-api, peppy-messaging-interface, config and
-            // build-helpers were moved out of the peppyos workspace into
-            // peppyos-shared; reach them all via the superproject reverse path.
-            (
-                "../../../nodes_shared_code/peppyos-shared/peppylib-rs",
-                false,
-            ),
-            (
-                "../../../nodes_shared_code/peppyos-shared/peppy-messaging-interface",
-                false,
-            ),
-            (
-                "../../../nodes_shared_code/peppyos-shared/peppy-config-model",
-                true,
-            ),
-            (
-                "../../../nodes_shared_code/peppyos-shared/core-node-api",
-                false,
-            ),
-            (
-                "../../../nodes_shared_code/peppyos-shared/build-helpers",
-                false,
-            ),
-        ];
-
-        let mut hasher = Sha256::new();
-
-        for (rel, is_config) in &crate_dirs {
-            let dir = manifest_dir.join(rel);
-            let mut files = super::collect_crate_source_files(&dir, *is_config);
-            // Sort for deterministic hashing
-            files.sort();
-
-            for file_path in &files {
-                println!("cargo:rerun-if-changed={}", file_path.display());
-                let relative = file_path.strip_prefix(&dir).unwrap_or(file_path);
-                hasher.update(relative.to_string_lossy().as_bytes());
-                match std::fs::read(file_path) {
-                    Ok(content) => hasher.update(&content),
-                    Err(e) => println!(
-                        "cargo:warning=Failed to read file for hashing {}: {}",
-                        file_path.display(),
-                        e
-                    ),
-                }
-            }
-        }
-
-        let hash = hasher.finalize();
-        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        println!("cargo:rustc-env=RUST_CRATES_HASH={}", &hex[..16]);
-    }
-}
-
 fn main() {
+    // Single source of truth for the shared crate sources generator embeds: the
+    // `peppyos-shared` dir located via build-helpers (works in-tree or from a
+    // cargo git checkout). The rust-embed `#[folder = "$PEPPYOS_SHARED_DIR/…"]`
+    // attributes in src/ expand this at compile time.
+    println!(
+        "cargo:rustc-env=PEPPYOS_SHARED_DIR={}",
+        build_helpers::peppyos_shared_dir().display()
+    );
+
     ruff_build::run();
     embed_ruff_binary();
 
     peppylib_build::run();
-    rust_crates_build::run();
 }

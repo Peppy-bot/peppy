@@ -302,8 +302,8 @@ fn hash_embedded_crate<E: Embed>(hasher: &mut Sha256, label: &str) {
 }
 
 /// Cache key for the vendored Rust crates, derived from the **actual embedded
-/// bytes that are about to be deployed** rather than the compile-time
-/// `RUST_CRATES_HASH`.
+/// bytes that are about to be deployed** rather than a compile-time source
+/// hash.
 ///
 /// In debug builds `rust-embed` (no `debug-embed` feature) reads each crate's
 /// source live from disk at call time, so this hash reflects the current
