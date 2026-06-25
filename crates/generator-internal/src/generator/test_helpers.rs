@@ -126,7 +126,8 @@ fn rename_peppygen_package(peppygen_dir: &Path) {
     }
     let renamed = contents.replacen("name = \"peppygen\"", &format!("name = \"{unique}\""), 1);
     assert_ne!(
-        renamed, contents,
+        renamed,
+        contents,
         "expected `name = \"peppygen\"` in generated peppygen Cargo.toml at {}",
         peppygen_cargo.display()
     );
