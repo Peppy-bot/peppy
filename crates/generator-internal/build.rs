@@ -718,7 +718,16 @@ mod peppylib_build {
         // crate from scratch: the guarantee the documented escape hatch provides
         // against any input the source hash does not cover.
         if force {
-            std::fs::remove_dir_all(&target_dir).ok();
+            match std::fs::remove_dir_all(&target_dir) {
+                Ok(()) => {}
+                // No cached target yet (e.g. first forced build): nothing to discard.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!(
+                    "failed to clear maturin target dir {:?} for a forced rebuild \
+                     ({REBUILD_ENV_VAR}): {e}",
+                    target_dir
+                ),
+            }
         }
 
         // Host extension: rebuilt whenever it is missing, its recorded
