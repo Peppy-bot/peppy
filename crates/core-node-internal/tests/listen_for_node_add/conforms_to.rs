@@ -19,7 +19,7 @@ use super::*;
 use common::TestPackagesCache;
 
 const INTERFACE_BODY: &str = r#"{
-    peppy_schema: "interface_v1",
+    peppy_schema: "interface/v1",
     manifest: { name: "uvc_camera", tag: "v1" },
     interfaces: {
         topics: [
@@ -32,7 +32,7 @@ const INTERFACE_BODY: &str = r#"{
 }"#;
 
 const NODE_BODY: &str = r#"{
-    peppy_schema: "node_v1",
+    peppy_schema: "node/v1",
     manifest: { name: "fake_uvc_camera", tag: "v1" },
     interfaces: {
         conforms_to: [

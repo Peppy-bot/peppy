@@ -116,7 +116,7 @@ const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 /// resolve `slot_bindings["brain"]` into a `ConsumerFilter::Pin` that
 /// the generated `fire_goal` splices as its target.
 const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
     tag: "v1",

@@ -10,7 +10,7 @@ async fn listen_for_node_fs_add_success() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -167,7 +167,7 @@ async fn listen_for_node_http_add_success() {
 
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

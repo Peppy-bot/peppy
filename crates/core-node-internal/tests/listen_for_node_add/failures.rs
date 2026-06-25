@@ -351,7 +351,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
 
     // Try to add a consumer node that depends on a non-existent provider
     let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
             name: "consumer_node",
             tag: "v1",
@@ -414,7 +414,7 @@ async fn listen_for_node_add_duplicate_link_id_fails() {
     // Two depends_on.nodes entries sharing the same link_id must be rejected
     // at parse time, before any dependency resolution runs.
     let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
             name: "dup_link_id_node",
             tag: "v1",
@@ -472,7 +472,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
@@ -582,7 +582,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
 
     let target_peppy_json5 = r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",

@@ -58,7 +58,7 @@ Neither node lists the other in `depends_on.nodes`, so there is no cycle to brea
 
 ## Define the two interfaces
 
-Each interface is a standalone `interface_v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). The `message_format` lives here once, and both the producer and the consumer inherit it by reference.
+Each interface is a standalone `interface/v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). The `message_format` lives here once, and both the producer and the consumer inherit it by reference.
 
 <Code code={jointStateInterface} lang="json5" title="joint_state_source/peppy.json5" />
 
@@ -111,7 +111,7 @@ The order does not matter: running `arm_controller:v1` first works just as well,
 
 ```json5 title="peppy_launcher.json5"
 {
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: [
     { source: { name: "robot_arm:v1" }, instances: [{ instance_id: "arm_1" }] },
     { source: { name: "arm_controller:v1" }, instances: [{ instance_id: "ctrl_1" }] },

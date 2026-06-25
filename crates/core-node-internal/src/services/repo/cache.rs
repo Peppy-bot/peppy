@@ -69,7 +69,7 @@ pub struct NodeCacheEntry {
 /// One entry as it appears in `launchers.json5`. Launchers live in the
 /// same kind of repositories as nodes (FS or Git), but they don't carry
 /// a tag — they're just the location of a launcher `.json5` file (any
-/// filename; identified by `peppy_schema: "launcher_v1"` and keyed by
+/// filename; identified by `peppy_schema: "launcher/v1"` and keyed by
 /// file stem).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LauncherCacheEntry {
@@ -97,7 +97,7 @@ pub struct LauncherCacheEntry {
 }
 
 /// One entry as it appears in `interfaces.json5`. Interfaces are
-/// stand-alone JSON5 documents (`peppy_schema: "interface_v1"`) that
+/// stand-alone JSON5 documents (`peppy_schema: "interface/v1"`) that
 /// describe a reusable contract of topics / services / actions. The
 /// `sha256` of the manifest bytes is the primary way to disambiguate
 /// entries that share `(name, tag)`.

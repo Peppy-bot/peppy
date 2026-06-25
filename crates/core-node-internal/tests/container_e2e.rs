@@ -421,7 +421,7 @@ mod container_e2e_tests {
         write_peppy_json5(
             source_dir.path(),
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "zombie_e2e_node", tag: "v1" },
                 execution: { language: "rust", container: { def_file: "apptainer.def" } }
             }"#,

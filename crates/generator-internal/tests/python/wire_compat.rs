@@ -102,7 +102,7 @@ const ACTION_RESULT_RECEIVED_SERVICE: &str = "result_received";
 // an order whose alphabetical sort swaps its two pointer-typed fields
 // (`status: Text`, `measurements: List(Float64)`); see module docstring.
 const ACTION_PRODUCER_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "producer",
     tag: "v1"
@@ -139,7 +139,7 @@ const ACTION_PRODUCER_CONFIG: &str = r#"{
 }"#;
 
 const ACTION_CONSUMER_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "consumer",
     tag: "v1",
@@ -508,7 +508,7 @@ const SERVICE_RESPONSE_RECEIVED_SERVICE: &str = "response_received";
 // alphabetical sort swaps its two pointer-typed fields (`status: Text`,
 // `measurements: List(Float64)`); see module docstring.
 const SERVICE_PRODUCER_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "producer",
     tag: "v1"
@@ -536,7 +536,7 @@ const SERVICE_PRODUCER_CONFIG: &str = r#"{
 }"#;
 
 const SERVICE_CONSUMER_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "consumer",
     tag: "v1",
@@ -859,7 +859,7 @@ const TOPIC_RECEIVED_SERVICE: &str = "received_ack";
 // alphabetical sort swaps its two pointer-typed fields (`status: Text`,
 // `readings: List(Float64)`); see module docstring.
 const TOPIC_PRODUCER_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "producer",
     tag: "v1"
@@ -887,7 +887,7 @@ const TOPIC_PRODUCER_CONFIG: &str = r#"{
 }"#;
 
 const TOPIC_CONSUMER_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "consumer",
     tag: "v1",

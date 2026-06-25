@@ -1107,7 +1107,7 @@ fn write_consumer_with_pinned_depends_on(
         .join(",\n");
     let body = format!(
         r#"{{
-    peppy_schema: "node_v1",
+    peppy_schema: "node/v1",
     manifest: {{
         name: "{consumer_name}",
         tag: "v1",

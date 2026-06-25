@@ -458,7 +458,7 @@ fn count_unique_by_name<'a>(it: impl Iterator<Item = &'a str>) -> u32 {
 }
 
 /// Walk a directory looking for `peppy.json5` (node) and any `.json5`
-/// file whose body declares `peppy_schema: "launcher_v1"` (launcher),
+/// file whose body declares `peppy_schema: "launcher/v1"` (launcher),
 /// collecting discovered nodes and launchers.
 ///
 /// Any directory whose path matches one of the `excluded_paths` entries is
@@ -549,7 +549,7 @@ pub(crate) fn walk_directory(
         };
         match schema {
             PeppySchema::NodeV1 => {
-                // A non-`peppy.json5` file declaring `node_v1` is unusual
+                // A non-`peppy.json5` file declaring `node/v1` is unusual
                 // but we still parse it strictly: matches the documented
                 // "schema dispatch" rule for any `.json5`.
                 try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes);
@@ -994,7 +994,7 @@ mod tests {
             dir.join(NODE_CONFIG_FILE),
             format!(
                 r#"{{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}},
   execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
@@ -1218,7 +1218,7 @@ mod tests {
         std::fs::write(
             path,
             r#"{
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: []
 }"#,
         )
@@ -1232,7 +1232,7 @@ mod tests {
         }
         let body = format!(
             r#"{{
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}}
 }}"#
@@ -1241,7 +1241,7 @@ mod tests {
         body.into_bytes()
     }
 
-    /// FS-side interface discovery: an `interface_v1` document is
+    /// FS-side interface discovery: an `interface/v1` document is
     /// recognized regardless of its filename, the cached `path` points
     /// at the manifest file itself, and `sha256` matches the raw bytes.
     #[test]
@@ -1351,7 +1351,7 @@ mod tests {
         std::fs::write(
             repo_a.join("uvc_camera/peppy.json5"),
             r#"{
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: { name: "uvc_camera", tag: "v1" },
   interfaces: {}
 }"#,
@@ -1362,7 +1362,7 @@ mod tests {
             repo_b.join("uvc_camera/peppy.json5"),
             r#"{
   // Same identity, different content fingerprint via extra whitespace.
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest:    { name: "uvc_camera", tag: "v1" },
   interfaces:  {}
 }"#,
@@ -1445,7 +1445,7 @@ mod tests {
     }
 
     /// Process_refresh discovers launcher files (any `.json5` filename
-    /// with `peppy_schema: "launcher_v1"`) alongside node files in the
+    /// with `peppy_schema: "launcher/v1"`) alongside node files in the
     /// same FS walk, names them by basename, and dedupes across repos.
     #[test]
     fn process_refresh_discovers_launchers_from_fs_repo() {
@@ -1524,7 +1524,7 @@ mod tests {
         );
     }
 
-    /// `.json5` files that don't declare `peppy_schema: "launcher_v1"`
+    /// `.json5` files that don't declare `peppy_schema: "launcher/v1"`
     /// must be skipped silently — they're unrelated configuration, not
     /// launchers.
     #[test]
@@ -1547,7 +1547,7 @@ mod tests {
         // in the repo and must not be misclassified.
         std::fs::write(
             repo.join("manifest.json5"),
-            r#"{ peppy_schema: "node_v1", manifest: { name: "x", tag: "v1" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
+            r#"{ peppy_schema: "node/v1", manifest: { name: "x", tag: "v1" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
         )
         .unwrap();
 
@@ -1627,7 +1627,7 @@ mod tests {
         std::fs::write(
             src.join("openarm01").join("openarm01_teleop.json5"),
             r#"{
-                peppy_schema: "launcher_v1",
+                peppy_schema: "launcher/v1",
                 deployments: []
             }"#,
         )

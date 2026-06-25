@@ -167,7 +167,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     const NODE_TAG: &str = "v1";
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -211,7 +211,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // up minimal publisher nodes that expose exactly the interfaces
     // `consumer_node` consumes, so the add resolves cleanly.
     let camera_node = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "camera_node", tag: "v1" },
             interfaces: {
                 topics: {
@@ -224,7 +224,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let lidar_node = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "lidar_node", tag: "v1" },
             interfaces: {
                 topics: { emits: [{ name: "point_cloud" }] }
@@ -232,7 +232,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let config_node = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "config_node", tag: "v1" },
             interfaces: {
                 services: { exposes: [{ name: "get_config" }] }
@@ -240,7 +240,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let navigation_node = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "navigation_node", tag: "v1" },
             interfaces: {
                 actions: { exposes: [{ name: "go_to_pose" }] }
@@ -326,7 +326,7 @@ fn node_info_no_dependencies_when_no_consumes() {
     const NODE_TAG: &str = "v1";
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",

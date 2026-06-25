@@ -11,7 +11,7 @@ use std::time::Duration;
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",

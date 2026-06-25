@@ -13,7 +13,7 @@ use crate::helpers::real_lifecycle;
 async fn add_instance_creates_new_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -104,7 +104,7 @@ async fn add_instance_creates_new_entity() {
 async fn add_instance_to_existing_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -199,7 +199,7 @@ async fn add_instance_to_existing_entity() {
 async fn add_instance_with_specific_id() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -251,7 +251,7 @@ async fn add_instance_with_specific_id() {
 async fn remove_instance_from_entity_with_multiple_instances() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -327,7 +327,7 @@ async fn remove_instance_from_entity_with_multiple_instances() {
 async fn remove_last_instance_keeps_entity_in_graph() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -384,7 +384,7 @@ async fn remove_last_instance_keeps_entity_in_graph() {
 async fn remove_nonexistent_instance_returns_false() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -438,7 +438,7 @@ async fn remove_nonexistent_instance_returns_false() {
 fn reset_clears_all_except_core_node() {
     let config1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor1",
               tag: "v1",
@@ -462,7 +462,7 @@ fn reset_clears_all_except_core_node() {
 
     let config2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor2",
               tag: "v1",
@@ -524,7 +524,7 @@ fn reset_clears_all_except_core_node() {
 async fn spawning_multiple_instances_on_same_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -607,7 +607,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     // First config: emits a topic
     let config_with_topic: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -633,7 +633,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     // Second config: same name and tag but emits a topic AND exposes a service
     let config_with_topic_and_service: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -713,7 +713,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     // First config: version 1.0.0 exposes a service
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -738,7 +738,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     // Second config: version 2.0.0 emits a topic AND exposes a service (different interfaces are allowed with different tag)
     let config_v2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v2",
@@ -847,7 +847,7 @@ fn cannot_modify_root_node() {
 fn node_stack_wires_dependencies_for_dependants() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -869,7 +869,7 @@ fn node_stack_wires_dependencies_for_dependants() {
 
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -917,7 +917,7 @@ fn dependency_fails_when_node_name_mismatches() {
     // Dependent expects "uvc_camera" but we add "lidar" instead
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -944,7 +944,7 @@ fn dependency_fails_when_node_name_mismatches() {
 
     let wrong_dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -989,7 +989,7 @@ fn dependency_fails_when_node_tag_mismatches() {
     // Dependent expects tag "v1" but we add tag "v2" instead
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -1009,7 +1009,7 @@ fn dependency_fails_when_node_tag_mismatches() {
 
     let wrong_tag_dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v2",
@@ -1053,7 +1053,7 @@ fn dependency_fails_when_node_tag_mismatches() {
 fn overwriting_existing_node_fails_if_node_has_dependencies() {
     let dependency_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -1075,7 +1075,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
 
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -1105,7 +1105,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
 
     let dependency_v2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -1172,7 +1172,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
 fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
     let original_config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -1187,7 +1187,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
 
     let updated_config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "sensor",
               tag: "v1",
@@ -1238,7 +1238,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
 fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     let dependency_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -1253,7 +1253,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
 
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -1274,7 +1274,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     // Same interfaces as v1, but different run_cmd
     let dependency_v1_updated: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",

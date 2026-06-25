@@ -13,7 +13,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 
     // First add: no interfaces
     let peppy_json5_v1 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -54,7 +54,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 
     // Second add: same name+tag but different interfaces -> should overwrite.
     let peppy_json5_v2 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -132,7 +132,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let dependency_peppy_json5_v1 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -170,7 +170,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     );
 
     let dependent_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
@@ -221,7 +221,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
     let dependency_peppy_json5_v2 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -316,7 +316,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5_v1 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "v1",
@@ -354,7 +354,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     );
 
     let peppy_json5_v2 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "v2",
@@ -406,7 +406,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -484,7 +484,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     // Create first node source directory
     let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let first_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
@@ -559,7 +559,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     // for the first action's result
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let second_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
@@ -618,7 +618,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
 
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v1 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -781,7 +781,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
 
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v2 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -916,7 +916,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let dependency_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -954,7 +954,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     );
 
     let dependent_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
@@ -1154,7 +1154,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let dependency_peppy_json5_v1 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -1192,7 +1192,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     );
 
     let dependent_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
@@ -1298,7 +1298,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 
     // Try to overwrite with a different interface (new_service instead of reset_sensor).
     let dependency_peppy_json5_v2 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -1407,7 +1407,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let dependency_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -1438,7 +1438,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     );
 
     let dependent_peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
@@ -1625,7 +1625,7 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     // v2 with the same name/tag triggers the overwrite path.
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v2 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "{NAME}", tag: "{TAG}" },
             execution: {
                 language: "rust",

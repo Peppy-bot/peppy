@@ -66,7 +66,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "fs_node",
                 tag: "v1",
@@ -191,7 +191,7 @@ async fn node_info_has_instance_ids() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "instance_ids_node",
                 tag: "v1",
@@ -380,7 +380,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     // is still alive.
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "fs_node",
                 tag: "v1",

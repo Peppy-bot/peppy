@@ -10,7 +10,7 @@ use crate::helpers::graph_query;
 fn action_dependency_resolved_when_dependency_added_first() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -40,7 +40,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
 
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "controller",
               tag: "v1",
@@ -131,7 +131,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
 fn action_dependency_fails_when_dependency_is_missing() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -182,7 +182,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     // but the target node exists without exposing the requested action
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -213,7 +213,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     // This node has the correct name but exposes a different action
     let dependency_wrong_action: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "controller",
               tag: "v1",
@@ -297,7 +297,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
 fn action_dependency_fails_when_link_id_is_undeclared() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",

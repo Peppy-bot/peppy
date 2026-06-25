@@ -492,7 +492,7 @@ mod tests {
 
         // Write a canonical peppy.json5 at the default location
         let canonical_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: { name: "canonical_node", tag: "v1" },
           execution: { language: "rust", run_cmd: ["./target/release/canonical_node"] }
         }"#;
@@ -500,7 +500,7 @@ mod tests {
 
         // Write a different config at a custom path
         let custom_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: { name: "custom_node", tag: "v2" },
           execution: { language: "rust", run_cmd: ["./target/release/custom_node"] }
         }"#;

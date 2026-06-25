@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 const NODE_EXAMPLE: &str = r#"
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",
@@ -40,7 +40,7 @@ const NODE_EXAMPLE: &str = r#"
 
 const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",
@@ -61,7 +61,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
 
 const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",
@@ -97,7 +97,7 @@ const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
 
 const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",
@@ -126,7 +126,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
 
 const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",
@@ -153,7 +153,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
 
 const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",

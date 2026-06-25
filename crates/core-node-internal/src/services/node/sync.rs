@@ -1469,7 +1469,7 @@ mod conforms_to_tests {
     }
 
     const DEPTH_V1_BODY: &str = r#"{
-        peppy_schema: "interface_v1",
+        peppy_schema: "interface/v1",
         manifest: { name: "depth_camera", tag: "v1" },
         interfaces: {
             topics: [
@@ -1608,7 +1608,7 @@ mod conforms_to_tests {
     }
 
     const ARM_V1_WITH_SERVICE_AND_ACTION: &str = r#"{
-        peppy_schema: "interface_v1",
+        peppy_schema: "interface/v1",
         manifest: { name: "arm", tag: "v1" },
         interfaces: {
             services: [
@@ -1842,7 +1842,7 @@ mod conforms_to_tests {
     #[test]
     fn consumed_service_with_response_only_format_resolves() {
         const UVC_V1_BODY: &str = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 services: [

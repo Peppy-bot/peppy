@@ -18,7 +18,7 @@ use tempfile::TempDir;
 use super::types::InterfaceArtifact;
 
 pub const STUB_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
     tag: "v1",

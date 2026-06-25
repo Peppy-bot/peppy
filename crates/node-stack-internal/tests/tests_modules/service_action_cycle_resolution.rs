@@ -25,7 +25,7 @@ fn interface_node(
 ) -> config::node::NodeConfig {
     let json5 = format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{
                 name: "{name}",
                 tag: "v1",
@@ -196,7 +196,7 @@ fn one_directional_service_through_interface_allowed() {
     // Provider `b` conforms to `iface_b` and consumes nothing back.
     let provider = serde_json5::from_str::<config::node::NodeConfig>(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "b", tag: "v1" },
             interfaces: {
                 conforms_to: [{ name: "iface_b", tag: "v1" }],
