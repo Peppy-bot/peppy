@@ -1030,9 +1030,38 @@ echo "=== Apptainer build complete ==="
         format!(
             r#"set -eu
 ROOT=/amd64
+
+# Unmount everything under $ROOT and delete the tree, in a way that can NEVER
+# let `rm` walk into a live /proc, /sys or the rbind of the guest /dev (doing so
+# deletes the guest's own device nodes). Each mountpoint under $ROOT is
+# unmounted, retrying and falling back to a lazy detach (which drops the path
+# from the mount table at once), then we refuse to delete unless the mount table
+# confirms nothing under $ROOT remains.
+peppy_teardown_root() {{
+    tries=0
+    while [ "$tries" -lt 8 ]; do
+        mounts=$(cut -d' ' -f2 /proc/self/mounts | grep -E "^$ROOT(/|$)" || true)
+        if [ -z "$mounts" ]; then
+            break
+        fi
+        for mp in $mounts; do
+            sudo umount "$mp" 2>/dev/null || sudo umount -l "$mp" 2>/dev/null || true
+        done
+        tries=$((tries + 1))
+    done
+    if cut -d' ' -f2 /proc/self/mounts | grep -qE "^$ROOT(/|$)"; then
+        echo "rosetta-build: mounts still present under $ROOT; refusing rm to protect the guest /dev" >&2
+        return 1
+    fi
+    sudo rm -rf "$ROOT"
+}}
+
+# Always tear the chroot down on exit, so a failed build never leaves $ROOT
+# mounted for the next run to trip over (every run starts from a clean state).
+trap peppy_teardown_root EXIT
+
 echo "=== Preparing pinned amd64 rootfs (Rosetta) ==="
-sudo umount -R -l "$ROOT" 2>/dev/null || true
-sudo rm -rf "$ROOT"
+peppy_teardown_root
 sudo mkdir -p "$ROOT"
 curl -fsSL {rootfs_url} -o /tmp/amd64base.tar.gz
 echo "=== Verifying amd64 rootfs SHA-256 ==="
@@ -1059,8 +1088,8 @@ sudo rm -rf {install_dir}
 sudo mkdir -p "$(dirname {install_dir})"
 sudo cp -a "$ROOT{install_dir}" {install_dir}
 sudo chown -R "$(id -u):$(id -g)" {install_dir}
-sudo umount -R -l "$ROOT" 2>/dev/null || true
 echo "=== Apptainer build complete ==="
+# The EXIT trap (peppy_teardown_root) unmounts and removes $ROOT from here.
 "#,
             rootfs_url = ubuntu_base_amd64_url(UBUNTU_BASE_VERSION),
             rootfs_sha = UBUNTU_BASE_AMD64_SHA256,
