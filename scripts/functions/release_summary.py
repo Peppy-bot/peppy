@@ -37,8 +37,12 @@ strict parser accepts, exactly this shape:
 Write for a user of the peppy tool, and include only changes such a user would
 notice or care about: new or changed CLI commands and flags, the `peppy.json5`
 configuration and schema, message and output formats, runtime behavior, and
-user-facing documentation. Before mentioning anything, ask "would a peppy user
-notice or care about this?"; if not, leave it out entirely, across every field.
+user-facing documentation. Renaming, adding, or removing something a user types
+or sees is user-facing and stays in, even when the commit is phrased as a
+rename: a CLI command or flag, a `peppy.json5` field, the configuration file
+name, or a schema identifier (for example "node/v1") all count. Before
+mentioning anything, ask "would a peppy user notice or care about this?"; if not,
+leave it out entirely, across every field.
 
 Field requirements:
 - "title": a concise, human headline for the release theme (max ~70 chars),
@@ -56,8 +60,9 @@ Field requirements:
   line.
 
 Leave out every internal change, even when it spans many commits: code refactors
-and restructuring, crate or module renames and reorganization, removal of unused
-or internal fields and APIs, dependency version bumps, build, CI, code-generator,
+and restructuring, renames and reorganization confined to internal code (crates,
+modules, and private fields or APIs that users never reference), removal of
+unused or internal fields, dependency version bumps, build, CI, code-generator,
 and release-tooling changes, test-only changes, and log-string tweaks. Also omit
 version bumps, release commits, and merge commits.
 
