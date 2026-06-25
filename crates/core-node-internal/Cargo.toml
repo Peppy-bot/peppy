@@ -5,14 +5,15 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
-config = { path = "../config-internal" }
-node-stack = { path = "../node-stack-internal" }
-peppylib = { path = "../peppylib" }
-core-node-api = { path = "../core-node-api" }
-generator = { path = "../generator-internal" }
-latency-report = { path = "../latency-report" }
-containers = { path = "../containers-internal" }
+pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
+config = { workspace = true }
+node-stack = { workspace = true }
+peppylib = { workspace = true }
+core-node-api = { workspace = true }
+generator = { workspace = true }
+latency-report = { workspace = true }
+containers = { workspace = true }
+json5-pretty = { workspace = true }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"
@@ -53,11 +54,13 @@ ignore = "0.4"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { workspace = true }
 
 [dev-dependencies]
-node-stack = { path = "../node-stack-internal" }
-config = { path = "../config-internal", features = ["test_helpers"] }
+node-stack = { workspace = true }
+config = { workspace = true, features = ["fingerprint_test_helpers"] }
+# git_fixtures: this crate's tests use the libgit2-backed `create_nodes_git_repo`.
+config-test-support = { workspace = true, features = ["git_fixtures"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
 rstest = { workspace = true }

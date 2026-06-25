@@ -5,14 +5,15 @@ edition.workspace = true
 autotests = false
 
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
-config = { path = "../config-internal" }
-containers = { path = "../containers-internal" }
-peppylib = { path = "../peppylib" }
-core-node = { path = "../core-node-internal" }
-core-node-api = { path = "../core-node-api" }
-node-stack = { path = "../node-stack-internal" }
-latency-report = { path = "../latency-report" }
+pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
+config = { workspace = true }
+containers = { workspace = true }
+peppylib = { workspace = true }
+core-node = { workspace = true }
+core-node-api = { workspace = true }
+node-stack = { workspace = true }
+latency-report = { workspace = true }
+json5-pretty = { workspace = true }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -58,7 +59,7 @@ tempfile = { version = "3.8", optional = true }
 parking_lot = { workspace = true, optional = true }
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { workspace = true }
 
 [features]
 # The shipped CLI carries no test scaffolding by default. `test-support` is
@@ -66,10 +67,9 @@ build-helpers = { path = "../build-helpers-internal" }
 # self-reference below, so `cargo test` works without extra flags while a plain
 # `cargo build`/`cargo install` stays lean.
 default = []
-# Gate test-only helpers (including config's fingerprint helpers and
-# their git2 transitive dep) behind this feature so a release build doesn't
-# carry them.
-test-support = ["dep:tempfile", "dep:parking_lot", "config/test_helpers"]
+# Gate test-only helpers (including config's fingerprint helpers) behind this
+# feature so a release build doesn't carry them.
+test-support = ["dep:tempfile", "dep:parking_lot", "config/fingerprint_test_helpers"]
 
 [dev-dependencies]
 tempfile = "3.8"

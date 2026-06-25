@@ -5,15 +5,16 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal" }
+config = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
-config = { path = "../config-internal", features = ["test_helpers"] }
+# Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.
+config-test-support = { workspace = true }
 tempfile = "3"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { workspace = true }

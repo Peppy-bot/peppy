@@ -1,8 +1,8 @@
 use super::identifiers::sanitize_rust_identifier;
 use crate::generator::naming::sanitize_component;
 use crate::{error::Error, error::Result};
-use config::encoding::FunctionParam;
 use config::node::{MessageFormat, SchemaType, TypeToken};
+use encoding::FunctionParam;
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;

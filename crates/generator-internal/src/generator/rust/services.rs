@@ -7,8 +7,8 @@ use super::serialization::{
 use super::topics::sender_target_expression;
 use crate::error::{Error, Result};
 use crate::generator::types::InterfaceOrigin;
-use config::encoding::FunctionParam;
 use config::node::MessageFormat;
+use encoding::FunctionParam;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 

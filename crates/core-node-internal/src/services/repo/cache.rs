@@ -197,7 +197,7 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 /// [`config::atomic_write::publish_atomic`] so concurrent readers never
 /// observe a partial file.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
-    let content = config::json5_pretty::to_string_pretty(nodes)
+    let content = json5_pretty::to_string_pretty(nodes)
         .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
     config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
@@ -212,7 +212,7 @@ pub(crate) fn write_launcher_cache(
     peppy_dirs: &PeppyDirs,
     launchers: &[LauncherCacheEntry],
 ) -> Result<()> {
-    let content = config::json5_pretty::to_string_pretty(launchers).map_err(|e| {
+    let content = json5_pretty::to_string_pretty(launchers).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
     })?;
     config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
@@ -228,7 +228,7 @@ pub(crate) fn write_interface_cache(
     peppy_dirs: &PeppyDirs,
     interfaces: &[InterfaceCacheEntry],
 ) -> Result<()> {
-    let content = config::json5_pretty::to_string_pretty(interfaces).map_err(|e| {
+    let content = json5_pretty::to_string_pretty(interfaces).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize interface cache: {e}"))
     })?;
     config::atomic_write::publish_atomic(&interfaces_repo_cache_path(peppy_dirs), |tmp| {

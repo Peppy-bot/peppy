@@ -158,7 +158,7 @@ async fn handle_node_info_request_inner(
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let config_json = config::json5_pretty::to_string_pretty(&node_config)
+    let config_json = json5_pretty::to_string_pretty(&node_config)
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
@@ -419,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn git_clone_cleans_up_temp_dir_on_checkout_failure() {
         let git_repo_temp_dir = tempfile::TempDir::new().unwrap();
-        let git_repo_path = config::test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+        let git_repo_path = config_test_support::create_nodes_git_repo(&git_repo_temp_dir);
         let repo_url =
             gix_url::Url::try_from(git_repo_path.as_path()).expect("git repo path should parse");
 

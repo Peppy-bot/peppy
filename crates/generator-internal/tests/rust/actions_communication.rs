@@ -2288,7 +2288,7 @@ fn main() -> Result<()> {
 ///
 /// In-library parity is
 /// `concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned`
-/// in `crates/peppylib/tests/actions.rs`.
+/// in `nodes_shared_code/peppyos-shared/peppylib-rs/tests/actions.rs`.
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]

@@ -34,7 +34,6 @@ use crate::helpers::{
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
-use config::json5_pretty;
 use config::launcher::Name;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, NodeConfigParser, PeppygenLanguage,

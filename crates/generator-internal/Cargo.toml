@@ -5,8 +5,9 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../pmi-internal" }
-config = { path = "../config-internal" }
+pmi = { workspace = true }
+config = { workspace = true }
+encoding = { workspace = true }
 quote = "1.0"
 proc-macro2 = "1.0"
 prettyplease = "0.2"
@@ -16,19 +17,25 @@ askama = "0.16"
 toml = "1"
 toml_edit = "0.25"
 indexmap = "2.2"
-rust-embed = { version = "8", features = ["include-exclude"] }
+rust-embed = { version = "8", features = ["include-exclude", "interpolate-folder-path"] }
+sha2 = "0.11"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { workspace = true }
+peppylib-build-policy = { workspace = true }
 sha2 = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"
-config = { path = "../config-internal", features = ["test_helpers"] }
-pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
+config = { workspace = true, features = ["fingerprint_test_helpers"] }
+# Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
+# no `git_fixtures` feature — keeps libgit2 out of the generator test build.
+config-test-support = { workspace = true }
+json5-pretty = { workspace = true }
+pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
-peppylib = { path = "../peppylib" }
+peppylib = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 rstest = { workspace = true }

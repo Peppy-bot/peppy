@@ -128,7 +128,11 @@ fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
     let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
         .parent()
         .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in ["peppylib", "pmi-internal", "config-internal"] {
+    for crate_name in [
+        "peppylib",
+        "peppy-messaging-interface",
+        "peppy-config-model",
+    ] {
         let dest = node_dir.join(libs_dir).join(crate_name);
         let meta = dest.symlink_metadata().unwrap_or_else(|e| {
             panic!("{crate_name} should be deployed at {}: {e}", dest.display())
@@ -239,7 +243,11 @@ fn generate_peppygen_lib_cargo() {
     let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
         .parent()
         .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in ["peppylib", "pmi-internal", "config-internal"] {
+    for crate_name in [
+        "peppylib",
+        "peppy-messaging-interface",
+        "peppy-config-model",
+    ] {
         let link = node_dir.join(libs_dir).join(crate_name);
         let meta = link.symlink_metadata().unwrap_or_else(|e| {
             panic!(

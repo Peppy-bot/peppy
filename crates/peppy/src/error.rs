@@ -25,11 +25,11 @@ pub enum Error {
     // -- NodeWatcher
     NodeWatcher(String),
 
-    // -- pmi-internal
+    // -- peppy-messaging-interface
     #[from]
     PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
-    // -- config-internal
+    // -- config
     PeppyConfig(config::ConfigError),
 
     // -- auth: transport/HTTP failures (unreachable backend, unexpected status)

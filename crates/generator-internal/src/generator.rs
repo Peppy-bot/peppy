@@ -43,8 +43,8 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// - creates `node_dir/.peppy/` and the `peppygen` output directory;
 /// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
 ///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
-/// - deploys five vendored crates (`peppylib`, `pmi-internal`, `config-internal`, `core-node-api`,
-///   `build-helpers-internal`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
+/// - deploys five vendored crates (`peppylib`, `peppy-messaging-interface`, `config`, `core-node-api`,
+///   `build-helpers`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
 ///   symlinks into a host-wide shared cache or as physical copies, per `deploy_mode`;
 /// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
 ///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not

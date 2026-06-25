@@ -21,11 +21,11 @@ use super::types::{
     validate_message_format_field_names,
 };
 use crate::error::Result;
-use config::encoding::MessageFormatMapper;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat,
 };
+use encoding::MessageFormatMapper;
 use std::collections::HashMap;
 use std::path::Path;
 

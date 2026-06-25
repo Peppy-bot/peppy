@@ -100,8 +100,8 @@ impl DaemonState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content = config::json5_pretty::to_string_pretty(state)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+        let content =
+            json5_pretty::to_string_pretty(state).map_err(|e| io::Error::other(e.to_string()))?;
         fs::write(path, content)
     }
 
