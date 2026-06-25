@@ -59,6 +59,17 @@ Field requirements:
   example "#123"), commit hashes, author or "@" mentions, or a "Full Changelog"
   line.
 
+Call out backward-incompatible changes. A user-facing change is breaking when a
+user must update their `peppy.json5`, commands, scripts, or workflow to keep
+working: for example a renamed or removed CLI command or flag, a renamed
+configuration file or field, a changed schema identifier (such as the
+slash-separated `node/v1`), or a changed output or message format that users
+parse. Collect every such change under a single "### Breaking changes"
+subheading placed first in the notes, before all other subheadings, and make
+each bullet state what changed and what the user must do. List a breaking change
+only there, never also under a topical subheading. Omit the "### Breaking
+changes" subheading entirely when there are none.
+
 Leave out every internal change, even when it spans many commits: code refactors
 and restructuring, renames and reorganization confined to internal code (crates,
 modules, and private fields or APIs that users never reference), removal of
