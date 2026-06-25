@@ -1,4 +1,5 @@
 mod action_poll;
+pub mod auth;
 mod confirm;
 pub mod container;
 pub mod info;

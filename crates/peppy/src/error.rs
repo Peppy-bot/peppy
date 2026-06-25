@@ -25,12 +25,19 @@ pub enum Error {
     // -- NodeWatcher
     NodeWatcher(String),
 
-    // -- pmi-internal
+    // -- peppy-messaging-interface
     #[from]
     PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
-    // -- config-internal
+    // -- config
     PeppyConfig(config::ConfigError),
+
+    // -- auth: transport/HTTP failures (unreachable backend, unexpected status)
+    Http(String),
+    // -- auth: OAuth / identity failures with a user-actionable message
+    Auth(String),
+    // -- auth: no usable credential and not on an interactive terminal
+    NotAuthenticated,
 
     // -- peppylib
     #[from]
@@ -55,6 +62,12 @@ impl Display for Error {
             Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
             Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
             Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
+            Error::Http(msg) => write!(fmt, "{msg}"),
+            Error::Auth(msg) => write!(fmt, "{msg}"),
+            Error::NotAuthenticated => write!(
+                fmt,
+                "Not authenticated. Run `peppy auth login` or set PEPPY_API_KEY."
+            ),
             Error::Peppy(e) => write!(fmt, "{e}"),
         }
     }

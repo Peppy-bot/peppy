@@ -1,5 +1,5 @@
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "fake_openarm01_controller",
     tag: "v1",

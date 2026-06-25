@@ -10,7 +10,7 @@ use common::{
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
-use config::test_helpers;
+use config_test_support as test_helpers;
 use core_node::names;
 use core_node_api::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use git2::{Repository, Signature};
@@ -69,7 +69,7 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
     };
     format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
@@ -91,7 +91,7 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
 fn node_config_with_execution(name: &str, tag: &str, execution_body: &str) -> String {
     format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
@@ -108,7 +108,7 @@ fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
     let peppy_json5 = format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{
                 name: "{node_name}",
                 tag: "{node_tag}",
@@ -220,7 +220,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     std::fs::write(
         repo_path.join(&rel_config_path),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
@@ -265,7 +265,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     std::fs::write(
         repo_path.join(&rel_config_path),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v2",
@@ -327,7 +327,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
     std::fs::write(
         repo_path.join(config_rel),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bad_node",
                 tag: "v1",

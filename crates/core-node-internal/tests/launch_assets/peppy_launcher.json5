@@ -1,5 +1,5 @@
 {
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: [
     {
       source: {

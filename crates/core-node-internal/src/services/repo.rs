@@ -168,7 +168,7 @@ pub(crate) fn normalize_repo_entries(
     }
 
     if needs_write {
-        let content = config::json5_pretty::to_string_pretty(repos).map_err(|e| {
+        let content = json5_pretty::to_string_pretty(repos).map_err(|e| {
             core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}"))
         })?;
         std::fs::write(file_path, content)?;

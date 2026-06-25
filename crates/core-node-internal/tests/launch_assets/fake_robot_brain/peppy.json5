@@ -1,5 +1,5 @@
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",

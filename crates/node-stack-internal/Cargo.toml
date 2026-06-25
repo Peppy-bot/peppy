@@ -5,9 +5,9 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal" }
-containers = { path = "../containers-internal" }
-core-node-api = { path = "../core-node-api" }
+config = { workspace = true }
+containers = { workspace = true }
+core-node-api = { workspace = true }
 petgraph = "0.8.3"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"

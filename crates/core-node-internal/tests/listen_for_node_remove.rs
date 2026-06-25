@@ -23,7 +23,7 @@ async fn listen_for_node_remove_success() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -145,7 +145,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -249,7 +249,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -359,7 +359,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

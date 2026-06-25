@@ -18,7 +18,7 @@ use crate::helpers::real_lifecycle;
 fn sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "sensor",
                 tag: "v1",
@@ -260,7 +260,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
 
     let producer_a: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "producer_a", tag: "v1" },
             interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
             execution: { language: "rust", run_cmd: ["producer_a"] }
@@ -270,7 +270,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
 
     let producer_b: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "producer_b", tag: "v1" },
             interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
             execution: { language: "rust", run_cmd: ["producer_b"] }
@@ -282,7 +282,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
         let link_id = format!("p_{}", producer_name);
         serde_json5::from_str(
             &r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {
                     name: "consumer",
                     tag: "v1",
@@ -506,7 +506,7 @@ fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConf
         .expect("snippet should be JSON-encodable");
     let json = format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{
                 name: "sensor",
                 tag: "v1",
@@ -629,7 +629,7 @@ async fn build_runs_add_cmd_for_process_node() {
 fn long_running_sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "sensor",
                 tag: "v1",

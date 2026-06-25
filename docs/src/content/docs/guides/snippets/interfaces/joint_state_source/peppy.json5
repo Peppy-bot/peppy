@@ -1,5 +1,5 @@
 {
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: {
     name: "joint_state_source",
     tag: "v1",

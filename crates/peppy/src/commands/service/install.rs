@@ -129,7 +129,7 @@ fn service_environment(
     path: Option<String>,
     peppy_home: Option<OsString>,
 ) -> Vec<(String, String)> {
-    let mut environment = vec![("PEPPY_ENV".to_string(), "PROD".to_string())];
+    let mut environment: Vec<(String, String)> = Vec::new();
 
     // Include the user's PATH so that build_cmd/run_cmd can find tools like cargo, python, etc.
     if let Some(path) = path {

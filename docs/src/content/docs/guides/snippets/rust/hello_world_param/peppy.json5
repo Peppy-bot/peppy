@@ -1,5 +1,5 @@
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "hello_world_param",
     tag: "v1",

@@ -43,8 +43,8 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// - creates `node_dir/.peppy/` and the `peppygen` output directory;
 /// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
 ///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
-/// - deploys five vendored crates (`peppylib`, `pmi-internal`, `config-internal`, `core-node-api`,
-///   `build-helpers-internal`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
+/// - deploys five vendored crates (`peppylib`, `peppy-messaging-interface`, `config`, `core-node-api`,
+///   `build-helpers`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
 ///   symlinks into a host-wide shared cache or as physical copies, per `deploy_mode`;
 /// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
 ///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not
@@ -492,7 +492,7 @@ mod tests {
 
         // Write a canonical peppy.json5 at the default location
         let canonical_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: { name: "canonical_node", tag: "v1" },
           execution: { language: "rust", run_cmd: ["./target/release/canonical_node"] }
         }"#;
@@ -500,7 +500,7 @@ mod tests {
 
         // Write a different config at a custom path
         let custom_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: { name: "custom_node", tag: "v2" },
           execution: { language: "rust", run_cmd: ["./target/release/custom_node"] }
         }"#;

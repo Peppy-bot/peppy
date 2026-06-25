@@ -37,7 +37,7 @@ fn conformed(name: &str, tag: &str, service: ExposedService) -> DeploymentInterf
 }
 
 const NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "control_panel",
     tag: "v1"

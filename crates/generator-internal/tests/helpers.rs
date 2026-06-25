@@ -10,6 +10,8 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,13 +30,13 @@ pub fn test_peppy_dirs() -> PeppyDirs {
 }
 
 /// Root for per-test scratch directories. Thin re-export of the shared
-/// [`config::test_helpers::test_tmp_root`] so the many generator test files can
+/// [`config_test_support::test_tmp_root`] so the many generator test files can
 /// keep calling `crate::helpers::test_tmp_root()`.
 ///
 /// Note: the shared `peppylib` `.so` cache itself still lives under
 /// [`test_peppy_dirs`] (the global `.peppy`); only the per-test copies move here.
 pub fn test_tmp_root() -> PathBuf {
-    config::test_helpers::test_tmp_root()
+    config_test_support::test_tmp_root()
 }
 
 pub const TEST_NODE_TAG: &str = "v1";
@@ -62,7 +64,7 @@ pub fn test_node_target(name: &str) -> SenderTarget {
 }
 
 pub const STUB_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
     tag: "v1"
@@ -107,55 +109,110 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::
     destination
 }
 
+const USER_NODE_LAUNCH_BIN: &str = "user_node";
+
+/// Stable per-crate-dir hash used to derive the unique `user_node` and
+/// `peppygen` package names. Canonicalizes so the same directory always hashes
+/// identically regardless of how the path was spelled.
+fn crate_identity_hash(crate_dir: &Path) -> u64 {
+    let stable_identity = crate_dir
+        .canonicalize()
+        .unwrap_or_else(|_| crate_dir.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    stable_identity.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn test_wrapper_crate_name(crate_dir: &Path) -> String {
+    format!("user_node_{:016x}", crate_identity_hash(crate_dir))
+}
+
+/// Per-test-unique package name for a node's generated `peppygen` library. The
+/// generator names every node's library `peppygen`; that collision lets the
+/// shared test target dir link one test's cached `peppygen` rlib into another
+/// test's `user_node`. A unique name per crate dir keeps each test's peppygen a
+/// distinct cargo unit. See [`rename_peppygen_package`] and [`compile_project`].
+fn peppygen_crate_name(crate_dir: &Path) -> String {
+    format!("peppygen_{:016x}", crate_identity_hash(crate_dir))
+}
+
+/// Rewrites the generated `peppygen` crate's `Cargo.toml` `package.name` to the
+/// per-test-unique [`peppygen_crate_name`]. The matching `user_node` manifest
+/// (written by [`init_cargo_user_node`]) aliases the dependency back to
+/// `peppygen` via `package = "..."`, so generated `use peppygen::…` code is
+/// unaffected. Idempotent. No-op if the peppygen crate was not generated.
+pub fn rename_peppygen_package(user_node_dir: &Path) {
+    let unique = peppygen_crate_name(user_node_dir);
+    let peppygen_cargo = user_node_dir.join(PEPPYGEN_OUTPUT_PATH).join("Cargo.toml");
+    let Ok(contents) = fs::read_to_string(&peppygen_cargo) else {
+        return;
+    };
+    if contents.contains(&format!("name = \"{unique}\"")) {
+        return;
+    }
+    let renamed = contents.replacen("name = \"peppygen\"", &format!("name = \"{unique}\""), 1);
+    assert_ne!(
+        renamed,
+        contents,
+        "expected `name = \"peppygen\"` in generated peppygen Cargo.toml at {}",
+        peppygen_cargo.display()
+    );
+    fs::write(&peppygen_cargo, renamed)
+        .expect("failed to rewrite peppygen Cargo.toml package name");
+}
+
+pub fn executable_filename(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
 pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     let crate_dir = to_dir.as_ref();
     fs::create_dir_all(crate_dir).expect("failed to create user node directory");
+    let src_dir = crate_dir.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create user node src directory");
+    let main_rs = src_dir.join("main.rs");
+    if !main_rs.exists() {
+        fs::write(&main_rs, "fn main() {}\n").expect("failed to write default user node main.rs");
+    }
+
     let cargo_toml_path = crate_dir.join("Cargo.toml");
+    let crate_name = test_wrapper_crate_name(crate_dir);
+    // Depend on the per-test-unique peppygen package, aliased back to `peppygen`
+    // so the generated `use peppygen::…` code is unchanged. `compile_project`
+    // renames the peppygen crate to match before building.
+    let peppygen_name = peppygen_crate_name(crate_dir);
+    let manifest = format!(
+        r#"[package]
+name = "{crate_name}"
+version = "0.1.0"
+edition = "2024"
 
-    if !cargo_toml_path.exists() {
-        Command::new("cargo")
-            .arg("init")
-            .arg("--bin")
-            .arg("--vcs")
-            .arg("none")
-            .current_dir(crate_dir)
-            .stdin(Stdio::null())
-            .output()
-            .expect("failed to invoke cargo init for user node");
-    }
+[[bin]]
+name = "{crate_name}"
+path = "src/main.rs"
 
-    let manifest_contents =
-        fs::read_to_string(&cargo_toml_path).expect("failed to read user node Cargo.toml");
+[dependencies]
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
+peppygen = {{ package = "{peppygen_name}", path = "{PEPPYGEN_OUTPUT_PATH}" }}
+"#
+    );
 
-    let mut updated_manifest = manifest_contents.clone();
-
-    if !updated_manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("tokio"))
-    {
-        let tokio_dependency_line =
-            "tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }\n";
-        updated_manifest = insert_dependency_line(&updated_manifest, tokio_dependency_line);
-    }
-
-    if !updated_manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("peppygen"))
-    {
-        let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", PEPPYGEN_OUTPUT_PATH);
-        updated_manifest = insert_dependency_line(&updated_manifest, &dependency_line);
-    }
-
-    if updated_manifest != manifest_contents {
-        fs::write(&cargo_toml_path, updated_manifest)
-            .expect("failed to write user node Cargo.toml");
+    let should_write_manifest = match fs::read_to_string(&cargo_toml_path) {
+        Ok(existing) => existing != manifest,
+        Err(_) => true,
+    };
+    if should_write_manifest {
+        fs::write(&cargo_toml_path, manifest).expect("failed to write user node Cargo.toml");
     }
 }
 
 pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     // Run the compiled binary directly to avoid cargo's global package-cache lock contention.
     // `compile_project` must be called beforehand to ensure the binary exists.
-    let binary_path = dir.join("target").join("debug").join("user_node");
+    let binary_path = dir
+        .join("target")
+        .join("debug")
+        .join(executable_filename(USER_NODE_LAUNCH_BIN));
     let use_binary = binary_path.exists();
     let mut command = if use_binary {
         Command::new(&binary_path)
@@ -413,9 +470,14 @@ pub fn wait_for_child(
 }
 
 /// Returns a stable, shared target directory for test compilations so that sccache can
-/// reuse the same dir across runs
+/// reuse the same dir across runs.
+///
+/// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
+/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
+/// mid-link.
 fn stable_test_target_dir() -> std::path::PathBuf {
-    PeppyDirs::default().root().join("cache/rust/test-targets")
+    config_test_support::test_data_root().join("cache/rust/test-targets")
 }
 
 pub fn compile_project(dir: impl AsRef<Path>) {
@@ -423,12 +485,16 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
 
-    // Hold an exclusive file lock across both the cargo build and the binary copy.
-    // This prevents a parallel test's build from overwriting the `user_node` binary
-    // in the shared target dir between our build finishing and the copy completing.
-    let lock_file = fs::File::create(target_dir.join(".compile.lock"))
-        .expect("failed to create compile lock file");
-    lock_file.lock().expect("failed to acquire compile lock");
+    // Give this node's generated `peppygen` crate a per-test-unique package name
+    // before building. The generator names every node's library `peppygen`, so in
+    // the shared target dir cargo treats them as one interchangeable
+    // `peppygen v0.1.0` unit and may link a *different* test's cached rlib into
+    // this `user_node` — e.g. a pinned consumer silently getting another test's
+    // unpinned `fire_goal`, which then discovers instead of pinning. A unique
+    // name forces cargo to compile (and link) the peppygen this test just
+    // generated. Mirrors the unique `user_node` wrapper name; the heavy shared
+    // dependencies (peppylib, zenoh, …) are still reused across builds.
+    rename_peppygen_package(dir);
 
     let cargo_output = Command::new("cargo")
         .arg("build")
@@ -446,16 +512,25 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         String::from_utf8_lossy(&cargo_output.stderr)
     );
 
-    // Copy the binary to the project's local target dir so that spawn_cargo_run
-    // can execute it directly without cargo, avoiding lock contention at runtime.
-    let binary = target_dir.join("debug").join("user_node");
-    if binary.exists() {
-        let local_bin_dir = dir.join("target").join("debug");
-        fs::create_dir_all(&local_bin_dir).expect("failed to create local target/debug dir");
-        fs::copy(&binary, local_bin_dir.join("user_node"))
-            .expect("failed to copy compiled binary to local target dir");
-    }
-    // Lock released on drop
+    // The shared target dir is still useful for dependency reuse, but each test
+    // wrapper has a unique package + binary name. That gives Cargo disjoint
+    // fingerprints and output artifact paths while preserving the fixed local
+    // launch path that `spawn_cargo_run` expects.
+    let shared_binary = target_dir
+        .join("debug")
+        .join(executable_filename(&test_wrapper_crate_name(dir)));
+    assert!(
+        shared_binary.exists(),
+        "cargo build succeeded but expected binary was not found at {}",
+        shared_binary.display()
+    );
+    let local_bin_dir = dir.join("target").join("debug");
+    fs::create_dir_all(&local_bin_dir).expect("failed to create local target/debug dir");
+    fs::copy(
+        &shared_binary,
+        local_bin_dir.join(executable_filename(USER_NODE_LAUNCH_BIN)),
+    )
+    .expect("failed to copy compiled binary to local target dir");
 }
 
 pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
@@ -807,7 +882,7 @@ pub async fn try_send_shutdown(
 // ---------------------------------------------------------------------------
 
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: { name: "generated_node",
     tag: "v1" },
   execution: { language: "python",

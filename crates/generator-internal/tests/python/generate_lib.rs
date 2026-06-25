@@ -9,7 +9,7 @@ use std::fs;
 use tempfile::TempDir;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "test_node",
     tag: "v1"
@@ -281,7 +281,7 @@ fn generate_peppygen_lib_minimal_config() {
 
     // Minimal config with no interfaces
     let minimal_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: { name: "minimal_node",
         tag: "v1" },
       execution: { language: "python",
@@ -339,7 +339,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "v1",
@@ -393,7 +393,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "v1",
@@ -456,7 +456,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "v1",
@@ -513,7 +513,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "v1",
@@ -589,7 +589,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "v1",
@@ -658,7 +658,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     let consumer_node_dir = consumer_dir.path();
 
     let consumer_config = r#"{
-          peppy_schema: "node_v1",
+          peppy_schema: "node/v1",
           manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "v1",

@@ -6,7 +6,7 @@ use config::consts::{
     PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH,
 };
 use config::node::Toolchain;
-use config::test_helpers::assert_contains_all;
+use config_test_support::assert_contains_all;
 use core_node_api::encoding::NodeInitRequest;
 use peppylib::core_node::transport::poll_node_init;
 use std::fs;

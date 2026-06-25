@@ -31,7 +31,7 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Returns true if a file inside a Rust crate is source that affects the crate's
-/// compiled output: `.rs`, `.toml`, `.capnp`, `.j2`, plus config-internal's
+/// compiled output: `.rs`, `.toml`, `.capnp`, `.j2`, plus config's
 /// `tools/capnp_*` helpers. `relative_path` is relative to the crate root.
 /// Mirrors the rust-embed include/exclude rules used when embedding crate source
 /// for node scaffolding, so the staleness hash and the embed stay in agreement.
@@ -446,17 +446,45 @@ mod peppylib_build {
     /// iterating on container bindings.
     const REBUILD_ENV_VAR: &str = "PEPPYLIB_REBUILD";
 
+    /// This build script's own source, embedded so it can be mixed into every
+    /// `.so` hash. The build logic is itself an input to the compiled artifact:
+    /// a change to how the `.so` is built, or to how its staleness is judged, can
+    /// change the output, so it must invalidate the cached `.so` and its
+    /// `.so-build-state` marker. Folding the script's source into the hash does
+    /// that automatically on the next build, with no version constant for anyone
+    /// to remember to bump. `include_str!` resolves relative to this file, so it
+    /// always embeds `generator-internal/build.rs`.
+    const BUILD_SCRIPT_SOURCE: &str = include_str!("build.rs");
+
     /// Dependency crates compiled into the `.so`, paired with whether the crate
-    /// is config-internal (which embeds extra `tools/capnp_*` helpers). This list
+    /// is config (which embeds extra `tools/capnp_*` helpers). This list
     /// MUST stay in sync with peppylib-py's path dependencies in
-    /// `crates/peppylib-py/Cargo.toml`; a crate missing here means edits to it
+    /// `nodes_shared_code/peppyos-shared/peppylib-py/Cargo.toml`; a crate
+    /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
-        ("peppylib", false),
-        ("config-internal", true),
-        ("pmi-internal", false),
+        // Resolved against `peppyos-shared` (located via build-helpers); all are
+        // siblings of peppylib-py in that shared workspace.
+        ("peppylib-rs", false),
+        ("peppy-config-model", true),
+        ("peppy-messaging-interface", false),
         ("core-node-api", false),
     ];
+
+    /// Every source file of the `.so` dependency crates. Resolved against
+    /// `peppyos-shared`, located via build-helpers so it works in the superproject
+    /// and from a cargo git checkout of nodes_shared_code alike.
+    fn dep_crate_source_files() -> Vec<PathBuf> {
+        let crates_root = build_helpers::peppyos_shared_dir();
+        let mut files = Vec::new();
+        for (crate_name, is_config) in SO_DEP_CRATES {
+            files.extend(super::collect_crate_source_files(
+                &crates_root.join(crate_name),
+                *is_config,
+            ));
+        }
+        files
+    }
 
     /// Every existing file whose contents are compiled into the `.so`: peppylib-py's
     /// own Rust bindings and build manifests, plus the source of every dependency
@@ -474,35 +502,55 @@ mod peppylib_build {
             }
         }
 
-        let crates_root = peppylib_py_dir.join("..");
-        for (crate_name, is_config) in SO_DEP_CRATES {
-            files.extend(super::collect_crate_source_files(
-                &crates_root.join(crate_name),
-                *is_config,
-            ));
-        }
+        files.extend(dep_crate_source_files());
 
         files.sort();
         files
     }
 
-    /// Computes a SHA-256 hash over every `.so` input file, keyed by each file's
-    /// path relative to the crates root so a move is detected and same-named files
-    /// in different crates never collide.
-    fn compute_source_hash(peppylib_py_dir: &Path) -> String {
+    /// Computes a SHA-256 hash over this build script's source plus the given
+    /// input files, keyed by each file's path relative to the crates root so a
+    /// move is detected and same-named files in different crates never collide.
+    /// The build script's source is folded in first so a change to the build logic
+    /// invalidates the cached `.so` (see [`BUILD_SCRIPT_SOURCE`]).
+    ///
+    /// Keys are relative to `peppyos-shared` (where every input, the dependency
+    /// crates and peppylib-py itself, lives). The marker files are per-checkout and
+    /// gitignored, so keys only need to be stable and collision-free within a
+    /// single checkout.
+    fn hash_files(files: &[PathBuf]) -> String {
         use sha2::{Digest, Sha256};
 
-        let crates_root = peppylib_py_dir.join("..");
+        let crates_root = build_helpers::peppyos_shared_dir();
         let mut hasher = Sha256::new();
-        for file in so_rebuild_input_files(peppylib_py_dir) {
-            let rel = file.strip_prefix(&crates_root).unwrap_or(&file);
-            if let Ok(bytes) = std::fs::read(&file) {
+        hasher.update(BUILD_SCRIPT_SOURCE.as_bytes());
+        for file in files {
+            let rel = file.strip_prefix(&crates_root).unwrap_or(file);
+            if let Ok(bytes) = std::fs::read(file) {
                 hasher.update(rel.to_string_lossy().as_bytes());
                 hasher.update(&bytes);
             }
         }
         let hash = hasher.finalize();
         hash.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Hash over every `.so` input file (peppylib-py plus its dependency crates).
+    /// Drives the per-platform rebuild decision: any change rebuilds the host `.so`.
+    fn compute_source_hash(peppylib_py_dir: &Path) -> String {
+        hash_files(&so_rebuild_input_files(peppylib_py_dir))
+    }
+
+    /// Hash over only the dependency crate sources, with peppylib-py's own code
+    /// excluded. Keys the isolated maturin target directory: when the dependency
+    /// crates change, the build moves to a fresh target tree so it can never link
+    /// a stale rlib that cargo's mtime fingerprint failed to invalidate across a
+    /// git-checkout swap. Keeping it separate from the full source hash means
+    /// iterating on peppylib-py's own bindings reuses the same warm target.
+    fn compute_dep_hash() -> String {
+        let mut files = dep_crate_source_files();
+        files.sort();
+        hash_files(&files)
     }
 
     /// Reads the per-platform build state, mapping each platform suffix to the
@@ -596,14 +644,17 @@ mod peppylib_build {
     }
 
     pub fn run() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
+        // peppylib-py and all its `.so` dependency crates live in the shared
+        // workspace (peppyos-shared), located via build-helpers so every path
+        // resolves in the superproject and from a cargo git checkout of
+        // nodes_shared_code alike — no reach across a submodule boundary.
+        let peppylib_py_dir = build_helpers::peppyos_shared_dir().join("peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         register_rerun_triggers(&peppylib_py_dir);
 
-        let profile = build_helpers::BuildProfile::from_env();
+        let profile = peppylib_build_policy::BuildProfile::from_env();
         let current_hash = compute_source_hash(&peppylib_py_dir);
         let host = host_platform_suffix();
 
@@ -643,19 +694,51 @@ mod peppylib_build {
             return;
         }
 
-        // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
-        // does not deadlock on the workspace build lock held by the outer cargo.
-        let target_dir = build_helpers::cache_dir("peppylib-py").join("target");
+        // Isolate the maturin target by dependency-source hash. A change to one of
+        // the `.so` dependency crates yields a different directory, so the build
+        // always starts from a tree with no artifacts from a previous version of
+        // those crates. This makes it impossible to link a stale dependency rlib
+        // that cargo's mtime fingerprint failed to invalidate across a checkout
+        // swap, the failure mode that produced a `.so` compiled against an
+        // outdated `peppy_schema` enum. peppylib-py's own edits do not change this
+        // hash, so iterating on the bindings reuses a warm target. A dedicated
+        // CARGO_TARGET_DIR also keeps maturin's inner `cargo build` from
+        // deadlocking on the workspace build lock held by the outer cargo. Old
+        // `target-<hash>` trees from prior dependency versions persist per the
+        // `cache_dir` convention (nothing auto-cleans it, and a sibling build in
+        // another checkout may still be using one); remove them by hand with
+        // `rm -rf ~/.peppy/tmp/peppylib-py/target-*` if disk use grows.
+        let dep_hash = compute_dep_hash();
+        let target_dir =
+            build_helpers::cache_dir("peppylib-py").join(format!("target-{}", &dep_hash[..16]));
         let mut state = read_build_state(&peppylib_dir);
         let force = std::env::var(REBUILD_ENV_VAR).is_ok_and(|v| !v.is_empty() && v != "0");
 
+        // A forced rebuild discards the cached target so maturin recompiles every
+        // crate from scratch: the guarantee the documented escape hatch provides
+        // against any input the source hash does not cover.
+        if force {
+            match std::fs::remove_dir_all(&target_dir) {
+                Ok(()) => {}
+                // No cached target yet (e.g. first forced build): nothing to discard.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!(
+                    "failed to clear maturin target dir {:?} for a forced rebuild \
+                     ({REBUILD_ENV_VAR}): {e}",
+                    target_dir
+                ),
+            }
+        }
+
         // Host extension: rebuilt whenever it is missing, its recorded
-        // (hash, profile) is stale, or a rebuild is forced. Built in both
-        // profiles so local host scaffolding always matches current sources.
+        // (hash, profile) is stale, or a rebuild is forced. Built in both profiles
+        // so local host scaffolding always matches current sources. The recorded
+        // source hash already covers the dependency crates, so a dependency change
+        // surfaces here as a stale hash and triggers a rebuild.
         let host_so = peppylib_dir.join(format!("_peppylib.abi3.{host}.so"));
         let host_state = (current_hash.clone(), profile.tag().to_string());
         let host_current = state.get(&host) == Some(&host_state);
-        if build_helpers::should_build_host(host_so.exists(), host_current, force) {
+        if peppylib_build_policy::should_build_host(host_so.exists(), host_current, force) {
             build_native_so(
                 &peppylib_py_dir,
                 &peppylib_dir,
@@ -678,7 +761,12 @@ mod peppylib_build {
                 let target_so = peppylib_dir.join(format!("_peppylib.abi3.{suffix}.so"));
                 let target_state = (current_hash.clone(), "release".to_string());
                 let stale = state.get(suffix) != Some(&target_state);
-                if build_helpers::should_cross_compile(profile, target_so.exists(), stale, force) {
+                if peppylib_build_policy::should_cross_compile(
+                    profile,
+                    target_so.exists(),
+                    stale,
+                    force,
+                ) {
                     cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
                     state.insert(suffix.to_string(), target_state);
                 } else if stale {
@@ -725,54 +813,18 @@ fn embed_ruff_binary() {
     build_helpers::write_if_changed(&generated, content.as_bytes());
 }
 
-mod rust_crates_build {
-    use sha2::{Digest, Sha256};
-    use std::path::PathBuf;
-
-    pub fn run() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-        let crate_dirs = [
-            ("../peppylib", false),
-            ("../pmi-internal", false),
-            ("../config-internal", true),
-            ("../core-node-api", false),
-            ("../build-helpers-internal", false),
-        ];
-
-        let mut hasher = Sha256::new();
-
-        for (rel, is_config) in &crate_dirs {
-            let dir = manifest_dir.join(rel);
-            let mut files = super::collect_crate_source_files(&dir, *is_config);
-            // Sort for deterministic hashing
-            files.sort();
-
-            for file_path in &files {
-                println!("cargo:rerun-if-changed={}", file_path.display());
-                let relative = file_path.strip_prefix(&dir).unwrap_or(file_path);
-                hasher.update(relative.to_string_lossy().as_bytes());
-                match std::fs::read(file_path) {
-                    Ok(content) => hasher.update(&content),
-                    Err(e) => println!(
-                        "cargo:warning=Failed to read file for hashing {}: {}",
-                        file_path.display(),
-                        e
-                    ),
-                }
-            }
-        }
-
-        let hash = hasher.finalize();
-        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        println!("cargo:rustc-env=RUST_CRATES_HASH={}", &hex[..16]);
-    }
-}
-
 fn main() {
+    // Single source of truth for the shared crate sources generator embeds: the
+    // `peppyos-shared` dir located via build-helpers (works in-tree or from a
+    // cargo git checkout). The rust-embed `#[folder = "$PEPPYOS_SHARED_DIR/…"]`
+    // attributes in src/ expand this at compile time.
+    println!(
+        "cargo:rustc-env=PEPPYOS_SHARED_DIR={}",
+        build_helpers::peppyos_shared_dir().display()
+    );
+
     ruff_build::run();
     embed_ruff_binary();
 
     peppylib_build::run();
-    rust_crates_build::run();
 }

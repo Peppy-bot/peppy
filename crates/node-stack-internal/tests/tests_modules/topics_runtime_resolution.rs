@@ -10,7 +10,7 @@ use crate::helpers::graph_query;
 fn topic_dependency_resolved_when_dependency_added_first() {
     let brain_dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -40,7 +40,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
     let lidar_dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -113,7 +113,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 fn topic_dependency_fails_when_dependency_is_missing() {
     let brain_dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -164,7 +164,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
     // but the target node exists without exposing the requested topic
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",
@@ -195,7 +195,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
     // This node has the correct name but emits a different topic
     let dependency_wrong_topic: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "lidar",
               tag: "v1",
@@ -252,7 +252,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
 fn topic_dependency_fails_when_link_id_is_undeclared() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
               name: "brain",
               tag: "v1",

@@ -39,7 +39,7 @@ fn conformed(name: &str, tag: &str, topic: EmittedTopic) -> DeploymentInterface 
 }
 
 const NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "realsense_d435",
     tag: "v1"

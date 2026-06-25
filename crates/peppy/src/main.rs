@@ -7,7 +7,7 @@ use tracing::error;
 
 use config::consts::AppEnv;
 use peppy::{
-    commands::{Command, container, info, node, repo, service, stack},
+    commands::{Command, auth, container, info, node, repo, service, stack},
     context::AppContext,
 };
 
@@ -50,6 +50,11 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         command: repo::RepoCommands,
+    },
+    /// Authentication: log in, log out, and show the current identity
+    Auth {
+        #[command(subcommand)]
+        command: auth::AuthCommands,
     },
     /// Display peppy version information
     Info {},
@@ -94,6 +99,7 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
+        Commands::Auth { command } => auth::AuthCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 

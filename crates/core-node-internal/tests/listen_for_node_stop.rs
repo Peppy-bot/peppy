@@ -34,7 +34,7 @@ async fn listen_for_node_stop_success() {
 
     // Add the node to the stack so it can be discovered by instance_id
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -188,7 +188,7 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -451,7 +451,7 @@ async fn node_stop_force_kills_whole_process_group() {
 ///
 /// This closes the loop between the daemon-side tests above (which simulate
 /// the node's shutdown listener in-process) and the node-side tests in
-/// `crates/peppylib/tests/runner.rs` (which simulate the daemon's shutdown
+/// `nodes_shared_code/peppyos-shared/peppylib-rs/tests/runner.rs` (which simulate the daemon's shutdown
 /// send): here both halves are the production code.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_reports_graceful_for_real_node_builder_node() {
@@ -698,7 +698,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     let started = start_core_node_with_mock_messenger().await;
 
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

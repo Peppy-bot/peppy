@@ -1,0 +1,89 @@
+//! `peppy auth login`: OAuth 2.0 device-authorization login (RFC 8628).
+//!
+//! Fetches the public `/cli-config`, runs OIDC discovery against the returned
+//! issuer, performs the device flow (opening the browser on a TTY), caches the
+//! tokens as the single session, and prints the resolved identity.
+
+use std::sync::Arc;
+
+use config::consts::PeppyDirs;
+
+use crate::auth::device::DeviceFlowOptions;
+use crate::auth::{
+    cli_config, client, device, discovery, http::HttpClient, profile, resolver, storage,
+};
+use crate::commands::Command;
+use crate::context::AppContext;
+use crate::error::{Error, Result};
+
+pub struct LoginCommand {
+    /// Override the backend base URL (else the build's `resource_servers.api` /
+    /// `PEPPY_API_URL`).
+    pub api_url: Option<String>,
+    /// Suppress the automatic browser launch.
+    pub no_browser: bool,
+    /// Test seam: override the peppy data dirs (defaults to the global root).
+    /// Both the credentials file and `peppy_config.json5` derive from it, so a
+    /// test isolates all auth state under one tempdir without touching
+    /// `PEPPY_HOME`.
+    pub peppy_dirs: Option<PeppyDirs>,
+}
+
+impl Command for LoginCommand {
+    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
+        let dirs = self.peppy_dirs.unwrap_or_default();
+        // Loads (and seeds/completes) peppy_config.json5 with the same strict,
+        // fail-loud semantics the daemon uses; resource_servers supplies the
+        // per-profile URL fallback.
+        let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
+        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
+        let creds_path = storage::credentials_path(&dirs);
+        let http = HttpClient::new();
+
+        let cfg = cli_config::fetch(&http, &api_url)?;
+        let endpoints = discovery::discover(&http, &cfg.issuer)?;
+        let tokens = device::run(
+            &http,
+            &endpoints,
+            &cfg.client_id,
+            &cfg.scopes,
+            &DeviceFlowOptions {
+                no_browser: self.no_browser,
+            },
+        )?;
+
+        // Persist immediately so a transient `/me` failure can't lose a good login.
+        let mut creds = storage::load(&creds_path)?;
+        let pc = client::creds_from_login(&cfg, &api_url, &tokens);
+        creds.session = Some(pc.clone());
+        storage::save(&creds_path, &creds)?;
+
+        // Fetch identity using the in-memory credential (the token was minted
+        // seconds ago, so there's no need to reload from disk or proactively
+        // refresh via the resolver).
+        let mut cred = resolver::session_credential(&creds_path, &pc);
+        match client::get_me(&http, &api_url, &mut cred) {
+            Ok(principal) => {
+                // Cache display identity against the stored session.
+                if let Some(session) = creds.session.as_mut() {
+                    session.subject = principal.sub.clone();
+                    session.username = principal.display_name().to_string();
+                    storage::save(&creds_path, &creds)?;
+                }
+                println!(
+                    "Logged in as {} ({})",
+                    principal.display_name(),
+                    profile::build_env_name()
+                );
+            }
+            Err(e) => {
+                // The tokens are valid and stored; only the identity lookup failed.
+                println!(
+                    "Logged in ({}). Could not fetch identity: {e}",
+                    profile::build_env_name()
+                );
+            }
+        }
+        Ok(())
+    }
+}

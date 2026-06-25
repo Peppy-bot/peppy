@@ -1,8 +1,8 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
-    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedCoreNodeApi,
-    EmbeddedPeppylib, EmbeddedPmiInternal, WorkspacePackageMetadata, cache_sibling_path,
-    copy_dir_recursive,
+    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
+    EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
+    cache_sibling_path, copy_dir_recursive,
 };
 use crate::{
     error::{Error, Result},
@@ -15,9 +15,10 @@ use crate::{
         types::{CapnpSchema, InterfaceArtifact, ModuleCategory},
     },
 };
-use config::encoding::compile_capnp;
+use encoding::compile_capnp;
 use proc_macro2::Span;
 use rust_embed::Embed;
+use sha2::{Digest, Sha256};
 use std::io;
 use std::io::ErrorKind;
 use std::{
@@ -126,8 +127,11 @@ fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
     return std::os::unix::fs::symlink(original, link);
 }
 
-/// Replaces workspace-inherited fields (`version.workspace = true`, etc.)
-/// in a `Cargo.toml` with concrete values from the given metadata.
+/// Normalizes a vendored crate's `Cargo.toml` for the flat `.peppy/libs` layout:
+/// replaces workspace-inherited fields (`version.workspace = true`, etc.) with
+/// concrete values, renames the `peppylib-rs` source package back to `peppylib`
+/// (the name every generated node depends on), and flattens inter-crate `path`
+/// dependencies to flat siblings.
 fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
     if !cargo_toml_path.exists() {
         return Ok(());
@@ -168,10 +172,71 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         {
             package.remove("authors");
         }
+
+        // The crate is named `peppylib-rs` in the peppyos-shared workspace, but it
+        // is vendored into `.peppy/libs/peppylib` (lib name already `peppylib`).
+        // Rename the package back to `peppylib` so every generated node's
+        // `peppylib = { path = ".peppy/libs/peppylib" }` resolves unchanged.
+        if package.get("name").and_then(|n| n.as_str()) == Some("peppylib-rs") {
+            package.insert("name", value("peppylib"));
+        }
     }
+
+    normalize_vendored_path_deps(&mut doc);
 
     fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
+}
+
+/// Crate directories the vendored `.peppy/libs` cache lays out as flat siblings.
+/// A `path` dependency whose final component is one of these is rewritten to
+/// `../<crate>` so it resolves in the flat cache regardless of whether the source
+/// manifest used a flat path (`../peppy-config-model`) or a reverse path into another
+/// submodule (`../../../peppyos/crates/config`, as `peppylib-rs` does).
+const VENDORED_SIBLING_CRATES: &[&str] = &[
+    "peppylib",
+    "peppy-messaging-interface",
+    "peppy-config-model",
+    "core-node-api",
+    "build-helpers",
+];
+
+/// Returns the flattened `../<crate>` path for `current` if its final component
+/// names a vendored sibling crate, otherwise `None` (leave it untouched).
+fn flatten_vendored_path(current: &str) -> Option<String> {
+    let final_component = current.rsplit('/').next().unwrap_or(current);
+    VENDORED_SIBLING_CRATES
+        .contains(&final_component)
+        .then(|| format!("../{final_component}"))
+}
+
+/// Rewrites every intra-vendor `path` dependency in `doc` to a flat sibling so the
+/// deployed flat-cache layout resolves even when the source manifest pointed across
+/// submodule boundaries. Registry deps and non-vendored path deps are left alone;
+/// `features` and other keys on the dependency are preserved. Idempotent on the
+/// already-flat crates that have not been moved out of the peppyos workspace.
+fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(deps) = doc.get_mut(table_name).and_then(|t| t.as_table_mut()) else {
+            continue;
+        };
+        for (_dep_name, item) in deps.iter_mut() {
+            // Inline form: `dep = { path = "...", features = [...] }`.
+            if let Some(inline) = item.as_inline_table_mut() {
+                if let Some(path_val) = inline.get_mut("path")
+                    && let Some(flat) = path_val.as_str().and_then(flatten_vendored_path)
+                {
+                    *path_val = flat.as_str().into();
+                }
+            // Full-table form: `[dependencies.dep]\npath = "..."`.
+            } else if let Some(table) = item.as_table_mut()
+                && let Some(path_item) = table.get_mut("path")
+                && let Some(flat) = path_item.as_str().and_then(flatten_vendored_path)
+            {
+                *path_item = value(flat);
+            }
+        }
+    }
 }
 
 /// Copies all files from an embedded crate into `vendored_root/crate_dir`,
@@ -216,8 +281,60 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
-/// Deploys the vendored Rust crates (peppylib, pmi-internal, config-internal, core-node-api,
-/// build-helpers-internal) to a shared cache directory, then links or
+/// Mixes every file of one embedded crate into `hasher` in a deterministic
+/// (sorted-by-path) order. A per-crate `label` and NUL domain separators keep
+/// identically named files in different crates from colliding.
+fn hash_embedded_crate<E: Embed>(hasher: &mut Sha256, label: &str) {
+    hasher.update(label.as_bytes());
+    hasher.update([0u8]);
+    let mut names: Vec<String> = E::iter().map(|name| name.as_ref().to_string()).collect();
+    names.sort();
+    for name in names {
+        // `get` cannot legitimately miss a name just returned by `iter`; skip
+        // defensively rather than poison the whole key on a transient race.
+        if let Some(file) = E::get(&name) {
+            hasher.update(name.as_bytes());
+            hasher.update([0u8]);
+            hasher.update(file.data.as_ref());
+            hasher.update([0u8]);
+        }
+    }
+}
+
+/// Cache key for the vendored Rust crates, derived from the **actual embedded
+/// bytes that are about to be deployed** rather than a compile-time source
+/// hash.
+///
+/// In debug builds `rust-embed` (no `debug-embed` feature) reads each crate's
+/// source live from disk at call time, so this hash reflects the current
+/// working tree — never a stale snapshot baked into the generator binary at its
+/// last compile. That makes the shared cache self-invalidating: any source
+/// change yields a new key and therefore a fresh deploy, even when cargo did not
+/// rebuild the generator (e.g. a submodule checkout whose mtimes did not advance,
+/// or a newly added file the build script's `rerun-if-changed` list never
+/// watched). Keying on the deployed bytes also means the hash can never drift
+/// out of agreement with the embed's own include/exclude rules.
+///
+/// In release builds the embed is compile-time, so `get` returns the embedded
+/// bytes and this stays in lockstep with them (the build script's
+/// `rerun-if-changed` registration keeps those embedded bytes fresh).
+fn vendored_crates_cache_key() -> String {
+    let mut hasher = Sha256::new();
+    hash_embedded_crate::<EmbeddedPeppylib>(&mut hasher, "peppylib");
+    hash_embedded_crate::<EmbeddedPeppyMessagingInterface>(
+        &mut hasher,
+        "peppy-messaging-interface",
+    );
+    hash_embedded_crate::<EmbeddedConfig>(&mut hasher, "peppy-config-model");
+    hash_embedded_crate::<EmbeddedCoreNodeApi>(&mut hasher, "core-node-api");
+    hash_embedded_crate::<EmbeddedBuildHelpers>(&mut hasher, "build-helpers");
+    let hash = hasher.finalize();
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}", &hex[..16], env!("CARGO_PKG_VERSION"))
+}
+
+/// Deploys the vendored Rust crates (peppylib, peppy-messaging-interface, config, core-node-api,
+/// build-helpers) to a shared cache directory, then links or
 /// copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
@@ -226,14 +343,15 @@ fn copy_embedded_crate<E: Embed>(
 /// In `Copy` mode, copies the crate sources directly into `node_libs_dir`.
 /// This is needed for container builds where symlinks to host paths would break.
 ///
-/// The cache is keyed by content hash + version, and uses file locking with a
+/// The cache is keyed by a content hash of the embedded crate bytes
+/// ([`vendored_crates_cache_key`]) + version, and uses file locking with a
 /// staging directory for concurrent-safe deployment.
 fn deploy_rust_crates_to_shared_cache(
     node_libs_dir: &Path,
     peppy_dirs: &config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
 ) -> Result<()> {
-    let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
+    let cache_key = vendored_crates_cache_key();
     let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
 
     let parent = cache_dir
@@ -258,14 +376,14 @@ fn deploy_rust_crates_to_shared_cache(
 
         let metadata = WorkspacePackageMetadata::embedded();
         copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedBuildHelpers>(
-            "build-helpers-internal",
+        copy_embedded_crate::<EmbeddedPeppyMessagingInterface>(
+            "peppy-messaging-interface",
             &staging_dir,
             &metadata,
         )?;
+        copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", &staging_dir, &metadata)?;
 
         if cache_dir.exists() {
             fs::remove_dir_all(&cache_dir)?;
@@ -275,18 +393,18 @@ fn deploy_rust_crates_to_shared_cache(
     }
     drop(lock_file);
 
-    // Link or copy all vendored crates (peppylib, pmi-internal, config-internal,
-    // core-node-api, build-helpers-internal) into node_libs_dir.
+    // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config,
+    // core-node-api, build-helpers) into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
-    // paths (e.g., peppylib has `config = { path = "../config-internal" }` and
+    // paths (e.g., peppylib has `config = { package = "peppy-config-model", path = "../peppy-config-model" }` and
     // build-dependencies), and Cargo resolves these paths relative to the symlink
     // location, not the target.
     for crate_name in &[
         "peppylib",
-        "pmi-internal",
-        "config-internal",
+        "peppy-messaging-interface",
+        "peppy-config-model",
         "core-node-api",
-        "build-helpers-internal",
+        "build-helpers",
     ] {
         let dest = node_libs_dir.join(crate_name);
         let source = cache_dir.join(crate_name);

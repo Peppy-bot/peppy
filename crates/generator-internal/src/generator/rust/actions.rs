@@ -6,8 +6,8 @@ use super::services::{
 };
 use super::topics::{EmitMethodSpec, build_emit_method};
 use crate::error::Result;
-use config::encoding::FunctionParam;
 use config::node::MessageFormat;
+use encoding::FunctionParam;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 

@@ -346,7 +346,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
 }
 
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
-    let dir = TempDir::new_in(config::test_helpers::test_tmp_root()).expect("test data dir");
+    let dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
     (dir, peppy_dirs)
 }
@@ -1309,7 +1309,7 @@ pub async fn add_and_build_forking_node(
 ) -> TempDir {
     let source_dir = tempfile::tempdir().expect("temp source dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "{NAME}", tag: "{TAG}" },
             execution: {
                 language: "rust",
@@ -1424,12 +1424,12 @@ pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
 }
 
 pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> TempDir {
-    // Build under the shared test-tmp root (see `config::test_helpers::test_tmp_root`) and keep the
+    // Build under the shared test-tmp root (see `config_test_support::test_tmp_root`) and keep the
     // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
     // ~2 GB cargo build are reclaimed when the returned guard drops.
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
-        .tempdir_in(config::test_helpers::test_tmp_root())
+        .tempdir_in(config_test_support::test_tmp_root())
         .expect("failed to create temp directory for test node");
 
     init_cargo_project(node_dir.path(), node_name);
@@ -1515,7 +1515,7 @@ fn main() -> Result<()> {
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
         r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "{crate_name}",
     tag: "{node_tag}",

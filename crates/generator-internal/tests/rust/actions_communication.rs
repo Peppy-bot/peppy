@@ -116,7 +116,7 @@ const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 /// resolve `slot_bindings["brain"]` into a `ConsumerFilter::Pin` that
 /// the generated `fire_goal` splices as its target.
 const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
     tag: "v1",
@@ -2288,7 +2288,7 @@ fn main() -> Result<()> {
 ///
 /// In-library parity is
 /// `concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned`
-/// in `crates/peppylib/tests/actions.rs`.
+/// in `nodes_shared_code/peppyos-shared/peppylib-rs/tests/actions.rs`.
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]
