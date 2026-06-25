@@ -246,6 +246,13 @@ fn compile_rust_node_release(dir: &Path) {
         .expect("create compile lock file");
     lock_file.lock().expect("acquire compile lock");
 
+    // Give this node's generated `peppygen` crate the same per-test-unique
+    // package name that `init_cargo_user_node` wrote into the `user_node`
+    // manifest's dependency. Without this the manifest depends on
+    // `peppygen_<hash>` while the generated crate is still named `peppygen`, so
+    // cargo can't resolve the dependency. Mirrors `helpers::compile_project`.
+    helpers::rename_peppygen_package(dir);
+
     let output = Command::new("cargo")
         .arg("build")
         .arg("--release")
@@ -264,12 +271,21 @@ fn compile_rust_node_release(dir: &Path) {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let binary = target.join("release").join("user_node");
-    if binary.exists() {
-        let local_dir = dir.join("target").join("release");
-        std::fs::create_dir_all(&local_dir).expect("create local release dir");
-        std::fs::copy(&binary, local_dir.join("user_node")).expect("copy release binary");
-    }
+    // The shared target dir builds each node under its unique wrapper package
+    // name (`user_node_<hash>`), so the produced binary carries that name. Copy
+    // it to the fixed local `user_node` launch path that `spawn_rust_node_release`
+    // expects.
+    let binary = target
+        .join("release")
+        .join(helpers::executable_filename(&helpers::test_wrapper_crate_name(dir)));
+    assert!(
+        binary.exists(),
+        "release build succeeded but expected binary was not found at {}",
+        binary.display(),
+    );
+    let local_dir = dir.join("target").join("release");
+    std::fs::create_dir_all(&local_dir).expect("create local release dir");
+    std::fs::copy(&binary, local_dir.join("user_node")).expect("copy release binary");
     // Lock released on drop.
 }
 

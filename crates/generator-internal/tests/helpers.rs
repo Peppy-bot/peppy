@@ -123,7 +123,7 @@ fn crate_identity_hash(crate_dir: &Path) -> u64 {
     hasher.finish()
 }
 
-fn test_wrapper_crate_name(crate_dir: &Path) -> String {
+pub fn test_wrapper_crate_name(crate_dir: &Path) -> String {
     format!("user_node_{:016x}", crate_identity_hash(crate_dir))
 }
 
@@ -141,7 +141,7 @@ fn peppygen_crate_name(crate_dir: &Path) -> String {
 /// (written by [`init_cargo_user_node`]) aliases the dependency back to
 /// `peppygen` via `package = "..."`, so generated `use peppygen::…` code is
 /// unaffected. Idempotent. No-op if the peppygen crate was not generated.
-fn rename_peppygen_package(user_node_dir: &Path) {
+pub fn rename_peppygen_package(user_node_dir: &Path) {
     let unique = peppygen_crate_name(user_node_dir);
     let peppygen_cargo = user_node_dir.join(PEPPYGEN_OUTPUT_PATH).join("Cargo.toml");
     let Ok(contents) = fs::read_to_string(&peppygen_cargo) else {
@@ -161,7 +161,7 @@ fn rename_peppygen_package(user_node_dir: &Path) {
         .expect("failed to rewrite peppygen Cargo.toml package name");
 }
 
-fn executable_filename(name: &str) -> String {
+pub fn executable_filename(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
