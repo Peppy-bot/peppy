@@ -44,7 +44,7 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
 
 def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
     # No build output, but cache exists
-    cache_dir = tmp_path / ".peppy" / "tmp" / "lima-2.1.2-Darwin-arm64" / "bin"
+    cache_dir = tmp_path / ".peppy" / "tmp" / "lima-2.1.3-Darwin-arm64" / "bin"
     cache_dir.mkdir(parents=True)
     limactl = cache_dir / "limactl"
     limactl.write_bytes(b"cached limactl")

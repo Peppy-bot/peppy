@@ -275,9 +275,9 @@ fn compile_rust_node_release(dir: &Path) {
     // name (`user_node_<hash>`), so the produced binary carries that name. Copy
     // it to the fixed local `user_node` launch path that `spawn_rust_node_release`
     // expects.
-    let binary = target
-        .join("release")
-        .join(helpers::executable_filename(&helpers::test_wrapper_crate_name(dir)));
+    let binary = target.join("release").join(helpers::executable_filename(
+        &helpers::test_wrapper_crate_name(dir),
+    ));
     assert!(
         binary.exists(),
         "release build succeeded but expected binary was not found at {}",
