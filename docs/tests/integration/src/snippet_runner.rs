@@ -195,7 +195,7 @@ pub fn run_snippet_with_deps(
 /// Run a snippet whose `depends_on.interfaces` / `conforms_to` references are
 /// resolved from an interface repository rather than from other nodes in the
 /// stack. `interfaces_root` is a workspace-relative directory of
-/// `interface_v1` documents; it is registered as an fs repo and refreshed,
+/// `interface/v1` documents; it is registered as an fs repo and refreshed,
 /// then the snippet is synced with `-r`, added, built, and launched with NO
 /// `--bind`. This is the launch path for an optional, `from_any` interface
 /// consumer: it must come up with zero producers present.

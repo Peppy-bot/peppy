@@ -438,7 +438,7 @@ mod tests {
     fn sample_response_with_execution(execution_json5: &str) -> NodeInfo {
         let config_json5 = format!(
             r#"{{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {{
                     name: "sensor_node",
                     tag: "v1",

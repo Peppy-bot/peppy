@@ -117,7 +117,7 @@ async fn stack_benchmark_runs_repeatedly() {
 
 fn provider_config() -> &'static str {
     r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: { name: "bench_provider", tag: "v1" },
         interfaces: { services: { exposes: [{ name: "bench_svc" }] } },
         execution: { language: "rust", run_cmd: ["sleep", "10"] }
@@ -126,7 +126,7 @@ fn provider_config() -> &'static str {
 
 fn consumer_config() -> &'static str {
     r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
             name: "bench_consumer",
             tag: "v1",
@@ -191,7 +191,7 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
 /// duplicate, indistinguishable rows that prompted carrying `link_id` end-to-end.
 fn two_link_consumer_config() -> &'static str {
     r#"{
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
             name: "bench_consumer",
             tag: "v1",

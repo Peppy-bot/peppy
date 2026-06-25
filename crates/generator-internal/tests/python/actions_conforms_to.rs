@@ -40,7 +40,7 @@ fn conformed(name: &str, tag: &str, action: ExposedAction) -> DeploymentInterfac
 }
 
 const NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "arm_driver",
     tag: "v1"

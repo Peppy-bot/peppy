@@ -64,7 +64,7 @@ pub fn test_node_target(name: &str) -> SenderTarget {
 }
 
 pub const STUB_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
     tag: "v1"
@@ -882,7 +882,7 @@ pub async fn try_send_shutdown(
 // ---------------------------------------------------------------------------
 
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: { name: "generated_node",
     tag: "v1" },
   execution: { language: "python",

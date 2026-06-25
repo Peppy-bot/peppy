@@ -318,7 +318,7 @@ mod tests {
             let name = &self.name;
             let json5 = format!(
                 r#"{{
-                    peppy_schema: "node_v1",
+                    peppy_schema: "node/v1",
                     manifest: {{
                         name: "{name}",
                         tag: "v1",

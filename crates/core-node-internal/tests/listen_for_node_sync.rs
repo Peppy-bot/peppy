@@ -24,7 +24,7 @@ async fn listen_for_node_sync_success() {
     write_node_config(
         node_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "example_node",
                 tag: "v1",
@@ -282,7 +282,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
         node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -363,7 +363,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
         node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -445,7 +445,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         uvc_camera_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
@@ -538,7 +538,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         brain_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -658,7 +658,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         uvc_camera_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
@@ -735,7 +735,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         brain_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -816,7 +816,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         uvc_camera_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
@@ -895,7 +895,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         brain_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -976,7 +976,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         action_server_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "brain",
                 tag: "v1",
@@ -1061,7 +1061,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         controller_node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "controller",
                 tag: "v1",
@@ -1142,7 +1142,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
         node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
@@ -1252,7 +1252,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     write_node_config(
         node_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "example_node",
                 tag: "v1",
@@ -1350,7 +1350,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
         node_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -1419,7 +1419,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 fn camera_config() -> &'static str {
     r#"
     {
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
             name: "uvc_camera",
             tag: "v1",
@@ -1452,7 +1452,7 @@ fn camera_config() -> &'static str {
 fn brain_consumes_camera_config() -> &'static str {
     r#"
     {
-        peppy_schema: "node_v1",
+        peppy_schema: "node/v1",
         manifest: {
             name: "my_robot_brain",
             tag: "v1",
@@ -1604,7 +1604,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     std::fs::write(
         source_repo_dir.join("nodes/dep_a").join(NODE_CONFIG_FILE),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "dep_a", tag: "v1" },
             interfaces: {
                 topics: {
@@ -1620,7 +1620,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     std::fs::write(
         source_repo_dir.join("nodes/dep_b").join(NODE_CONFIG_FILE),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "dep_b", tag: "v1" },
             interfaces: {
                 topics: {
@@ -1660,7 +1660,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         brain_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -1721,7 +1721,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         stack_camera_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
@@ -1758,7 +1758,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         repo_camera_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 topics: {
@@ -1782,7 +1782,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         brain_dir.path(),
         r#"
         {
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -1838,7 +1838,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     write_node_config(
         c_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "dep_c", tag: "v1" },
             interfaces: {
                 topics: {
@@ -1853,7 +1853,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     write_node_config(
         b_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dep_b",
                 tag: "v1",
@@ -1872,7 +1872,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     write_node_config(
         a_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dep_a",
                 tag: "v1",
@@ -1897,7 +1897,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     write_node_config(
         brain_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
@@ -1981,7 +1981,7 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     let branch = init_local_git_repo(&source_repo_dir);
 
     const INTERFACE_BODY: &str = r#"{
-        peppy_schema: "interface_v1",
+        peppy_schema: "interface/v1",
         manifest: { name: "depth_camera", tag: "v1" },
         interfaces: {
             topics: [
@@ -2033,7 +2033,7 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     write_node_config(
         node_dir.path(),
         r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "depth_publisher", tag: "v1" },
             interfaces: {
                 topics: { emits: [], consumes: [] },

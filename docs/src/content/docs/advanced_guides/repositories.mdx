@@ -8,8 +8,8 @@ sidebar:
 Repositories tell peppy where to look for nodes, launchers, and interfaces. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
 
 - **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
-- **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher_v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
-- **Interfaces**, identified by content: every `.json5` file whose body declares `peppy_schema: "interface_v1"` is treated as an interface, regardless of its filename. An interface is a reusable contract of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes reference interfaces by `name:tag` to declare conformance.
+- **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
+- **Interfaces**, identified by content: every `.json5` file whose body declares `peppy_schema: "interface/v1"` is treated as an interface, regardless of its filename. An interface is a reusable contract of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes reference interfaces by `name:tag` to declare conformance.
 
 Out of the box, four repositories are configured:
 
@@ -47,7 +47,7 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `fs` | `path` | A local directory. Peppy recursively walks it, indexing every `peppy.json5` (node) and every `.json5` file whose body declares `peppy_schema: "launcher_v1"` (launcher) or `peppy_schema: "interface_v1"` (interface). |
+| `fs` | `path` | A local directory. Peppy recursively walks it, indexing every `peppy.json5` (node) and every `.json5` file whose body declares `peppy_schema: "launcher/v1"` (launcher) or `peppy_schema: "interface/v1"` (interface). |
 | `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and scans it the same way as an `fs` source. Use `ref` to pin a branch, tag, or commit. |
 | `url` | `url` | An HTTP endpoint (not yet implemented). |
 
@@ -80,7 +80,7 @@ Re-scans all configured repositories and rebuilds the node, launcher, and interf
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Walks local directories and shallow-clones git repositories.
-- Records every `peppy.json5` as a node, every `.json5` file whose body declares `peppy_schema: "launcher_v1"` as a launcher (file stem becomes the launcher name), and every `.json5` file whose body declares `peppy_schema: "interface_v1"` as an interface (keyed by the `name:tag` in its manifest).
+- Records every `peppy.json5` as a node, every `.json5` file whose body declares `peppy_schema: "launcher/v1"` as a launcher (file stem becomes the launcher name), and every `.json5` file whose body declares `peppy_schema: "interface/v1"` as an interface (keyed by the `name:tag` in its manifest).
 - Reports each discovered node, launcher, interface, and excluded repository in real time.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, and `~/.peppy/cache/interfaces.json5`.
 

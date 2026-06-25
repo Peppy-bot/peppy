@@ -379,7 +379,7 @@ mod tests {
         let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
         let config = format!(
             r#"{{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {{
                     name: "{name}",
                     tag: "{tag}",

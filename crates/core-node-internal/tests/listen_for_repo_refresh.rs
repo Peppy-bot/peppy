@@ -22,7 +22,7 @@ use std::time::Duration;
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {{
     name: "{name}",
     tag: "{tag}",
@@ -842,7 +842,7 @@ async fn refresh_discovers_interfaces() {
     let iface_dir = repo_dir.join("uvc_camera");
     std::fs::create_dir_all(&iface_dir).expect("create iface dir");
     let manifest_body = r#"{
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: { name: "uvc_camera", tag: "v1", labels: ["uvc", "camera"] },
   interfaces: {}
 }"#;
@@ -991,7 +991,7 @@ async fn refresh_discovers_launchers() {
     let repo_dir = started.peppy_dirs.root().join("launcher_repo");
     std::fs::create_dir_all(&repo_dir).expect("create launcher repo dir");
     let manifest_body = r#"{
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: []
 }"#;
     std::fs::write(repo_dir.join("openarm01_teleop.json5"), manifest_body)

@@ -42,7 +42,7 @@ fn write_node_config(
     fs::write(
         &node_config_path,
         r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {
                     name: "{node_name}",
                     tag: "{node_tag}",
@@ -210,7 +210,7 @@ async fn node_launch_command_succeed() {
     let node_b_path = nodes_dir.path().join(node_b_name);
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{}" }},
@@ -408,7 +408,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{}" }},
@@ -528,7 +528,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     let launcher_path = nodes_dir_path.join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{}" }},
@@ -700,7 +700,7 @@ fn write_node_config_for_helper(
         .unwrap_or_default();
     let body = format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{
                 name: "{node_name}",
                 tag: "{node_tag}"{manifest_extra}
@@ -860,7 +860,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{producer_path}" }},
@@ -1015,7 +1015,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{camera}" }},
@@ -1081,7 +1081,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     );
 }
 
-/// Writes a minimal `peppy_schema: "interface_v1"` document at `path` with
+/// Writes a minimal `peppy_schema: "interface/v1"` document at `path` with
 /// a single `video_stream` topic. Used by the conformance-binding
 /// integration tests to materialize the interface contract on disk
 /// alongside the producer/consumer node configs that reference it.
@@ -1116,7 +1116,7 @@ fn write_interface_v1_doc_with_topic(
     }
     let body = format!(
         r#"{{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: {{ name: "{name}", tag: "{tag}" }},
             interfaces: {{
                 topics: [
@@ -1129,13 +1129,13 @@ fn write_interface_v1_doc_with_topic(
             }}
         }}"#
     );
-    fs::write(path, body).expect("failed to write interface_v1 doc");
+    fs::write(path, body).expect("failed to write interface/v1 doc");
 }
 
 /// End-to-end check that a pinned interface binding resolves against
 /// the producer's `interfaces.conforms_to` declaration. Exercises a real
-/// `peppy_schema: "interface_v1"` document on disk alongside a `node_v1`
-/// producer declaring conformance and a `node_v1` consumer declaring
+/// `peppy_schema: "interface/v1"` document on disk alongside a `node/v1`
+/// producer declaring conformance and a `node/v1` consumer declaring
 /// the interface dep — pairs the unit-level binding validator tests
 /// with the full launch pipeline (cache resolution + daemon node-add).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1294,7 +1294,7 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{producer_path}" }},
@@ -1431,7 +1431,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{producer_path}" }},
@@ -1563,7 +1563,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{producer_path}" }},
@@ -1819,7 +1819,7 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {{
                     source: {{ local: "{controller_path}" }},

@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **interface**. An interface is a standalone document with its own `peppy_schema: "interface_v1"` that names a set of topics, services and actions. Producers conform to the interface; consumers depend on the interface. Both sides cite the interface by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
+A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **interface**. An interface is a standalone document with its own `peppy_schema: "interface/v1"` that names a set of topics, services and actions. Producers conform to the interface; consumers depend on the interface. Both sides cite the interface by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
 
 Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot.
 
@@ -15,12 +15,12 @@ Interface conformance is the abstraction you reach for when several nodes implem
 
 ### 1. The interface document
 
-An interface lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "interface_v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
+An interface lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "interface/v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
 
 ```json5
 // depth_camera/peppy.json5 (inside a registered repo)
 {
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: {
     name: "depth_camera",
     tag: "v1",
@@ -54,7 +54,7 @@ An interface lives in its own file under a repository peppy scans (see [Reposito
 }
 ```
 
-After `peppy repo refresh`, the interface is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies an `interface_v1` document by its `peppy_schema` field.
+After `peppy repo refresh`, the interface is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies an `interface/v1` document by its `peppy_schema` field.
 
 ### 2. A producer that conforms
 
@@ -63,7 +63,7 @@ A producer node declares conformance with an `interfaces.conforms_to` list. Each
 ```json5
 // realsense_d405/peppy.json5
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "realsense_d405",
     tag: "v1",
@@ -92,7 +92,7 @@ A consumer references an interface through `manifest.depends_on.interfaces` rath
 ```json5
 // video_reconstruction/peppy.json5
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "video_reconstruction",
     tag: "v1",
@@ -133,7 +133,7 @@ A pinned interface dep (`from_any: false`, the default) requires an explicit `--
 ```json5
 // peppy_launcher.json5
 {
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: [
     {
       source: { name: "realsense_d405:v1" },
@@ -188,7 +188,7 @@ First, the consumer declares a single `from_any: true` interface dep and consume
 ```json5
 // video_reconstruction/peppy.json5
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "video_reconstruction",
     tag: "v1",
@@ -221,7 +221,7 @@ Then the launcher accepts one `--bind` per producer instance, each under a disti
 ```json5
 // peppy_launcher.json5
 {
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: [
     {
       source: { name: "realsense_d405:v1" },
@@ -333,7 +333,7 @@ A launcher can wire the three slots to any mix of conforming producers:
 
 ```json5
 {
-  peppy_schema: "launcher_v1",
+  peppy_schema: "launcher/v1",
   deployments: [
     {
       source: { name: "realsense_d405:v1" },
@@ -384,7 +384,7 @@ Two service interfaces, one provided by each node:
 ```json5
 // pose_service/peppy.json5 (interface)
 {
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: { name: "pose_service", tag: "v1" },
   interfaces: {
     services: [
@@ -398,7 +398,7 @@ Two service interfaces, one provided by each node:
 
 // obstacle_service/peppy.json5 (interface)
 {
-  peppy_schema: "interface_v1",
+  peppy_schema: "interface/v1",
   manifest: { name: "obstacle_service", tag: "v1" },
   interfaces: {
     services: [
@@ -417,7 +417,7 @@ Two service interfaces, one provided by each node:
 ```json5
 // localizer/peppy.json5
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "localizer",
     tag: "v1",
@@ -444,7 +444,7 @@ Two service interfaces, one provided by each node:
 
 // mapper/peppy.json5
 {
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "mapper",
     tag: "v1",

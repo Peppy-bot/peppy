@@ -1087,7 +1087,7 @@ mod tests {
     fn consumer() -> NodeConfig {
         parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {
                     name: "brain", tag: "v1",
                     depends_on: {
@@ -1108,7 +1108,7 @@ mod tests {
     fn camera_mock() -> NodeConfig {
         parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "uvc_camera_python_mock", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["camera"] },
                 interfaces: { conforms_to: [ { name: "uvc_camera", tag: "v1" } ] }
@@ -1119,7 +1119,7 @@ mod tests {
     fn arm() -> NodeConfig {
         parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "arm", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["arm"] },
                 interfaces: { actions: { exposes: [ { name: "move_arm" } ] } }
@@ -1240,7 +1240,7 @@ mod tests {
     fn formats_from_node_sizes_topic_message_on_response_side() {
         let provider = parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "camera", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["camera"] },
                 interfaces: { topics: { emits: [ {
@@ -1269,7 +1269,7 @@ mod tests {
     fn formats_from_interface_sizes_topic_message_on_response_side() {
         let doc = config::interface::PeppyInterfaceParser::from_content(
             r#"{
-                peppy_schema: "interface_v1",
+                peppy_schema: "interface/v1",
                 manifest: { name: "uvc_camera", tag: "v1" },
                 interfaces: { topics: [ {
                     name: "video_stream",
@@ -1294,7 +1294,7 @@ mod tests {
     fn formats_from_node_resolves_service_request_response_sizes() {
         let provider = parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "arm", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["arm"] },
                 interfaces: { services: { exposes: [ {

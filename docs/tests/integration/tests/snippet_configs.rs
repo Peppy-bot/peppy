@@ -71,7 +71,7 @@ fn assert_parses_with_matching_schema(path: &Path) {
             );
         }
         PeppySchema::LauncherV1 => panic!(
-            "unexpected launcher_v1 among node/interface snippets: {}",
+            "unexpected launcher/v1 among node/interface snippets: {}",
             path.display()
         ),
     }

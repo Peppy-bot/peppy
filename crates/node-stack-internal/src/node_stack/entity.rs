@@ -1386,7 +1386,7 @@ mod tests {
     fn sensor_config() -> NodeConfig {
         serde_json5::from_str::<NodeConfig>(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "sensor", tag: "v1" },
                 interfaces: {},
                 execution: { language: "rust", run_cmd: ["sensor"] }

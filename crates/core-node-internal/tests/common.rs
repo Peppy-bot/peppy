@@ -1309,7 +1309,7 @@ pub async fn add_and_build_forking_node(
 ) -> TempDir {
     let source_dir = tempfile::tempdir().expect("temp source dir");
     let peppy_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "{NAME}", tag: "{TAG}" },
             execution: {
                 language: "rust",
@@ -1515,7 +1515,7 @@ fn main() -> Result<()> {
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
         r#"{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "{crate_name}",
     tag: "{node_tag}",
