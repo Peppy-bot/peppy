@@ -2,8 +2,9 @@
 
 Given the list of commit subjects since the previous release, ask Claude to
 produce a short headline, a one-line summary, and a self-contained Markdown
-body: an exhaustive, readable list of the changes with no external links,
-pull-request numbers, or author mentions.
+body: a readable list of the user-facing changes only, with no external links,
+pull-request numbers, or author mentions. Internal work (refactors, crate
+reorganization, dependency bumps, build and codegen changes) is left out.
 """
 
 from __future__ import annotations
@@ -33,17 +34,32 @@ strict parser accepts, exactly this shape:
 
 {{"title": "<headline>", "description": "<one sentence>", "notes": "<markdown>"}}
 
+Write for a user of the peppy tool, and include only changes such a user would
+notice or care about: new or changed CLI commands and flags, the `peppy.json5`
+configuration and schema, message and output formats, runtime behavior, and
+user-facing documentation. Before mentioning anything, ask "would a peppy user
+notice or care about this?"; if not, leave it out entirely, across every field.
+
 Field requirements:
 - "title": a concise, human headline for the release theme (max ~70 chars),
-  without the version number; it is shown separately.
-- "description": a single sentence (max ~120 chars) summarizing the release.
-- "notes": the release body in Markdown, as an exhaustive bulleted list of the
-  changes, one bullet per meaningful change, each rewritten as a clear,
-  self-contained sentence. Group related changes under short "### " subheadings
-  when it improves readability. Do NOT include any links, URLs, pull-request or
-  issue numbers (for example "#123"), commit hashes, author or "@" mentions, or
-  a "Full Changelog" line. Omit purely mechanical commits such as version bumps,
-  release commits, merge commits, and changes that only touch CI or formatting.
+  without the version number; it is shown separately. Headline only user-facing
+  themes; never advertise internal work such as refactors or crate
+  reorganization.
+- "description": a single sentence (max ~120 chars) summarizing the release for
+  users. Mention only user-facing themes, so the headline never promises changes
+  the notes leave out.
+- "notes": the release body in Markdown, as a bulleted list of the user-facing
+  changes only, one bullet per change, each rewritten as a clear, self-contained
+  sentence. Group related changes under short "### " subheadings when it improves
+  readability. Do NOT include any links, URLs, pull-request or issue numbers (for
+  example "#123"), commit hashes, author or "@" mentions, or a "Full Changelog"
+  line.
+
+Leave out every internal change, even when it spans many commits: code refactors
+and restructuring, crate or module renames and reorganization, removal of unused
+or internal fields and APIs, dependency version bumps, build, CI, code-generator,
+and release-tooling changes, test-only changes, and log-string tweaks. Also omit
+version bumps, release commits, and merge commits.
 
 Commits since the previous release:
 {changes}
@@ -68,8 +84,8 @@ def generate_release_content(
 
     ``commit_subjects`` are the git commit subjects since the previous release.
     Claude runs with no tools (a pure transformation) and is instructed to emit
-    a self-contained list of changes with no links, pull-request numbers, or
-    author mentions.
+    a self-contained list of user-facing changes only, with no links,
+    pull-request numbers, or author mentions.
     """
     changes = "\n".join(f"- {subject}" for subject in commit_subjects) or (
         "(no commits since the last release)"
