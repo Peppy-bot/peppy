@@ -51,6 +51,23 @@ latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
+# Dev-only source override: build the `nodes_shared_code` git dependencies
+# against the in-tree submodule checkout instead of the published `main` revision,
+# so cross-repo changes to `pmi`/`peppylib` (e.g. the per-user-router TLS work) can
+# be exercised from `peppyos` without a merge round-trip. ALL shared crates are
+# redirected together — patching only a subset makes Cargo resolve a second copy of
+# a transitively-shared crate (e.g. `core-node-api`) from git, which then fails to
+# unify with the local one (type mismatch). Remove this block once the shared
+# changes land on `main` and `cargo update` moves the lockfile forward.
+[patch."https://github.com/Peppy-bot/nodes_shared_code"]
+peppy-config-model = { path = "../nodes_shared_code/peppyos-shared/peppy-config-model" }
+peppylib-rs = { path = "../nodes_shared_code/peppyos-shared/peppylib-rs" }
+pmi = { path = "../nodes_shared_code/peppyos-shared/peppy-messaging-interface" }
+core-node-api = { path = "../nodes_shared_code/peppyos-shared/core-node-api" }
+json5-pretty = { path = "../nodes_shared_code/peppyos-shared/json5-pretty" }
+config-test-support = { path = "../nodes_shared_code/peppyos-shared/config-test-support" }
+build-helpers = { path = "../nodes_shared_code/peppyos-shared/build-helpers" }
+
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]
 # unused_extern_crates = "deny"

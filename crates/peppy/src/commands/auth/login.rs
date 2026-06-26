@@ -56,6 +56,9 @@ impl Command for LoginCommand {
         let mut creds = storage::load(&creds_path)?;
         let pc = client::creds_from_login(&cfg, &api_url, &tokens);
         creds.session = Some(pc.clone());
+        // Drop any cached router config: it is identity-bound, and this login may
+        // be a different user/backend. The next remote connect re-pulls.
+        creds.router = None;
         storage::save(&creds_path, &creds)?;
 
         // Fetch identity using the in-memory credential (the token was minted

@@ -12,9 +12,9 @@ use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;
 
-use peppy::auth::resolver::CredentialKind;
-use peppy::auth::storage::{self, Credentials, ProfileCreds};
-use peppy::auth::{client, http::HttpClient, resolver};
+use peppy::auth::resolver::{CredentialKind, SessionContext};
+use peppy::auth::storage::{self, Credentials, ProfileCreds, RouterSession};
+use peppy::auth::{client, http::HttpClient, resolver, router};
 use peppy::commands::Command;
 use peppy::commands::auth::login::LoginCommand;
 use peppy::commands::auth::logout::LogoutCommand;
@@ -194,6 +194,7 @@ fn logout_calls_backend_and_clears_local_credentials() {
     // Seed a logged-in session.
     let creds = Credentials {
         session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
     };
     storage::save(&path, &creds).expect("seed creds");
 
@@ -257,6 +258,7 @@ fn resolver_refreshes_an_expired_session_token() {
     // expires_at in the past → resolver must refresh.
     let creds = Credentials {
         session: Some(seeded_creds(&server, 1)),
+        ..Default::default()
     };
     storage::save(&path, &creds).expect("seed creds");
 
@@ -303,6 +305,7 @@ fn whoami_runs_against_a_seeded_session() {
     let path = creds_path(&dir);
     let creds = Credentials {
         session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
     };
     storage::save(&path, &creds).expect("seed creds");
 
@@ -316,6 +319,211 @@ fn whoami_runs_against_a_seeded_session() {
         .execute(&ctx())
         .expect("whoami");
     }
+}
+
+#[test]
+fn get_zenoh_router_config_parses_the_contract() {
+    let server = MockServer::start();
+    let cfg_mock = server.mock(|when, then| {
+        when.method(GET).path("/me/zenoh-router-config");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/7f3a.zenoh.localhost:7443",
+            "protocol": "tls",
+            "mode": "client",
+            "reconnect_after_secs": 3000,
+            "some_future_field": "ignored by a tolerant client",
+        }));
+    });
+    let http = HttpClient::new();
+
+    // A PAT credential is fine here: 200, no refresh needed.
+    let mut cred = peppy::auth::Credential {
+        token: storage::secret("any-token".to_string()),
+        kind: CredentialKind::Pat,
+    };
+    let cfg =
+        client::get_zenoh_router_config(&http, &server.base_url(), &mut cred).expect("pull config");
+    assert_eq!(cfg.protocol, "tls");
+    assert_eq!(cfg.mode, "client");
+    assert_eq!(cfg.reconnect_after_secs, 3000);
+    assert_eq!(
+        cfg.host_port().expect("parse endpoint"),
+        ("7f3a.zenoh.localhost".to_string(), 7443)
+    );
+    assert!(cfg_mock.calls() >= 1, "the config endpoint should be hit");
+}
+
+#[test]
+fn router_config_pull_refreshes_on_401_then_re_pulls() {
+    // Mid-session 401 ⇒ refresh the access token ⇒ retry the pull with the
+    // rotated token. The single most important Phase F acceptance check.
+    let server = MockServer::start();
+    let base = server.base_url();
+
+    // OIDC discovery + token endpoint for the reactive refresh.
+    server.mock(|when, then| {
+        when.method(GET).path("/.well-known/openid-configuration");
+        then.status(200).json_body(json!({
+            "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
+            "token_endpoint": format!("{base}/oauth/v2/token"),
+        }));
+    });
+    let token = server.mock(|when, then| {
+        when.method(POST).path("/oauth/v2/token");
+        then.status(200).json_body(json!({
+            "access_token": "refreshed-access",
+            "refresh_token": "rotated-refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "scope": "openid",
+        }));
+    });
+    // First pull (seeded token) is rejected; the retry (rotated token) succeeds.
+    let pull_rejected = server.mock(|when, then| {
+        when.method(GET)
+            .path("/me/zenoh-router-config")
+            .header("Authorization", "Bearer seeded-access");
+        then.status(401);
+    });
+    let pull_ok = server.mock(|when, then| {
+        when.method(GET)
+            .path("/me/zenoh-router-config")
+            .header("Authorization", "Bearer refreshed-access");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/cap.zenoh.localhost:7443",
+            "protocol": "tls",
+            "mode": "client",
+            "reconnect_after_secs": 3000,
+        }));
+    });
+
+    // A stored, non-expired session so `refresh_in_place` can reload + rotate it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let http = HttpClient::new();
+    let mut cred = peppy::auth::Credential {
+        token: storage::secret("seeded-access".to_string()),
+        kind: CredentialKind::Session(SessionContext {
+            issuer: server.base_url(),
+            client_id: "cli-client-id".to_string(),
+            refresh_token: storage::secret("seeded-refresh".to_string()),
+            creds_path: path.clone(),
+        }),
+    };
+
+    let cfg = client::get_zenoh_router_config(&http, &server.base_url(), &mut cred)
+        .expect("pull after refresh");
+    assert_eq!(
+        cfg.host_port().unwrap(),
+        ("cap.zenoh.localhost".to_string(), 7443)
+    );
+    assert!(pull_rejected.calls() >= 1, "the seeded token must be tried");
+    assert!(token.calls() >= 1, "a refresh must occur on the 401");
+    assert!(pull_ok.calls() >= 1, "the retry uses the rotated token");
+
+    // The rotation was persisted (so a later command starts from the new token).
+    let after = storage::load(&path).expect("reload");
+    assert_eq!(
+        after
+            .session
+            .as_ref()
+            .unwrap()
+            .refresh_token
+            .expose_secret(),
+        "rotated-refresh"
+    );
+}
+
+#[test]
+fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
+    let server = MockServer::start();
+    // A mock serving a bogus endpoint *if* it is ever hit. The proof that the
+    // fresh cache was reused is `pull.calls() == 0` (asserted below) plus the
+    // returned host matching the cached value — not this mock's response; the
+    // bogus body only makes an accidental pull obvious.
+    let pull = server.mock(|when, then| {
+        when.method(GET).path("/me/zenoh-router-config");
+        then.status(200)
+            .json_body(json!({ "endpoint": "tls/should-not-be-used:1" }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        router: Some(RouterSession {
+            endpoint: "tls/cached.zenoh.localhost:7443".into(),
+            protocol: "tls".into(),
+            ca_certificate: None,
+            // Far in the future ⇒ fresh ⇒ reuse.
+            repull_after: storage::now_unix() + 100_000,
+        }),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let http = HttpClient::new();
+    let endpoint = router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None)
+        .expect("resolve from cache");
+    assert_eq!(endpoint.host, "cached.zenoh.localhost");
+    assert_eq!(endpoint.port, 7443);
+    assert!(endpoint.tls.verify_name_on_connect);
+    assert_eq!(pull.calls(), 0, "a fresh cache must not trigger a pull");
+}
+
+#[test]
+fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(GET).path("/me/zenoh-router-config");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/fresh.zenoh.localhost:7443",
+            "protocol": "tls",
+            "mode": "client",
+            "reconnect_after_secs": 3000,
+        }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        router: Some(RouterSession {
+            endpoint: "tls/stale.zenoh.localhost:7443".into(),
+            protocol: "tls".into(),
+            ca_certificate: None,
+            repull_after: 1, // long past ⇒ stale ⇒ re-pull
+        }),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let http = HttpClient::new();
+    let ca = std::path::PathBuf::from("/etc/peppy/ca.pem");
+    let endpoint =
+        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, Some(ca.clone()))
+            .expect("re-pull");
+    assert_eq!(endpoint.host, "fresh.zenoh.localhost");
+    assert_eq!(endpoint.port, 7443);
+    assert_eq!(
+        endpoint.tls.root_ca_certificate.as_deref(),
+        Some(ca.as_path())
+    );
+    assert!(pull.calls() >= 1, "a stale cache must trigger a pull");
+
+    // The fresh config was cached (endpoint replaced, deadline pushed out, CA
+    // recorded) so the next connect reuses it.
+    let after = storage::load(&path).expect("reload");
+    let rs = after.router.as_ref().expect("router cached");
+    assert_eq!(rs.endpoint, "tls/fresh.zenoh.localhost:7443");
+    assert_eq!(rs.ca_certificate.as_deref(), Some("/etc/peppy/ca.pem"));
+    assert!(rs.repull_after > storage::now_unix(), "deadline pushed out");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.

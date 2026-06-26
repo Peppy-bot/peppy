@@ -86,6 +86,9 @@ impl ServeCommandBuilder {
                     listening_port,
                     self.peppy_config.mode.gossip(),
                     buffer_sizes,
+                    // The local daemon router stays plaintext loopback TCP; TLS is
+                    // for the per-user cloud routers reached via the CLI.
+                    None,
                 )?
                 .with_session_reconnect();
                 MessengerAdapter::Zenoh(adapter)

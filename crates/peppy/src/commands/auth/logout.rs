@@ -50,6 +50,8 @@ impl Command for LogoutCommand {
         }
 
         creds.session = None;
+        // The cached router config is identity-bound; clear it with the session.
+        creds.router = None;
         storage::save(&creds_path, &creds)?;
         println!("Logged out ({}).", profile::build_env_name());
         Ok(())
