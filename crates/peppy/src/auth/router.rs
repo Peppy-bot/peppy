@@ -115,10 +115,12 @@ fn pull_and_cache(
 /// idle keepalive (it refreshes `last_seen_at` server-side); the daemon's
 /// periodic re-resolve sustains it (and re-provisions a reaped router).
 pub fn resolve_federation_target(api_url: &str) -> Option<(String, pmi::TlsConfig)> {
-    let pat = std::env::var("PEPPY_API_KEY")
-        .ok()
-        .filter(|v| !v.is_empty());
-    resolve_federation_target_at(&storage::default_path(), api_url, pat, ca_from_env())
+    resolve_federation_target_at(
+        &storage::default_path(),
+        api_url,
+        resolver::pat_from_env(),
+        ca_from_env(),
+    )
 }
 
 /// Testable core of [`resolve_federation_target`] with the creds path, PAT, and

@@ -94,10 +94,11 @@ async fn manage_federation(
     mut messaging_ready: watch::Receiver<bool>,
 ) {
     // Don't touch the router until it is actually up, or the initial federation
-    // could race MessagingRouter's `start_router`/`start_session`. If the sender
-    // drops first (the router task never started or already exited) there is
-    // nothing to federate, so stop.
-    if !wait_until_ready(&mut messaging_ready).await {
+    // could race MessagingRouter's `start_router`/`start_session`. `wait_for`
+    // checks the current value first, then awaits changes; `Err` means the sender
+    // dropped before it went `true` (the router task never started or already
+    // exited), so there is nothing to federate — stop.
+    if messaging_ready.wait_for(|ready| *ready).await.is_err() {
         return;
     }
 
@@ -109,18 +110,6 @@ async fn manage_federation(
         poll_and_apply(messenger, api_url, &mut applied).await;
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-}
-
-/// Waits until `messaging_ready` is `true`. Returns `false` if the sender is
-/// dropped before that (the router task never started / already exited), in which
-/// case there is nothing to federate.
-async fn wait_until_ready(ready: &mut watch::Receiver<bool>) -> bool {
-    while !*ready.borrow() {
-        if ready.changed().await.is_err() {
-            return false;
-        }
-    }
-    true
 }
 
 /// One poll: resolve the desired upstream and, if it changed, (re)federate the

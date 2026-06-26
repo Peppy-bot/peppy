@@ -6,7 +6,7 @@
 //! distinct messages so an ops problem isn't mistaken for a bad token.
 
 use secrecy::ExposeSecret;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, CredentialKind, refresh_and_persist};
@@ -46,20 +46,7 @@ impl Principal {
 
 /// `GET {api_url}/me`, refreshing once on a 401 for session credentials.
 pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result<Principal> {
-    let url = format!("{}/me", api_url.trim_end_matches('/'));
-    let resp = authed_get(http, &url, cred)?;
-    match resp.status {
-        200 => resp.json("/me"),
-        401 => Err(unauthorized_error(cred)),
-        502 => Err(Error::Auth(
-            "the backend's introspection credentials were rejected (server-side problem)"
-                .to_string(),
-        )),
-        503 => Err(Error::Http(
-            "backend temporarily unavailable, try again shortly".to_string(),
-        )),
-        s => Err(Error::Http(format!("GET {url} returned {s}"))),
-    }
+    authed_get_json(http, api_url, "/me", cred)
 }
 
 /// The connection config the backend hands the CLI for the caller's private
@@ -124,20 +111,7 @@ pub fn get_zenoh_router_config(
     api_url: &str,
     cred: &mut Credential,
 ) -> Result<ZenohRouterConfig> {
-    let url = format!("{}/me/zenoh-router-config", api_url.trim_end_matches('/'));
-    let resp = authed_get(http, &url, cred)?;
-    match resp.status {
-        200 => resp.json("/me/zenoh-router-config"),
-        401 => Err(unauthorized_error(cred)),
-        502 => Err(Error::Auth(
-            "the backend's introspection credentials were rejected (server-side problem)"
-                .to_string(),
-        )),
-        503 => Err(Error::Http(
-            "backend temporarily unavailable, try again shortly".to_string(),
-        )),
-        s => Err(Error::Http(format!("GET {url} returned {s}"))),
-    }
+    authed_get_json(http, api_url, "/me/zenoh-router-config", cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code
@@ -158,6 +132,34 @@ fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<Htt
         return http.get(url, Some(cred.token.expose_secret()));
     }
     Ok(resp)
+}
+
+/// An authenticated `GET {api_url}{path}` whose `200` body deserializes to `T`,
+/// applying the status contract every `/me*` endpoint shares: a `401` becomes the
+/// credential-specific auth error (after the single reactive refresh [`authed_get`]
+/// already attempts), `502`/`503` map to distinct ops-vs-token messages, and any
+/// other status to a generic HTTP error. `path` doubles as the deserialization
+/// context label, so a new authed GET endpoint is one line, not a copied block.
+fn authed_get_json<T: DeserializeOwned>(
+    http: &HttpClient,
+    api_url: &str,
+    path: &str,
+    cred: &mut Credential,
+) -> Result<T> {
+    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
+    let resp = authed_get(http, &url, cred)?;
+    match resp.status {
+        200 => resp.json(path),
+        401 => Err(unauthorized_error(cred)),
+        502 => Err(Error::Auth(
+            "the backend's introspection credentials were rejected (server-side problem)"
+                .to_string(),
+        )),
+        503 => Err(Error::Http(
+            "backend temporarily unavailable, try again shortly".to_string(),
+        )),
+        s => Err(Error::Http(format!("GET {url} returned {s}"))),
+    }
 }
 
 /// Refreshes a session credential in place via the shared refresh-and-persist
