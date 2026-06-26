@@ -87,6 +87,15 @@ impl Command for LoginCommand {
                 );
             }
         }
+
+        // Federation lives in the running daemon, which would otherwise only see
+        // this login on its next poll. Poke it so it re-resolves the now-saved
+        // credentials and federates immediately. Best effort: never fails login.
+        super::poke_federation_and_report(
+            &dirs,
+            config.federation.connect_timeout_secs,
+            super::FederationPokeAction::Login,
+        );
         Ok(())
     }
 }

@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use config::consts::PeppyDirs;
 use httpmock::prelude::*;
@@ -123,6 +124,50 @@ fn login_persists_credentials_and_resolves_identity() {
 
     // `/me` was consulted (the tolerant parse succeeded).
     assert!(me.calls() >= 1, "GET /me should have been called");
+}
+
+#[test]
+fn login_pokes_the_running_daemon_to_refederate() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "access-token-1");
+    let _me = mock_me(&server);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    let runtime = peppy_dirs.runtime_config_dir();
+    std::fs::create_dir_all(&runtime).expect("runtime dir");
+    // Matches `daemon_control::FEDERATION_CONTROL_SOCK` (the wire contract).
+    let socket = runtime.join("federation_control.sock");
+
+    // A stub daemon: accept one poke, capture the request line, reply ok.
+    let listener = UnixListener::bind(&socket).expect("bind stub control socket");
+    let stub = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept poke");
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read poke request");
+        stream
+            .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap:7443\"}\n")
+            .expect("reply");
+        line.trim().to_string()
+    });
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        peppy_dirs: Some(peppy_dirs),
+    }
+    .execute(&ctx())
+    .expect("login should succeed");
+
+    let request = stub.join().expect("stub thread");
+    assert_eq!(
+        request, "refederate",
+        "login must poke the daemon to refederate"
+    );
 }
 
 #[test]
@@ -500,8 +545,9 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     };
     storage::save(&path, &creds).expect("seed creds");
 
-    let target = router::resolve_federation_target_at(&path, &server.base_url(), None, None)
-        .expect("logged in ⇒ a federation target");
+    let target =
+        router::resolve_federation_target_at(&path, &server.base_url(), None, None, SECS_30)
+            .expect("logged in ⇒ a federation target");
     assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
     assert!(
         target.1.verify_name_on_connect,
@@ -528,9 +574,65 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir); // no creds file written ⇒ no session
-    let target = router::resolve_federation_target_at(&path, &server.base_url(), None, None);
+    let target =
+        router::resolve_federation_target_at(&path, &server.base_url(), None, None, SECS_30);
     assert!(target.is_none(), "not logged in ⇒ no federation target");
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
+}
+
+/// A generous federation timeout for tests that don't exercise the bound itself.
+const SECS_30: Duration = Duration::from_secs(30);
+
+#[test]
+fn resolve_federation_target_honors_a_short_connect_timeout() {
+    // The federation pull is bounded by `connect_timeout`: a backend slower than
+    // the bound resolves to `None` (local router stays standalone) rather than
+    // hanging, while a generous bound against the same delay succeeds — proving
+    // it's the timeout, not the mock, that fails the short case.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(GET).path("/me/zenoh-router-config");
+        then.status(200)
+            .delay(Duration::from_millis(500))
+            .json_body(json!({
+                "endpoint": "tls/cap.zenoh.localhost:7443",
+                "protocol": "tls",
+                "reconnect_after_secs": 3000,
+            }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    // A 100ms bound against a 500ms backend aborts the pull ⇒ no target.
+    let too_slow = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        None,
+        None,
+        Duration::from_millis(100),
+    );
+    assert!(
+        too_slow.is_none(),
+        "a backend slower than the timeout ⇒ no federation target"
+    );
+
+    // A generous bound against the same delay succeeds.
+    let in_time =
+        router::resolve_federation_target_at(&path, &server.base_url(), None, None, SECS_30);
+    assert!(
+        in_time.is_some(),
+        "a backend within the timeout ⇒ a federation target"
+    );
+    assert!(
+        pull.calls() >= 1,
+        "the bounded resolve still hit the backend"
+    );
 }
 
 #[test]

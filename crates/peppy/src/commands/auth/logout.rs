@@ -54,6 +54,15 @@ impl Command for LogoutCommand {
         creds.router = None;
         storage::save(&creds_path, &creds)?;
         println!("Logged out ({}).", profile::build_env_name());
+
+        // Poke the running daemon so it re-resolves (now logged out) and
+        // de-federates the local router immediately, not on its next poll. Best
+        // effort: never fails logout.
+        super::poke_federation_and_report(
+            &dirs,
+            config.federation.connect_timeout_secs,
+            super::FederationPokeAction::Logout,
+        );
         Ok(())
     }
 }

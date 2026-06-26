@@ -11,6 +11,7 @@
 //! endpoint may be reused, but the trust root is never stale).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::http::HttpClient;
 use super::storage::{self, RouterSession};
@@ -114,24 +115,33 @@ fn pull_and_cache(
 /// fails, so the daemon always starts. The pull doubles as the cloud router's
 /// idle keepalive (it refreshes `last_seen_at` server-side); the daemon's
 /// periodic re-resolve sustains it (and re-provisions a reaped router).
-pub fn resolve_federation_target(api_url: &str) -> Option<(String, pmi::TlsConfig)> {
+///
+/// `connect_timeout` bounds the (blocking) config pull so a slow/unreachable
+/// backend can't stall the caller (federation at startup / on a login-poke)
+/// beyond it; on timeout the pull errors and this returns `None`.
+pub fn resolve_federation_target(
+    api_url: &str,
+    connect_timeout: Duration,
+) -> Option<(String, pmi::TlsConfig)> {
     resolve_federation_target_at(
         &storage::default_path(),
         api_url,
         resolver::pat_from_env(),
         ca_from_env(),
+        connect_timeout,
     )
 }
 
-/// Testable core of [`resolve_federation_target`] with the creds path, PAT, and
-/// CA made explicit (so it can be exercised against a stub backend without
-/// touching the process-global credentials file or `PEPPY_API_KEY`). Mirrors the
-/// [`super::profile::resolve_api_url`] / `resolve_api_url_from` split.
+/// Testable core of [`resolve_federation_target`] with the creds path, PAT, CA,
+/// and timeout made explicit (so it can be exercised against a stub backend
+/// without touching the process-global credentials file or `PEPPY_API_KEY`).
+/// Mirrors the [`super::profile::resolve_api_url`] / `resolve_api_url_from` split.
 pub fn resolve_federation_target_at(
     creds_path: &Path,
     api_url: &str,
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
+    connect_timeout: Duration,
 ) -> Option<(String, pmi::TlsConfig)> {
     // Skip the network entirely when there is plainly no identity to pull for, so
     // an un-provisioned dev box does not log a spurious auth error every poll.
@@ -142,7 +152,7 @@ pub fn resolve_federation_target_at(
     if !logged_in {
         return None;
     }
-    let http = HttpClient::new();
+    let http = HttpClient::with_timeout(connect_timeout);
     match resolve_router_endpoint(creds_path, &http, api_url, pat, ca_certificate) {
         Ok(ep) => Some((format!("tls/{}:{}", ep.host, ep.port), ep.tls)),
         Err(e) => {

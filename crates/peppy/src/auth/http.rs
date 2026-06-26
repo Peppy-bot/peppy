@@ -32,6 +32,9 @@ impl HttpResponse {
     }
 }
 
+/// The default global HTTP timeout for the CLI's blocking client.
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A shared blocking HTTP client wrapping a configured `ureq::Agent`.
 ///
 /// `http_status_as_error(false)` makes 4xx/5xx return `Ok` so callers can inspect
@@ -48,9 +51,17 @@ impl Default for HttpClient {
 
 impl HttpClient {
     pub fn new() -> Self {
+        Self::with_timeout(DEFAULT_HTTP_TIMEOUT)
+    }
+
+    /// Like [`new`](Self::new) but with an explicit global timeout. The router
+    /// federation path uses this to honor the configurable
+    /// `federation.connect_timeout_secs` instead of the default; every other
+    /// caller stays on [`new`](Self::new).
+    pub fn with_timeout(timeout: Duration) -> Self {
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(30)))
+            .timeout_global(Some(timeout))
             .build()
             .into();
         Self { agent }

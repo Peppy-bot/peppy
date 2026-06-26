@@ -1,4 +1,5 @@
 use super::core_node::CoreNodeRunner;
+use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
@@ -45,6 +46,12 @@ pub struct ServeCommandBuilder {
     /// *standalone*; the task applies the federation off the startup path so a
     /// slow/unreachable backend can never stall daemon startup.
     federation_api_url: Option<String>,
+    /// Bound on the federation backend round-trip (the startup gate and each
+    /// resolve). Read from `peppy_config.federation` in
+    /// [`with_messaging_router`](Self::with_messaging_router) before the config is
+    /// moved into the core node, and shared by [`RouterFederation`] and
+    /// [`FederationControl`].
+    federation_connect_timeout: Duration,
 }
 
 impl ServeCommandBuilder {
@@ -61,6 +68,9 @@ impl ServeCommandBuilder {
             root_dir: root_dir.into(),
             peppy_config: PeppyConfig::default(),
             federation_api_url: None,
+            federation_connect_timeout: Duration::from_secs(
+                config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
+            ),
         })
     }
 
@@ -108,6 +118,11 @@ impl ServeCommandBuilder {
                 )
                 .ok();
                 self.federation_api_url = api_url;
+                // Capture the federation timeout here, before `peppy_config` is
+                // moved into the core node in `build`; both the federation task
+                // and its control socket share it.
+                self.federation_connect_timeout =
+                    Duration::from_secs(self.peppy_config.federation.connect_timeout_secs);
 
                 let adapter = ZenohAdapter::with_router(
                     ZenohNetProtocol::Tcp,
@@ -216,21 +231,41 @@ impl ServeCommandBuilder {
 
         // Per-user-router federation manager (zenoh engine only — other engines
         // never set `federation_api_url`). Applies the initial federation once the
-        // router is up, keeps the cloud router alive, and (de)federates the local
-        // router live on login/logout. Started even when not currently logged in,
-        // so a later login is picked up without a restart. It waits on
-        // `messaging_ready` before touching the router, so it can't race
-        // MessagingRouter's initial `start_router`.
+        // router is up (gating `serve` reporting ready, bounded by the timeout),
+        // keeps the cloud router alive, and (de)federates the local router live on
+        // login/logout — immediately when poked over the control socket, else on
+        // the next poll. It waits on `messaging_ready` before touching the router,
+        // so it can't race MessagingRouter's initial `start_router`.
         if let Some(api_url) = self.federation_api_url.take()
             && let Some(messenger) = self.messenger.clone()
             && let Some(messaging_ready) = self.messaging_ready.clone()
         {
+            let connect_timeout = self.federation_connect_timeout;
+            // Poke channel: `auth login`/`logout` reach the federation loop through
+            // the control socket so a login is federated immediately, not on the
+            // next poll. Bounded + tiny: pokes are rare and serviced one at a time.
+            let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(8);
             self.composite_command =
                 self.composite_command
                     .add_async_command(Box::new(RouterFederation::new(
                         messenger,
                         api_url,
                         messaging_ready,
+                        trigger_rx,
+                        connect_timeout,
+                    )));
+
+            // Control socket the CLI pokes. Derived from the same `PeppyDirs` the
+            // CLI resolves, so the two agree without a discovery handshake.
+            let socket_path = crate::daemon_control::federation_control_socket_path(
+                &config::consts::PeppyDirs::default(),
+            );
+            self.composite_command =
+                self.composite_command
+                    .add_async_command(Box::new(FederationControl::new(
+                        socket_path,
+                        trigger_tx,
+                        connect_timeout,
                     )));
         }
 
