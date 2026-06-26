@@ -104,15 +104,23 @@ fn login_persists_credentials_and_resolves_identity() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
 
-    LoginCommand {
+    // Strict federation: with no daemon running (no control socket), login fails
+    // *after* persisting the credentials. This is the canonical "creds kept on a
+    // federation failure" check: the user is authenticated, only the command
+    // exits non-zero.
+    let err = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
-    .expect("login should succeed against the mock backend");
+    .expect_err("login fails strictly when no daemon is running to federate");
+    assert!(
+        err.to_string().contains("federation"),
+        "the error explains the federation failure: {err}"
+    );
 
-    // The single session is persisted, with identity cached.
+    // The single session is still persisted, with identity cached.
     let creds = storage::load(&path).expect("load creds");
     let pc = creds.session.as_ref().expect("session present");
     assert_eq!(pc.access_token.expose_secret(), "access-token-1");
@@ -178,13 +186,14 @@ fn login_seeds_peppy_config_with_resource_servers_block() {
 
     let dir = tempfile::tempdir().expect("temp dir");
 
-    LoginCommand {
+    // The federation poke fails (no daemon) so login exits non-zero, but the
+    // config seeding happens earlier in the flow; ignore the federation error.
+    let _ = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
-    .execute(&ctx())
-    .expect("login");
+    .execute(&ctx());
 
     // A login on a machine that never ran the daemon still seeds
     // peppy_config.json5 with the resource_servers block (build's default URL,
@@ -213,13 +222,14 @@ fn login_writes_credentials_file_0600() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
 
-    LoginCommand {
+    // No daemon ⇒ login exits non-zero on the federation step, but the
+    // credentials file is written (0600) earlier; ignore the federation error.
+    let _ = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
-    .execute(&ctx())
-    .expect("login");
+    .execute(&ctx());
 
     let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "credentials must be owner-only");
@@ -504,7 +514,6 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
         router: Some(RouterSession {
             endpoint: "tls/cached.zenoh.localhost:7443".into(),
             protocol: "tls".into(),
-            ca_certificate: None,
             // Far in the future ⇒ fresh ⇒ reuse.
             repull_after: storage::now_unix() + 100_000,
         }),
@@ -655,7 +664,6 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
         router: Some(RouterSession {
             endpoint: "tls/stale.zenoh.localhost:7443".into(),
             protocol: "tls".into(),
-            ca_certificate: None,
             repull_after: 1, // long past ⇒ stale ⇒ re-pull
         }),
         ..Default::default()
@@ -675,12 +683,12 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     );
     assert!(pull.calls() >= 1, "a stale cache must trigger a pull");
 
-    // The fresh config was cached (endpoint replaced, deadline pushed out, CA
-    // recorded) so the next connect reuses it.
+    // The fresh config was cached (endpoint replaced, deadline pushed out) so the
+    // next connect reuses it. The trust anchor is resolved fresh at connect time,
+    // so it is deliberately not part of the cached session.
     let after = storage::load(&path).expect("reload");
     let rs = after.router.as_ref().expect("router cached");
     assert_eq!(rs.endpoint, "tls/fresh.zenoh.localhost:7443");
-    assert_eq!(rs.ca_certificate.as_deref(), Some("/etc/peppy/ca.pem"));
     assert!(rs.repull_after > storage::now_unix(), "deadline pushed out");
 }
 

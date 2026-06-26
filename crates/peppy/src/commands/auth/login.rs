@@ -90,12 +90,15 @@ impl Command for LoginCommand {
 
         // Federation lives in the running daemon, which would otherwise only see
         // this login on its next poll. Poke it so it re-resolves the now-saved
-        // credentials and federates immediately. Best effort: never fails login.
+        // credentials and federates immediately. Strict: if federation cannot be
+        // established (no daemon, unreachable/untrusted router, apply timeout, or
+        // no upstream), this returns an actionable error and the command exits
+        // non-zero. The credentials were already saved above, so the user stays
+        // authenticated — only the command fails.
         super::poke_federation_and_report(
             &dirs,
             config.federation.connect_timeout_secs,
             super::FederationPokeAction::Login,
-        );
-        Ok(())
+        )
     }
 }

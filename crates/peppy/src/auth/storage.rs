@@ -66,12 +66,6 @@ pub struct RouterSession {
     /// Transport scheme echoed from the server (`"tls"` today); recorded so a
     /// future transport change is visible on disk.
     pub protocol: String,
-    /// The deployment trust root the router's certificate is validated against,
-    /// as a path string. CLI-side config (not part of the server response),
-    /// cached alongside the endpoint so the dialing parameters are
-    /// self-contained. `None` falls back to the system trust store.
-    #[serde(default)]
-    pub ca_certificate: Option<String>,
     /// Absolute unix time after which the CLI should re-pull (and reconnect)
     /// before the server's idle reaper could tear the router down. Derived at
     /// pull time from the server's `reconnect_after_secs`.
@@ -314,7 +308,6 @@ mod tests {
             router: Some(RouterSession {
                 endpoint: "tls/cap.zenoh.localhost:7443".into(),
                 protocol: "tls".into(),
-                ca_certificate: Some("/etc/peppy/ca.pem".into()),
                 repull_after: 1_700_000_000,
             }),
             ..Default::default()
@@ -325,7 +318,6 @@ mod tests {
         let rs = loaded.router.as_ref().expect("router session");
         assert_eq!(rs.endpoint, "tls/cap.zenoh.localhost:7443");
         assert_eq!(rs.protocol, "tls");
-        assert_eq!(rs.ca_certificate.as_deref(), Some("/etc/peppy/ca.pem"));
         assert_eq!(rs.repull_after, 1_700_000_000);
     }
 
@@ -361,7 +353,6 @@ mod tests {
         let rs = RouterSession {
             endpoint: "tls/cap:7443".into(),
             protocol: "tls".into(),
-            ca_certificate: None,
             repull_after: 1_000,
         };
         assert!(!rs.is_stale(900, 30));

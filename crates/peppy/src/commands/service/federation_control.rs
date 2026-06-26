@@ -32,9 +32,13 @@ use crate::error::Error;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Extra time the daemon waits for the federation loop to apply, on top of the
-/// configured connect timeout. Kept smaller than the client's read slack so the
-/// daemon always replies before the client gives up.
-const APPLY_ACK_SLACK: Duration = Duration::from_secs(2);
+/// configured connect timeout (which bounds the resolve). It must cover the
+/// post-resolve work of a *verifying* login poke: the zenohd bounce plus the TLS
+/// reachability probe ([`super::router_federation::PROBE_TIMEOUT`]). Kept smaller
+/// than the client's read slack ([`crate::daemon_control::POKE_READ_SLACK`]) so
+/// the daemon always replies a definite outcome before the client gives up (the
+/// `ack_budget_*` test guards both relationships).
+const APPLY_ACK_SLACK: Duration = Duration::from_secs(8);
 
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
@@ -42,6 +46,7 @@ impl From<FederationOutcome> for ControlResponse {
             FederationOutcome::Applied(applied) => ControlResponse::Ok { applied },
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
+            FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
         }
     }
 }
@@ -217,6 +222,39 @@ mod tests {
     use super::*;
     use crate::daemon_control::{FEDERATION_CONTROL_SOCK, PokeOutcome, poke_refederate};
     use tokio::sync::mpsc;
+
+    /// The daemon ack budget must cover the verifying poke's post-resolve work
+    /// (the TLS probe + bounce), and the client must always outlast the daemon so
+    /// it receives a definite reply rather than a client-side timeout. Guards the
+    /// constants from drifting back into the pre-probe sizing.
+    #[test]
+    fn ack_budget_covers_the_verify_probe_and_client_outlasts_daemon() {
+        use super::super::router_federation::PROBE_TIMEOUT;
+        use crate::daemon_control::POKE_READ_SLACK;
+        assert!(
+            PROBE_TIMEOUT < APPLY_ACK_SLACK,
+            "the daemon ack slack must cover the verify probe (plus the bounce)"
+        );
+        assert!(
+            APPLY_ACK_SLACK < POKE_READ_SLACK,
+            "the client must outlast the daemon so it gets a definite reply"
+        );
+    }
+
+    /// A federation probe failure crosses the wire as the `unreachable` status,
+    /// distinct from a plain `error`, so the CLI can word it specifically.
+    #[test]
+    fn unreachable_outcome_maps_to_the_unreachable_response() {
+        let resp = ControlResponse::from(FederationOutcome::Unreachable(
+            "received fatal alert: UnknownCA".to_string(),
+        ));
+        match resp {
+            ControlResponse::Unreachable { message } => {
+                assert_eq!(message, "received fatal alert: UnknownCA")
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
 
     /// A poke from the (sync) CLI client crosses the real control socket, reaches
     /// the trigger channel, and the federation loop's ack comes back to the

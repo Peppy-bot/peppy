@@ -38,10 +38,11 @@ pub(crate) const REFEDERATE_VERB: &str = "refederate";
 
 /// Extra time the client waits for the daemon's ack on top of the configured
 /// federation connect timeout. Kept strictly larger than the daemon-side ack
-/// budget so the daemon always replies (even "timed out applying") before the
-/// client gives up, turning a slow apply into a definite status rather than a
-/// client-side timeout.
-pub(crate) const POKE_READ_SLACK: Duration = Duration::from_secs(5);
+/// budget (`APPLY_ACK_SLACK`, which itself covers the verifying poke's TLS probe)
+/// so the daemon always replies a definite status (even "timed out applying")
+/// before the client gives up, turning a slow apply into a definite status rather
+/// than a client-side timeout. (The `ack_budget_*` test guards this ordering.)
+pub(crate) const POKE_READ_SLACK: Duration = Duration::from_secs(11);
 
 /// Where the daemon binds (and the client connects to) the federation control
 /// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
@@ -61,6 +62,10 @@ pub(crate) enum ControlResponse {
     Ok { applied: Option<String> },
     /// An operator-pinned `ZENOH_CONFIG` owns the router config; not auto-managed.
     Pinned,
+    /// The config was applied (the local router was federated), but the TLS link
+    /// to the per-user cloud router could not be established/validated — so
+    /// federation with platform-backend is not actually in effect.
+    Unreachable { message: String },
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
     /// within the federation timeout).
     Error { message: String },
@@ -83,6 +88,10 @@ pub(crate) enum PokeOutcome {
     Pinned,
     /// The daemon acked an error (e.g. the backend was unreachable in time).
     DaemonError(String),
+    /// The daemon federated the local router but the TLS link to the per-user
+    /// cloud router does not validate (e.g. UnknownCA) — federation with
+    /// platform-backend is not in effect.
+    Unreachable(String),
     /// No running daemon to poke (no socket, or the connection was refused).
     /// Federation will be applied the next time `serve` starts.
     DaemonNotRunning,
@@ -129,6 +138,7 @@ fn poke_inner(socket_path: &Path, read_timeout: Duration) -> std::io::Result<Pok
     Ok(match response {
         ControlResponse::Ok { applied } => PokeOutcome::Applied(applied),
         ControlResponse::Pinned => PokeOutcome::Pinned,
+        ControlResponse::Unreachable { message } => PokeOutcome::Unreachable(message),
         ControlResponse::Error { message } => PokeOutcome::DaemonError(message),
     })
 }
@@ -186,6 +196,10 @@ mod tests {
             (
                 "{\"status\":\"error\",\"message\":\"boom\"}\n",
                 PokeOutcome::DaemonError("boom".to_string()),
+            ),
+            (
+                "{\"status\":\"unreachable\",\"message\":\"received fatal alert: UnknownCA\"}\n",
+                PokeOutcome::Unreachable("received fatal alert: UnknownCA".to_string()),
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();
