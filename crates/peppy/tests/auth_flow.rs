@@ -344,7 +344,6 @@ fn get_zenoh_router_config_parses_the_contract() {
     let cfg =
         client::get_zenoh_router_config(&http, &server.base_url(), &mut cred).expect("pull config");
     assert_eq!(cfg.protocol, "tls");
-    assert_eq!(cfg.mode, "client");
     assert_eq!(cfg.reconnect_after_secs, 3000);
     assert_eq!(
         cfg.host_port().expect("parse endpoint"),
@@ -475,6 +474,63 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     assert_eq!(endpoint.port, 7443);
     assert!(endpoint.tls.verify_name_on_connect);
     assert_eq!(pull.calls(), 0, "a fresh cache must not trigger a pull");
+}
+
+#[test]
+fn resolve_federation_target_derives_the_upstream_tls_locator() {
+    // The daemon's federation target: pull the per-user router config and turn it
+    // into the `tls/<host>:<port>` connect endpoint the local zenohd federates to,
+    // plus the connect-side trust. Proves the derivation the `serve` builder and
+    // the `RouterFederation` task both rely on.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(GET).path("/me/zenoh-router-config");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/cap.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+        }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let target = router::resolve_federation_target_at(&path, &server.base_url(), None, None)
+        .expect("logged in ⇒ a federation target");
+    assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
+    assert!(
+        target.1.verify_name_on_connect,
+        "the upstream link verifies the router's cert name"
+    );
+    assert!(
+        !target.1.enable_mtls,
+        "one-way TLS to the router (no client cert)"
+    );
+    assert!(pull.calls() >= 1, "a logged-in resolve pulls the config");
+}
+
+#[test]
+fn resolve_federation_target_is_none_when_not_logged_in() {
+    // No session and no PAT ⇒ the local router stays standalone, and crucially the
+    // backend is never contacted (the daemon must start cleanly on an
+    // un-provisioned dev box).
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(GET).path("/me/zenoh-router-config");
+        then.status(200)
+            .json_body(json!({ "endpoint": "tls/should-not-be-pulled:1" }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir); // no creds file written ⇒ no session
+    let target = router::resolve_federation_target_at(&path, &server.base_url(), None, None);
+    assert!(target.is_none(), "not logged in ⇒ no federation target");
+    assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
 }
 
 #[test]

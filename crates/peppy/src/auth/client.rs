@@ -75,8 +75,6 @@ pub struct ZenohRouterConfig {
     pub endpoint: String,
     /// Transport scheme, `"tls"` today.
     pub protocol: String,
-    /// `"client"`: the CLI is a client of its private cloud router.
-    pub mode: String,
     /// Re-pull (and reconnect) before this many seconds elapse; the backend
     /// keeps it below the router's idle TTL so a live client is never reaped.
     pub reconnect_after_secs: u64,
@@ -222,7 +220,6 @@ mod tests {
         ZenohRouterConfig {
             endpoint: endpoint.to_string(),
             protocol: "tls".to_string(),
-            mode: "client".to_string(),
             reconnect_after_secs: 3000,
         }
     }

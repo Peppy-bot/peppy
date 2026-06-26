@@ -1,4 +1,3 @@
-use crate::auth::{http::HttpClient, router, storage};
 use crate::daemon_state::DaemonState;
 use crate::error::Error;
 use peppylib::MessengerHandle;
@@ -11,10 +10,6 @@ pub struct AppContext {
     pub root_dir: PathBuf,
     daemon_state_path: Option<PathBuf>,
     messenger_handle: OnceCell<MessengerHandle>,
-    /// Handle to the caller's *remote* per-user zenoh router. A distinct
-    /// connection target from [`messenger_handle`](Self::messenger_handle) (the
-    /// local daemon), so it gets its own cell — the two are not interchangeable.
-    router_handle: OnceCell<MessengerHandle>,
 }
 
 impl AppContext {
@@ -23,7 +18,6 @@ impl AppContext {
             root_dir: PathBuf::from(root_dir.as_ref()),
             daemon_state_path: None,
             messenger_handle: OnceCell::new(),
-            router_handle: OnceCell::new(),
         }
     }
 
@@ -76,7 +70,6 @@ impl AppContext {
             root_dir: PathBuf::from(root_dir.as_ref()),
             daemon_state_path: None,
             messenger_handle: OnceCell::new_with(Some(MessengerHandle::from_shared(messenger))),
-            router_handle: OnceCell::new(),
         }
     }
 
@@ -95,42 +88,6 @@ impl AppContext {
 
     pub fn messenger_handle(&self) -> Option<&MessengerHandle> {
         self.messenger_handle.get()
-    }
-
-    /// Connects to the caller's *remote* per-user zenoh router over `tls/`,
-    /// pulling (and caching) the connection config from the backend. Reuses a
-    /// cached config while fresh; otherwise re-pulls, refreshing the access
-    /// token on a `401`. The remote counterpart to
-    /// [`connect_to_daemon`](Self::connect_to_daemon): a distinct target dialed
-    /// over an end-to-end-encrypted link, validated against the deployment CA
-    /// (`PEPPY_ROUTER_CA_CERT`) with name verification on.
-    ///
-    /// `api_url` is resolved by the caller (the flag/env/`resource_servers`
-    /// precedence the auth commands use). Cached behind its own cell, so the
-    /// first call provisions/dials and later calls return the live handle.
-    pub async fn connect_to_router(&self, api_url: &str) -> crate::error::Result<&MessengerHandle> {
-        self.router_handle
-            .get_or_try_init(|| async {
-                let creds_path = storage::default_path();
-                let http = HttpClient::new();
-                let pat = std::env::var("PEPPY_API_KEY")
-                    .ok()
-                    .filter(|v| !v.is_empty());
-                // Blocking HTTP pull (ureq), consistent with the rest of the
-                // auth engine; it is a single quick request and the connect path
-                // has nothing else scheduled meanwhile.
-                let endpoint = router::resolve_router_endpoint(
-                    &creds_path,
-                    &http,
-                    api_url,
-                    pat,
-                    router::ca_from_env(),
-                )?;
-                MessengerHandle::from_remote_tls(&endpoint.host, endpoint.port, endpoint.tls)
-                    .await
-                    .map_err(Error::from)
-            })
-            .await
     }
 }
 

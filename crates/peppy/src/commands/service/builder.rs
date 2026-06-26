@@ -1,5 +1,6 @@
 use super::core_node::CoreNodeRunner;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
+use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
@@ -36,6 +37,15 @@ pub struct ServeCommandBuilder {
     core_node_done_tx: Option<watch::Sender<bool>>,
     root_dir: PathBuf,
     peppy_config: PeppyConfig,
+    /// Backend URL for per-user-router federation, set by
+    /// [`with_messaging_router`](Self::with_messaging_router) for the `zenoh`
+    /// engine. `Some` ⇒ [`build`](Self::build) spawns the [`RouterFederation`]
+    /// task that keeps the local router federated to the cloud router.
+    federation_api_url: Option<String>,
+    /// The upstream connect endpoint the builder federated the local router to at
+    /// startup (`None` if not logged in). Handed to the federation task as its
+    /// baseline so it only acts on a later change.
+    federation_initial_endpoint: Option<String>,
 }
 
 impl ServeCommandBuilder {
@@ -51,6 +61,8 @@ impl ServeCommandBuilder {
             core_node_done_tx: None,
             root_dir: root_dir.into(),
             peppy_config: PeppyConfig::default(),
+            federation_api_url: None,
+            federation_initial_endpoint: None,
         })
     }
 
@@ -80,15 +92,47 @@ impl ServeCommandBuilder {
                 // mode (peer vs router-relay) and buffer sizes come from the
                 // daemon-global config read at startup.
                 let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.peer);
+
+                // Best-effort: if the user is logged in, federate the local router
+                // to their per-user cloud router so messages cross between the two
+                // routers as one network (only the inter-router hop is TLS; local
+                // nodes stay plaintext loopback). Resolved synchronously here so
+                // the FIRST zenohd already carries the upstream connect endpoint;
+                // live (re)federation on a later login/logout is the
+                // `RouterFederation` task's job (registered in `build`). If not
+                // logged in / offline, this is `None` and the router is standalone.
+                let api_url = crate::auth::profile::resolve_api_url(
+                    None,
+                    &self.peppy_config.resource_servers,
+                )
+                .ok();
+                let federation = api_url
+                    .as_deref()
+                    .and_then(crate::auth::router::resolve_federation_target);
+                let (connect_endpoints, federation_tls) = match &federation {
+                    Some((endpoint, tls)) => {
+                        info!(
+                            target: "peppy::serve",
+                            upstream = %endpoint,
+                            "federating local router to the per-user cloud router"
+                        );
+                        (vec![endpoint.clone()], Some(tls.clone()))
+                    }
+                    None => (Vec::new(), None),
+                };
+                self.federation_initial_endpoint = federation.map(|(endpoint, _)| endpoint);
+                self.federation_api_url = api_url;
+
                 let adapter = ZenohAdapter::with_router(
                     ZenohNetProtocol::Tcp,
                     "0.0.0.0",
                     listening_port,
                     self.peppy_config.mode.gossip(),
                     buffer_sizes,
-                    // The local daemon router stays plaintext loopback TCP; TLS is
-                    // for the per-user cloud routers reached via the CLI.
-                    None,
+                    // Local nodes reach this router over plaintext loopback TCP;
+                    // the only TLS is the (optional) federation link above.
+                    connect_endpoints,
+                    federation_tls,
                 )?
                 .with_session_reconnect();
                 MessengerAdapter::Zenoh(adapter)
@@ -182,6 +226,19 @@ impl ServeCommandBuilder {
                 warn!("Commands listener requires a messaging router");
                 return Err(Error::MissingMessagingRouter);
             }
+        }
+
+        // Per-user-router federation manager (zenoh engine only — other engines
+        // never set `federation_api_url`). Keeps the cloud router alive and
+        // (de)federates the local router live on login/logout. Started even when
+        // not currently logged in, so a later login is picked up without a restart.
+        if let Some(api_url) = self.federation_api_url.take()
+            && let Some(messenger) = self.messenger.clone()
+        {
+            let initial = self.federation_initial_endpoint.take();
+            self.composite_command = self
+                .composite_command
+                .add_async_command(Box::new(RouterFederation::new(messenger, api_url, initial)));
         }
 
         let serve = Serve::new(self.composite_command);

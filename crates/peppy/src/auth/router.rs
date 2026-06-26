@@ -57,13 +57,14 @@ pub fn resolve_router_endpoint(
     let cached = storage::load(creds_path)?.router;
     // The cache is identity-bound: `login`/`logout` clear it with the session
     // (`storage::Credentials` doc). The fresh-cache branch reuses the endpoint
-    // without re-resolving a credential, which is fine while this is reached only
-    // through `AppContext::connect_to_router` (itself not yet wired into any
-    // command). FOLLOW-UP, to land with the local-vs-remote command wiring: tag
-    // the cached `RouterSession` with the identity it was pulled for and verify
-    // it on reuse, so a cache that survives an identity change is re-pulled
-    // rather than dialed. A blanket "require a session" guard is wrong here —
-    // it would disable caching for a `PEPPY_API_KEY` PAT, which has no session.
+    // without re-resolving a credential, which is fine for the daemon's
+    // federation poll (`resolve_federation_target`): a fresh cache means the
+    // upstream is unchanged, so no re-pull (and no last_seen refresh) is needed
+    // until it goes stale. FOLLOW-UP: tag the cached `RouterSession` with the
+    // identity it was pulled for and verify it on reuse, so a cache that survives
+    // an identity change is re-pulled rather than reused. A blanket "require a
+    // session" guard is wrong here — it would disable caching for a
+    // `PEPPY_API_KEY` PAT, which has no session.
     let endpoint = match cached {
         Some(rs) if !rs.is_stale(now, REPULL_SKEW_SECS) => rs.endpoint,
         _ => pull_and_cache(creds_path, http, api_url, pat, ca_certificate.as_ref(), now)?,
@@ -102,6 +103,54 @@ fn pull_and_cache(
     });
     storage::save(creds_path, &creds)?;
     Ok(cfg.endpoint)
+}
+
+/// Best-effort federation target for the daemon's *local* router: the upstream
+/// `tls/<host>:<port>` connect endpoint plus the connect-side trust, resolved by
+/// pulling the caller's per-user router config (provisioning it on first pull).
+///
+/// Returns `None` — and the local router stays standalone (plaintext-only) — when
+/// the user is not logged in, no backend is configured/reachable, or the pull
+/// fails, so the daemon always starts. The pull doubles as the cloud router's
+/// idle keepalive (it refreshes `last_seen_at` server-side); the daemon's
+/// periodic re-resolve sustains it (and re-provisions a reaped router).
+pub fn resolve_federation_target(api_url: &str) -> Option<(String, pmi::TlsConfig)> {
+    let pat = std::env::var("PEPPY_API_KEY")
+        .ok()
+        .filter(|v| !v.is_empty());
+    resolve_federation_target_at(&storage::default_path(), api_url, pat, ca_from_env())
+}
+
+/// Testable core of [`resolve_federation_target`] with the creds path, PAT, and
+/// CA made explicit (so it can be exercised against a stub backend without
+/// touching the process-global credentials file or `PEPPY_API_KEY`). Mirrors the
+/// [`super::profile::resolve_api_url`] / `resolve_api_url_from` split.
+pub fn resolve_federation_target_at(
+    creds_path: &Path,
+    api_url: &str,
+    pat: Option<String>,
+    ca_certificate: Option<PathBuf>,
+) -> Option<(String, pmi::TlsConfig)> {
+    // Skip the network entirely when there is plainly no identity to pull for, so
+    // an un-provisioned dev box does not log a spurious auth error every poll.
+    let logged_in = pat.is_some()
+        || storage::load(creds_path)
+            .map(|c| c.session.is_some())
+            .unwrap_or(false);
+    if !logged_in {
+        return None;
+    }
+    let http = HttpClient::new();
+    match resolve_router_endpoint(creds_path, &http, api_url, pat, ca_certificate) {
+        Ok(ep) => Some((format!("tls/{}:{}", ep.host, ep.port), ep.tls)),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "router federation: config pull failed; local router stays standalone"
+            );
+            None
+        }
+    }
 }
 
 /// Client trust material: validate the router against the deployment CA (or the
