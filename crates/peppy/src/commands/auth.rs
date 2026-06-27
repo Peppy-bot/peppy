@@ -56,7 +56,21 @@ pub(crate) fn poke_federation_and_report(
 ) -> Result<()> {
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = Duration::from_secs(connect_timeout_secs) + daemon_control::POKE_READ_SLACK;
+    // The poke blocks while the daemon re-resolves the user's cloud router and
+    // verifies the TLS link, which can take a few seconds — show the same
+    // steady-tick spinner as the browser-approval wait so the step isn't a silent
+    // pause. Only for a login: a logout's de-federation is best-effort and quick.
+    // Cleared before the outcome is reported so the result prints on a clean line.
+    let spinner = match action {
+        FederationPokeAction::Login => {
+            crate::terminal::spinner("Waiting for federation link to establish")
+        }
+        FederationPokeAction::Logout => None,
+    };
     let outcome = daemon_control::poke_refederate(&socket, read_timeout);
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
     match action {
         FederationPokeAction::Login => report_login(outcome),
         FederationPokeAction::Logout => {
