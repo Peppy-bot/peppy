@@ -18,6 +18,12 @@ use crate::daemon_control::{self, PokeOutcome};
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
 
+/// Shown when the daemon's router config is operator-pinned via `ZENOH_CONFIG`,
+/// so the CLI does not auto-manage federation. Used by both login and logout
+/// reporting.
+const PINNED_NOTE: &str = "Note: this daemon's router config is operator-pinned (ZENOH_CONFIG); \
+     federation is not auto-managed.";
+
 /// Whether a federation poke follows a login (federate) or a logout
 /// (de-federate). Affects the user-facing wording and, crucially, whether a
 /// federation failure is fatal: a login that cannot establish federation fails
@@ -73,10 +79,7 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
         PokeOutcome::Pinned => {
             // The operator owns this router's config via ZENOH_CONFIG, so the CLI
             // is not responsible for federating it. Treat as non-fatal.
-            println!(
-                "Note: this daemon's router config is operator-pinned (ZENOH_CONFIG); \
-                 federation is not auto-managed."
-            );
+            println!("{PINNED_NOTE}");
             Ok(())
         }
         PokeOutcome::Unreachable(reason) => Err(Error::Auth(format!(
@@ -113,10 +116,7 @@ fn report_logout(outcome: PokeOutcome) {
     match outcome {
         PokeOutcome::Applied(None) => println!("Router federation cleared."),
         PokeOutcome::Applied(Some(_)) => println!("Router federation refreshed."),
-        PokeOutcome::Pinned => println!(
-            "Note: this daemon's router config is operator-pinned (ZENOH_CONFIG); \
-             federation is not auto-managed."
-        ),
+        PokeOutcome::Pinned => println!("{PINNED_NOTE}"),
         PokeOutcome::Unreachable(msg) | PokeOutcome::DaemonError(msg) => {
             println!("Note: the daemon could not apply federation now ({msg}); it will retry.")
         }

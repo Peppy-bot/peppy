@@ -259,7 +259,11 @@ async fn manage_federation(
 
     // Phase 3 — steady state: periodic keepalive/re-resolve, or an immediate poke
     // from `auth login`/`logout`. A single `select!` keeps sole ownership of
-    // `applied`, so a poke and a tick can never apply concurrently.
+    // `applied`, so a poke and a tick can never apply concurrently. Once all
+    // trigger senders drop (control listener gone, only at teardown in practice)
+    // the trigger arm is disabled via the `if !triggers_closed` guard so keepalive
+    // keeps polling without busy-spinning on the closed channel.
+    let mut triggers_closed = false;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(POLL_INTERVAL) => {
@@ -268,7 +272,7 @@ async fn manage_federation(
                     &messenger, &resolver, &prober, connect_timeout, &mut applied, false,
                 ).await;
             }
-            maybe_req = trigger_rx.recv() => {
+            maybe_req = trigger_rx.recv(), if !triggers_closed => {
                 match maybe_req {
                     Some(req) => {
                         // A login/logout poke verifies the link (`verify = true`)
@@ -279,26 +283,12 @@ async fn manage_federation(
                         // The CLI may have already given up (read timeout); ignore.
                         let _ = req.ack.send(outcome);
                     }
-                    // All trigger senders dropped (control listener gone, only at
-                    // teardown in practice): keep the keepalive poll going without
-                    // it rather than busy-spinning on a closed channel.
-                    None => break,
+                    // All trigger senders dropped: stop polling the closed channel
+                    // and keep only the keepalive arm for the rest of our lifetime.
+                    None => triggers_closed = true,
                 }
             }
         }
-    }
-
-    loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
-        poll_and_apply(
-            &messenger,
-            &resolver,
-            &prober,
-            connect_timeout,
-            &mut applied,
-            false,
-        )
-        .await;
     }
 }
 
@@ -398,16 +388,14 @@ async fn poll_and_apply(
         && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
             (&outcome, resolved.as_ref())
     {
-        match split_endpoint_host_port(ep) {
+        match crate::auth::client::split_locator(ep).ok() {
             Some((host, port)) => {
                 // Bound the probe by the small dedicated PROBE_TIMEOUT (NOT
                 // connect_timeout) so resolve + bounce + probe stays within the
                 // daemon's ack budget; otherwise a slow/unreachable router would
                 // blow the budget and surface as a generic ack timeout instead of
                 // the actionable Unreachable.
-                if let Err(reason) =
-                    prober(host.to_string(), port, tls.clone(), PROBE_TIMEOUT).await
-                {
+                if let Err(reason) = prober(host, port, tls.clone(), PROBE_TIMEOUT).await {
                     warn!(
                         upstream = %ep, reason = %reason,
                         "router federation: the local router was (re)federated, but the TLS \
@@ -432,22 +420,6 @@ async fn poll_and_apply(
     }
 
     outcome
-}
-
-/// Splits a `<scheme>/<host>:<port>` connect endpoint (e.g.
-/// `tls/cap.zenoh.localhost:7443`) into `(host, port)` for the reachability
-/// probe. Returns `None` if it isn't in that shape. Hostnames only (the upstream
-/// is always a capability/router DNS name, never a bracketed IPv6 literal).
-fn split_endpoint_host_port(endpoint: &str) -> Option<(&str, u16)> {
-    let after_scheme = endpoint
-        .split_once('/')
-        .map_or(endpoint, |(_scheme, rest)| rest);
-    let (host, port) = after_scheme.rsplit_once(':')?;
-    if host.is_empty() {
-        return None;
-    }
-    let port: u16 = port.parse().ok()?;
-    Some((host, port))
 }
 
 /// Re-renders the local router's config with the (possibly empty) upstream and,
@@ -541,18 +513,6 @@ mod tests {
 
     fn upstream() -> Option<(String, pmi::TlsConfig)> {
         Some((ENDPOINT.to_string(), pmi::TlsConfig::default()))
-    }
-
-    #[test]
-    fn splits_scheme_host_and_port() {
-        assert_eq!(
-            split_endpoint_host_port("tls/cap.zenoh.localhost:7443"),
-            Some(("cap.zenoh.localhost", 7443))
-        );
-        assert_eq!(split_endpoint_host_port("host:1"), Some(("host", 1)));
-        assert_eq!(split_endpoint_host_port("tls/host"), None);
-        assert_eq!(split_endpoint_host_port("tls/:7443"), None);
-        assert_eq!(split_endpoint_host_port("tls/host:notaport"), None);
     }
 
     /// A login/logout poke runs a federation poll *immediately* (well within the
