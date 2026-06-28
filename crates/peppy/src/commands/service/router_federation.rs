@@ -283,8 +283,8 @@ async fn manage_federation(
 /// local router. Updates `*applied` to the upstream now in effect and returns the
 /// [`FederationOutcome`] (so a poke can ack the post-apply state).
 ///
-/// When `verify` is set (login/logout pokes only — never the keepalive), and an
-/// upstream is in effect, a real TLS handshake confirms the federation link
+/// When `verify` is set (login/logout pokes only, not the initial startup
+/// federation), and an upstream is in effect, a real TLS handshake confirms the link
 /// actually validates; a failed handshake is reported as
 /// [`FederationOutcome::Unreachable`] (and logged loudly) instead of a false
 /// `Applied`.
@@ -297,8 +297,9 @@ async fn poll_and_apply(
     verify: bool,
 ) -> FederationOutcome {
     // The resolver is blocking (HTTP + file I/O); keep it off the async worker. It
-    // also performs the cloud router's keepalive re-pull when its cached config has
-    // gone stale. Bound the whole resolve by `connect_timeout` so a hung pull can't
+    // also re-pulls the cloud router's config when the cached copy has gone stale
+    // (cache freshness only, not a keepalive). Bound the whole resolve by
+    // `connect_timeout` so a hung pull can't
     // stall a poll (or the startup gate) past it; the timed-out blocking thread is
     // harmless (its own HTTP timeout ends it) and its result is simply discarded.
     let resolver = resolver.clone();
@@ -323,7 +324,7 @@ async fn poll_and_apply(
 
     // Apply the change (or note the no-op) and derive the base outcome.
     let outcome = if desired == *applied {
-        // Steady state (including the cache-gated keepalive re-pull): the upstream
+        // Steady state (including the cache-gated re-pull): the upstream
         // is unchanged, so there is nothing to re-render or restart. Report it as
         // applied so a poke gets a positive "already in place" ack.
         FederationOutcome::Applied(applied.clone())
@@ -368,9 +369,10 @@ async fn poll_and_apply(
     };
 
     // Verify reachability only on a poke (`verify`), and only when an upstream is
-    // actually in effect. The keepalive never reaches here. A failed handshake
-    // means the local router was federated but the link to platform-backend does
-    // not validate (e.g. UnknownCA) — federation is not really in effect.
+    // actually in effect. The non-verifying initial federation never reaches here.
+    // A failed handshake means the local router was federated but the link to
+    // platform-backend does not validate (e.g. UnknownCA), so federation is not
+    // really in effect.
     if verify
         && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
             (&outcome, resolved.as_ref())

@@ -62,8 +62,10 @@ pub struct ZenohRouterConfig {
     pub endpoint: String,
     /// Transport scheme, `"tls"` today.
     pub protocol: String,
-    /// Re-pull (and reconnect) before this many seconds elapse; the backend
-    /// keeps it below the router's idle TTL so a live client is never reaped.
+    /// How long this config may be reused before re-resolving it. A cache-freshness
+    /// hint only: the backend now actively health-checks the daemon, so reusing a
+    /// still-fresh config (rather than re-pulling) never risks the router being torn
+    /// down.
     pub reconnect_after_secs: u64,
 }
 

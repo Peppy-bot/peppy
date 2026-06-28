@@ -18,9 +18,9 @@ use super::storage::{self, RouterSession};
 use super::{client, resolver};
 use crate::error::Result;
 
-/// Re-pull this many seconds before the server's deadline (mirrors the OAuth
-/// refresh skew) so a slow pull + TLS handshake still lands inside the live
-/// window the server's reaper honours.
+/// Re-resolve this many seconds before the cache-freshness deadline (mirrors the
+/// OAuth refresh skew) so a slow re-pull + TLS handshake completes before the
+/// cached config is treated as stale.
 const REPULL_SKEW_SECS: i64 = 30;
 
 /// The committed dev root CA, embedded into the binary **only** in debug builds
