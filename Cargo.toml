@@ -22,7 +22,7 @@ parking_lot = "0.12"
 # router mode via `#[case]` (see crates/*/tests). Test-only.
 rstest = "0.26"
 
-# Shared, public-facing crates consumed from the `nodes_shared_code` repo (the
+# Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
 # `peppyos-shared` virtual workspace) as git dependencies, so `peppyos` holds no
 # path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
 # crate follows the repo's default branch (`main`); the resolved revision is
@@ -31,13 +31,13 @@ rstest = "0.26"
 # and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
 # directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
 # `git_fixtures`) are added at each use site with `{ workspace = true, features = [...] }`.
-config = { git = "https://github.com/Peppy-bot/nodes_shared_code", package = "peppy-config-model" }
-peppylib = { git = "https://github.com/Peppy-bot/nodes_shared_code", package = "peppylib-rs" }
-pmi = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
-core-node-api = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
-json5-pretty = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
-config-test-support = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
-build-helpers = { git = "https://github.com/Peppy-bot/nodes_shared_code" }
+config = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppy-config-model" }
+peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppylib-rs" }
+pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a
@@ -51,7 +51,7 @@ latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
-# Dev-only source override: build the `nodes_shared_code` git dependencies
+# Dev-only source override: build the `public-peppy-libs` git dependencies
 # against the in-tree submodule checkout instead of the published `main` revision,
 # so cross-repo changes to `pmi`/`peppylib` (e.g. the per-user-router TLS work) can
 # be exercised from `peppyos` without a merge round-trip. ALL shared crates are
@@ -59,14 +59,14 @@ peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 # a transitively-shared crate (e.g. `core-node-api`) from git, which then fails to
 # unify with the local one (type mismatch). Remove this block once the shared
 # changes land on `main` and `cargo update` moves the lockfile forward.
-[patch."https://github.com/Peppy-bot/nodes_shared_code"]
-peppy-config-model = { path = "../nodes_shared_code/peppyos-shared/peppy-config-model" }
-peppylib-rs = { path = "../nodes_shared_code/peppyos-shared/peppylib-rs" }
-pmi = { path = "../nodes_shared_code/peppyos-shared/peppy-messaging-interface" }
-core-node-api = { path = "../nodes_shared_code/peppyos-shared/core-node-api" }
-json5-pretty = { path = "../nodes_shared_code/peppyos-shared/json5-pretty" }
-config-test-support = { path = "../nodes_shared_code/peppyos-shared/config-test-support" }
-build-helpers = { path = "../nodes_shared_code/peppyos-shared/build-helpers" }
+[patch."https://github.com/Peppy-bot/public-peppy-libs"]
+peppy-config-model = { path = "../public-peppy-libs/peppyos-shared/peppy-config-model" }
+peppylib-rs = { path = "../public-peppy-libs/peppyos-shared/peppylib-rs" }
+pmi = { path = "../public-peppy-libs/peppyos-shared/peppy-messaging-interface" }
+core-node-api = { path = "../public-peppy-libs/peppyos-shared/core-node-api" }
+json5-pretty = { path = "../public-peppy-libs/peppyos-shared/json5-pretty" }
+config-test-support = { path = "../public-peppy-libs/peppyos-shared/config-test-support" }
+build-helpers = { path = "../public-peppy-libs/peppyos-shared/build-helpers" }
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]

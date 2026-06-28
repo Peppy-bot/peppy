@@ -459,7 +459,7 @@ mod peppylib_build {
     /// Dependency crates compiled into the `.so`, paired with whether the crate
     /// is config (which embeds extra `tools/capnp_*` helpers). This list
     /// MUST stay in sync with peppylib-py's path dependencies in
-    /// `nodes_shared_code/peppyos-shared/peppylib-py/Cargo.toml`; a crate
+    /// `public-peppy-libs/peppyos-shared/peppylib-py/Cargo.toml`; a crate
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
@@ -473,7 +473,7 @@ mod peppylib_build {
 
     /// Every source file of the `.so` dependency crates. Resolved against
     /// `peppyos-shared`, located via build-helpers so it works in the superproject
-    /// and from a cargo git checkout of nodes_shared_code alike.
+    /// and from a cargo git checkout of public-peppy-libs alike.
     fn dep_crate_source_files() -> Vec<PathBuf> {
         let crates_root = build_helpers::peppyos_shared_dir();
         let mut files = Vec::new();
@@ -647,7 +647,7 @@ mod peppylib_build {
         // peppylib-py and all its `.so` dependency crates live in the shared
         // workspace (peppyos-shared), located via build-helpers so every path
         // resolves in the superproject and from a cargo git checkout of
-        // nodes_shared_code alike — no reach across a submodule boundary.
+        // public-peppy-libs alike — no reach across a submodule boundary.
         let peppylib_py_dir = build_helpers::peppyos_shared_dir().join("peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
         let so_path = peppylib_dir.join("_peppylib.abi3.so");

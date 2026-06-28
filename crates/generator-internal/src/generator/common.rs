@@ -143,7 +143,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 // rust-embed (the `interpolate-folder-path` feature). generator's build script
 // sets it to the `peppyos-shared` directory located via build-helpers, so these
 // resolve to the real source trees whether peppyos builds in the superproject or
-// from a cargo git checkout of nodes_shared_code — no `../../../` reach required.
+// from a cargo git checkout of public-peppy-libs — no `../../../` reach required.
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]

@@ -7,14 +7,14 @@ mod capnp_build {
     /// Embed the bundled capnp binary for the host platform.
     ///
     /// The binary is the single source of truth shipped with `build-helpers`
-    /// in nodes_shared_code (`peppyos-shared/peppy-config-model/tools`). peppyos
+    /// in public-peppy-libs (`peppyos-shared/peppy-config-model/tools`). peppyos
     /// pulls build-helpers as a cargo git dependency, so the tools dir is always
     /// present in the checkout — no superproject sibling and no cmake required.
     pub fn run() {
         let binary_path = build_helpers::bundled_capnp_path().unwrap_or_else(|| {
             panic!(
                 "No bundled capnp binary for this host platform ({}/{}). Supported: \
-                 linux x86_64/aarch64, macos aarch64. Add a binary to nodes_shared_code \
+                 linux x86_64/aarch64, macos aarch64. Add a binary to public-peppy-libs \
                  peppyos-shared/peppy-config-model/tools/.",
                 env::consts::OS,
                 env::consts::ARCH,
