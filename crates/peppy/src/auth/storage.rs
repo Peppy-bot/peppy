@@ -66,16 +66,16 @@ pub struct RouterSession {
     /// Transport scheme echoed from the server (`"tls"` today); recorded so a
     /// future transport change is visible on disk.
     pub protocol: String,
-    /// Absolute unix time after which the CLI should re-pull (and reconnect)
-    /// before the server's idle reaper could tear the router down. Derived at
-    /// pull time from the server's `reconnect_after_secs`.
+    /// Absolute unix time after which the CLI re-resolves (and reconnects) on the
+    /// next poke instead of reusing this cached config. A cache-freshness deadline
+    /// only; derived at pull time from the server's `reconnect_after_secs`.
     pub repull_after: i64,
 }
 
 impl RouterSession {
-    /// Whether the cached config is at/near its re-pull deadline, allowing
-    /// `skew` seconds of slack so a slow pull + handshake still lands inside the
-    /// server's live window (mirrors [`ProfileCreds::is_expired`]).
+    /// Whether the cached config is at/near its re-pull deadline, allowing `skew`
+    /// seconds of slack so a slow re-resolve + handshake completes before the cache
+    /// is treated as stale (mirrors [`ProfileCreds::is_expired`]).
     pub fn is_stale(&self, now_unix: i64, skew_secs: i64) -> bool {
         now_unix + skew_secs >= self.repull_after
     }
