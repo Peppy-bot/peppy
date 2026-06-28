@@ -1,6 +1,6 @@
 //! Authenticated calls to the `platform-backend` resource server: `GET /me`,
-//! `POST /logout`, and `POST /me/messaging-federation` (provision-or-refresh the per-user
-//! router, returning its connection config). On a `401` with a refreshable session credential the
+//! `POST /logout`, and `POST /me/messaging-federation` (fetch the shared
+//! router's connection config). On a `401` with a refreshable session credential the
 //! request is retried once after refreshing (and persisting) the token; a `401`
 //! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
 //! distinct messages so an ops problem isn't mistaken for a bad token.
@@ -105,23 +105,18 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-/// `POST {api_url}/me/messaging-federation` with `{"core_node": <name>}`: establish
-/// (on first call) or refresh the caller's messaging federation, provisioning the
-/// per-user router and returning the connection config the local router federates
-/// with, and refreshing the access token once on a 401 for session credentials (the
-/// same reactive-refresh contract as [`get_me`]). It is a POST, not a GET, because
-/// the call provisions the router and records `core_node` server-side; that
-/// mutation does not belong on a safe GET. `core_node` is the daemon's stable
-/// core-node name; the backend stores it so its liveness health-check can address
-/// this daemon's `/health` service over the federated link.
+/// `POST {api_url}/me/messaging-federation`: fetch the shared router's connection
+/// config (the daemon's discovery point), refreshing the access token once on a 401
+/// for session credentials (the same reactive-refresh contract as [`get_me`]). The
+/// platform runs a single shared router, so this provisions nothing and takes no
+/// body; it stays a POST for the historical shape. The daemon dials the returned
+/// endpoint over mTLS, presenting its client certificate.
 pub fn establish_messaging_federation(
     http: &HttpClient,
     api_url: &str,
-    core_node: &str,
     cred: &mut Credential,
 ) -> Result<ZenohRouterConfig> {
-    let body = serde_json::json!({ "core_node": core_node }).to_string();
-    authed_post_json(http, api_url, "/me/messaging-federation", &body, cred)
+    authed_post_json(http, api_url, "/me/messaging-federation", "", cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code

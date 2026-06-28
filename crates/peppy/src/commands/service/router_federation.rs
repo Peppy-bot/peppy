@@ -129,13 +129,12 @@ impl RouterFederation {
     pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         api_url: String,
-        core_node: String,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
         connect_timeout: Duration,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
-            crate::auth::router::resolve_federation_target(&api_url, &core_node, connect_timeout)
+            crate::auth::router::resolve_federation_target(&api_url, connect_timeout)
         });
         Self {
             messenger,

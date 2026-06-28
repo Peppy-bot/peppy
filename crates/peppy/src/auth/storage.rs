@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 pub const CREDENTIALS_VERSION: u32 = 1;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
-/// session, and the cached per-user router connection — or empty (just the
+/// session, and the cached shared-router connection — or empty (just the
 /// current version) when not logged in.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
