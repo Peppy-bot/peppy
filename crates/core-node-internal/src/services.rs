@@ -1,6 +1,7 @@
 mod action_loop;
 mod clock;
 mod datastore;
+mod health;
 mod info;
 mod node;
 mod ping;
@@ -359,6 +360,14 @@ impl CoreNode {
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
+            )
+            .boxed(),
+            health::listen_for_health(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.start_time,
             )
             .boxed(),
             clock::listen_for_clock(

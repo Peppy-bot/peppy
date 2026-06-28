@@ -22,11 +22,12 @@
 //!   *verifies* the federation link with a real TLS handshake
 //!   ([`pmi::probe_tls_reachable`]) so a silent UnknownCA loop is reported as
 //!   [`FederationOutcome::Unreachable`] rather than a false success.
-//! * **Keepalive.** The cloud router is idle-reaped by the backend unless its
-//!   config is re-pulled within the idle window. The periodic re-resolve re-pulls
-//!   when the cached config goes stale, refreshing the server-side `last_seen_at`
-//!   (and re-provisioning a router that was already reaped). The keepalive does
-//!   *not* probe — it is kept cheap.
+//! * **Liveness (backend-driven).** There is no client-side keepalive poll. Once
+//!   federated, the local router holds its link to the cloud router open on its
+//!   own (`reconnect: true`); the backend actively probes this daemon's `/health`
+//!   service over the federated link and tears the cloud router down when the
+//!   daemon stops answering. The config pull on startup/login tells the backend
+//!   this daemon's `core_node` name so it knows which `/health` service to probe.
 //! * **Live (re)federation.** When the resolved upstream changes — the user logs
 //!   in, logs out, or the endpoint moves — the local router's zenohd config is
 //!   re-rendered and the router restarted, so the change takes effect without a
@@ -41,12 +42,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tracing::{info, warn};
-
-/// How often the manager re-resolves the caller's cloud-router config. Frequent
-/// enough to (de)federate within ~a poll even if a login/logout poke is missed
-/// (no daemon control socket); the config-pull keepalive is itself cache-gated,
-/// so a steady state mostly hits the local cache and does no network I/O.
-const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long a *verifying* login/logout poke waits for the federation link's TLS
 /// handshake to validate. Deliberately small and decoupled from `connect_timeout`
@@ -134,12 +129,13 @@ impl RouterFederation {
     pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         api_url: String,
+        core_node: String,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
         connect_timeout: Duration,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
-            crate::auth::router::resolve_federation_target(&api_url, connect_timeout)
+            crate::auth::router::resolve_federation_target(&api_url, &core_node, connect_timeout)
         });
         Self {
             messenger,
@@ -197,9 +193,11 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>) {
 }
 
 /// Waits for the router to come up, runs the initial federation (firing the
-/// startup gate when it completes or the timeout elapses), then services periodic
-/// keepalive re-resolves and immediate login/logout pokes for the daemon's
-/// lifetime (the caller races it against the shutdown signal).
+/// startup gate when it completes or the timeout elapses), then services
+/// immediate login/logout pokes for the daemon's lifetime (the caller races it
+/// against the shutdown signal). There is no periodic keepalive: once federated,
+/// the local router holds its upstream link open on its own and the backend
+/// actively health-checks this daemon.
 async fn manage_federation(
     messenger: Arc<Mutex<Messenger>>,
     resolver: Resolver,
@@ -257,38 +255,27 @@ async fn manage_federation(
     .await;
     fire_gate(&mut ready_tx);
 
-    // Phase 3 — steady state: periodic keepalive/re-resolve, or an immediate poke
-    // from `auth login`/`logout`. A single `select!` keeps sole ownership of
-    // `applied`, so a poke and a tick can never apply concurrently. Once all
-    // trigger senders drop (control listener gone, only at teardown in practice)
-    // the trigger arm is disabled via the `if !triggers_closed` guard so keepalive
-    // keeps polling without busy-spinning on the closed channel.
-    let mut triggers_closed = false;
-    loop {
-        tokio::select! {
-            _ = tokio::time::sleep(POLL_INTERVAL) => {
-                // Keepalive: cheap, never probes (`verify = false`).
-                poll_and_apply(
-                    &messenger, &resolver, &prober, connect_timeout, &mut applied, false,
-                ).await;
-            }
-            maybe_req = trigger_rx.recv(), if !triggers_closed => {
-                match maybe_req {
-                    Some(req) => {
-                        // A login/logout poke verifies the link (`verify = true`)
-                        // so the CLI learns whether federation actually validates.
-                        let outcome = poll_and_apply(
-                            &messenger, &resolver, &prober, connect_timeout, &mut applied, true,
-                        ).await;
-                        // The CLI may have already given up (read timeout); ignore.
-                        let _ = req.ack.send(outcome);
-                    }
-                    // All trigger senders dropped: stop polling the closed channel
-                    // and keep only the keepalive arm for the rest of our lifetime.
-                    None => triggers_closed = true,
-                }
-            }
-        }
+    // Phase 3 — steady state: react to immediate login/logout pokes from `auth
+    // login`/`logout`. There is no periodic keepalive: the local router keeps its
+    // upstream link alive on its own (`reconnect: true`), and the backend now
+    // probes this daemon's `/health` service for liveness, so re-resolving on a
+    // timer is no longer needed. When every trigger sender drops (the control
+    // listener is gone, only at teardown in practice) there is nothing left to
+    // react to, so the loop ends and the task exits.
+    while let Some(req) = trigger_rx.recv().await {
+        // A login/logout poke verifies the link (`verify = true`) so the CLI
+        // learns whether federation actually validates.
+        let outcome = poll_and_apply(
+            &messenger,
+            &resolver,
+            &prober,
+            connect_timeout,
+            &mut applied,
+            true,
+        )
+        .await;
+        // The CLI may have already given up (read timeout); ignore.
+        let _ = req.ack.send(outcome);
     }
 }
 
@@ -515,10 +502,10 @@ mod tests {
         Some((ENDPOINT.to_string(), pmi::TlsConfig::default()))
     }
 
-    /// A login/logout poke runs a federation poll *immediately* (well within the
-    /// 30s `POLL_INTERVAL`), verifies the link, and acks the applied outcome —
-    /// the whole point of the control channel. The initial (non-poke) poll does
-    /// NOT probe; only the verifying poke does.
+    /// A login/logout poke runs a federation poll *immediately*, verifies the
+    /// link, and acks the applied outcome — the whole point of the control
+    /// channel. The initial (non-poke) poll does NOT probe; only the verifying
+    /// poke does.
     #[tokio::test]
     async fn poke_refederates_immediately_verifies_and_acks() {
         let messenger = mock_messenger();
@@ -556,8 +543,7 @@ mod tests {
             "the initial (non-poke) poll must not probe the link"
         );
 
-        // Poke: must run a second resolve immediately, probe the link, and ack —
-        // not wait out the 30s poll interval.
+        // Poke: must run a second resolve immediately, probe the link, and ack.
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
             .send(RefederateRequest { ack: ack_tx })
@@ -565,7 +551,7 @@ mod tests {
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
             .await
-            .expect("the poke is serviced immediately, not after POLL_INTERVAL")
+            .expect("the poke is serviced immediately")
             .expect("ack sender not dropped");
 
         // The upstream is already in effect from the initial poll, so the poke

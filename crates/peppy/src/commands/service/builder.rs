@@ -179,6 +179,10 @@ impl ServeCommandBuilder {
     }
 
     pub fn build(mut self) -> Result<Serve> {
+        // The resolved core-node name, captured for the federation manager so the
+        // backend learns which `/health` service to probe. Set when the core node
+        // is built below; `serve` always builds a core node alongside federation.
+        let mut federation_core_node_name: Option<String> = None;
         if self.core_node_requested {
             if let Some(messenger) = &self.messenger {
                 // Capture the shutdown grace before `peppy_config` is moved into
@@ -205,6 +209,7 @@ impl ServeCommandBuilder {
 
                 // Write the daemon state file with the core node name
                 let core_node_name = core_node.node_name().to_string();
+                federation_core_node_name = Some(core_node_name.clone());
                 let daemon_state = DaemonState::new(
                     &core_node_name,
                     messenger.blocking_lock().messaging_port(),
@@ -241,6 +246,12 @@ impl ServeCommandBuilder {
             && let Some(messaging_ready) = self.messaging_ready.clone()
         {
             let connect_timeout = self.federation_connect_timeout;
+            // The backend stores this so its liveness health-check can address the
+            // daemon's `/health` service. `serve` always builds a core node before
+            // this block, so the name is present.
+            let core_node = federation_core_node_name.clone().expect(
+                "federation requires a core node; serve always builds one via with_core_node",
+            );
             // Poke channel: `auth login`/`logout` reach the federation loop through
             // the control socket so a login is federated immediately, not on the
             // next poll. Bounded + tiny: pokes are rare and serviced one at a time.
@@ -250,6 +261,7 @@ impl ServeCommandBuilder {
                     .add_async_command(Box::new(RouterFederation::new(
                         messenger,
                         api_url,
+                        core_node,
                         messaging_ready,
                         trigger_rx,
                         connect_timeout,

@@ -103,6 +103,7 @@ pub fn resolve_router_endpoint(
     creds_path: &Path,
     http: &HttpClient,
     api_url: &str,
+    core_node: &str,
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
 ) -> Result<RouterEndpoint> {
@@ -120,7 +121,7 @@ pub fn resolve_router_endpoint(
     // `PEPPY_API_KEY` PAT, which has no session.
     let endpoint = match cached {
         Some(rs) if !rs.is_stale(now, REPULL_SKEW_SECS) => rs.endpoint,
-        _ => pull_and_cache(creds_path, http, api_url, pat, now)?,
+        _ => pull_and_cache(creds_path, http, api_url, core_node, pat, now)?,
     };
 
     let (host, port) = client::split_locator(&endpoint)?;
@@ -140,11 +141,12 @@ fn pull_and_cache(
     creds_path: &Path,
     http: &HttpClient,
     api_url: &str,
+    core_node: &str,
     pat: Option<String>,
     now: i64,
 ) -> Result<String> {
     let mut cred = resolver::resolve(creds_path, http, pat)?;
-    let cfg = client::get_zenoh_router_config(http, api_url, &mut cred)?;
+    let cfg = client::get_zenoh_router_config(http, api_url, core_node, &mut cred)?;
 
     // Reload before caching so we don't clobber a concurrent refresh's rotation
     // (the same load-before-write discipline the token refresh uses).
@@ -164,20 +166,23 @@ fn pull_and_cache(
 ///
 /// Returns `None` — and the local router stays standalone (plaintext-only) — when
 /// the user is not logged in, no backend is configured/reachable, or the pull
-/// fails, so the daemon always starts. The pull doubles as the cloud router's
-/// idle keepalive (it refreshes `last_seen_at` server-side); the daemon's
-/// periodic re-resolve sustains it (and re-provisions a reaped router).
+/// fails, so the daemon always starts. The pull also tells the backend this
+/// daemon's `core_node` name so its active liveness health-check can address the
+/// `/health` service over the federated link; there is no longer a client-side
+/// keepalive re-pull (the backend now probes the daemon instead).
 ///
 /// `connect_timeout` bounds the (blocking) config pull so a slow/unreachable
 /// backend can't stall the caller (federation at startup / on a login-poke)
 /// beyond it; on timeout the pull errors and this returns `None`.
 pub fn resolve_federation_target(
     api_url: &str,
+    core_node: &str,
     connect_timeout: Duration,
 ) -> Option<(String, pmi::TlsConfig)> {
     resolve_federation_target_at(
         &storage::default_path(),
         api_url,
+        core_node,
         resolver::pat_from_env(),
         resolve_router_ca(),
         connect_timeout,
@@ -191,6 +196,7 @@ pub fn resolve_federation_target(
 pub fn resolve_federation_target_at(
     creds_path: &Path,
     api_url: &str,
+    core_node: &str,
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
     connect_timeout: Duration,
@@ -205,7 +211,7 @@ pub fn resolve_federation_target_at(
         return None;
     }
     let http = HttpClient::with_timeout(connect_timeout);
-    match resolve_router_endpoint(creds_path, &http, api_url, pat, ca_certificate) {
+    match resolve_router_endpoint(creds_path, &http, api_url, core_node, pat, ca_certificate) {
         Ok(ep) => Some((format!("tls/{}:{}", ep.host, ep.port), ep.tls)),
         Err(e) => {
             tracing::warn!(

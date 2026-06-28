@@ -379,8 +379,12 @@ fn whoami_runs_against_a_seeded_session() {
 #[test]
 fn get_zenoh_router_config_parses_the_contract() {
     let server = MockServer::start();
+    // The daemon must identify itself with `?core_node=<name>` so the backend
+    // knows which `/health` service to probe; pin that into the matcher.
     let cfg_mock = server.mock(|when, then| {
-        when.method(GET).path("/me/zenoh-router-config");
+        when.method(GET)
+            .path("/me/zenoh-router-config")
+            .query_param("core_node", "core-node-test");
         then.status(200).json_body(json!({
             "endpoint": "tls/7f3a.zenoh.localhost:7443",
             "protocol": "tls",
@@ -397,7 +401,8 @@ fn get_zenoh_router_config_parses_the_contract() {
         kind: CredentialKind::Pat,
     };
     let cfg =
-        client::get_zenoh_router_config(&http, &server.base_url(), &mut cred).expect("pull config");
+        client::get_zenoh_router_config(&http, &server.base_url(), "core-node-test", &mut cred)
+            .expect("pull config");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
     assert_eq!(
@@ -471,8 +476,9 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
         }),
     };
 
-    let cfg = client::get_zenoh_router_config(&http, &server.base_url(), &mut cred)
-        .expect("pull after refresh");
+    let cfg =
+        client::get_zenoh_router_config(&http, &server.base_url(), "core-node-test", &mut cred)
+            .expect("pull after refresh");
     assert_eq!(
         cfg.host_port().unwrap(),
         ("cap.zenoh.localhost".to_string(), 7443)
@@ -522,8 +528,15 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
-    let endpoint = router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None)
-        .expect("resolve from cache");
+    let endpoint = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        "core-node-test",
+        None,
+        None,
+    )
+    .expect("resolve from cache");
     assert_eq!(endpoint.host, "cached.zenoh.localhost");
     assert_eq!(endpoint.port, 7443);
     assert!(endpoint.tls.verify_name_on_connect);
@@ -554,9 +567,15 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     };
     storage::save(&path, &creds).expect("seed creds");
 
-    let target =
-        router::resolve_federation_target_at(&path, &server.base_url(), None, None, SECS_30)
-            .expect("logged in ⇒ a federation target");
+    let target = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        "core-node-test",
+        None,
+        None,
+        SECS_30,
+    )
+    .expect("logged in ⇒ a federation target");
     assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
     assert!(
         target.1.verify_name_on_connect,
@@ -583,8 +602,14 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir); // no creds file written ⇒ no session
-    let target =
-        router::resolve_federation_target_at(&path, &server.base_url(), None, None, SECS_30);
+    let target = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        "core-node-test",
+        None,
+        None,
+        SECS_30,
+    );
     assert!(target.is_none(), "not logged in ⇒ no federation target");
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
 }
@@ -622,6 +647,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
     let too_slow = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
+        "core-node-test",
         None,
         None,
         Duration::from_millis(100),
@@ -632,8 +658,14 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
     );
 
     // A generous bound against the same delay succeeds.
-    let in_time =
-        router::resolve_federation_target_at(&path, &server.base_url(), None, None, SECS_30);
+    let in_time = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        "core-node-test",
+        None,
+        None,
+        SECS_30,
+    );
     assert!(
         in_time.is_some(),
         "a backend within the timeout ⇒ a federation target"
@@ -672,9 +704,15 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
 
     let http = HttpClient::new();
     let ca = std::path::PathBuf::from("/etc/peppy/ca.pem");
-    let endpoint =
-        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, Some(ca.clone()))
-            .expect("re-pull");
+    let endpoint = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        "core-node-test",
+        None,
+        Some(ca.clone()),
+    )
+    .expect("re-pull");
     assert_eq!(endpoint.host, "fresh.zenoh.localhost");
     assert_eq!(endpoint.port, 7443);
     assert_eq!(

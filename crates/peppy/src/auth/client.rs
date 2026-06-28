@@ -7,6 +7,7 @@
 
 use secrecy::ExposeSecret;
 use serde::{Deserialize, de::DeserializeOwned};
+use url::form_urlencoded;
 
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, CredentialKind, refresh_and_persist};
@@ -103,15 +104,21 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-/// `GET {api_url}/me/zenoh-router-config`: pull (provisioning on first call) the
-/// caller's private router connection config, refreshing once on a 401 for
-/// session credentials (the same reactive-refresh contract as [`get_me`]).
+/// `GET {api_url}/me/zenoh-router-config?core_node=<name>`: pull (provisioning on
+/// first call) the caller's private router connection config, refreshing once on
+/// a 401 for session credentials (the same reactive-refresh contract as
+/// [`get_me`]). `core_node` is the daemon's stable core-node name; the backend
+/// stores it so its liveness health-check can address this daemon's `/health`
+/// service over the federated link.
 pub fn get_zenoh_router_config(
     http: &HttpClient,
     api_url: &str,
+    core_node: &str,
     cred: &mut Credential,
 ) -> Result<ZenohRouterConfig> {
-    authed_get_json(http, api_url, "/me/zenoh-router-config", cred)
+    let encoded: String = form_urlencoded::byte_serialize(core_node.as_bytes()).collect();
+    let path = format!("/me/zenoh-router-config?core_node={encoded}");
+    authed_get_json(http, api_url, &path, cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code
