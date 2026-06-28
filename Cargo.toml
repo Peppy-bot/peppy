@@ -51,11 +51,11 @@ latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
-# NOTE: there is intentionally no [patch] here. Inside the superproject the git deps
-# above are redirected to the in-tree `public-peppy-libs` checkout by the
-# `.cargo/config.toml` at the SUPERPROJECT root (a `[patch.*]` block, committed to the
-# superproject only). That keeps this committed manifest git-only, so standalone clones
-# and CI build against the published `main` revision with no edits. See that file.
+# NOTE: there is intentionally no [patch] here. These git deps are the source of truth
+# for everyone — standalone clones and CI build the pinned revision with no edits, and
+# Cargo.lock stays git-resolved. For LOCAL co-development of public-peppy-libs, the
+# superproject can opt in to redirecting them to the in-tree checkout via
+# `scripts/local-libs.sh on` (a gitignored .cargo/config.toml [patch]); off by default.
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]

@@ -126,9 +126,18 @@ async fn serve_control(socket_path: &Path, trigger_tx: TriggerSender, connect_ti
         path = %socket_path.display(),
         "federation control: listening for login/logout federation pokes"
     );
+    // Back off on a failed `accept()` so a *persistent* error (e.g. the process
+    // ran out of file descriptors) can't spin this loop into a CPU/log storm.
+    // Starts small, doubles on each consecutive failure up to a cap, and resets
+    // after any successful accept. The whole loop is raced against shutdown by the
+    // caller, so a sleep here never delays daemon exit.
+    const ACCEPT_BACKOFF_INIT: Duration = Duration::from_millis(5);
+    const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+    let mut accept_backoff = ACCEPT_BACKOFF_INIT;
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                accept_backoff = ACCEPT_BACKOFF_INIT;
                 let trigger_tx = trigger_tx.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_conn(stream, trigger_tx, connect_timeout).await {
@@ -136,7 +145,11 @@ async fn serve_control(socket_path: &Path, trigger_tx: TriggerSender, connect_ti
                     }
                 });
             }
-            Err(e) => warn!(error = %e, "federation control: accept failed; continuing"),
+            Err(e) => {
+                warn!(error = %e, "federation control: accept failed; backing off then continuing");
+                tokio::time::sleep(accept_backoff).await;
+                accept_backoff = (accept_backoff * 2).min(ACCEPT_BACKOFF_MAX);
+            }
         }
     }
 }

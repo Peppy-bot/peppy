@@ -133,6 +133,18 @@ def test_prod_gate_malformed_endpoint_raises() -> None:
             verify_prod_router_publicly_trusted()
 
 
+@pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999"])
+def test_prod_gate_out_of_range_port_raises(bad_port: str) -> None:
+    # A numeric but out-of-range TCP port is rejected up front, before the probe
+    # is ever attempted.
+    with patch.dict(
+        os.environ, {PROD_ROUTER_ENDPOINT_ENV: f"health.zenoh.example:{bad_port}"}
+    ), patch("functions.cli._probe_publicly_trusted_tls") as probe:
+        with pytest.raises(ReleaseError, match="1-65535"):
+            verify_prod_router_publicly_trusted()
+    probe.assert_not_called()
+
+
 def test_prod_gate_valid_chain_passes() -> None:
     # A valid, publicly-trusted endpoint: the probe completes without raising.
     with patch.dict(

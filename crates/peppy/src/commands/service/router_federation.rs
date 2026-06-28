@@ -77,6 +77,27 @@ fn real_prober() -> Prober {
     })
 }
 
+/// The future a [`Federator`] returns: `Ok(true)` ⇒ the local router's config was
+/// (re)rendered and zenohd bounced, `Ok(false)` ⇒ nothing was applied (an operator
+/// `ZENOH_CONFIG` pins the config), `Err` ⇒ the apply failed.
+type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
+
+/// Applies a desired upstream to the local router (re-render + bounce). A boxed
+/// async closure so tests can inject a deterministic federation result —
+/// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned) — in place of the
+/// real [`refederate_and_restart`], whose mock backend can only ever report
+/// `Ok(false)` and so cannot exercise the applied/verify path.
+type Federator = Arc<dyn Fn(Option<(String, pmi::TlsConfig)>) -> FederateFuture + Send + Sync>;
+
+/// The real federator: re-render the owned router's config with the upstream and,
+/// if it changed, bounce zenohd (see [`refederate_and_restart`]).
+fn real_federator(messenger: Arc<Mutex<Messenger>>) -> Federator {
+    Arc::new(move |target| -> FederateFuture {
+        let messenger = messenger.clone();
+        Box::pin(async move { refederate_and_restart(&messenger, &target).await })
+    })
+}
+
 /// Outcome of one federation poll, reported back to a control-socket poke so the
 /// CLI can tell the user the post-apply state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +132,7 @@ pub(crate) type TriggerReceiver = mpsc::Receiver<RefederateRequest>;
 /// Background task (a [`ServeAsyncCommand`]) that federates the local router to
 /// the per-user cloud router and keeps it federated. See the module docs.
 pub(crate) struct RouterFederation {
-    messenger: Arc<Mutex<Messenger>>,
+    federator: Federator,
     resolver: Resolver,
     prober: Prober,
     /// Goes `true` once the router process is up (MessagingRouter ran
@@ -137,7 +158,7 @@ impl RouterFederation {
             crate::auth::router::resolve_federation_target(&api_url, connect_timeout)
         });
         Self {
-            messenger,
+            federator: real_federator(messenger),
             resolver,
             prober: real_prober(),
             messaging_ready,
@@ -150,7 +171,7 @@ impl RouterFederation {
 impl ServeAsyncCommand for RouterFederation {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
         let RouterFederation {
-            messenger,
+            federator,
             resolver,
             prober,
             messaging_ready,
@@ -168,7 +189,7 @@ impl ServeAsyncCommand for RouterFederation {
             // promptly (the loop is otherwise infinite).
             tokio::select! {
                 _ = manage_federation(
-                    messenger, resolver, prober, messaging_ready, trigger_rx, ready_tx,
+                    federator, resolver, prober, messaging_ready, trigger_rx, ready_tx,
                     connect_timeout,
                 ) => {}
                 res = super::shutdown_signal::shutdown_signal() => {
@@ -191,6 +212,23 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>) {
     }
 }
 
+/// What the last completed poll left in effect, cached across polls so an
+/// identical repeat (the same desired upstream) is answered from the fast path
+/// without re-applying. Richer than the bare endpoint string: it also remembers
+/// whether the upstream is *operator-pinned* (an operator `ZENOH_CONFIG` owns the
+/// router config, so we did not actually apply it). Without the `pinned` bit a
+/// repeat of a pinned target would match on endpoint alone and be misreported as
+/// [`FederationOutcome::Applied`] instead of [`FederationOutcome::Pinned`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AppliedState {
+    /// The upstream now in effect: `Some(ep)` federated to `ep`, `None`
+    /// de-federated / nothing federated.
+    endpoint: Option<String>,
+    /// Whether the config is operator-pinned (so the desired change was not
+    /// applied here), replayed so identical repeats stay `Pinned`.
+    pinned: bool,
+}
+
 /// Waits for the router to come up, runs the initial federation (firing the
 /// startup gate when it completes or the timeout elapses), then services
 /// immediate login/logout pokes for the daemon's lifetime (the caller races it
@@ -198,7 +236,7 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>) {
 /// the local router holds its upstream link open on its own and the backend
 /// actively health-checks this daemon.
 async fn manage_federation(
-    messenger: Arc<Mutex<Messenger>>,
+    federator: Federator,
     resolver: Resolver,
     prober: Prober,
     mut messaging_ready: watch::Receiver<bool>,
@@ -242,9 +280,9 @@ async fn manage_federation(
     // bounce, even if the user is logged in but the backend is unreachable. The
     // initial poll does not verify (`verify = false`): startup must not block on a
     // TLS handshake, and the verifying check belongs to the login poke.
-    let mut applied: Option<String> = None;
+    let mut applied = AppliedState::default();
     poll_and_apply(
-        &messenger,
+        &federator,
         &resolver,
         &prober,
         connect_timeout,
@@ -265,7 +303,7 @@ async fn manage_federation(
         // A login/logout poke verifies the link (`verify = true`) so the CLI
         // learns whether federation actually validates.
         let outcome = poll_and_apply(
-            &messenger,
+            &federator,
             &resolver,
             &prober,
             connect_timeout,
@@ -288,11 +326,11 @@ async fn manage_federation(
 /// [`FederationOutcome::Unreachable`] (and logged loudly) instead of a false
 /// `Applied`.
 async fn poll_and_apply(
-    messenger: &Arc<Mutex<Messenger>>,
+    federator: &Federator,
     resolver: &Resolver,
     prober: &Prober,
     connect_timeout: Duration,
-    applied: &mut Option<String>,
+    applied: &mut AppliedState,
     verify: bool,
 ) -> FederationOutcome {
     // The resolver is blocking (HTTP + file I/O); keep it off the async worker. It
@@ -322,13 +360,18 @@ async fn poll_and_apply(
     let desired = resolved.as_ref().map(|(ep, _)| ep.clone());
 
     // Apply the change (or note the no-op) and derive the base outcome.
-    let outcome = if desired == *applied {
-        // Steady state (including the cache-gated re-pull): the upstream
-        // is unchanged, so there is nothing to re-render or restart. Report it as
-        // applied so a poke gets a positive "already in place" ack.
-        FederationOutcome::Applied(applied.clone())
+    let outcome = if desired == applied.endpoint {
+        // Steady state (including the cache-gated re-pull): the upstream is
+        // unchanged, so there is nothing to re-render or restart. Replay the last
+        // outcome — crucially preserving `Pinned`, so an identical repeat of an
+        // operator-pinned target is not misreported as a positive `Applied`.
+        if applied.pinned {
+            FederationOutcome::Pinned
+        } else {
+            FederationOutcome::Applied(applied.endpoint.clone())
+        }
     } else {
-        match refederate_and_restart(messenger, &resolved).await {
+        match federator(resolved.clone()).await {
             Ok(true) => {
                 match &desired {
                     Some(ep) => {
@@ -340,19 +383,27 @@ async fn poll_and_apply(
                         )
                     }
                 }
-                *applied = desired.clone();
+                *applied = AppliedState {
+                    endpoint: desired.clone(),
+                    pinned: false,
+                };
                 FederationOutcome::Applied(desired.clone())
             }
             Ok(false) => {
                 // An operator-pinned `ZENOH_CONFIG` owns the router config, so the
-                // desired change cannot be applied here. Advance `applied` so this is
-                // noted once per change (login/logout) rather than every poll, but warn
-                // so the operator knows federation is not being auto-managed.
+                // desired change cannot be applied here. Advance `applied` (endpoint
+                // *and* the pinned bit) so this is noted once per change
+                // (login/logout) rather than every poll, and so an identical repeat
+                // replays `Pinned`; warn so the operator knows federation is not
+                // being auto-managed.
                 warn!(
                     "router federation: ZENOH_CONFIG pins the router config; the desired \
                      federation change was not applied (the operator owns this router's config)"
                 );
-                *applied = desired;
+                *applied = AppliedState {
+                    endpoint: desired,
+                    pinned: true,
+                };
                 FederationOutcome::Pinned
             }
             Err(e) => {
@@ -451,15 +502,23 @@ async fn refederate_and_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pmi::{MessengerAdapter, MockAdapter};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     const ENDPOINT: &str = "tls/cap.zenoh.localhost:7443";
 
-    fn mock_messenger() -> Arc<Mutex<Messenger>> {
-        Arc::new(Mutex::new(Messenger::new(MessengerAdapter::Mock(
-            MockAdapter::default(),
-        ))))
+    /// A federator simulating a real (non-pinned) rewrite: it reports the config
+    /// was rewritten (`Ok(true)`), so the poll treats the upstream as actually
+    /// applied — the path the verify/probe logic exercises. (The mock messenger's
+    /// real `refederate` can only ever report `Ok(false)`, i.e. pinned, so the
+    /// applied path is reachable in tests only via an injected federator.)
+    fn applying_federator() -> Federator {
+        Arc::new(|_target| -> FederateFuture { Box::pin(async { Ok(true) }) })
+    }
+
+    /// A federator simulating an operator-pinned config: `refederate` reports no
+    /// rewrite (`Ok(false)`), so the poll classifies the outcome as `Pinned`.
+    fn pinned_federator() -> Federator {
+        Arc::new(|_target| -> FederateFuture { Box::pin(async { Ok(false) }) })
     }
 
     /// A resolver returning a fixed value and counting its calls.
@@ -509,7 +568,6 @@ mod tests {
     /// poke does.
     #[tokio::test]
     async fn poke_refederates_immediately_verifies_and_acks() {
-        let messenger = mock_messenger();
         let (resolver, calls) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
         // Router already up.
@@ -518,7 +576,7 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
 
         let task = tokio::spawn(manage_federation(
-            messenger,
+            applying_federator(),
             resolver,
             prober,
             messaging_rx,
@@ -581,7 +639,6 @@ mod tests {
     /// within the daemon's ack budget. Regression guard for the latency-budget bug.
     #[tokio::test]
     async fn poke_probes_with_the_bounded_probe_timeout() {
-        let messenger = mock_messenger();
         let (resolver, _) = counting_resolver(upstream());
         let (prober, seen) = timeout_capturing_prober();
         let (messaging_tx, messaging_rx) = watch::channel(true);
@@ -589,7 +646,7 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
 
         let task = tokio::spawn(manage_federation(
-            messenger,
+            applying_federator(),
             resolver,
             prober,
             messaging_rx,
@@ -628,7 +685,6 @@ mod tests {
     /// config was applied.
     #[tokio::test]
     async fn poke_with_failing_probe_reports_unreachable() {
-        let messenger = mock_messenger();
         let (resolver, _calls) = counting_resolver(upstream());
         let reason = "received fatal alert: UnknownCA";
         let (prober, probe_calls) = counting_prober(Err(reason.to_string()));
@@ -637,7 +693,7 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
 
         let task = tokio::spawn(manage_federation(
-            messenger,
+            applying_federator(),
             resolver,
             prober,
             messaging_rx,
@@ -676,12 +732,64 @@ mod tests {
         task.abort();
     }
 
+    /// An operator-pinned config (`refederate` reports no rewrite) must keep
+    /// reporting `Pinned` on an *identical* repeat, not flip to `Applied`. The
+    /// cached state has to remember the pinned bit alongside the endpoint —
+    /// otherwise the fast path matches on endpoint alone and misreports `Applied`
+    /// (and would then needlessly probe). Regression guard for that cache.
+    #[tokio::test]
+    async fn poke_on_pinned_config_stays_pinned_and_does_not_probe() {
+        let (resolver, _calls) = counting_resolver(upstream());
+        let (prober, probe_calls) = counting_prober(Ok(()));
+        let (messaging_tx, messaging_rx) = watch::channel(true);
+        let (trigger_tx, trigger_rx) = mpsc::channel(8);
+        let (ready_tx, ready_rx) = oneshot::channel();
+
+        let task = tokio::spawn(manage_federation(
+            pinned_federator(),
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+            ready_tx,
+            Duration::from_secs(5),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), ready_rx)
+            .await
+            .expect("startup gate fires")
+            .expect("gate sender not dropped");
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        trigger_tx
+            .send(RefederateRequest { ack: ack_tx })
+            .await
+            .expect("trigger accepted");
+        let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("poke serviced immediately")
+            .expect("ack sender not dropped");
+
+        assert_eq!(
+            outcome,
+            FederationOutcome::Pinned,
+            "an identical repeat of a pinned target must stay Pinned, not Applied"
+        );
+        assert_eq!(
+            probe_calls.load(Ordering::SeqCst),
+            0,
+            "a pinned outcome is never probed"
+        );
+
+        drop(messaging_tx);
+        task.abort();
+    }
+
     /// The startup gate fires within the timeout even when the backend is slow
     /// enough to blow the bound, so a hung backend can never stall `serve` past
     /// `connect_timeout`. The federation loop then keeps retrying.
     #[tokio::test]
     async fn startup_gate_fires_within_timeout_when_resolve_is_slow() {
-        let messenger = mock_messenger();
         // Resolver sleeps past the (short) connect timeout, so the bounded resolve
         // elapses and the first poll completes as a failure — the gate must still
         // fire.
@@ -695,7 +803,7 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
 
         let task = tokio::spawn(manage_federation(
-            messenger,
+            applying_federator(),
             resolver,
             prober,
             messaging_rx,
@@ -718,7 +826,6 @@ mod tests {
     /// when nothing was federated, the gate still fires, and nothing is probed.
     #[tokio::test]
     async fn logged_out_initial_poll_is_a_noop_and_fires_the_gate() {
-        let messenger = mock_messenger();
         let (resolver, calls) = counting_resolver(None);
         let (prober, probe_calls) = counting_prober(Ok(()));
         let (messaging_tx, messaging_rx) = watch::channel(true);
@@ -726,7 +833,7 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
 
         let task = tokio::spawn(manage_federation(
-            messenger,
+            applying_federator(),
             resolver,
             prober,
             messaging_rx,

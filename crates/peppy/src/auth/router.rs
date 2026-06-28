@@ -16,12 +16,18 @@ use std::time::Duration;
 use super::http::HttpClient;
 use super::storage::{self, RouterSession};
 use super::{client, resolver};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Re-resolve this many seconds before the cache-freshness deadline (mirrors the
 /// OAuth refresh skew) so a slow re-pull + TLS handshake completes before the
 /// cached config is treated as stale.
 const REPULL_SKEW_SECS: i64 = 30;
+
+/// The only router transport the CLI dials. The federation connect target is
+/// always built as `tls/<host>:<port>` (see [`resolve_federation_target_at`]), so a
+/// config advertising any other transport is rejected at pull time rather than
+/// cached and then silently dialed over TLS anyway.
+const SUPPORTED_ROUTER_PROTOCOL: &str = "tls";
 
 /// The committed dev root CA, embedded into the binary **only** in debug builds
 /// (`#[cfg(debug_assertions)]`) so a release binary never carries it. The CLI
@@ -200,6 +206,23 @@ fn pull_and_cache(
     let mut cred = resolver::resolve(creds_path, http, pat)?;
     let cfg = client::establish_messaging_federation(http, api_url, &mut cred)?;
 
+    // Validate the config *before* it is written to `creds.router`: a malformed
+    // endpoint or an unsupported transport must not poison the on-disk
+    // `RouterSession`. A poisoned cache would otherwise re-fail `split_locator` on
+    // every reuse until it goes stale (instead of being re-pulled). The connect
+    // target is always `tls/<host>:<port>`, so reject any other advertised
+    // transport here rather than caching it and dialing TLS anyway.
+    if cfg.protocol != SUPPORTED_ROUTER_PROTOCOL {
+        return Err(Error::Auth(format!(
+            "router config advertised unsupported transport {:?}; only \
+             `{SUPPORTED_ROUTER_PROTOCOL}` is supported",
+            cfg.protocol
+        )));
+    }
+    // Parse the locator now (the same check the connect path does) so an
+    // unparseable endpoint is rejected before it is persisted.
+    client::split_locator(&cfg.endpoint)?;
+
     // Reload before caching so we don't clobber a concurrent refresh's rotation
     // (the same load-before-write discipline the token refresh uses).
     let mut creds = storage::load(creds_path)?;
@@ -253,13 +276,23 @@ pub fn resolve_federation_target_at(
     connect_timeout: Duration,
 ) -> Option<(String, pmi::TlsConfig)> {
     // Skip the network entirely when there is plainly no identity to pull for, so
-    // an un-provisioned dev box does not log a spurious auth error every poll.
-    let logged_in = pat.is_some()
-        || storage::load(creds_path)
-            .map(|c| c.session.is_some())
-            .unwrap_or(false);
-    if !logged_in {
-        return None;
+    // an un-provisioned dev box does not log a spurious auth error every poll. Take
+    // that fast path only on a *definitive* no-identity (no PAT and a clean load
+    // that returns no session). A real credential *read* failure is not "no
+    // identity": log it and fall through rather than swallowing it into a silent
+    // logged-out state, so the resolve path below surfaces the underlying error.
+    if pat.is_none() {
+        match storage::load(creds_path) {
+            Ok(creds) if creds.session.is_none() => return None,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "router federation: could not read stored credentials to check login \
+                     state; not taking the logged-out fast path"
+                );
+            }
+        }
     }
     let http = HttpClient::with_timeout(connect_timeout);
     match resolve_router_endpoint(

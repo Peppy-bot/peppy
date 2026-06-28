@@ -138,6 +138,10 @@ def verify_prod_router_publicly_trusted() -> None:
         raise ReleaseError(
             f"{PROD_ROUTER_ENDPOINT_ENV} has a non-numeric port: {endpoint!r}"
         ) from None
+    if not 1 <= port <= 65535:
+        raise ReleaseError(
+            f"{PROD_ROUTER_ENDPOINT_ENV} port must be in 1-65535, got {port} in {endpoint!r}"
+        )
     _probe_publicly_trusted_tls(host, port)
 
 
