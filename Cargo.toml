@@ -51,22 +51,11 @@ latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
-# Dev-only source override: build the `public-peppy-libs` git dependencies
-# against the in-tree submodule checkout instead of the published `main` revision,
-# so cross-repo changes to `pmi`/`peppylib` (e.g. the per-user-router TLS work) can
-# be exercised from `peppyos` without a merge round-trip. ALL shared crates are
-# redirected together — patching only a subset makes Cargo resolve a second copy of
-# a transitively-shared crate (e.g. `core-node-api`) from git, which then fails to
-# unify with the local one (type mismatch). Remove this block once the shared
-# changes land on `main` and `cargo update` moves the lockfile forward.
-[patch."https://github.com/Peppy-bot/public-peppy-libs"]
-peppy-config-model = { path = "../public-peppy-libs/peppyos-shared/peppy-config-model" }
-peppylib-rs = { path = "../public-peppy-libs/peppyos-shared/peppylib-rs" }
-pmi = { path = "../public-peppy-libs/peppyos-shared/peppy-messaging-interface" }
-core-node-api = { path = "../public-peppy-libs/peppyos-shared/core-node-api" }
-json5-pretty = { path = "../public-peppy-libs/peppyos-shared/json5-pretty" }
-config-test-support = { path = "../public-peppy-libs/peppyos-shared/config-test-support" }
-build-helpers = { path = "../public-peppy-libs/peppyos-shared/build-helpers" }
+# NOTE: there is intentionally no [patch] here. Inside the superproject the git deps
+# above are redirected to the in-tree `public-peppy-libs` checkout by the
+# `.cargo/config.toml` at the SUPERPROJECT root (a `[patch.*]` block, committed to the
+# superproject only). That keeps this committed manifest git-only, so standalone clones
+# and CI build against the published `main` revision with no edits. See that file.
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]
