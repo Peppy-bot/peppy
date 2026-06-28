@@ -377,14 +377,14 @@ fn whoami_runs_against_a_seeded_session() {
 }
 
 #[test]
-fn get_zenoh_router_config_parses_the_contract() {
+fn establish_messaging_federation_parses_the_contract() {
     let server = MockServer::start();
-    // The daemon must identify itself with `?core_node=<name>` so the backend
-    // knows which `/health` service to probe; pin that into the matcher.
+    // The daemon must identify itself with `{"core_node": <name>}` in the POST body
+    // so the backend knows which `/health` service to probe; pin that into the matcher.
     let cfg_mock = server.mock(|when, then| {
-        when.method(GET)
-            .path("/me/zenoh-router-config")
-            .query_param("core_node", "core-node-test");
+        when.method(POST)
+            .path("/me/messaging-federation")
+            .json_body(json!({ "core_node": "core-node-test" }));
         then.status(200).json_body(json!({
             "endpoint": "tls/7f3a.zenoh.localhost:7443",
             "protocol": "tls",
@@ -400,9 +400,13 @@ fn get_zenoh_router_config_parses_the_contract() {
         token: storage::secret("any-token".to_string()),
         kind: CredentialKind::Pat,
     };
-    let cfg =
-        client::get_zenoh_router_config(&http, &server.base_url(), "core-node-test", &mut cred)
-            .expect("pull config");
+    let cfg = client::establish_messaging_federation(
+        &http,
+        &server.base_url(),
+        "core-node-test",
+        &mut cred,
+    )
+    .expect("provision router");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
     assert_eq!(
@@ -439,14 +443,14 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
     });
     // First pull (seeded token) is rejected; the retry (rotated token) succeeds.
     let pull_rejected = server.mock(|when, then| {
-        when.method(GET)
-            .path("/me/zenoh-router-config")
+        when.method(POST)
+            .path("/me/messaging-federation")
             .header("Authorization", "Bearer seeded-access");
         then.status(401);
     });
     let pull_ok = server.mock(|when, then| {
-        when.method(GET)
-            .path("/me/zenoh-router-config")
+        when.method(POST)
+            .path("/me/messaging-federation")
             .header("Authorization", "Bearer refreshed-access");
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
@@ -476,9 +480,13 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
         }),
     };
 
-    let cfg =
-        client::get_zenoh_router_config(&http, &server.base_url(), "core-node-test", &mut cred)
-            .expect("pull after refresh");
+    let cfg = client::establish_messaging_federation(
+        &http,
+        &server.base_url(),
+        "core-node-test",
+        &mut cred,
+    )
+    .expect("pull after refresh");
     assert_eq!(
         cfg.host_port().unwrap(),
         ("cap.zenoh.localhost".to_string(), 7443)
@@ -508,7 +516,7 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     // returned host matching the cached value — not this mock's response; the
     // bogus body only makes an accidental pull obvious.
     let pull = server.mock(|when, then| {
-        when.method(GET).path("/me/zenoh-router-config");
+        when.method(POST).path("/me/messaging-federation");
         then.status(200)
             .json_body(json!({ "endpoint": "tls/should-not-be-used:1" }));
     });
@@ -551,7 +559,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     // the `RouterFederation` task both rely on.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(GET).path("/me/zenoh-router-config");
+        when.method(POST).path("/me/messaging-federation");
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -595,7 +603,7 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
     // un-provisioned dev box).
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(GET).path("/me/zenoh-router-config");
+        when.method(POST).path("/me/messaging-federation");
         then.status(200)
             .json_body(json!({ "endpoint": "tls/should-not-be-pulled:1" }));
     });
@@ -625,7 +633,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
     // it's the timeout, not the mock, that fails the short case.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(GET).path("/me/zenoh-router-config");
+        when.method(POST).path("/me/messaging-federation");
         then.status(200)
             .delay(Duration::from_millis(500))
             .json_body(json!({
@@ -680,7 +688,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
 fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(GET).path("/me/zenoh-router-config");
+        when.method(POST).path("/me/messaging-federation");
         then.status(200).json_body(json!({
             "endpoint": "tls/fresh.zenoh.localhost:7443",
             "protocol": "tls",

@@ -97,6 +97,20 @@ impl HttpClient {
         finish("POST", url, resp)
     }
 
+    /// `POST url` with a pre-serialized JSON `body` (`application/json`),
+    /// optionally with a bearer token. The caller serializes the payload so this
+    /// thin client stays free of `serde::Serialize` bounds.
+    pub fn post_json(&self, url: &str, body: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let req = self
+            .agent
+            .post(url)
+            .header("Content-Type", "application/json");
+        let resp = with_bearer(req, bearer)
+            .send(body)
+            .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
+        finish("POST", url, resp)
+    }
+
     /// `POST url` with no body (used for `/logout`).
     pub fn post_empty(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
         let resp = with_bearer(self.agent.post(url), bearer)

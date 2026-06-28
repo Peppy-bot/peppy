@@ -1,13 +1,12 @@
 //! Authenticated calls to the `platform-backend` resource server: `GET /me`,
-//! `POST /logout`, and `GET /me/zenoh-router-config` (the per-user router
-//! connection config). On a `401` with a refreshable session credential the
+//! `POST /logout`, and `POST /me/messaging-federation` (provision-or-refresh the per-user
+//! router, returning its connection config). On a `401` with a refreshable session credential the
 //! request is retried once after refreshing (and persisting) the token; a `401`
 //! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
 //! distinct messages so an ops problem isn't mistaken for a bad token.
 
 use secrecy::ExposeSecret;
 use serde::{Deserialize, de::DeserializeOwned};
-use url::form_urlencoded;
 
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, CredentialKind, refresh_and_persist};
@@ -104,21 +103,23 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-/// `GET {api_url}/me/zenoh-router-config?core_node=<name>`: pull (provisioning on
-/// first call) the caller's private router connection config, refreshing once on
-/// a 401 for session credentials (the same reactive-refresh contract as
-/// [`get_me`]). `core_node` is the daemon's stable core-node name; the backend
-/// stores it so its liveness health-check can address this daemon's `/health`
-/// service over the federated link.
-pub fn get_zenoh_router_config(
+/// `POST {api_url}/me/messaging-federation` with `{"core_node": <name>}`: establish
+/// (on first call) or refresh the caller's messaging federation, provisioning the
+/// per-user router and returning the connection config the local router federates
+/// with, and refreshing the access token once on a 401 for session credentials (the
+/// same reactive-refresh contract as [`get_me`]). It is a POST, not a GET, because
+/// the call provisions the router and records `core_node` server-side; that
+/// mutation does not belong on a safe GET. `core_node` is the daemon's stable
+/// core-node name; the backend stores it so its liveness health-check can address
+/// this daemon's `/health` service over the federated link.
+pub fn establish_messaging_federation(
     http: &HttpClient,
     api_url: &str,
     core_node: &str,
     cred: &mut Credential,
 ) -> Result<ZenohRouterConfig> {
-    let encoded: String = form_urlencoded::byte_serialize(core_node.as_bytes()).collect();
-    let path = format!("/me/zenoh-router-config?core_node={encoded}");
-    authed_get_json(http, api_url, &path, cred)
+    let body = serde_json::json!({ "core_node": core_node }).to_string();
+    authed_post_json(http, api_url, "/me/messaging-federation", &body, cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code
@@ -141,12 +142,24 @@ fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<Htt
     Ok(resp)
 }
 
-/// An authenticated `GET {api_url}{path}` whose `200` body deserializes to `T`,
-/// applying the status contract every `/me*` endpoint shares: a `401` becomes the
-/// credential-specific auth error (after the single reactive refresh [`authed_get`]
-/// already attempts), `502`/`503` map to distinct ops-vs-token messages, and any
-/// other status to a generic HTTP error. `path` doubles as the deserialization
-/// context label, so a new authed GET endpoint is one line, not a copied block.
+/// A JSON POST that, on 401 with a session credential, refreshes (and persists)
+/// the token and retries exactly once with the same body.
+fn authed_post(
+    http: &HttpClient,
+    url: &str,
+    body: &str,
+    cred: &mut Credential,
+) -> Result<HttpResponse> {
+    let resp = http.post_json(url, body, Some(cred.token.expose_secret()))?;
+    if resp.status == 401 && cred.is_refreshable() {
+        refresh_in_place(http, cred)?;
+        return http.post_json(url, body, Some(cred.token.expose_secret()));
+    }
+    Ok(resp)
+}
+
+/// An authenticated `GET {api_url}{path}` whose `200` body deserializes to `T`.
+/// See [`interpret_authed_json`] for the shared status contract.
 fn authed_get_json<T: DeserializeOwned>(
     http: &HttpClient,
     api_url: &str,
@@ -155,6 +168,37 @@ fn authed_get_json<T: DeserializeOwned>(
 ) -> Result<T> {
     let url = format!("{}{}", api_url.trim_end_matches('/'), path);
     let resp = authed_get(http, &url, cred)?;
+    interpret_authed_json(resp, cred, "GET", &url, path)
+}
+
+/// An authenticated `POST {api_url}{path}` with a JSON `body` whose `200` response
+/// deserializes to `T`. See [`interpret_authed_json`] for the shared status
+/// contract.
+fn authed_post_json<T: DeserializeOwned>(
+    http: &HttpClient,
+    api_url: &str,
+    path: &str,
+    body: &str,
+    cred: &mut Credential,
+) -> Result<T> {
+    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
+    let resp = authed_post(http, &url, body, cred)?;
+    interpret_authed_json(resp, cred, "POST", &url, path)
+}
+
+/// The status contract every authenticated `/me*` JSON endpoint shares: a `200`
+/// body deserializes to `T`, a `401` becomes the credential-specific auth error
+/// (after the single reactive refresh the `authed_*` callers already attempt),
+/// `502`/`503` map to distinct ops-vs-token messages, and any other status to a
+/// generic HTTP error. `path` doubles as the deserialization context label, so a
+/// new authed endpoint is one line, not a copied block.
+fn interpret_authed_json<T: DeserializeOwned>(
+    resp: HttpResponse,
+    cred: &Credential,
+    method: &str,
+    url: &str,
+    path: &str,
+) -> Result<T> {
     match resp.status {
         200 => resp.json(path),
         401 => Err(unauthorized_error(cred)),
@@ -165,7 +209,7 @@ fn authed_get_json<T: DeserializeOwned>(
         503 => Err(Error::Http(
             "backend temporarily unavailable, try again shortly".to_string(),
         )),
-        s => Err(Error::Http(format!("GET {url} returned {s}"))),
+        s => Err(Error::Http(format!("{method} {url} returned {s}"))),
     }
 }
 

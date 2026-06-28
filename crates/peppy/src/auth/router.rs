@@ -2,8 +2,8 @@
 //! session.
 //!
 //! The flow mirrors the OAuth resolver: reuse the cached router config while it
-//! is fresh, otherwise pull a new one from `GET /me/zenoh-router-config`
-//! (refreshing the access token on a `401` via [`client::get_zenoh_router_config`])
+//! is fresh, otherwise fetch a new one from `POST /me/messaging-federation`
+//! (refreshing the access token on a `401` via [`client::establish_messaging_federation`])
 //! and cache it beside the session. The CA the router is validated against is
 //! resolved CLI-side at connect time (see [`resolve_router_ca`]), **not** taken
 //! from the server's response: a debug build trusts the committed dev CA embedded
@@ -146,7 +146,7 @@ fn pull_and_cache(
     now: i64,
 ) -> Result<String> {
     let mut cred = resolver::resolve(creds_path, http, pat)?;
-    let cfg = client::get_zenoh_router_config(http, api_url, core_node, &mut cred)?;
+    let cfg = client::establish_messaging_federation(http, api_url, core_node, &mut cred)?;
 
     // Reload before caching so we don't clobber a concurrent refresh's rotation
     // (the same load-before-write discipline the token refresh uses).
