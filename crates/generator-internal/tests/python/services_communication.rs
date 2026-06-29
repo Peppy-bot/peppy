@@ -252,13 +252,9 @@ if __name__ == "__main__":
         exposer_runtime_config_path.to_str().unwrap().to_owned();
     let user_node_consumer_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(config::org::OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger for test control");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
@@ -561,13 +557,9 @@ if __name__ == "__main__":
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(config::org::OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger for test control");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
@@ -942,13 +934,9 @@ if __name__ == "__main__":
     let exposer2_runtime_config_str = exposer2_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(config::org::OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger for test control");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,

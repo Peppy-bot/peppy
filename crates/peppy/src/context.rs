@@ -85,12 +85,9 @@ impl AppContext {
         let namespace = config::org::resolve_session_namespace(Some(organization_namespace));
         self.messenger_handle
             .get_or_try_init(|| async {
-                MessengerHandle::from_host_port_with_namespace(
-                    config::consts::DEFAULT_MESSAGING_HOST,
-                    messaging_port,
-                    Some(namespace),
-                )
-                .await
+                MessengerHandle::connect(config::consts::DEFAULT_MESSAGING_HOST, messaging_port)
+                    .namespace(namespace)
+                    .await
             })
             .await?;
         Ok(())

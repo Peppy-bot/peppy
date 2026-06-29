@@ -261,13 +261,9 @@ fn main() -> Result<()> {
 
     // Wait until both nodes have completed their setup_fn (node_health is reachable).
     // (The receiver reaches this point only after it receives a frame.)
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(config::org::OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger for shutdown");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for shutdown");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,
