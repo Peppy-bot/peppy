@@ -116,10 +116,12 @@ async fn print_runtime_config_async(
 
     // Reflect the daemon's organization namespace, exactly as `apply_daemon_defaults`
     // stamps it onto a launched node, so this inspection output matches the session
-    // namespace a real node would open under.
+    // namespace a real node would open under. Reuse the namespace captured when the
+    // connection was established (above) rather than reading the state again, which
+    // could race a restart and pair this generation's stack lookup with another
+    // generation's namespace.
     let mut runtime_config = runtime_config;
-    runtime_config.discovery.organization_id =
-        Some(ctx.read_daemon_state()?.organization_namespace);
+    runtime_config.discovery.organization_id = Some(conn.organization_namespace);
 
     let runtime_config_json = serde_json::to_string(&runtime_config).map_err(|e| {
         Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))

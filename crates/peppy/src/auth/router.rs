@@ -180,15 +180,22 @@ pub fn resolve_router_endpoint(
         .map(|s| s.subject.clone())
         .unwrap_or_default();
     // The cache is identity-bound two ways: `login`/`logout` clear it with the
-    // session, AND `RouterSession.subject` tags it with the identity it was pulled
-    // for. The fresh-cache branch reuses the endpoint (and its `organization_id`)
-    // only while the cache is fresh AND its subject still matches the active
-    // session, so a cache that somehow survived an identity change is re-pulled
-    // rather than reused under the wrong org. A PAT pull has no session, so both
-    // subjects are empty and still match (the PAT path keeps caching, which a
-    // blanket "require a session" guard would wrongly disable).
+    // session, AND `RouterSession.subject` tags it with the backend identity it was
+    // pulled for. Reuse the cached endpoint (and its `organization_id`) only for a
+    // *session* resolve (no active PAT) whose non-empty subject still matches the
+    // cache, so a config pulled under one identity is never replayed under another
+    // (e.g. a PAT-pulled org leaking onto the on-disk session once the PAT is gone).
+    // An active PAT always re-pulls: a PAT is bound to its own backend subject at
+    // pull time (see `pull_and_cache`), which the session-derived `active_subject`
+    // cannot match on this fast path, and re-pulling is cheap (federation resolves
+    // only at startup and on a login/logout poke).
+    let reuse_cache = pat.is_none() && !active_subject.is_empty();
     let (endpoint, organization_id) = match creds.router {
-        Some(rs) if !rs.is_stale(now, REPULL_SKEW_SECS) && rs.subject == active_subject => {
+        Some(rs)
+            if reuse_cache
+                && !rs.is_stale(now, REPULL_SKEW_SECS)
+                && rs.subject == active_subject =>
+        {
             (rs.endpoint, rs.organization_id)
         }
         _ => pull_and_cache(creds_path, http, api_url, pat, now)?,
@@ -216,6 +223,11 @@ fn pull_and_cache(
     now: i64,
 ) -> Result<(String, String)> {
     let mut cred = resolver::resolve(creds_path, http, pat)?;
+    // The identity this pull is actually authenticated as drives the cache tag
+    // below. A PAT is not the on-disk session, so it must not be tagged with the
+    // session subject — doing so would let the session reuse the PAT's org once the
+    // PAT is gone (a cross-identity leak).
+    let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
     let cfg = client::establish_messaging_federation(http, api_url, &mut cred)?;
 
     // Validate the config *before* it is written to `creds.router`: a malformed
@@ -238,14 +250,21 @@ fn pull_and_cache(
     // Reload before caching so we don't clobber a concurrent refresh's rotation
     // (the same load-before-write discipline the token refresh uses).
     let mut creds = storage::load(creds_path)?;
-    // Tag the cache with the identity it was pulled for so a stale cache that
-    // outlives an identity change is re-pulled (see `resolve_router_endpoint`).
-    // A PAT pull has no session, so the subject is empty.
-    let subject = creds
-        .session
-        .as_ref()
-        .map(|s| s.subject.clone())
-        .unwrap_or_default();
+    // Tag the cache with the backend identity the config was pulled for so a stale
+    // cache that outlives an identity change is re-pulled (see
+    // `resolve_router_endpoint`). For a session that is the session subject; for a
+    // PAT it is the PAT owner's stable, non-secret subject from the backend (`/me`)
+    // — never the session subject (which is a different identity) or an empty
+    // string (which an empty active subject would spuriously match).
+    let subject = if is_pat {
+        client::get_me(http, api_url, &mut cred)?.sub
+    } else {
+        creds
+            .session
+            .as_ref()
+            .map(|s| s.subject.clone())
+            .unwrap_or_default()
+    };
     creds.router = Some(RouterSession {
         endpoint: cfg.endpoint.clone(),
         protocol: cfg.protocol.clone(),

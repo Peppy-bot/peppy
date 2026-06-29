@@ -33,10 +33,16 @@ impl Command for LogoutCommand {
 
         // Load-resilient: a malformed / pre-`organization_id` file fails to parse
         // with `Error::Auth`; treat it as "already effectively logged out" rather
-        // than wedging logout (the clear below self-heals the file).
+        // than wedging logout. A default has no session, so the early return below
+        // would otherwise leave the bad file on disk — overwrite it with a clean
+        // default here so logout actually heals it.
         let mut creds = match storage::load(&creds_path) {
             Ok(creds) => creds,
-            Err(Error::Auth(_)) => storage::Credentials::default(),
+            Err(Error::Auth(_)) => {
+                let cleaned = storage::Credentials::default();
+                storage::save(&creds_path, &cleaned)?;
+                cleaned
+            }
             Err(e) => return Err(e),
         };
         let Some(pc) = creds.session.as_ref() else {

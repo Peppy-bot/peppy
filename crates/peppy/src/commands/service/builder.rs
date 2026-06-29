@@ -299,6 +299,10 @@ impl ServeCommandBuilder {
                         // the namespace it re-resolves from fresh creds against this
                         // to decide live re-federate (unchanged) vs restart (changed).
                         self.organization_namespace.clone(),
+                        // The startup poll raises this if it resolves a namespace
+                        // that differs from this generation's (the steady-state
+                        // poke path leaves the restart to the control handler).
+                        restart_tx.clone(),
                         self.teardown_token.clone(),
                     )));
 

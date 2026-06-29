@@ -274,6 +274,41 @@ fn logout_calls_backend_and_clears_local_credentials() {
 }
 
 #[test]
+fn logout_heals_a_malformed_credentials_file() {
+    // A malformed (e.g. pre-`organization_id`/unversioned) credentials file fails
+    // to parse with `Error::Auth`. Logout treats that as "already logged out", but
+    // it must still rewrite the file to a clean default so the bad file does not
+    // linger on disk (the early "Not logged in" return used to skip the save).
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir conf");
+    // Unversioned old shape ⇒ rejected by `storage::load` with `Error::Auth`.
+    std::fs::write(
+        &path,
+        r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
+            access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
+            scope: "openid" } }"#,
+    )
+    .expect("write malformed creds");
+
+    LogoutCommand {
+        // Never contacted: the malformed path returns "Not logged in" before any
+        // backend call. A dummy keeps the test independent of build-default URLs.
+        api_url: Some("http://127.0.0.1:9".to_string()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("logout tolerates a malformed file");
+
+    // The file now parses cleanly (healed to a current-version default) and is
+    // logged out.
+    let after = storage::load(&path).expect("malformed file must be healed, not left on disk");
+    assert!(after.session.is_none(), "healed file is logged out");
+    assert!(after.router.is_none(), "healed file has no router cache");
+}
+
+#[test]
 fn resolver_prefers_pat_env_over_files() {
     let http = HttpClient::new();
 
@@ -770,6 +805,80 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     let rs = after.router.as_ref().expect("router cached");
     assert_eq!(rs.endpoint, "tls/fresh.zenoh.localhost:7443");
     assert!(rs.repull_after > storage::now_unix(), "deadline pushed out");
+}
+
+#[test]
+fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
+    // A PAT-authenticated pull must tag the cache with the PAT owner's stable
+    // backend subject (`/me`), NOT the on-disk session subject. Otherwise, once the
+    // PAT is gone, a session resolve would reuse the PAT's org — a cross-identity
+    // (cross-tenant) leak.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(POST).path("/me/messaging-federation");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/pat-org.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+        }));
+    });
+    // Only a PAT pull resolves `/me` (to learn the PAT owner's stable subject).
+    let me = server.mock(|when, then| {
+        when.method(GET).path("/me");
+        then.status(200)
+            .json_body(json!({ "sub": "pat-owner-xyz" }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    // A session for a *different* identity is on disk at the same time as the PAT.
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)), // subject "user-123"
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let http = HttpClient::new();
+
+    // Pull as the PAT.
+    let ep = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        Some("the-pat".to_string()),
+        None,
+        None,
+    )
+    .expect("PAT pull resolves");
+    assert_eq!(ep.host, "pat-org.zenoh.localhost");
+    assert_eq!(pull.calls(), 1, "the PAT pull hit the backend once");
+    assert_eq!(
+        me.calls(),
+        1,
+        "a PAT pull resolves /me to bind the cache to the PAT identity"
+    );
+
+    // The cache is tagged with the PAT owner's subject, not the session subject.
+    let cached = storage::load(&path)
+        .expect("reload")
+        .router
+        .expect("router cached");
+    assert_eq!(
+        cached.subject, "pat-owner-xyz",
+        "a PAT pull must bind the cache to the PAT identity, not the on-disk session"
+    );
+
+    // With the PAT gone, a session resolve must NOT reuse the PAT's cache: the
+    // subjects differ, so it re-pulls rather than leaking the PAT's org.
+    let _ = router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, None)
+        .expect("session resolve");
+    assert_eq!(
+        pull.calls(),
+        2,
+        "the session must re-pull, not reuse the PAT-identity cache"
+    );
+    assert_eq!(me.calls(), 1, "a session pull does not need /me");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.

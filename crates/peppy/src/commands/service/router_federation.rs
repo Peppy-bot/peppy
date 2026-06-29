@@ -180,6 +180,13 @@ pub(crate) struct RouterFederation {
     /// Resolves the current namespace from the credentials (post-pull), compared
     /// against `startup_namespace` to detect a namespace change.
     namespace_resolver: NamespaceResolver,
+    /// In-process restart signal (the serve coordinator's). The *startup*
+    /// federation poll raises it when it discovers the credentials already resolve
+    /// to a different namespace than this generation started under, so the live
+    /// session (which can't be re-namespaced) is rebuilt rather than left running
+    /// un-federated. The steady-state poke path instead acks `Restart` and the
+    /// control handler raises this same signal after flushing the ack.
+    restart_tx: watch::Sender<bool>,
     /// Shared coordinator token: the task tears down when it is cancelled (an
     /// in-process restart) or on a real OS shutdown signal.
     teardown_token: CancellationToken,
@@ -194,6 +201,7 @@ impl RouterFederation {
         trigger_rx: TriggerReceiver,
         connect_timeout: Duration,
         startup_namespace: String,
+        restart_tx: watch::Sender<bool>,
         teardown_token: CancellationToken,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
@@ -208,6 +216,7 @@ impl RouterFederation {
             connect_timeout,
             startup_namespace,
             namespace_resolver: real_namespace_resolver(),
+            restart_tx,
             teardown_token,
         }
     }
@@ -224,6 +233,7 @@ impl ServeAsyncCommand for RouterFederation {
             connect_timeout,
             startup_namespace,
             namespace_resolver,
+            restart_tx,
             teardown_token,
         } = *self;
         // Readiness gate: fired by `manage_federation` once the first federation
@@ -239,7 +249,7 @@ impl ServeAsyncCommand for RouterFederation {
             tokio::select! {
                 _ = manage_federation(
                     federator, resolver, prober, messaging_ready, trigger_rx, ready_tx,
-                    connect_timeout, startup_namespace, namespace_resolver,
+                    connect_timeout, startup_namespace, namespace_resolver, restart_tx,
                 ) => {}
                 _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
@@ -291,6 +301,7 @@ async fn manage_federation(
     connect_timeout: Duration,
     startup_namespace: String,
     namespace_resolver: NamespaceResolver,
+    restart_tx: watch::Sender<bool>,
 ) {
     let mut ready_tx = Some(ready_tx);
 
@@ -329,7 +340,7 @@ async fn manage_federation(
     // initial poll does not verify (`verify = false`): startup must not block on a
     // TLS handshake, and the verifying check belongs to the login poke.
     let mut applied = AppliedState::default();
-    poll_and_apply(
+    let initial_outcome = poll_and_apply(
         &federator,
         &resolver,
         &prober,
@@ -341,6 +352,26 @@ async fn manage_federation(
     )
     .await;
     fire_gate(&mut ready_tx);
+
+    // The initial poll re-pulled the federation config, so the credentials now
+    // reflect the current org. If that resolves to a *different* namespace than
+    // this generation started under (e.g. the daemon started logged-in but with a
+    // cleared/stale router cache, so `startup_namespace` was `local` before the
+    // pull discovered the real org), the live session can't be re-namespaced.
+    // Request a generation restart now — otherwise the daemon would run
+    // un-federated under the wrong namespace until the next login/logout poke. The
+    // steady-state poke path leaves the actual restart to the control handler
+    // (which flushes its ack first); the startup poll has no ack to flush, so it
+    // raises the signal directly. The rebuilt generation resolves the namespace
+    // afresh and federates normally.
+    if matches!(initial_outcome, FederationOutcome::Restart) {
+        info!(
+            "router federation: startup resolved a namespace that differs from this generation's; \
+             requesting a daemon restart instead of federating under the wrong namespace"
+        );
+        let _ = restart_tx.send(true);
+        return;
+    }
 
     // Phase 3 — steady state: react to immediate login/logout pokes from `auth
     // login`/`logout`. There is no periodic keepalive: the local router keeps its
@@ -660,6 +691,23 @@ mod tests {
         (resolver, calls)
     }
 
+    /// A namespace resolver that returns `first` on its first call and `rest`
+    /// after, so the *startup* poll sees the unchanged namespace (no startup
+    /// restart) and a later *poke* sees the change — exercising the steady-state
+    /// `Restart` ack distinctly from the startup restart path.
+    fn switching_ns_resolver(first: &str, rest: &str) -> NamespaceResolver {
+        let calls = AtomicUsize::new(0);
+        let first = first.to_string();
+        let rest = rest.to_string();
+        Arc::new(move || {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                first.clone()
+            } else {
+                rest.clone()
+            }
+        })
+    }
+
     /// A login/logout poke runs a federation poll *immediately*, verifies the
     /// link, and acks the applied outcome — the whole point of the control
     /// channel. The initial (non-poke) poll does NOT probe; only the verifying
@@ -683,6 +731,7 @@ mod tests {
             Duration::from_secs(5),
             "local".to_string(),
             local_ns_resolver(),
+            watch::channel(false).0,
         ));
 
         // Startup gate fires after the first (initial) poll; that poll resolved
@@ -756,6 +805,7 @@ mod tests {
             Duration::from_secs(45),
             "local".to_string(),
             local_ns_resolver(),
+            watch::channel(false).0,
         ));
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
@@ -804,6 +854,7 @@ mod tests {
             Duration::from_secs(5),
             "local".to_string(),
             local_ns_resolver(),
+            watch::channel(false).0,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -859,6 +910,7 @@ mod tests {
             Duration::from_secs(5),
             "local".to_string(),
             local_ns_resolver(),
+            watch::channel(false).0,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -918,6 +970,7 @@ mod tests {
             Duration::from_millis(100),
             "local".to_string(),
             local_ns_resolver(),
+            watch::channel(false).0,
         ));
 
         // Gate fires close to the 100ms bound, well before the 400ms resolve.
@@ -950,6 +1003,7 @@ mod tests {
             Duration::from_secs(5),
             "local".to_string(),
             local_ns_resolver(),
+            watch::channel(false).0,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -969,16 +1023,21 @@ mod tests {
 
     /// A poke after the credentials change the daemon's namespace acks `Restart`
     /// (the control handler then triggers a generation restart). The loop must NOT
-    /// federate or probe on a namespace change — a restart is fail-closed.
+    /// federate or probe on a namespace change — a restart is fail-closed. The
+    /// change appears only at the poke (the startup poll still sees `local`), so the
+    /// startup-restart path stays dormant and the steady-state ack is exercised.
     #[tokio::test]
     async fn poke_acks_restart_on_a_namespace_change() {
         let (resolver, _calls) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
-        // The re-resolved namespace differs from the `local` startup namespace.
-        let (ns_resolver, ns_calls) = counting_ns_resolver("550e8400-e29b-41d4-a716-446655440000");
+        // Startup resolves `local` (matches the startup namespace ⇒ no startup
+        // restart); the poke resolves the changed org id ⇒ a steady-state Restart.
+        let ns_resolver = switching_ns_resolver("local", "550e8400-e29b-41d4-a716-446655440000");
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
+        // The startup poll must NOT raise the restart signal in this scenario.
+        let (restart_tx, restart_rx) = watch::channel(false);
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
@@ -990,12 +1049,17 @@ mod tests {
             Duration::from_secs(5),
             "local".to_string(),
             ns_resolver,
+            restart_tx,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
             .expect("startup gate fires")
             .expect("gate sender not dropped");
+        assert!(
+            !*restart_rx.borrow(),
+            "the startup poll saw an unchanged namespace ⇒ no startup restart"
+        );
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
@@ -1017,9 +1081,61 @@ mod tests {
             0,
             "a restart never probes the link"
         );
+
+        drop(messaging_tx);
+        task.abort();
+    }
+
+    /// The *startup* federation poll, on resolving a namespace that differs from
+    /// the one this generation started under (e.g. logged in but the router cache
+    /// was empty at build time so the startup namespace was `local`), must raise
+    /// the in-process restart signal itself — there is no poke to ack — rather than
+    /// run on un-federated under the wrong namespace. It also must not federate or
+    /// probe on that drift (a restart is fail-closed).
+    #[tokio::test]
+    async fn startup_poll_requests_restart_on_namespace_drift() {
+        let (resolver, _calls) = counting_resolver(upstream());
+        let (prober, probe_calls) = counting_prober(Ok(()));
+        // Every resolve returns an org id that differs from the `local` startup
+        // namespace, so the very first (startup) poll detects the drift.
+        let (ns_resolver, ns_calls) = counting_ns_resolver("550e8400-e29b-41d4-a716-446655440000");
+        let (messaging_tx, messaging_rx) = watch::channel(true);
+        let (_trigger_tx, trigger_rx) = mpsc::channel(8);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (restart_tx, mut restart_rx) = watch::channel(false);
+
+        let task = tokio::spawn(manage_federation(
+            applying_federator(),
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+            ready_tx,
+            Duration::from_secs(5),
+            "local".to_string(),
+            ns_resolver,
+            restart_tx,
+        ));
+
+        // Startup still unblocks `serve` (the gate fires) ...
+        tokio::time::timeout(Duration::from_secs(1), ready_rx)
+            .await
+            .expect("startup gate fires even when a restart is requested")
+            .expect("gate sender not dropped");
+        // ... and then the startup poll raises the restart signal on its own.
+        tokio::time::timeout(Duration::from_secs(1), restart_rx.changed())
+            .await
+            .expect("the startup poll raises the restart signal")
+            .expect("restart sender not dropped");
+        assert!(*restart_rx.borrow(), "the restart signal is set");
+        assert_eq!(
+            probe_calls.load(Ordering::SeqCst),
+            0,
+            "a startup restart never probes the link"
+        );
         assert!(
             ns_calls.load(Ordering::SeqCst) >= 1,
-            "the namespace was re-resolved to detect the change"
+            "the namespace was re-resolved to detect the drift"
         );
 
         drop(messaging_tx);

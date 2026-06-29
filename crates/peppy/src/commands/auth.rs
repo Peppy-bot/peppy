@@ -63,8 +63,11 @@ pub(crate) fn confirm_restart(yes: bool, action: &FederationPokeAction) -> Resul
         return Ok(true);
     }
     // Nothing to restart if no daemon is running; and never block a non-interactive
-    // invocation (a script / CI) on a prompt.
-    if DaemonState::read().is_err() || !std::io::stdin().is_terminal() {
+    // invocation (a script / CI) on a prompt. A readable state file can outlive a
+    // crashed daemon, so probe the recorded pid for *real* liveness rather than
+    // treating state-file readability as "a daemon is up".
+    let daemon_running = DaemonState::read().is_ok_and(|s| s.is_running());
+    if !daemon_running || !std::io::stdin().is_terminal() {
         return Ok(true);
     }
     let verb = match action {
@@ -149,6 +152,12 @@ fn await_restart(
 ) -> Result<()> {
     // The namespace the daemon must come back under (what we just wrote).
     let expected = current_creds_namespace();
+    // This helper is shared by both flows, so the recovery guidance must name the
+    // caller's own subcommand rather than always saying `login`.
+    let subcommand = match action {
+        FederationPokeAction::Login => "login",
+        FederationPokeAction::Logout => "logout",
+    };
     let spinner =
         crate::terminal::spinner("Waiting for the daemon to restart under the new namespace");
     let deadline = Instant::now() + RESTART_POLL_DEADLINE;
@@ -156,7 +165,7 @@ fn await_restart(
         if Instant::now() >= deadline {
             break Err(Error::Auth(format!(
                 "the daemon did not come back under namespace `{expected}` within the timeout; \
-                 check the `peppy service serve` logs and re-run `peppy auth login`"
+                 check the `peppy service serve` logs and re-run `peppy auth {subcommand}`"
             )));
         }
         std::thread::sleep(RESTART_POLL_INTERVAL);
@@ -164,9 +173,9 @@ fn await_restart(
         // A concurrent login/logout rewrote the credentials mid-restart, so the
         // daemon will not come back under what we wrote.
         if current_creds_namespace() != expected {
-            break Err(Error::Auth(
-                "credentials changed during restart; re-run `peppy auth login`".to_string(),
-            ));
+            break Err(Error::Auth(format!(
+                "credentials changed during restart; re-run `peppy auth {subcommand}`"
+            )));
         }
 
         // The (path-stable) daemon state records the live generation's namespace,
@@ -181,7 +190,14 @@ fn await_restart(
         // Back under the expected namespace. Confirm the settled federation state
         // with a fresh poke (which now resolves "unchanged" and federates live).
         match daemon_control::poke_refederate(socket, read_timeout) {
-            PokeOutcome::Restarting => continue, // still settling (rare)
+            // Still settling: the new generation wrote its state (so we got here)
+            // but its control socket may not have bound yet, so a poke can
+            // transiently find no socket or time out. Keep polling until it
+            // actually answers (or the deadline above fires) rather than reporting
+            // one of these in-flight outcomes as the settled state.
+            PokeOutcome::Restarting | PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {
+                continue;
+            }
             other => {
                 break match action {
                     FederationPokeAction::Login => report_login(other),
