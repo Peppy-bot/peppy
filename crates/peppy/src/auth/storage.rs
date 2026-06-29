@@ -18,12 +18,67 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::{Error, Result};
 
-/// Whole `credentials.json5` document: a single cached session, or empty when
-/// not logged in.
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// On-disk schema version of `credentials.json5`. Bumped on any shape change;
+/// there is intentionally **no reader for an older version**. A clean break: a
+/// pre-Phase-F file has no `version`, deserializes to `0`, and is rejected by
+/// [`load`], so dev users simply re-run `peppy auth login` (acceptable pre-GA).
+pub const CREDENTIALS_VERSION: u32 = 1;
+
+/// Whole `credentials.json5` document: the schema version, a single cached OAuth
+/// session, and the cached shared-router connection — or empty (just the
+/// current version) when not logged in.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
+    /// Schema version (see [`CREDENTIALS_VERSION`]). Defaults to `0` when absent
+    /// so an old/unversioned file is detected and rejected rather than
+    /// half-interpreted.
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub session: Option<ProfileCreds>,
+    /// Cached per-user zenoh-router connection (from `POST /me/messaging-federation`), or
+    /// `None` until first fetched. Bound to `session`: cleared on login/logout so
+    /// it can never outlive its identity.
+    #[serde(default)]
+    pub router: Option<RouterSession>,
+}
+
+impl Default for Credentials {
+    /// An empty, not-logged-in document stamped with the current schema version,
+    /// so a freshly-written file round-trips through [`load`]'s version check.
+    fn default() -> Self {
+        Self {
+            version: CREDENTIALS_VERSION,
+            session: None,
+            router: None,
+        }
+    }
+}
+
+/// Cached per-user zenoh-router connection. Pulled from the backend after login
+/// and reused until [`is_stale`](Self::is_stale). `Clone` is derivable (no
+/// secrets — the capability lives in the endpoint and the link is end-to-end
+/// TLS), unlike [`ProfileCreds`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterSession {
+    /// The `<scheme>/<host>:<port>` locator the CLI dials.
+    pub endpoint: String,
+    /// Transport scheme echoed from the server (`"tls"` today); recorded so a
+    /// future transport change is visible on disk.
+    pub protocol: String,
+    /// Absolute unix time after which the CLI re-resolves (and reconnects) on the
+    /// next poke instead of reusing this cached config. A cache-freshness deadline
+    /// only; derived at pull time from the server's `reconnect_after_secs`.
+    pub repull_after: i64,
+}
+
+impl RouterSession {
+    /// Whether the cached config is at/near its re-pull deadline, allowing `skew`
+    /// seconds of slack so a slow re-resolve + handshake completes before the cache
+    /// is treated as stale (mirrors [`ProfileCreds::is_expired`]).
+    pub fn is_stale(&self, now_unix: i64, skew_secs: i64) -> bool {
+        now_unix + skew_secs >= self.repull_after
+    }
 }
 
 /// Cached credentials for one profile. The display-only `subject`/`username`
@@ -133,8 +188,23 @@ pub fn default_path() -> PathBuf {
 /// not exist yet (first login).
 pub fn load(path: &Path) -> Result<Credentials> {
     match std::fs::read_to_string(path) {
-        Ok(content) => serde_json5::from_str(&content)
-            .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display()))),
+        Ok(content) => {
+            let creds: Credentials = serde_json5::from_str(&content)
+                .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
+            // No back-compat reader: any other version (including the
+            // unversioned old format, which reads as 0) is rejected outright so
+            // a stale-shaped file is never half-interpreted.
+            if creds.version != CREDENTIALS_VERSION {
+                return Err(Error::Auth(format!(
+                    "credentials file {} is an unsupported format (v{}, expected v{}); \
+                     run `peppy auth login` again",
+                    path.display(),
+                    creds.version,
+                    CREDENTIALS_VERSION
+                )));
+            }
+            Ok(creds)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
         Err(e) => Err(Error::Io(e)),
     }
@@ -218,6 +288,7 @@ mod tests {
         let path = dir.path().join("conf").join("credentials.json5");
         let creds = Credentials {
             session: Some(sample()),
+            ..Default::default()
         };
 
         save(&path, &creds).expect("save");
@@ -226,6 +297,67 @@ mod tests {
         assert_eq!(pc.access_token.expose_secret(), ACCESS);
         assert_eq!(pc.refresh_token.expose_secret(), REFRESH);
         assert_eq!(pc.username, "alice");
+    }
+
+    #[test]
+    fn round_trips_a_cached_router_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        let creds = Credentials {
+            session: Some(sample()),
+            router: Some(RouterSession {
+                endpoint: "tls/cap.zenoh.localhost:7443".into(),
+                protocol: "tls".into(),
+                repull_after: 1_700_000_000,
+            }),
+            ..Default::default()
+        };
+
+        save(&path, &creds).expect("save");
+        let loaded = load(&path).expect("load");
+        let rs = loaded.router.as_ref().expect("router session");
+        assert_eq!(rs.endpoint, "tls/cap.zenoh.localhost:7443");
+        assert_eq!(rs.protocol, "tls");
+        assert_eq!(rs.repull_after, 1_700_000_000);
+    }
+
+    #[test]
+    fn default_document_carries_the_current_version() {
+        assert_eq!(Credentials::default().version, CREDENTIALS_VERSION);
+    }
+
+    #[test]
+    fn rejects_an_unversioned_old_format_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        // A pre-Phase-F document: no `version` field (reads as 0).
+        std::fs::write(
+            &path,
+            r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
+                access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
+                scope: "openid" } }"#,
+        )
+        .expect("write old file");
+
+        let err = load(&path).expect_err("old format must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported format") && msg.contains("peppy auth login"),
+            "rejection should be actionable: {msg}"
+        );
+    }
+
+    #[test]
+    fn router_session_staleness_accounts_for_skew() {
+        let rs = RouterSession {
+            endpoint: "tls/cap:7443".into(),
+            protocol: "tls".into(),
+            repull_after: 1_000,
+        };
+        assert!(!rs.is_stale(900, 30));
+        assert!(rs.is_stale(980, 30)); // 980 + 30 >= 1000
+        assert!(rs.is_stale(1_000, 0));
     }
 
     #[cfg(unix)]

@@ -1,11 +1,12 @@
-//! Authenticated calls to the `platform-backend` resource server: `GET /me` and
-//! `POST /logout`. On a `401` with a refreshable session credential the request
-//! is retried once after refreshing (and persisting) the token; a `401` on a PAT
-//! is a hard error (a PAT cannot be refreshed). `502`/`503` map to distinct
-//! messages so an ops problem isn't mistaken for a bad token.
+//! Authenticated calls to the `platform-backend` resource server: `GET /me`,
+//! `POST /logout`, and `POST /me/messaging-federation` (fetch the shared
+//! router's connection config). On a `401` with a refreshable session credential the
+//! request is retried once after refreshing (and persisting) the token; a `401`
+//! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
+//! distinct messages so an ops problem isn't mistaken for a bad token.
 
 use secrecy::ExposeSecret;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 
 use super::http::{HttpClient, HttpResponse};
 use super::resolver::{Credential, CredentialKind, refresh_and_persist};
@@ -45,20 +46,77 @@ impl Principal {
 
 /// `GET {api_url}/me`, refreshing once on a 401 for session credentials.
 pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result<Principal> {
-    let url = format!("{}/me", api_url.trim_end_matches('/'));
-    let resp = authed_get(http, &url, cred)?;
-    match resp.status {
-        200 => resp.json("/me"),
-        401 => Err(unauthorized_error(cred)),
-        502 => Err(Error::Auth(
-            "the backend's introspection credentials were rejected (server-side problem)"
-                .to_string(),
-        )),
-        503 => Err(Error::Http(
-            "backend temporarily unavailable, try again shortly".to_string(),
-        )),
-        s => Err(Error::Http(format!("GET {url} returned {s}"))),
+    authed_get_json(http, api_url, "/me", cred)
+}
+
+/// The connection config the backend hands the CLI for the caller's private
+/// per-user zenoh router. Deserialized tolerantly (unknown fields ignored) so a
+/// backend that adds fields still parses. The CA the router is validated against
+/// is **not** part of this response — it is CLI-side deployment config (the
+/// trust root the gateway's routers present a cert chained to).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ZenohRouterConfig {
+    /// The Zenoh locator to dial, `<scheme>/<host>:<port>` — e.g.
+    /// `tls/7f3a….zenoh.localhost:7443`. The host is the capability subdomain
+    /// (the SNI the gateway routes on); TLS terminates at the user's router.
+    pub endpoint: String,
+    /// Transport scheme, `"tls"` today.
+    pub protocol: String,
+    /// How long this config may be reused before re-resolving it. A cache-freshness
+    /// hint only: the backend now actively health-checks the daemon, so reusing a
+    /// still-fresh config (rather than re-pulling) never risks the router being torn
+    /// down.
+    pub reconnect_after_secs: u64,
+}
+
+impl ZenohRouterConfig {
+    /// Splits this config's `<scheme>/<host>:<port>` locator into the
+    /// `(host, port)` a TLS client dials. Thin wrapper over [`split_locator`].
+    pub fn host_port(&self) -> Result<(String, u16)> {
+        split_locator(&self.endpoint)
     }
+}
+
+/// Splits a `<scheme>/<host>:<port>` Zenoh locator into the `(host, port)` a TLS
+/// client dials. The host doubles as the SNI the gateway routes on and the name
+/// the router certificate is validated against. A scheme prefix is optional; a
+/// missing/invalid `host:port` is a hard error. Shared by the live response and
+/// the cached endpoint string.
+pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
+    let after_scheme = endpoint
+        .split_once('/')
+        .map(|(_scheme, rest)| rest)
+        .unwrap_or(endpoint);
+    let (host, port) = after_scheme.rsplit_once(':').ok_or_else(|| {
+        Error::Auth(format!(
+            "malformed router endpoint {endpoint:?}: expected `<scheme>/<host>:<port>`"
+        ))
+    })?;
+    if host.is_empty() {
+        return Err(Error::Auth(format!(
+            "malformed router endpoint {endpoint:?}: empty host"
+        )));
+    }
+    let port: u16 = port.parse().map_err(|_| {
+        Error::Auth(format!(
+            "malformed router endpoint {endpoint:?}: invalid port {port:?}"
+        ))
+    })?;
+    Ok((host.to_string(), port))
+}
+
+/// `POST {api_url}/me/messaging-federation`: fetch the shared router's connection
+/// config (the daemon's discovery point), refreshing the access token once on a 401
+/// for session credentials (the same reactive-refresh contract as [`get_me`]). The
+/// platform runs a single shared router, so this provisions nothing and takes no
+/// body; it stays a POST for the historical shape. The daemon dials the returned
+/// endpoint over mTLS, presenting its client certificate.
+pub fn establish_messaging_federation(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+) -> Result<ZenohRouterConfig> {
+    authed_post_json(http, api_url, "/me/messaging-federation", "", cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code
@@ -79,6 +137,77 @@ fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<Htt
         return http.get(url, Some(cred.token.expose_secret()));
     }
     Ok(resp)
+}
+
+/// A JSON POST that, on 401 with a session credential, refreshes (and persists)
+/// the token and retries exactly once with the same body.
+fn authed_post(
+    http: &HttpClient,
+    url: &str,
+    body: &str,
+    cred: &mut Credential,
+) -> Result<HttpResponse> {
+    let resp = http.post_json(url, body, Some(cred.token.expose_secret()))?;
+    if resp.status == 401 && cred.is_refreshable() {
+        refresh_in_place(http, cred)?;
+        return http.post_json(url, body, Some(cred.token.expose_secret()));
+    }
+    Ok(resp)
+}
+
+/// An authenticated `GET {api_url}{path}` whose `200` body deserializes to `T`.
+/// See [`interpret_authed_json`] for the shared status contract.
+fn authed_get_json<T: DeserializeOwned>(
+    http: &HttpClient,
+    api_url: &str,
+    path: &str,
+    cred: &mut Credential,
+) -> Result<T> {
+    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
+    let resp = authed_get(http, &url, cred)?;
+    interpret_authed_json(resp, cred, "GET", &url, path)
+}
+
+/// An authenticated `POST {api_url}{path}` with a JSON `body` whose `200` response
+/// deserializes to `T`. See [`interpret_authed_json`] for the shared status
+/// contract.
+fn authed_post_json<T: DeserializeOwned>(
+    http: &HttpClient,
+    api_url: &str,
+    path: &str,
+    body: &str,
+    cred: &mut Credential,
+) -> Result<T> {
+    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
+    let resp = authed_post(http, &url, body, cred)?;
+    interpret_authed_json(resp, cred, "POST", &url, path)
+}
+
+/// The status contract every authenticated `/me*` JSON endpoint shares: a `200`
+/// body deserializes to `T`, a `401` becomes the credential-specific auth error
+/// (after the single reactive refresh the `authed_*` callers already attempt),
+/// `502`/`503` map to distinct ops-vs-token messages, and any other status to a
+/// generic HTTP error. `path` doubles as the deserialization context label, so a
+/// new authed endpoint is one line, not a copied block.
+fn interpret_authed_json<T: DeserializeOwned>(
+    resp: HttpResponse,
+    cred: &Credential,
+    method: &str,
+    url: &str,
+    path: &str,
+) -> Result<T> {
+    match resp.status {
+        200 => resp.json(path),
+        401 => Err(unauthorized_error(cred)),
+        502 => Err(Error::Auth(
+            "the backend's introspection credentials were rejected (server-side problem)"
+                .to_string(),
+        )),
+        503 => Err(Error::Http(
+            "backend temporarily unavailable, try again shortly".to_string(),
+        )),
+        s => Err(Error::Http(format!("{method} {url} returned {s}"))),
+    }
 }
 
 /// Refreshes a session credential in place via the shared refresh-and-persist
@@ -131,4 +260,69 @@ pub fn creds_from_login(
         String::new(),
         tokens,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(endpoint: &str) -> ZenohRouterConfig {
+        ZenohRouterConfig {
+            endpoint: endpoint.to_string(),
+            protocol: "tls".to_string(),
+            reconnect_after_secs: 3000,
+        }
+    }
+
+    #[test]
+    fn host_port_splits_a_tls_locator() {
+        let (host, port) = cfg("tls/7f3a.zenoh.localhost:7443")
+            .host_port()
+            .expect("valid locator");
+        assert_eq!(host, "7f3a.zenoh.localhost");
+        assert_eq!(port, 7443);
+    }
+
+    #[test]
+    fn host_port_tolerates_a_missing_scheme() {
+        let (host, port) = cfg("cap.zenoh.localhost:7443")
+            .host_port()
+            .expect("scheme is optional");
+        assert_eq!(host, "cap.zenoh.localhost");
+        assert_eq!(port, 7443);
+    }
+
+    #[test]
+    fn host_port_rejects_a_missing_port() {
+        assert!(cfg("tls/cap.zenoh.localhost").host_port().is_err());
+    }
+
+    #[test]
+    fn host_port_rejects_a_non_numeric_port() {
+        assert!(cfg("tls/cap.zenoh.localhost:https").host_port().is_err());
+    }
+
+    #[test]
+    fn host_port_rejects_an_empty_host() {
+        assert!(cfg("tls/:7443").host_port().is_err());
+    }
+
+    #[test]
+    fn router_config_parses_tolerantly() {
+        // A backend that adds an unknown field still deserializes.
+        let json = r#"{
+            "endpoint": "tls/abc.zenoh.localhost:7443",
+            "protocol": "tls",
+            "mode": "client",
+            "reconnect_after_secs": 3000,
+            "some_future_field": "ignored"
+        }"#;
+        let cfg: ZenohRouterConfig = serde_json::from_str(json).expect("tolerant parse");
+        assert_eq!(cfg.protocol, "tls");
+        assert_eq!(cfg.reconnect_after_secs, 3000);
+        assert_eq!(
+            cfg.host_port().unwrap(),
+            ("abc.zenoh.localhost".to_string(), 7443)
+        );
+    }
 }

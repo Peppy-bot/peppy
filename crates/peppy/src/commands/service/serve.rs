@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::Command;
 use crate::context::AppContext;
@@ -18,15 +18,39 @@ pub(crate) type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + '
 pub(crate) struct ServeAsyncHandle {
     future: ServeFuture,
     ready: Option<oneshot::Receiver<()>>,
+    /// Whether a readiness gate that drops without firing aborts startup. `true`
+    /// for load-bearing gates (messaging router, core node) whose failure means
+    /// the daemon is broken; `false` for a best-effort gate (federation) that may
+    /// *delay* startup but must never crash it.
+    ready_required: bool,
 }
 
 impl ServeAsyncHandle {
+    /// A handle whose readiness gate (if any) is *required*: if its sender drops
+    /// without firing, startup aborts.
     pub(crate) fn new(future: ServeFuture, ready: Option<oneshot::Receiver<()>>) -> Self {
-        Self { future, ready }
+        Self {
+            future,
+            ready,
+            ready_required: true,
+        }
     }
 
-    fn into_parts(self) -> (ServeFuture, Option<oneshot::Receiver<()>>) {
-        (self.future, self.ready)
+    /// A handle whose readiness gate is *optional*: startup waits for it (so the
+    /// work is in place before reporting ready) but a drop is logged and
+    /// tolerated. Used for the best-effort federation gate, so a slow or failed
+    /// federation degrades to "proceed standalone" rather than taking the daemon
+    /// down.
+    pub(crate) fn new_optional_ready(future: ServeFuture, ready: oneshot::Receiver<()>) -> Self {
+        Self {
+            future,
+            ready: Some(ready),
+            ready_required: false,
+        }
+    }
+
+    fn into_parts(self) -> (ServeFuture, Option<oneshot::Receiver<()>>, bool) {
+        (self.future, self.ready, self.ready_required)
     }
 }
 
@@ -100,15 +124,25 @@ impl Serve {
             let mut join_set = JoinSet::new();
             let mut readiness = Vec::new();
             for handle in handles {
-                let (future, ready) = handle.into_parts();
+                let (future, ready, ready_required) = handle.into_parts();
                 if let Some(rx) = ready {
-                    readiness.push(rx);
+                    readiness.push((rx, ready_required));
                 }
                 join_set.spawn(future);
             }
 
-            for ready in readiness {
+            for (ready, required) in readiness {
                 if ready.await.is_err() {
+                    if !required {
+                        // A best-effort gate (federation) dropped without firing —
+                        // e.g. its task exited early or shutdown raced startup.
+                        // Proceed (standalone) rather than failing the daemon.
+                        warn!(
+                            "A serve handler dropped its optional readiness gate; \
+                             continuing without it"
+                        );
+                        continue;
+                    }
                     let join_result = join_set.join_next().await;
                     let err = match join_result {
                         Some(Ok(Ok(()))) => Error::ExecutionFailed(
@@ -216,5 +250,68 @@ impl Command for ServeCommand {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A test async command that fires (or drops) its readiness gate then exits,
+    /// with the gate marked required or optional.
+    struct FakeReady {
+        fire: bool,
+        required: bool,
+    }
+
+    impl ServeAsyncCommand for FakeReady {
+        fn run(self: Box<Self>) -> ServeAsyncHandle {
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let fire = self.fire;
+            let future: ServeFuture = Box::pin(async move {
+                if fire {
+                    let _ = ready_tx.send(());
+                } else {
+                    drop(ready_tx);
+                }
+                Ok(())
+            });
+            if self.required {
+                ServeAsyncHandle::new(future, Some(ready_rx))
+            } else {
+                ServeAsyncHandle::new_optional_ready(future, ready_rx)
+            }
+        }
+    }
+
+    /// A best-effort (optional) readiness gate that drops without firing must not
+    /// fail daemon startup — `serve` proceeds (standalone) and the run completes.
+    #[test]
+    fn optional_gate_drop_does_not_fail_startup() {
+        let composite = CompositeCommand::default()
+            .add_async_command(Box::new(FakeReady {
+                fire: true,
+                required: true,
+            }))
+            .add_async_command(Box::new(FakeReady {
+                fire: false,
+                required: false,
+            }));
+        Serve::new(composite)
+            .execute()
+            .expect("a dropped optional gate must not fail startup");
+    }
+
+    /// A required readiness gate that drops without firing still aborts startup.
+    #[test]
+    fn required_gate_drop_fails_startup() {
+        let composite = CompositeCommand::default().add_async_command(Box::new(FakeReady {
+            fire: false,
+            required: true,
+        }));
+        assert!(
+            Serve::new(composite).execute().is_err(),
+            "a dropped required gate must fail startup"
+        );
     }
 }

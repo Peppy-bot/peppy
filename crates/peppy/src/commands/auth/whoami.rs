@@ -29,9 +29,7 @@ impl Command for WhoamiCommand {
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
-        let pat = std::env::var("PEPPY_API_KEY")
-            .ok()
-            .filter(|v| !v.is_empty());
+        let pat = resolver::pat_from_env();
 
         match resolver::resolve(&creds_path, &http, pat) {
             Ok(mut cred) => {
