@@ -290,9 +290,13 @@ if __name__ == "__main__":
         )],
     );
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for shutdown");
+    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
+        &router_host,
+        router_port,
+        Some(config::org::OrgNamespace::local()),
+    )
+    .await
+    .expect("failed to create messenger for shutdown");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_core_node: TEST_CORE_NODE,

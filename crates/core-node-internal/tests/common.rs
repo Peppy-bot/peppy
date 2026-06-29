@@ -1693,6 +1693,12 @@ pub async fn start_core_node_with_real_messenger_in_mode(
         None,
         mode.gossip(),
         pmi::SubscriberBufferSizes::default(),
+        // The core node stamps the `local` org namespace onto every node it
+        // spawns (see `organization_namespace` below); its own session must open
+        // under the same namespace or it cannot reach a spawned node's
+        // node_ready/health services. Mirrors the daemon's
+        // `with_router(...).with_namespace(...)` pairing in production.
+        Some(config::org::OrgNamespace::local()),
     )
     .await
     .expect("failed to start zenoh router for test");
