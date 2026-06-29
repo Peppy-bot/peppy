@@ -73,12 +73,22 @@ impl AppContext {
         }
     }
 
-    async fn connect_with_port(&self, messaging_port: u16) -> crate::error::Result<()> {
+    async fn connect_with_port(
+        &self,
+        messaging_port: u16,
+        organization_namespace: &str,
+    ) -> crate::error::Result<()> {
+        // Open the control session under the daemon's namespace so the CLI reaches
+        // the daemon/node services that run under it. The daemon recorded the
+        // namespace in `DaemonState` before binding the control socket, so it is a
+        // valid value; resolve defensively (a bad value falls back to `local`).
+        let namespace = config::org::resolve_session_namespace(Some(organization_namespace));
         self.messenger_handle
             .get_or_try_init(|| async {
-                MessengerHandle::from_host_port(
+                MessengerHandle::from_host_port_with_namespace(
                     config::consts::DEFAULT_MESSAGING_HOST,
                     messaging_port,
+                    Some(namespace),
                 )
                 .await
             })
@@ -104,7 +114,11 @@ pub(crate) struct DaemonConnection<'a> {
 impl AppContext {
     pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
         let daemon_state = self.read_daemon_state()?;
-        self.connect_with_port(daemon_state.messaging_port).await?;
+        self.connect_with_port(
+            daemon_state.messaging_port,
+            &daemon_state.organization_namespace,
+        )
+        .await?;
         let messenger = self
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;

@@ -24,3 +24,17 @@ pub async fn shutdown_signal() -> std::io::Result<()> {
         tokio::signal::ctrl_c().await
     }
 }
+
+/// Resolves when this serve generation should tear down: either an OS shutdown
+/// signal (SIGINT/SIGTERM) OR the shared coordinator token being cancelled (an
+/// in-process restart). Every serve task awaits this so a namespace-change
+/// restart triggers the *same* graceful teardown as a real stop, without a
+/// self-SIGTERM. The OS-signal error is swallowed here: the serve coordinator is
+/// the authoritative signal observer and records the stop/restart reason; a task
+/// only needs the unpark, not the cause.
+pub(crate) async fn shutdown_or_token(token: &tokio_util::sync::CancellationToken) {
+    tokio::select! {
+        _ = shutdown_signal() => {}
+        _ = token.cancelled() => {}
+    }
+}

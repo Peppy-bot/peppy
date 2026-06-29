@@ -114,6 +114,13 @@ async fn print_runtime_config_async(
     )
     .map_err(Error::PeppyConfig)?;
 
+    // Reflect the daemon's organization namespace, exactly as `apply_daemon_defaults`
+    // stamps it onto a launched node, so this inspection output matches the session
+    // namespace a real node would open under.
+    let mut runtime_config = runtime_config;
+    runtime_config.discovery.organization_id =
+        Some(ctx.read_daemon_state()?.organization_namespace);
+
     let runtime_config_json = serde_json::to_string(&runtime_config).map_err(|e| {
         Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))
     })?;

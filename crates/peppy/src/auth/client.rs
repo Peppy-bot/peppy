@@ -67,6 +67,12 @@ pub struct ZenohRouterConfig {
     /// still-fresh config (rather than re-pulling) never risks the router being torn
     /// down.
     pub reconnect_after_secs: u64,
+    /// The caller's organization id (the platform's stable per-user `Uuid`, as a
+    /// string). Becomes the daemon's session namespace so robots of the same org
+    /// interoperate across the federation while different orgs stay routing-isolated.
+    /// Required: a backend that predates this field fails to parse, which is the
+    /// intended clean break (re-run `peppy auth login`).
+    pub organization_id: String,
 }
 
 impl ZenohRouterConfig {
@@ -271,6 +277,7 @@ mod tests {
             endpoint: endpoint.to_string(),
             protocol: "tls".to_string(),
             reconnect_after_secs: 3000,
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
         }
     }
 
@@ -315,11 +322,13 @@ mod tests {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
             "some_future_field": "ignored"
         }"#;
         let cfg: ZenohRouterConfig = serde_json::from_str(json).expect("tolerant parse");
         assert_eq!(cfg.protocol, "tls");
         assert_eq!(cfg.reconnect_after_secs, 3000);
+        assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
         assert_eq!(
             cfg.host_port().unwrap(),
             ("abc.zenoh.localhost".to_string(), 7443)

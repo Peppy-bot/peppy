@@ -191,6 +191,7 @@ impl ServeCommandEmulation {
             root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
             peppy_config: config::peppy_config::PeppyConfig::default(),
+            organization_namespace: "local".to_string(),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
         });
         let core_node_name = core_node.node_name().to_string();
@@ -214,6 +215,7 @@ impl ServeCommandEmulation {
             port,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+            "local",
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");

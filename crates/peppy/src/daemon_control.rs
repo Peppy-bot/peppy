@@ -69,6 +69,12 @@ pub(crate) enum ControlResponse {
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
     /// within the federation timeout).
     Error { message: String },
+    /// The credentials changed the daemon's *organization namespace*, which is
+    /// immutable for a live session, so the daemon is restarting its whole
+    /// generation to re-open every session under the new namespace. The daemon
+    /// flushes this ack and only then tears down; the CLI polls the (path-stable)
+    /// control socket until the daemon is back under the expected namespace.
+    Restarting,
 }
 
 impl ControlResponse {
@@ -97,6 +103,10 @@ pub(crate) enum PokeOutcome {
     DaemonNotRunning,
     /// Connected, but the daemon did not ack within the read deadline.
     TimedOut,
+    /// The credentials changed the daemon's organization namespace, so the daemon
+    /// acked and is restarting its whole generation. The caller then polls until
+    /// the daemon is back under the expected namespace.
+    Restarting,
 }
 
 /// Pokes the running daemon over `socket_path` to re-resolve and (re)apply
@@ -140,6 +150,7 @@ fn poke_inner(socket_path: &Path, read_timeout: Duration) -> std::io::Result<Pok
         ControlResponse::Pinned => PokeOutcome::Pinned,
         ControlResponse::Unreachable { message } => PokeOutcome::Unreachable(message),
         ControlResponse::Error { message } => PokeOutcome::DaemonError(message),
+        ControlResponse::Restarting => PokeOutcome::Restarting,
     })
 }
 

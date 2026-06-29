@@ -19,13 +19,13 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::router_federation::{FederationOutcome, RefederateRequest, TriggerSender};
 use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::daemon_control::{ControlResponse, REFEDERATE_VERB};
-use crate::error::Error;
 
 /// Bound on reading a request line, so a client that connects but never writes
 /// cannot hold a handler task open.
@@ -47,6 +47,7 @@ impl From<FederationOutcome> for ControlResponse {
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
             FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
+            FederationOutcome::Restart => ControlResponse::Restarting,
         }
     }
 }
@@ -58,6 +59,13 @@ pub(crate) struct FederationControl {
     /// Bound on how long to wait for a poked poll to apply before replying with a
     /// timeout (so a wedged apply can't hold a connection open forever).
     connect_timeout: Duration,
+    /// In-process restart signal. The control handler raises it *after* it has
+    /// flushed a `Restarting` ack (a real happens-before edge), so the CLI always
+    /// reads the ack before teardown can affect the connection.
+    restart_tx: watch::Sender<bool>,
+    /// Shared coordinator token: the task tears down when it is cancelled (an
+    /// in-process restart) or on a real OS shutdown signal.
+    teardown_token: CancellationToken,
 }
 
 impl FederationControl {
@@ -65,11 +73,15 @@ impl FederationControl {
         socket_path: PathBuf,
         trigger_tx: TriggerSender,
         connect_timeout: Duration,
+        restart_tx: watch::Sender<bool>,
+        teardown_token: CancellationToken,
     ) -> Self {
         Self {
             socket_path,
             trigger_tx,
             connect_timeout,
+            restart_tx,
+            teardown_token,
         }
     }
 }
@@ -80,17 +92,16 @@ impl ServeAsyncCommand for FederationControl {
             socket_path,
             trigger_tx,
             connect_timeout,
+            restart_tx,
+            teardown_token,
         } = *self;
         let future = Box::pin(async move {
-            // Race the accept loop against shutdown so the daemon can exit
-            // promptly (the loop is otherwise infinite).
+            // Race the accept loop against shutdown (a real signal or an in-process
+            // restart via the shared token) so the daemon can exit promptly (the
+            // loop is otherwise infinite).
             tokio::select! {
-                _ = serve_control(&socket_path, trigger_tx, connect_timeout) => {}
-                res = super::shutdown_signal::shutdown_signal() => {
-                    res.map_err(|e| Error::ExecutionFailed(
-                        format!("federation control: failed to listen for shutdown: {e}")
-                    ))?;
-                }
+                _ = serve_control(&socket_path, trigger_tx, connect_timeout, restart_tx) => {}
+                _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             // Best-effort cleanup so a stale socket does not linger (the next start
             // unlinks unconditionally anyway).
@@ -105,7 +116,12 @@ impl ServeAsyncCommand for FederationControl {
 
 /// Binds the socket and accepts poke connections until cancelled. A bind failure
 /// is non-fatal: log it and idle until shutdown rather than aborting the daemon.
-async fn serve_control(socket_path: &Path, trigger_tx: TriggerSender, connect_timeout: Duration) {
+async fn serve_control(
+    socket_path: &Path,
+    trigger_tx: TriggerSender,
+    connect_timeout: Duration,
+    restart_tx: watch::Sender<bool>,
+) {
     let listener = match bind_listener(socket_path) {
         Ok(listener) => listener,
         Err(e) => {
@@ -115,9 +131,11 @@ async fn serve_control(socket_path: &Path, trigger_tx: TriggerSender, connect_ti
                 "federation control: could not bind control socket; login/logout pokes \
                  will not be applied immediately (federation still updates on its own poll)"
             );
-            // Hold `trigger_tx` alive (so the federation loop's channel stays
-            // open) and wait for the shutdown race above to cancel us.
+            // Hold `trigger_tx`/`restart_tx` alive (so the federation loop's
+            // channel and the restart watch stay open) and wait for the shutdown
+            // race above to cancel us.
             let _keep_sender_alive = trigger_tx;
+            let _keep_restart_alive = restart_tx;
             std::future::pending::<()>().await;
             return;
         }
@@ -139,8 +157,11 @@ async fn serve_control(socket_path: &Path, trigger_tx: TriggerSender, connect_ti
             Ok((stream, _addr)) => {
                 accept_backoff = ACCEPT_BACKOFF_INIT;
                 let trigger_tx = trigger_tx.clone();
+                let restart_tx = restart_tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_conn(stream, trigger_tx, connect_timeout).await {
+                    if let Err(e) =
+                        handle_conn(stream, trigger_tx, connect_timeout, restart_tx).await
+                    {
                         warn!(error = %e, "federation control: error handling a poke");
                     }
                 });
@@ -180,6 +201,7 @@ async fn handle_conn(
     stream: UnixStream,
     trigger_tx: TriggerSender,
     connect_timeout: Duration,
+    restart_tx: watch::Sender<bool>,
 ) -> std::io::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -215,7 +237,18 @@ async fn handle_conn(
         Ok(Err(_)) => ControlResponse::error("federation task dropped the request"),
         Err(_elapsed) => ControlResponse::error("timed out applying federation"),
     };
-    write_response(&mut write_half, response).await
+
+    // The namespace changed: write+flush the `Restarting` ack FIRST, and only
+    // after the flush returns `Ok` (the bytes are in the kernel socket buffer)
+    // raise the in-process restart signal. This is a real happens-before edge:
+    // the CLI always reads the ack before teardown can affect the connection, and
+    // there is no self-SIGTERM and no fire-and-forget oneshot race.
+    let trigger_restart = matches!(response, ControlResponse::Restarting);
+    write_response(&mut write_half, response).await?;
+    if trigger_restart {
+        let _ = restart_tx.send(true);
+    }
+    Ok(())
 }
 
 /// Writes one JSON response line and flushes.
@@ -290,8 +323,15 @@ mod tests {
 
         // The control listener, bound on the temp socket.
         let socket_for_listener = socket.clone();
+        let (restart_tx, _restart_rx) = watch::channel(false);
         let control = tokio::spawn(async move {
-            serve_control(&socket_for_listener, trigger_tx, Duration::from_secs(5)).await;
+            serve_control(
+                &socket_for_listener,
+                trigger_tx,
+                Duration::from_secs(5),
+                restart_tx,
+            )
+            .await;
         });
 
         // Drive the blocking client off the async workers; it retries connect
@@ -326,8 +366,15 @@ mod tests {
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<RefederateRequest>(8);
 
         let socket_for_listener = socket.clone();
+        let (restart_tx, _restart_rx) = watch::channel(false);
         let control = tokio::spawn(async move {
-            serve_control(&socket_for_listener, trigger_tx, Duration::from_secs(5)).await;
+            serve_control(
+                &socket_for_listener,
+                trigger_tx,
+                Duration::from_secs(5),
+                restart_tx,
+            )
+            .await;
         });
 
         let socket_for_client = socket.clone();

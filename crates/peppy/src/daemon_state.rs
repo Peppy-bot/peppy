@@ -40,6 +40,18 @@ pub(crate) struct DaemonState {
     /// read so a state file written before this field still parses.
     #[serde(default)]
     pub written_at_ms: u64,
+    /// The organization namespace this daemon generation resolved at startup
+    /// (`"local"` when logged out, else the org id). A CLI control session reads
+    /// it so it opens its session under exactly the daemon's namespace; it is
+    /// written before the control socket binds, so a reader never sees a half-set
+    /// generation. Defaulted to `"local"` on read so a state file written before
+    /// this field still parses.
+    #[serde(default = "default_organization_namespace")]
+    pub organization_namespace: String,
+}
+
+fn default_organization_namespace() -> String {
+    config::org::LOCAL_NAMESPACE.to_string()
 }
 
 fn default_messaging_port() -> u16 {
@@ -65,6 +77,7 @@ impl DaemonState {
         messaging_port: u16,
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
+        organization_namespace: impl Into<String>,
     ) -> Self {
         Self {
             core_node_name: core_node_name.into(),
@@ -73,6 +86,7 @@ impl DaemonState {
             git_hash: git_hash.into(),
             shutdown_grace_secs,
             written_at_ms: now_epoch_ms(),
+            organization_namespace: organization_namespace.into(),
         }
     }
 
@@ -256,6 +270,7 @@ mod tests {
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
             written_at_ms,
+            organization_namespace: "local".to_string(),
         }
     }
 

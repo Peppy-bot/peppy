@@ -8,13 +8,14 @@ pub mod logout;
 pub mod whoami;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Subcommand;
 use config::consts::PeppyDirs;
 
 use super::Command;
 use crate::daemon_control::{self, PokeOutcome};
+use crate::daemon_state::DaemonState;
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
 
@@ -24,6 +25,23 @@ use crate::{context::AppContext, error::Result};
 const PINNED_NOTE: &str = "Note: this daemon's router config is operator-pinned (ZENOH_CONFIG); \
      federation is not auto-managed.";
 
+/// Re-poke cadence and overall deadline while waiting for the daemon to restart
+/// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)
+/// plus the federation connect timeout and slack.
+const RESTART_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
+
+/// The namespace the current on-disk credentials resolve to (`local` when logged
+/// out, else the org id). The same resolution the daemon does at startup, so the
+/// CLI can confirm the daemon came back under exactly what it just wrote.
+fn current_creds_namespace() -> String {
+    config::org::resolve_session_namespace(
+        crate::auth::router::cached_organization_id_default().as_deref(),
+    )
+    .as_str()
+    .to_string()
+}
+
 /// Whether a federation poke follows a login (federate) or a logout
 /// (de-federate). Affects the user-facing wording and, crucially, whether a
 /// federation failure is fatal: a login that cannot establish federation fails
@@ -31,6 +49,40 @@ const PINNED_NOTE: &str = "Note: this daemon's router config is operator-pinned 
 pub(crate) enum FederationPokeAction {
     Login,
     Logout,
+}
+
+/// Confirms (before authentication begins) a login/logout that may restart the
+/// daemon and wipe the running node stack, unless `--yes` was passed. Returns
+/// `Ok(true)` to proceed. Only prompts when a daemon is actually running (else
+/// there is nothing to restart) and stdin is a TTY (so a script is never blocked
+/// on a prompt).
+pub(crate) fn confirm_restart(yes: bool, action: &FederationPokeAction) -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    if yes {
+        return Ok(true);
+    }
+    // Nothing to restart if no daemon is running; and never block a non-interactive
+    // invocation (a script / CI) on a prompt.
+    if DaemonState::read().is_err() || !std::io::stdin().is_terminal() {
+        return Ok(true);
+    }
+    let verb = match action {
+        FederationPokeAction::Login => "Logging in",
+        FederationPokeAction::Logout => "Logging out",
+    };
+    eprintln!(
+        "{verb} changes this machine's organization namespace, which restarts the messaging \
+         daemon and wipes the running node stack."
+    );
+    eprint!("Continue? [y/N] ");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).map_err(Error::Io)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// After credentials change, poke the running daemon over its control socket so
@@ -71,6 +123,12 @@ pub(crate) fn poke_federation_and_report(
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
+    // A namespace change makes the daemon restart its whole generation. The first
+    // ack is `Restarting`; poll the (path-stable) control socket until the daemon
+    // is back under the namespace we just wrote, then report the settled outcome.
+    if matches!(outcome, PokeOutcome::Restarting) {
+        return await_restart(&socket, read_timeout, &action);
+    }
     match action {
         FederationPokeAction::Login => report_login(outcome),
         FederationPokeAction::Logout => {
@@ -78,6 +136,67 @@ pub(crate) fn poke_federation_and_report(
             Ok(())
         }
     }
+}
+
+/// Polls until the daemon is back under the namespace the credentials now resolve
+/// to, then reports the settled federation outcome. Detects a concurrent
+/// credentials change (a second login/logout mid-restart) and a never-recovers
+/// timeout. Bounded by [`RESTART_POLL_DEADLINE`].
+fn await_restart(
+    socket: &std::path::Path,
+    read_timeout: Duration,
+    action: &FederationPokeAction,
+) -> Result<()> {
+    // The namespace the daemon must come back under (what we just wrote).
+    let expected = current_creds_namespace();
+    let spinner =
+        crate::terminal::spinner("Waiting for the daemon to restart under the new namespace");
+    let deadline = Instant::now() + RESTART_POLL_DEADLINE;
+    let result = loop {
+        if Instant::now() >= deadline {
+            break Err(Error::Auth(format!(
+                "the daemon did not come back under namespace `{expected}` within the timeout; \
+                 check the `peppy service serve` logs and re-run `peppy auth login`"
+            )));
+        }
+        std::thread::sleep(RESTART_POLL_INTERVAL);
+
+        // A concurrent login/logout rewrote the credentials mid-restart, so the
+        // daemon will not come back under what we wrote.
+        if current_creds_namespace() != expected {
+            break Err(Error::Auth(
+                "credentials changed during restart; re-run `peppy auth login`".to_string(),
+            ));
+        }
+
+        // The (path-stable) daemon state records the live generation's namespace,
+        // written before the control socket binds. While the daemon is down or the
+        // old generation is still up, this is unreadable or carries the old value.
+        let back_under_expected =
+            matches!(DaemonState::read(), Ok(state) if state.organization_namespace == expected);
+        if !back_under_expected {
+            continue;
+        }
+
+        // Back under the expected namespace. Confirm the settled federation state
+        // with a fresh poke (which now resolves "unchanged" and federates live).
+        match daemon_control::poke_refederate(socket, read_timeout) {
+            PokeOutcome::Restarting => continue, // still settling (rare)
+            other => {
+                break match action {
+                    FederationPokeAction::Login => report_login(other),
+                    FederationPokeAction::Logout => {
+                        report_logout(other);
+                        Ok(())
+                    }
+                };
+            }
+        }
+    };
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    result
 }
 
 /// Strict reporting for a login poke: success and the operator-pinned case print
@@ -121,6 +240,13 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
              reachable and your account is provisioned, then run `peppy auth login` again."
                 .to_string(),
         )),
+        // `Restarting` is intercepted by `poke_federation_and_report` (it drives
+        // the restart poll), so it should not reach here; treat defensively.
+        PokeOutcome::Restarting => Err(Error::Auth(
+            "the daemon is restarting to apply the new namespace; re-run `peppy auth login` \
+             once it is back."
+                .to_string(),
+        )),
     }
 }
 
@@ -140,6 +266,10 @@ fn report_logout(outcome: PokeOutcome) {
         PokeOutcome::TimedOut => {
             println!("Federation poke timed out; the daemon will retry shortly.")
         }
+        // Intercepted by `poke_federation_and_report`; defensive only.
+        PokeOutcome::Restarting => {
+            println!("The daemon is restarting to apply the cleared namespace.")
+        }
     }
 }
 
@@ -153,11 +283,17 @@ pub enum AuthCommands {
         /// Print the verification URL/code instead of opening a browser.
         #[arg(long = "no-browser")]
         no_browser: bool,
+        /// Skip the "this restarts the daemon and wipes the node stack" prompt.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
     },
     /// Log out: revoke the access token on the backend and clear local credentials
     Logout {
         #[arg(long = "api-url")]
         api_url: Option<String>,
+        /// Skip the "this restarts the daemon and wipes the node stack" prompt.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
     },
     /// Show the current Peppy identity, backend, and token status
     #[command(visible_alias = "status")]
@@ -180,14 +316,17 @@ impl Command for AuthCommand {
             AuthCommands::Login {
                 api_url,
                 no_browser,
+                yes,
             } => login::LoginCommand {
                 api_url,
                 no_browser,
+                yes,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            AuthCommands::Logout { api_url } => logout::LogoutCommand {
+            AuthCommands::Logout { api_url, yes } => logout::LogoutCommand {
                 api_url,
+                yes,
                 peppy_dirs: None,
             }
             .execute(app_ctx),

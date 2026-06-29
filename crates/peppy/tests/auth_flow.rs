@@ -111,6 +111,7 @@ fn login_persists_credentials_and_resolves_identity() {
     let err = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
@@ -166,6 +167,7 @@ fn login_pokes_the_running_daemon_to_refederate() {
     LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(peppy_dirs),
     }
     .execute(&ctx())
@@ -191,6 +193,7 @@ fn login_seeds_peppy_config_with_resource_servers_block() {
     let _ = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx());
@@ -227,6 +230,7 @@ fn login_writes_credentials_file_0600() {
     let _ = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx());
@@ -255,6 +259,7 @@ fn logout_calls_backend_and_clears_local_credentials() {
 
     LogoutCommand {
         api_url: Some(server.base_url()),
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
@@ -388,6 +393,7 @@ fn establish_messaging_federation_parses_the_contract() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
             "some_future_field": "ignored by a tolerant client",
         }));
     });
@@ -402,6 +408,7 @@ fn establish_messaging_federation_parses_the_contract() {
         .expect("fetch shared router config");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
+    assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
     assert_eq!(
         cfg.host_port().expect("parse endpoint"),
         ("localhost".to_string(), 7447)
@@ -450,6 +457,7 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -518,6 +526,10 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
             protocol: "tls".into(),
             // Far in the future ⇒ fresh ⇒ reuse.
             repull_after: storage::now_unix() + 100_000,
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            // Matches `seeded_creds`'s subject so the identity tag agrees and the
+            // fresh cache is reused (a mismatch would force a re-pull).
+            subject: "user-123".into(),
         }),
         ..Default::default()
     };
@@ -546,6 +558,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -607,6 +620,44 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
 }
 
+#[test]
+fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
+    // Fail closed: a logged-in pull whose `organization_id` cannot be a zenoh
+    // namespace (here a wildcard) must NOT federate. The local router stays
+    // standalone rather than dialing the shared router under a bogus namespace.
+    // The daemon resolves its session namespace from the same org id, so a value
+    // that cannot federate also cannot carry a federating namespace.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(POST).path("/me/messaging-federation");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/cap.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "organization_id": "**",
+        }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let target =
+        router::resolve_federation_target_at(&path, &server.base_url(), None, None, None, SECS_30);
+    assert!(
+        target.is_none(),
+        "an org id that is not a valid namespace must fail closed (no federation)"
+    );
+    assert!(
+        pull.calls() >= 1,
+        "the gate is applied after the pull, not before"
+    );
+}
+
 /// A generous federation timeout for tests that don't exercise the bound itself.
 const SECS_30: Duration = Duration::from_secs(30);
 
@@ -625,6 +676,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
                 "endpoint": "tls/cap.zenoh.localhost:7443",
                 "protocol": "tls",
                 "reconnect_after_secs": 3000,
+                "organization_id": "550e8400-e29b-41d4-a716-446655440000",
             }));
     });
 
@@ -673,6 +725,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -684,6 +737,8 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             endpoint: "tls/stale.zenoh.localhost:7443".into(),
             protocol: "tls".into(),
             repull_after: 1, // long past ⇒ stale ⇒ re-pull
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            subject: "user-123".into(),
         }),
         ..Default::default()
     };

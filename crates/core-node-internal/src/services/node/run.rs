@@ -63,7 +63,7 @@ fn drain_quiet_window(is_container: bool) -> Duration {
 /// constructors through the run/launch context chains down to
 /// [`apply_daemon_defaults`], so the next daemon-global knob touches this
 /// struct and that function, not every context in between.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct DaemonDefaults {
     /// Daemon-global messaging mode, injected into every spawned node.
     pub messaging_mode: Mode,
@@ -76,18 +76,27 @@ pub struct DaemonDefaults {
     /// node so its runtime bounds registered shutdown hooks by the same window
     /// the daemon waits before force-killing a stopping node.
     pub shutdown_grace_secs: u64,
+    /// The daemon's organization namespace (`"local"` when logged out, else the
+    /// org id), stamped onto every spawned node's `discovery.organization_id` so
+    /// the node opens its session under exactly the daemon's namespace and stays
+    /// routing-isolated across the federation. Resolved per daemon generation
+    /// from the cached credentials, not from `peppy_config`, so it is threaded in
+    /// rather than derived in `from_peppy_config`.
+    pub organization_namespace: String,
 }
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
     /// — the single place that knows which of its fields are shipped to
-    /// spawned nodes.
-    pub fn from_peppy_config(config: &PeppyConfig) -> Self {
+    /// spawned nodes — plus the daemon's resolved `organization_namespace`
+    /// (which comes from the credentials, not `peppy_config`).
+    pub fn from_peppy_config(config: &PeppyConfig, organization_namespace: String) -> Self {
         Self {
             messaging_mode: config.mode,
             peer_buffer: config.peer,
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
+            organization_namespace,
         }
     }
 }
@@ -138,6 +147,10 @@ fn apply_daemon_defaults(
     cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
     cfg.lifecycle.shutdown_grace_secs = defaults.shutdown_grace_secs;
+    // Stamp the daemon's organization namespace so the spawned node opens its
+    // session under it (`peppylib` resolves `discovery.organization_id` through
+    // `resolve_session_namespace`). Always set: `"local"` when logged out.
+    cfg.discovery.organization_id = Some(defaults.organization_namespace.clone());
 }
 
 struct ProcessNodeRunContext {
@@ -1597,6 +1610,7 @@ mod tests {
             peer_buffer: peer,
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
+            organization_namespace: "local".to_string(),
         }
     }
 
@@ -1643,8 +1657,8 @@ mod tests {
         );
     }
 
-    /// Buffer sizes and both grace periods are applied regardless of mode or
-    /// container placement.
+    /// Buffer sizes, both grace periods, and the organization namespace are
+    /// applied regardless of mode or container placement.
     #[test]
     fn apply_daemon_defaults_always_applies_buffers_and_grace() {
         let peer = PeerConfig {
@@ -1662,7 +1676,23 @@ mod tests {
             assert_eq!(cfg.discovery.high_throughput_buffer_size, 4096);
             assert_eq!(cfg.lifecycle.daemon_grace_secs, 123);
             assert_eq!(cfg.lifecycle.shutdown_grace_secs, 17);
+            // The node is stamped with the daemon's namespace, so it opens its
+            // session under the same routing-isolation prefix as the daemon.
+            assert_eq!(cfg.discovery.organization_id.as_deref(), Some("local"));
         }
+    }
+
+    /// A logged-in daemon stamps the org id (not `local`) onto every node.
+    #[test]
+    fn apply_daemon_defaults_stamps_the_org_namespace() {
+        let mut defaults = daemon_defaults(Mode::Peer, PeerConfig::default());
+        defaults.organization_namespace = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let mut cfg = runtime_config_for_test();
+        apply_daemon_defaults(&mut cfg, defaults, false);
+        assert_eq!(
+            cfg.discovery.organization_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     #[test]

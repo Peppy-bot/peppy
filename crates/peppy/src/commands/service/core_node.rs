@@ -34,8 +34,14 @@ pub struct CoreNodeRunner {
     core_node: CoreNode,
     messaging_ready: Option<watch::Receiver<bool>>,
     /// Cancelled at the start of shutdown to stop the core node's clock +
-    /// heartbeat publishers before the messaging session is closed.
+    /// heartbeat publishers before the messaging session is closed. This is the
+    /// core node's OWN internal token (publisher-stop), distinct from the shared
+    /// serve coordinator token below.
     shutdown_token: CancellationToken,
+    /// Shared serve coordinator token: the runner observes it to begin teardown
+    /// on either a real OS shutdown signal or an in-process restart. Distinct
+    /// from `shutdown_token`, which only stops the publishers.
+    serve_teardown_token: CancellationToken,
     /// Signaled (`true`) once node teardown has finished, releasing the
     /// messaging router to close the session. The startup `messaging_ready`
     /// watch's shutdown-side counterpart.
@@ -53,6 +59,8 @@ impl CoreNodeRunner {
         messaging_ready: Option<watch::Receiver<bool>>,
         clock_source: super::ClockSource,
         peppy_config: config::peppy_config::PeppyConfig,
+        organization_namespace: String,
+        serve_teardown_token: CancellationToken,
         core_node_done: watch::Sender<bool>,
     ) -> Self {
         let node_arguments = CoreNodeArguments {
@@ -84,12 +92,14 @@ impl CoreNodeRunner {
             root_dir,
             peppy_dirs,
             peppy_config,
+            organization_namespace,
             shutdown_token: shutdown_token.clone(),
         });
         Self {
             core_node,
             messaging_ready,
             shutdown_token,
+            serve_teardown_token,
             core_node_done,
         }
     }
@@ -105,10 +115,13 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let core_node = self.core_node;
         let mut messaging_ready = self.messaging_ready;
         let shutdown_token = self.shutdown_token;
+        let serve_teardown_token = self.serve_teardown_token;
         let core_node_done = self.core_node_done;
         let future = Box::pin(async move {
-            let shutdown_signal = super::shutdown_signal::shutdown_signal();
-            tokio::pin!(shutdown_signal);
+            // Tear down on a real OS shutdown signal OR an in-process restart
+            // (the shared serve coordinator token).
+            let teardown = super::shutdown_signal::shutdown_or_token(&serve_teardown_token);
+            tokio::pin!(teardown);
 
             if let Some(mut ready_rx) = messaging_ready.take() {
                 if !*ready_rx.borrow() {
@@ -135,15 +148,9 @@ impl ServeAsyncCommand for CoreNodeRunner {
                         ))
                     })
                 }
-                ctrl_c_result = &mut shutdown_signal => {
+                _ = &mut teardown => {
                     shutdown_triggered = true;
-                    match ctrl_c_result {
-                        Ok(()) => Ok(()),
-                        Err(err) => Err(Error::ExecutionFailed(format!(
-                            "Failed to listen for shutdown signal: {}",
-                            err
-                        ))),
-                    }
+                    Ok(())
                 }
             };
 

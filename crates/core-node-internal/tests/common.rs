@@ -1790,6 +1790,7 @@ async fn start_core_node_with_messenger(
         root_dir,
         peppy_dirs: peppy_dirs.clone(),
         peppy_config,
+        organization_namespace: "local".to_string(),
         shutdown_token: shutdown_token.clone(),
     });
     let core_node_name = core_node.node_name().to_string();
