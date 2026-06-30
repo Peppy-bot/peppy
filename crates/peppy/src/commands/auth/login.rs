@@ -32,7 +32,7 @@ pub struct LoginCommand {
 }
 
 impl Command for LoginCommand {
-    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
+    fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
         // Loads (and seeds/completes) peppy_config.json5 with the same strict,
         // fail-loud semantics the daemon uses; resource_servers supplies the
@@ -44,8 +44,9 @@ impl Command for LoginCommand {
 
         // Warn (before authentication begins) that a login changing the
         // organization namespace restarts the daemon and wipes the running node
-        // stack. Bypassed by `--yes`, and skipped when no daemon is running.
-        if !super::confirm_restart(self.yes, &super::FederationPokeAction::Login)? {
+        // stack. Bypassed by `--yes`, and skipped when no daemon is running or
+        // its node stack holds no user nodes (so the restart wipes nothing).
+        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)? {
             println!("Login aborted.");
             return Ok(());
         }

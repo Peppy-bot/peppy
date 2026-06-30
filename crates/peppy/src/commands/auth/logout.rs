@@ -24,7 +24,7 @@ pub struct LogoutCommand {
 }
 
 impl Command for LogoutCommand {
-    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
+    fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
         let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
@@ -52,8 +52,9 @@ impl Command for LogoutCommand {
 
         // Warn (before revoking) that logging out clears the namespace, which
         // restarts the daemon and wipes the running node stack. Bypassed by
-        // `--yes`, skipped when no daemon is running.
-        if !super::confirm_restart(self.yes, &super::FederationPokeAction::Logout)? {
+        // `--yes`, skipped when no daemon is running or its node stack holds no
+        // user nodes (so the restart wipes nothing).
+        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Logout)? {
             println!("Logout aborted.");
             return Ok(());
         }

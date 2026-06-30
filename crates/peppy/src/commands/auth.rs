@@ -12,8 +12,12 @@ use std::time::{Duration, Instant};
 
 use clap::Subcommand;
 use config::consts::PeppyDirs;
+use core_node_api::encoding::StackListRequest;
+use core_node_api::{NodeStage, SerializedNodeGraph};
+use peppylib::core_node::transport::poll_stack_list;
 
 use super::Command;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::daemon_control::{self, PokeOutcome};
 use crate::daemon_state::DaemonState;
 use crate::error::Error;
@@ -30,6 +34,12 @@ const PINNED_NOTE: &str = "Note: this daemon's router config is operator-pinned 
 /// plus the federation connect timeout and slack.
 const RESTART_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Upper bound on the pre-prompt probe that asks the running daemon whether its
+/// node stack holds any user nodes. Kept short so a sluggish or half-up daemon
+/// (pid alive but its messaging router not yet reachable) delays the
+/// login/logout prompt only briefly before we fall back to showing the warning.
+const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The namespace the current on-disk credentials resolve to (`local` when logged
 /// out, else the org id). The same resolution the daemon does at startup, so the
@@ -54,9 +64,14 @@ pub(crate) enum FederationPokeAction {
 /// Confirms (before authentication begins) a login/logout that may restart the
 /// daemon and wipe the running node stack, unless `--yes` was passed. Returns
 /// `Ok(true)` to proceed. Only prompts when a daemon is actually running (else
-/// there is nothing to restart) and stdin is a TTY (so a script is never blocked
-/// on a prompt).
-pub(crate) fn confirm_restart(yes: bool, action: &FederationPokeAction) -> Result<bool> {
+/// there is nothing to restart), stdin is a TTY (so a script is never blocked on
+/// a prompt), and the daemon is running at least one user node (else the restart
+/// wipes nothing worth warning about).
+pub(crate) fn confirm_restart(
+    ctx: &Arc<AppContext>,
+    yes: bool,
+    action: &FederationPokeAction,
+) -> Result<bool> {
     use std::io::{IsTerminal, Write};
 
     if yes {
@@ -68,6 +83,12 @@ pub(crate) fn confirm_restart(yes: bool, action: &FederationPokeAction) -> Resul
     // treating state-file readability as "a daemon is up".
     let daemon_running = DaemonState::read().is_ok_and(|s| s.is_running());
     if !daemon_running || !std::io::stdin().is_terminal() {
+        return Ok(true);
+    }
+    // The restart only wipes a node stack worth warning about when the daemon is
+    // actually running user nodes. A stack that holds nothing but the synthetic
+    // core-node root loses nothing on restart, so the warning would be noise.
+    if !daemon_has_user_nodes(ctx) {
         return Ok(true);
     }
     let verb = match action {
@@ -86,6 +107,57 @@ pub(crate) fn confirm_restart(yes: bool, action: &FederationPokeAction) -> Resul
         line.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+/// Whether the running daemon's node stack holds any user node, by querying its
+/// live stack over the messaging session (the same query `peppy stack list`
+/// uses). Drives the login/logout restart prompt: an empty stack means the
+/// restart wipes nothing the user staged, so the warning is skipped.
+///
+/// Best effort: connecting to the daemon and reading its stack can fail or stall
+/// (it is mid-restart, its messaging router is not up yet, the query times out).
+/// Any such outcome returns `true` so the caller still shows the warning rather
+/// than silently dropping it. The whole probe is bounded by
+/// [`STACK_PROBE_TIMEOUT`] because opening the session can itself stall when the
+/// router is unreachable, which the per-query timeout alone would not cover.
+fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
+    let probe = async {
+        let conn = ctx.connect_to_daemon().await?;
+        let response = poll_stack_list(
+            &StackListRequest::new(false),
+            conn.messenger,
+            &conn.core_node_name,
+            CALLER_INSTANCE_ID,
+            &conn.core_node_name,
+            STACK_PROBE_TIMEOUT,
+        )
+        .await?;
+        let graph = crate::commands::parse_stack_graph(&response.graph_json)?;
+        Ok::<bool, Error>(stack_has_user_nodes(&graph))
+    };
+
+    crate::commands::block_on(async move {
+        Ok(
+            match tokio::time::timeout(STACK_PROBE_TIMEOUT, probe).await {
+                Ok(Ok(has_user_nodes)) => has_user_nodes,
+                Ok(Err(_)) | Err(_) => true,
+            },
+        )
+    })
+    .unwrap_or(true)
+}
+
+/// Whether a serialized stack graph contains a user node, i.e. any node other
+/// than the synthetic [`NodeStage::Root`] entity the daemon always carries for
+/// itself. A node entity counts as present regardless of its instances' states,
+/// since a node whose only instances have finished is still in the stack and
+/// would be wiped by a restart. Pure over the graph so the decision is
+/// unit-testable without a live daemon.
+fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
+    graph
+        .nodes
+        .iter()
+        .any(|node| node.stage != Some(NodeStage::Root))
 }
 
 /// After credentials change, poke the running daemon over its control socket so
@@ -358,8 +430,71 @@ impl Command for AuthCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{report_login, report_logout};
+    use super::{report_login, report_logout, stack_has_user_nodes};
     use crate::daemon_control::PokeOutcome;
+    use core_node_api::{
+        InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
+    };
+    use std::collections::BTreeMap;
+
+    /// Builds an instance-less node fixed at `stage`. The bindings/instances are
+    /// irrelevant to the user-node predicate, which keys only on `stage`.
+    fn node_with_stage(name: &str, stage: NodeStage) -> SerializedNode {
+        SerializedNode {
+            name: name.to_string(),
+            tag: "v1".to_string(),
+            config_path: format!("/tmp/{name}.json5"),
+            artifact_path: None,
+            stage: Some(stage),
+            instances: Vec::new(),
+        }
+    }
+
+    fn graph_of(nodes: Vec<SerializedNode>) -> SerializedNodeGraph {
+        SerializedNodeGraph {
+            nodes,
+            edges: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_stack_with_only_the_core_root_has_no_user_nodes() {
+        let graph = graph_of(vec![node_with_stage("core", NodeStage::Root)]);
+        assert!(
+            !stack_has_user_nodes(&graph),
+            "a daemon carrying only its synthetic root is an empty stack"
+        );
+    }
+
+    #[test]
+    fn a_stack_with_a_user_node_alongside_the_root_has_user_nodes() {
+        let graph = graph_of(vec![
+            node_with_stage("core", NodeStage::Root),
+            node_with_stage("sensor", NodeStage::Added),
+        ]);
+        assert!(stack_has_user_nodes(&graph));
+    }
+
+    #[test]
+    fn an_empty_graph_has_no_user_nodes() {
+        assert!(!stack_has_user_nodes(&graph_of(Vec::new())));
+    }
+
+    #[test]
+    fn a_user_node_with_only_terminal_instances_still_counts() {
+        // "Empty" is about node entities present in the stack, not running
+        // instances: a node whose only instance has finished is still in the
+        // stack and would be wiped by a restart, so it must keep the warning.
+        let mut recorder = node_with_stage("recorder", NodeStage::Ready);
+        recorder.instances = vec![SerializedInstance {
+            instance_id: "rec-1".to_string(),
+            state: InstanceState::Finished,
+            healthy: true,
+            slot_bindings: BTreeMap::new(),
+        }];
+        let graph = graph_of(vec![node_with_stage("core", NodeStage::Root), recorder]);
+        assert!(stack_has_user_nodes(&graph));
+    }
 
     #[test]
     fn login_is_ok_for_applied_some_and_pinned() {
