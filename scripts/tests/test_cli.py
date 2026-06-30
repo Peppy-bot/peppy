@@ -102,6 +102,30 @@ def test_validate_release_environment_runs_prod_gate_on_prod_path() -> None:
     gate.assert_called_once_with()
 
 
+def test_validate_release_environment_skip_prod_router_check_bypasses_gate() -> None:
+    # --skip-prod-cert-check bypasses the prod-router gate but keeps the token check.
+    with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "test-token"}), patch(
+        "functions.cli.verify_prod_router_publicly_trusted"
+    ) as gate:
+        token = validate_release_environment(
+            required_commands=(), skip_prod_router_check=True
+        )
+    assert token == "test-token"
+    gate.assert_not_called()
+
+
+def test_validate_release_environment_skip_prod_router_check_still_requires_token() -> None:
+    # Skipping the cert gate must not weaken the rest of the prod path.
+    with patch.dict(os.environ, {}, clear=True), patch(
+        "functions.cli.verify_prod_router_publicly_trusted"
+    ) as gate:
+        with pytest.raises(ReleaseError, match="GITHUB_PEPPY_RELEASE_TOKEN"):
+            validate_release_environment(
+                required_commands=(), skip_prod_router_check=True
+            )
+    gate.assert_not_called()
+
+
 def test_validate_release_environment_missing_command() -> None:
     with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "test-token"}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"

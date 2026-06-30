@@ -125,7 +125,8 @@ def verify_prod_router_publicly_trusted() -> None:
             f"{PROD_ROUTER_ENDPOINT_ENV} is required for a prod release: the shipped CLI "
             "trusts only the system trust store, so the release must first prove the prod "
             "routers present a publicly-trusted certificate. Set it to the prod router "
-            "gateway host:port (e.g. health.zenoh.<prod-domain>:7443)."
+            "gateway host:port (e.g. health.zenoh.<prod-domain>:7443), or pass "
+            "--skip-prod-cert-check to bypass this verification."
         )
     host, _, port_str = endpoint.rpartition(":")
     if not host or not port_str:
@@ -149,6 +150,7 @@ def validate_release_environment(
     required_commands: Sequence[str] = ("git", "cargo", "rustc"),
     *,
     require_token: bool = True,
+    skip_prod_router_check: bool = False,
 ) -> str:
     """Validate the release environment: check token and required commands.
 
@@ -161,13 +163,27 @@ def validate_release_environment(
     aren't publicly trusted — aborted before anything is built. `--local` skips it
     (require_token=False) and `--base-images` never reaches this function.
 
+    Passing skip_prod_router_check=True (the `--skip-prod-cert-check` flag) bypasses
+    that gate while keeping every other prod check. It exists for releases against a
+    deployment whose routers are known-good or not yet publicly trusted; a loud
+    warning is printed because a CLI shipped this way cannot federate to routers that
+    are not publicly trusted.
+
     Returns the validated token string (empty if not required).
     Raises ReleaseError if any check fails.
     """
     token = ""
     if require_token:
-        # Prove the prod routers are publicly trusted *before* building anything.
-        verify_prod_router_publicly_trusted()
+        if skip_prod_router_check:
+            console.print(
+                "[yellow]WARNING: skipping the prod-router publicly-trusted "
+                "certificate check (--skip-prod-cert-check). The shipped CLI trusts "
+                "only the system trust store; if the prod routers are not publicly "
+                "trusted, this release will be unable to federate to them.[/yellow]"
+            )
+        else:
+            # Prove the prod routers are publicly trusted *before* building anything.
+            verify_prod_router_publicly_trusted()
 
         token = os.environ.get("GITHUB_PEPPY_RELEASE_TOKEN", "").strip()
         if not token:

@@ -80,6 +80,16 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build and push Docker base images to Docker Hub.",
     )
+    parser.add_argument(
+        "--skip-prod-cert-check",
+        action="store_true",
+        help=(
+            "Skip the publicly-trusted prod-router certificate gate. Every other "
+            "prod check still runs. Only use when the prod routers are known-good "
+            "or not yet publicly trusted; the shipped CLI cannot federate to "
+            "routers that are not publicly trusted."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -311,7 +321,7 @@ def _run_local() -> None:
         console.print(f"[green]Built:[/green] {artifact.asset_path}")
 
 
-def _run_full() -> None:
+def _run_full(skip_prod_cert_check: bool = False) -> None:
     """Build all 3 targets and publish a full GitHub release.
 
     Only allowed on macOS ARM64, because a complete release requires
@@ -325,7 +335,8 @@ def _run_full() -> None:
         )
 
     token = validate_release_environment(
-        required_commands=("git", "cargo", "rustc", "claude")
+        required_commands=("git", "cargo", "rustc", "claude"),
+        skip_prod_router_check=skip_prod_cert_check,
     )
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -431,4 +442,4 @@ def main() -> None:
     elif args.local:
         run_with_error_handling(_run_local)
     else:
-        run_with_error_handling(_run_full)
+        run_with_error_handling(lambda: _run_full(args.skip_prod_cert_check))
