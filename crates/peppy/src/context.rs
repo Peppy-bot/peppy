@@ -1,6 +1,6 @@
 use crate::daemon_state::DaemonState;
 use crate::error::Error;
-use peppylib::MessengerHandle;
+use peppylib::{MessengerHandle, SessionScope};
 use pmi::Messenger;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -86,7 +86,7 @@ impl AppContext {
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::connect(config::consts::DEFAULT_MESSAGING_HOST, messaging_port)
-                    .namespace(namespace)
+                    .scope(SessionScope::Namespace(namespace))
                     .await
             })
             .await?;
