@@ -70,6 +70,18 @@ pub struct RouterSession {
     /// next poke instead of reusing this cached config. A cache-freshness deadline
     /// only; derived at pull time from the server's `reconnect_after_secs`.
     pub repull_after: i64,
+    /// The organization id this config was pulled for (the platform's stable
+    /// per-user `Uuid`, as a string). Drives the daemon's session namespace, so
+    /// it is cached alongside the endpoint. Required: a pre-`organization_id`
+    /// file fails to parse with [`Error::Auth`], the intended clean break (the
+    /// load-resilient `auth login`/`logout` then start fresh).
+    pub organization_id: String,
+    /// The OAuth subject the config was pulled for, tagging the cache to one
+    /// identity. On reuse the daemon re-pulls when this no longer matches the
+    /// active session, so a cache that survives an identity change can never be
+    /// reused under the wrong org. Empty for a PAT pull (no session). Required
+    /// for the same clean-break reason as `organization_id`.
+    pub subject: String,
 }
 
 impl RouterSession {
@@ -309,6 +321,8 @@ mod tests {
                 endpoint: "tls/cap.zenoh.localhost:7443".into(),
                 protocol: "tls".into(),
                 repull_after: 1_700_000_000,
+                organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                subject: "auth0|alice".into(),
             }),
             ..Default::default()
         };
@@ -319,6 +333,8 @@ mod tests {
         assert_eq!(rs.endpoint, "tls/cap.zenoh.localhost:7443");
         assert_eq!(rs.protocol, "tls");
         assert_eq!(rs.repull_after, 1_700_000_000);
+        assert_eq!(rs.organization_id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(rs.subject, "auth0|alice");
     }
 
     #[test]
@@ -354,6 +370,8 @@ mod tests {
             endpoint: "tls/cap:7443".into(),
             protocol: "tls".into(),
             repull_after: 1_000,
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            subject: "auth0|alice".into(),
         };
         assert!(!rs.is_stale(900, 30));
         assert!(rs.is_stale(980, 30)); // 980 + 30 >= 1000

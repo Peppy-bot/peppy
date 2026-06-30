@@ -704,7 +704,7 @@ async fn start_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor_interval: ctx.timeouts.health_monitor_interval,
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
-        daemon_defaults: ctx.daemon_defaults,
+        daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
     };
 

@@ -1,6 +1,6 @@
 use crate::daemon_state::DaemonState;
 use crate::error::Error;
-use peppylib::MessengerHandle;
+use peppylib::{MessengerHandle, SessionScope};
 use pmi::Messenger;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,14 +73,21 @@ impl AppContext {
         }
     }
 
-    async fn connect_with_port(&self, messaging_port: u16) -> crate::error::Result<()> {
+    async fn connect_with_port(
+        &self,
+        messaging_port: u16,
+        organization_namespace: &str,
+    ) -> crate::error::Result<()> {
+        // Open the control session under the daemon's namespace so the CLI reaches
+        // the daemon/node services that run under it. The daemon recorded the
+        // namespace in `DaemonState` before binding the control socket, so it is a
+        // valid value; resolve defensively (a bad value falls back to `local`).
+        let namespace = config::org::resolve_session_namespace(Some(organization_namespace));
         self.messenger_handle
             .get_or_try_init(|| async {
-                MessengerHandle::from_host_port(
-                    config::consts::DEFAULT_MESSAGING_HOST,
-                    messaging_port,
-                )
-                .await
+                MessengerHandle::connect(config::consts::DEFAULT_MESSAGING_HOST, messaging_port)
+                    .scope(SessionScope::Namespace(namespace))
+                    .await
             })
             .await?;
         Ok(())
@@ -99,12 +106,22 @@ pub(crate) struct DaemonConnection<'a> {
     /// node, from its `peppy_config`. Lets `node stop` size its request timeout
     /// to outlast the daemon's grace + reap window.
     pub shutdown_grace_secs: u64,
+    /// The organization namespace recorded by the generation this connection was
+    /// established against, captured from the *same* `DaemonState` read the
+    /// connection used. Callers reuse this instead of reading the state again,
+    /// which could race a restart and pair this connection's data with a different
+    /// generation's namespace.
+    pub organization_namespace: String,
 }
 
 impl AppContext {
     pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
         let daemon_state = self.read_daemon_state()?;
-        self.connect_with_port(daemon_state.messaging_port).await?;
+        self.connect_with_port(
+            daemon_state.messaging_port,
+            &daemon_state.organization_namespace,
+        )
+        .await?;
         let messenger = self
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
@@ -113,6 +130,7 @@ impl AppContext {
             core_node_name: daemon_state.core_node_name,
             git_hash: daemon_state.git_hash,
             shutdown_grace_secs: daemon_state.shutdown_grace_secs,
+            organization_namespace: daemon_state.organization_namespace,
         })
     }
 }

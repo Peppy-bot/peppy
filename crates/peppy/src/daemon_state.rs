@@ -40,6 +40,18 @@ pub(crate) struct DaemonState {
     /// read so a state file written before this field still parses.
     #[serde(default)]
     pub written_at_ms: u64,
+    /// The organization namespace this daemon generation resolved at startup
+    /// (`"local"` when logged out, else the org id). A CLI control session reads
+    /// it so it opens its session under exactly the daemon's namespace; it is
+    /// written before the control socket binds, so a reader never sees a half-set
+    /// generation. Defaulted to `"local"` on read so a state file written before
+    /// this field still parses.
+    #[serde(default = "default_organization_namespace")]
+    pub organization_namespace: String,
+}
+
+fn default_organization_namespace() -> String {
+    config::org::LOCAL_NAMESPACE.to_string()
 }
 
 fn default_messaging_port() -> u16 {
@@ -65,6 +77,7 @@ impl DaemonState {
         messaging_port: u16,
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
+        organization_namespace: impl Into<String>,
     ) -> Self {
         Self {
             core_node_name: core_node_name.into(),
@@ -73,6 +86,7 @@ impl DaemonState {
             git_hash: git_hash.into(),
             shutdown_grace_secs,
             written_at_ms: now_epoch_ms(),
+            organization_namespace: organization_namespace.into(),
         }
     }
 
@@ -174,6 +188,14 @@ impl DaemonState {
         Self::rank_states(states, Self::pid_looks_alive)
     }
 
+    /// Whether the daemon that wrote this state still appears to be running, by
+    /// probing its recorded pid. A state file outlives a crashed daemon (it is
+    /// left on disk), so a successful [`read`](Self::read) is not by itself proof
+    /// of liveness — a caller that needs "is a daemon actually up" must check this.
+    pub(crate) fn is_running(&self) -> bool {
+        self.daemon_pid.is_some_and(Self::pid_looks_alive)
+    }
+
     /// Picks the state file that best represents the live daemon, given a
     /// liveness predicate (injected so tests can stub it without spawning real
     /// processes):
@@ -256,6 +278,7 @@ mod tests {
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
             written_at_ms,
+            organization_namespace: "local".to_string(),
         }
     }
 

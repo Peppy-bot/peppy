@@ -52,6 +52,18 @@ pub struct ServeCommandBuilder {
     /// moved into the core node, and shared by [`RouterFederation`] and
     /// [`FederationControl`].
     federation_connect_timeout: Duration,
+    /// The organization namespace resolved once for this daemon generation
+    /// (`"local"` when logged out, else the org id). Resolved in
+    /// [`with_messaging_router`](Self::with_messaging_router) from the cached
+    /// credentials and applied to the daemon's own session there; also threaded
+    /// into [`DaemonState`], the core node (and thus every spawned node), and the
+    /// [`RouterFederation`] task (which compares against it to decide restart vs
+    /// live re-federate). A single source for the whole generation.
+    organization_namespace: String,
+    /// The shared coordinator token for this generation: cloned into every serve
+    /// task (so a restart/stop unparks them for graceful teardown) and handed to
+    /// [`Serve`] (which cancels it on its way out). Created per generation.
+    teardown_token: CancellationToken,
 }
 
 impl ServeCommandBuilder {
@@ -71,6 +83,10 @@ impl ServeCommandBuilder {
             federation_connect_timeout: Duration::from_secs(
                 config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
             ),
+            // Default for the mock/other engines that never resolve a namespace;
+            // the zenoh path overwrites this in `with_messaging_router`.
+            organization_namespace: config::org::LOCAL_NAMESPACE.to_string(),
+            teardown_token: CancellationToken::new(),
         })
     }
 
@@ -124,6 +140,17 @@ impl ServeCommandBuilder {
                 self.federation_connect_timeout =
                     Duration::from_secs(self.peppy_config.federation.connect_timeout_secs);
 
+                // Resolve this generation's organization namespace once, from the
+                // cached credentials: `"local"` when logged out, else the org id.
+                // It is the single source threaded into the daemon's own session
+                // (here), `DaemonState`, every spawned node, and the federation
+                // task. The router itself is never namespaced (it only forwards),
+                // so the namespace rides only on application sessions.
+                let namespace = config::org::resolve_session_namespace(
+                    crate::auth::router::cached_organization_id_default().as_deref(),
+                );
+                self.organization_namespace = namespace.as_str().to_string();
+
                 let adapter = ZenohAdapter::with_router(
                     ZenohNetProtocol::Tcp,
                     "0.0.0.0",
@@ -135,7 +162,8 @@ impl ServeCommandBuilder {
                     Vec::new(),
                     None,
                 )?
-                .with_session_reconnect();
+                .with_session_reconnect()
+                .with_namespace(Some(namespace));
                 MessengerAdapter::Zenoh(adapter)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
@@ -163,6 +191,7 @@ impl ServeCommandBuilder {
                     messaging_ready_tx,
                     Some(core_node_done_rx),
                     teardown_budget,
+                    self.teardown_token.clone(),
                 )));
         Ok(self)
     }
@@ -200,16 +229,22 @@ impl ServeCommandBuilder {
                     self.messaging_ready.clone(),
                     self.clock_source,
                     self.peppy_config,
+                    self.organization_namespace.clone(),
+                    self.teardown_token.clone(),
                     core_node_done_tx,
                 );
 
-                // Write the daemon state file with the core node name
+                // Write the daemon state file with the core node name. The
+                // organization namespace is recorded here, before the control
+                // socket binds (below), so a CLI control session that reads it
+                // never sees a half-set generation.
                 let core_node_name = core_node.node_name().to_string();
                 let daemon_state = DaemonState::new(
                     &core_node_name,
                     messenger.blocking_lock().messaging_port(),
                     GIT_HASH,
                     shutdown_grace_secs,
+                    &self.organization_namespace,
                 );
                 let state_path = daemon_state.write().map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
@@ -236,6 +271,9 @@ impl ServeCommandBuilder {
         // login/logout — immediately when poked over the control socket, else on
         // the next poll. It waits on `messaging_ready` before touching the router,
         // so it can't race MessagingRouter's initial `start_router`.
+        // In-process restart channel. `None` for the mock engine (no federation
+        // control), so a mock daemon never restarts; armed for the zenoh engine.
+        let mut restart_rx: Option<watch::Receiver<bool>> = None;
         if let Some(api_url) = self.federation_api_url.take()
             && let Some(messenger) = self.messenger.clone()
             && let Some(messaging_ready) = self.messaging_ready.clone()
@@ -245,6 +283,10 @@ impl ServeCommandBuilder {
             // the control socket so a login is federated immediately, not on the
             // next poll. Bounded + tiny: pokes are rare and serviced one at a time.
             let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(8);
+            // Restart signal: the control handler raises it after flushing the
+            // `Restarting` ack; the serve coordinator observes it.
+            let (restart_tx, restart_signal_rx) = watch::channel(false);
+            restart_rx = Some(restart_signal_rx);
             self.composite_command =
                 self.composite_command
                     .add_async_command(Box::new(RouterFederation::new(
@@ -253,6 +295,15 @@ impl ServeCommandBuilder {
                         messaging_ready,
                         trigger_rx,
                         connect_timeout,
+                        // This generation's namespace: the federation loop compares
+                        // the namespace it re-resolves from fresh creds against this
+                        // to decide live re-federate (unchanged) vs restart (changed).
+                        self.organization_namespace.clone(),
+                        // The startup poll raises this if it resolves a namespace
+                        // that differs from this generation's (the steady-state
+                        // poke path leaves the restart to the control handler).
+                        restart_tx.clone(),
+                        self.teardown_token.clone(),
                     )));
 
             // Control socket the CLI pokes. Derived from the same `PeppyDirs` the
@@ -266,10 +317,15 @@ impl ServeCommandBuilder {
                         socket_path,
                         trigger_tx,
                         connect_timeout,
+                        restart_tx,
+                        self.teardown_token.clone(),
                     )));
         }
 
-        let serve = Serve::new(self.composite_command);
+        let mut serve = Serve::new(self.composite_command).with_teardown_token(self.teardown_token);
+        if let Some(rx) = restart_rx {
+            serve = serve.with_restart_rx(rx);
+        }
         let serve = match self.shutdown_token {
             Some(token) => serve.with_shutdown_token(token),
             None => serve,
@@ -279,7 +335,7 @@ impl ServeCommandBuilder {
 }
 
 /// Extracts the messaging port from the environment variable, falling back to the default port.
-fn extract_messaging_port() -> u16 {
+pub(super) fn extract_messaging_port() -> u16 {
     std::env::var(config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
         .ok()
         .and_then(|s| s.parse().ok())

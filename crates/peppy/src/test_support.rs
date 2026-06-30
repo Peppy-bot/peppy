@@ -150,7 +150,22 @@ impl ServeCommandEmulation {
     }
 
     pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None).await?;
+        // Host the router session under the `local` namespace so the core node's
+        // service queryables are declared under the same namespace the spawned
+        // `peppy` CLI opens its control session under. The CLI resolves `local`
+        // from the daemon state we write below and connects with
+        // `SessionScope::Namespace(local)`; zenoh sessions interoperate only when
+        // their namespaces are equal, so a namespace-free router would leave
+        // `node_init` (and every other core-node service) unreachable from the
+        // CLI. The other arguments mirror `start_router_ephemeral`'s defaults.
+        let mut instance = ZenohAdapter::start_router_ephemeral_in_mode(
+            "127.0.0.1",
+            None,
+            true,
+            pmi::SubscriberBufferSizes::default(),
+            Some(pmi::OrgNamespace::local()),
+        )
+        .await?;
         instance.messenger().start_session().await?;
         let port = instance.port;
         let messenger = instance.take_messenger();
@@ -191,6 +206,7 @@ impl ServeCommandEmulation {
             root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
             peppy_config: config::peppy_config::PeppyConfig::default(),
+            organization_namespace: "local".to_string(),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
         });
         let core_node_name = core_node.node_name().to_string();
@@ -214,6 +230,7 @@ impl ServeCommandEmulation {
             port,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+            "local",
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");

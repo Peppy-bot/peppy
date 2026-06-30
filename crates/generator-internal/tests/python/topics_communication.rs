@@ -290,7 +290,7 @@ if __name__ == "__main__":
         )],
     );
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for shutdown");
     let ctx = WaitContext {

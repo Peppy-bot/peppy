@@ -452,7 +452,7 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
     };
     let mut driver_child = spawn_rust_node_release(&driver_dir, &driver_env);
 
-    let control = MessengerHandle::from_host_port(&host, port)
+    let control = MessengerHandle::connect(&host, port)
         .await
         .expect("control messenger");
 

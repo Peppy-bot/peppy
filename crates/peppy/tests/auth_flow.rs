@@ -111,6 +111,7 @@ fn login_persists_credentials_and_resolves_identity() {
     let err = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
@@ -166,6 +167,7 @@ fn login_pokes_the_running_daemon_to_refederate() {
     LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(peppy_dirs),
     }
     .execute(&ctx())
@@ -191,6 +193,7 @@ fn login_seeds_peppy_config_with_resource_servers_block() {
     let _ = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx());
@@ -227,6 +230,7 @@ fn login_writes_credentials_file_0600() {
     let _ = LoginCommand {
         api_url: Some(server.base_url()),
         no_browser: true,
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx());
@@ -255,6 +259,7 @@ fn logout_calls_backend_and_clears_local_credentials() {
 
     LogoutCommand {
         api_url: Some(server.base_url()),
+        yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
     }
     .execute(&ctx())
@@ -266,6 +271,41 @@ fn logout_calls_backend_and_clears_local_credentials() {
         after.session.is_none(),
         "local credentials must be removed after logout"
     );
+}
+
+#[test]
+fn logout_heals_a_malformed_credentials_file() {
+    // A malformed (e.g. pre-`organization_id`/unversioned) credentials file fails
+    // to parse with `Error::Auth`. Logout treats that as "already logged out", but
+    // it must still rewrite the file to a clean default so the bad file does not
+    // linger on disk (the early "Not logged in" return used to skip the save).
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir conf");
+    // Unversioned old shape ⇒ rejected by `storage::load` with `Error::Auth`.
+    std::fs::write(
+        &path,
+        r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
+            access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
+            scope: "openid" } }"#,
+    )
+    .expect("write malformed creds");
+
+    LogoutCommand {
+        // Never contacted: the malformed path returns "Not logged in" before any
+        // backend call. A dummy keeps the test independent of build-default URLs.
+        api_url: Some("http://127.0.0.1:9".to_string()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("logout tolerates a malformed file");
+
+    // The file now parses cleanly (healed to a current-version default) and is
+    // logged out.
+    let after = storage::load(&path).expect("malformed file must be healed, not left on disk");
+    assert!(after.session.is_none(), "healed file is logged out");
+    assert!(after.router.is_none(), "healed file has no router cache");
 }
 
 #[test]
@@ -388,6 +428,7 @@ fn establish_messaging_federation_parses_the_contract() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
             "some_future_field": "ignored by a tolerant client",
         }));
     });
@@ -402,6 +443,7 @@ fn establish_messaging_federation_parses_the_contract() {
         .expect("fetch shared router config");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
+    assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
     assert_eq!(
         cfg.host_port().expect("parse endpoint"),
         ("localhost".to_string(), 7447)
@@ -450,6 +492,7 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -518,6 +561,10 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
             protocol: "tls".into(),
             // Far in the future ⇒ fresh ⇒ reuse.
             repull_after: storage::now_unix() + 100_000,
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            // Matches `seeded_creds`'s subject so the identity tag agrees and the
+            // fresh cache is reused (a mismatch would force a re-pull).
+            subject: "user-123".into(),
         }),
         ..Default::default()
     };
@@ -546,6 +593,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -607,6 +655,44 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
 }
 
+#[test]
+fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
+    // Fail closed: a logged-in pull whose `organization_id` cannot be a zenoh
+    // namespace (here a wildcard) must NOT federate. The local router stays
+    // standalone rather than dialing the shared router under a bogus namespace.
+    // The daemon resolves its session namespace from the same org id, so a value
+    // that cannot federate also cannot carry a federating namespace.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(POST).path("/me/messaging-federation");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/cap.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "organization_id": "**",
+        }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let target =
+        router::resolve_federation_target_at(&path, &server.base_url(), None, None, None, SECS_30);
+    assert!(
+        target.is_none(),
+        "an org id that is not a valid namespace must fail closed (no federation)"
+    );
+    assert!(
+        pull.calls() >= 1,
+        "the gate is applied after the pull, not before"
+    );
+}
+
 /// A generous federation timeout for tests that don't exercise the bound itself.
 const SECS_30: Duration = Duration::from_secs(30);
 
@@ -625,6 +711,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
                 "endpoint": "tls/cap.zenoh.localhost:7443",
                 "protocol": "tls",
                 "reconnect_after_secs": 3000,
+                "organization_id": "550e8400-e29b-41d4-a716-446655440000",
             }));
     });
 
@@ -673,6 +760,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -684,6 +772,8 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             endpoint: "tls/stale.zenoh.localhost:7443".into(),
             protocol: "tls".into(),
             repull_after: 1, // long past ⇒ stale ⇒ re-pull
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            subject: "user-123".into(),
         }),
         ..Default::default()
     };
@@ -715,6 +805,80 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     let rs = after.router.as_ref().expect("router cached");
     assert_eq!(rs.endpoint, "tls/fresh.zenoh.localhost:7443");
     assert!(rs.repull_after > storage::now_unix(), "deadline pushed out");
+}
+
+#[test]
+fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
+    // A PAT-authenticated pull must tag the cache with the PAT owner's stable
+    // backend subject (`/me`), NOT the on-disk session subject. Otherwise, once the
+    // PAT is gone, a session resolve would reuse the PAT's org — a cross-identity
+    // (cross-tenant) leak.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(POST).path("/me/messaging-federation");
+        then.status(200).json_body(json!({
+            "endpoint": "tls/pat-org.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+        }));
+    });
+    // Only a PAT pull resolves `/me` (to learn the PAT owner's stable subject).
+    let me = server.mock(|when, then| {
+        when.method(GET).path("/me");
+        then.status(200)
+            .json_body(json!({ "sub": "pat-owner-xyz" }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    // A session for a *different* identity is on disk at the same time as the PAT.
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)), // subject "user-123"
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let http = HttpClient::new();
+
+    // Pull as the PAT.
+    let ep = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        Some("the-pat".to_string()),
+        None,
+        None,
+    )
+    .expect("PAT pull resolves");
+    assert_eq!(ep.host, "pat-org.zenoh.localhost");
+    assert_eq!(pull.calls(), 1, "the PAT pull hit the backend once");
+    assert_eq!(
+        me.calls(),
+        1,
+        "a PAT pull resolves /me to bind the cache to the PAT identity"
+    );
+
+    // The cache is tagged with the PAT owner's subject, not the session subject.
+    let cached = storage::load(&path)
+        .expect("reload")
+        .router
+        .expect("router cached");
+    assert_eq!(
+        cached.subject, "pat-owner-xyz",
+        "a PAT pull must bind the cache to the PAT identity, not the on-disk session"
+    );
+
+    // With the PAT gone, a session resolve must NOT reuse the PAT's cache: the
+    // subjects differ, so it re-pulls rather than leaking the PAT's org.
+    let _ = router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, None)
+        .expect("session resolve");
+    assert_eq!(
+        pull.calls(),
+        2,
+        "the session must re-pull, not reuse the PAT-identity cache"
+    );
+    assert_eq!(me.calls(), 1, "a session pull does not need /me");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.
