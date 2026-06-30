@@ -8,7 +8,6 @@ use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
 pub struct ConsumedTopicCallbackSpec<'a> {
-    pub fn_name: &'a Ident,
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -243,7 +242,6 @@ pub fn sender_target_expression(
 
 pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
     let ConsumedTopicCallbackSpec {
-        fn_name,
         helper_fn_ident,
         args_struct_ident,
         params,
@@ -269,46 +267,70 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     let is_from_any_lit = is_from_any_literal(dependency);
 
     Ok(quote! {
-        pub async fn #fn_name(
+        /// A held subscription to this topic. Declared once via `subscribe`; its
+        /// buffer keeps every message in arrival order, so looping on `next` never
+        /// drops a message published between calls. Filter inside the loop on the
+        /// returned producer identity or the message fields.
+        pub struct Subscription {
+            inner: peppylib::messaging::Subscription,
+        }
+
+        impl Subscription {
+            /// Awaits the next message on this subscription.
+            ///
+            /// Returns `Ok(Some((producer, message)))` for each message in arrival
+            /// order, `Ok(None)` once the subscription has closed, and `Err(..)` if
+            /// a received payload fails to deserialize.
+            // An async `next` returning `Result<Option<_>>` is intentionally not
+            // `Iterator::next`; silence clippy's lookalike heuristic.
+            #[allow(clippy::should_implement_trait)]
+            pub async fn next(
+                &mut self,
+            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
+                let Some(message) = self.inner.on_next_message().await else {
+                    return Ok(None);
+                };
+
+                let payload = message.payload();
+                let producer = peppylib::messaging::ProducerRef::new(
+                    message.core_node(),
+                    message.instance_id(),
+                );
+                let message = #helper_fn_ident(payload.as_ref())?;
+                Ok(Some((producer, message)))
+            }
+        }
+
+        /// Subscribes to this topic and returns a held `Subscription`.
+        ///
+        /// Call this once, then loop on `Subscription::next`; the subscription's
+        /// buffer retains messages published between calls, so nothing is lost to a
+        /// re-subscribe gap.
+        pub async fn subscribe(
             node_runner: &crate::NodeRunner,
-        ) -> crate::Result<(peppylib::messaging::ProducerRef, #args_struct_ident)> {
+        ) -> crate::Result<Subscription> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
-            let message = {
-                let subscription_future = peppylib::TopicMessenger::subscribe(
-                    node_runner.messenger(),
-                    node_runner.processor().bound_core_node(),
-                    node_runner.processor().bound_instance_id(),
-                    #from_target_expr,
-                    #is_from_any_lit,
-                    topic_name,
-                    #consumer_filter_expr,
-                    qos,
-                );
-                let mut subscription = subscription_future.await.map_err(|source| {
-                    crate::Error::TopicSubscribe {
-                        topic_name: topic_name.to_string(),
-                        node_name: node_name.to_string(),
-                        source_msg: source.to_string(),
-                    }
-                })?;
-                subscription
-                    .on_next_message()
-                    .await
-                    .ok_or_else(|| crate::Error::SubscriptionClosed {
-                        topic_name: topic_name.to_string(),
-                    })?
-            };
+            let inner = peppylib::TopicMessenger::subscribe(
+                node_runner.messenger(),
+                node_runner.processor().bound_core_node(),
+                node_runner.processor().bound_instance_id(),
+                #from_target_expr,
+                #is_from_any_lit,
+                topic_name,
+                #consumer_filter_expr,
+                qos,
+            )
+            .await
+            .map_err(|source| crate::Error::TopicSubscribe {
+                topic_name: topic_name.to_string(),
+                node_name: node_name.to_string(),
+                source_msg: source.to_string(),
+            })?;
 
-            let payload = message.payload();
-            let producer = peppylib::messaging::ProducerRef::new(
-                message.core_node(),
-                message.instance_id(),
-            );
-            let message = #helper_fn_ident(payload.as_ref())?;
-            Ok((producer, message))
+            Ok(Subscription { inner })
         }
 
         #helper_fn_tokens

@@ -19,11 +19,20 @@ fn main() -> Result<()> {
                     return;
                 }
             };
+            // Subscribe once; the held subscription buffers commands in order,
+            // so the loop never misses one published between iterations.
+            let mut subscription = controller_joint_commands::subscribe(&node_runner)
+                .await
+                .expect("failed to subscribe to joint commands");
             loop {
-                let (producer, command) =
-                    controller_joint_commands::on_next_message_received(&node_runner)
-                        .await
-                        .expect("failed to receive joint command");
+                let (producer, command) = match subscription.next().await {
+                    Ok(Some(received)) => received,
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("Error receiving joint command: {e}");
+                        continue;
+                    }
+                };
 
                 println!(
                     "received from {}/{}: target={:?} max_vel={}",

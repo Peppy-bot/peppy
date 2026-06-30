@@ -185,7 +185,7 @@ To depend on a contract instead of a specific producer node, so any conforming n
 
 The code generator creates a module for each consumed topic under `peppygen::consumed_topics`.
 The module name is `<link_id>_<topic_name>` based on the `link_id` field; in this case `uvc_camera_video_stream`.
-Use `on_next_message_received` to wait for the next message:
+Call `subscribe` once to obtain a held `Subscription`, then await `next` for each message:
 
 ```rust
 use peppygen::consumed_topics::uvc_camera_video_stream;
@@ -193,32 +193,37 @@ use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-        let (producer, frame) =
-            uvc_camera_video_stream::on_next_message_received(&node_runner).await?;
+        let mut subscription = uvc_camera_video_stream::subscribe(&node_runner).await?;
 
-        println!(
-            "got {}x{} frame encoded as {} from {}/{}",
-            frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
-        );
+        if let Some((producer, frame)) = subscription.next().await? {
+            println!(
+                "got {}x{} frame encoded as {} from {}/{}",
+                frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
+            );
+        }
 
         Ok(())
     })
 }
 ```
 
-The `on_next_message_received` function takes:
+`subscribe` takes:
 - `node_runner`: the node runner reference.
 
-It returns a tuple of:
-- `producer`: a `peppylib::messaging::ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity, read straight from the message context.
-- `message`: the deserialized message, with fields matching the topic's `message_format`.
+and returns a `Subscription`. Awaiting `subscription.next()` yields:
+- `Ok(Some((producer, message)))` for each message, where `producer` is a `peppylib::messaging::ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity (read straight from the message context), and `message` is the deserialized message, with fields matching the topic's `message_format`.
+- `Ok(None)` once the subscription has closed.
+- `Err(..)` if a received payload fails to deserialize.
 
-There are no call-site producer-targeting arguments at all. To pin a `from_any` slot to one specific producer, use a launcher binding (see [Bindings and routing](#bindings-and-routing) below); the resolved binding carries the producer's full `(core_node, instance_id)` wire address, so a pinned slot can never receive from a producer that merely shares the instance_id on another core node. The same full identity is what `on_next_message_received` returns with every message, so a consumer can pass it straight back into any producer-targeting slot.
+The subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped — loop on `next` and nothing is lost in the gap between iterations.
+
+There are no call-site producer-targeting arguments at all. To pin a `from_any` slot to one specific producer, use a launcher binding (see [Bindings and routing](#bindings-and-routing) below); the resolved binding carries the producer's full `(core_node, instance_id)` wire address, so a pinned slot can never receive from a producer that merely shares the instance_id on another core node. The same full identity is what `next` returns with every message, so a consumer can pass it straight back into any producer-targeting slot.
 
 ### Receiving messages continuously
 
-`on_next_message_received` processes a single message and returns.
-To receive messages continuously, call it in a loop.
+To receive messages continuously, subscribe once and loop on `next`.
+The held subscription keeps every message in arrival order, so the loop never
+misses a message published between iterations.
 Each message is processed in a separate task so that the receive loop is not blocked:
 
 ```rust
@@ -234,11 +239,17 @@ fn main() -> Result<()> {
 }
 
 async fn receive_frames(node_runner: Arc<NodeRunner>) {
-    loop {
-        let result = uvc_camera_video_stream::on_next_message_received(&node_runner).await;
+    let mut subscription = match uvc_camera_video_stream::subscribe(&node_runner).await {
+        Ok(subscription) => subscription,
+        Err(e) => {
+            eprintln!("Failed to subscribe: {e}");
+            return;
+        }
+    };
 
-        match result {
-            Ok((producer, frame)) => {
+    loop {
+        match subscription.next().await {
+            Ok(Some((producer, frame))) => {
                 tokio::spawn(async move {
                     println!(
                         "got {}x{} frame from {}/{}",
@@ -246,6 +257,7 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
                     );
                 });
             }
+            Ok(None) => break,
             Err(e) => {
                 eprintln!("Error receiving frame: {e}");
                 break;

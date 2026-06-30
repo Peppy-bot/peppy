@@ -20,17 +20,22 @@ async def control_loop(node_runner: NodeRunner):
         print(f"Failed to declare joint_commands publisher: {e}", file=sys.stderr)
         return
 
+    # Subscribe once; the held subscription buffers state messages in order, so
+    # the loop never misses one published between iterations.
+    subscription = await arm_joint_states.subscribe(node_runner)
     while True:
         try:
-            producer, state = await arm_joint_states.on_next_message_received(
-                node_runner,
-            )
+            received = await subscription.next()
         except Exception as e:
             # Log the failure, then pause before retrying so a persistent
             # receive error does not spin the loop at full speed.
             print(f"Error receiving joint state: {e}", file=sys.stderr)
             await asyncio.sleep(1.0)
             continue
+
+        if received is None:
+            break  # subscription closed
+        producer, state = received
 
         print(
             f"state from {producer.core_node}/{producer.instance_id}: "

@@ -19,15 +19,24 @@ fn main() -> Result<()> {
                     return;
                 }
             };
+            // Subscribe once; the held subscription buffers state messages in
+            // order, so the loop never misses one published between iterations.
+            let mut subscription = match arm_joint_states::subscribe(&node_runner).await {
+                Ok(subscription) => subscription,
+                Err(e) => {
+                    eprintln!("Failed to subscribe to joint_states: {e}");
+                    return;
+                }
+            };
             loop {
-                let (producer, state) =
-                    match arm_joint_states::on_next_message_received(&node_runner).await {
-                        Ok(received) => received,
-                        Err(e) => {
-                            eprintln!("Error receiving joint state: {e}");
-                            continue;
-                        }
-                    };
+                let (producer, state) = match subscription.next().await {
+                    Ok(Some(received)) => received,
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("Error receiving joint state: {e}");
+                        continue;
+                    }
+                };
 
                 println!(
                     "state from {}/{}: positions={:?}",

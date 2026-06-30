@@ -1095,7 +1095,6 @@ impl LanguageGenerator for RustGenerator {
             .collect();
         context.add_struct(args_struct_ident.clone(), args_fields);
 
-        let callback_fn_ident = Ident::new("on_next_message_received", Span::call_site());
         let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
 
         let encoding = self
@@ -1107,7 +1106,6 @@ impl LanguageGenerator for RustGenerator {
             )?
             .expect("message encoding spec should exist when message format is provided");
         let method_tokens = build_consumed_topic_callback(ConsumedTopicCallbackSpec {
-            fn_name: &callback_fn_ident,
             helper_fn_ident: &helper_fn_ident,
             args_struct_ident: &args_struct_ident,
             params: &params,

@@ -141,7 +141,8 @@ from peppygen.consumed_topics import uvc_camera_video_stream
 
 async def receive_frames(node_runner, frame_received):
     print("receiver: about to subscribe", flush=True)
-    producer, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
+    subscription = await uvc_camera_video_stream.subscribe(node_runner)
+    producer, frame = await subscription.next()
     print(
         f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {producer.core_node}/{producer.instance_id}",
         flush=True,

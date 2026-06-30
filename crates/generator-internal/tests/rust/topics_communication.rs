@@ -125,16 +125,18 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     // TODO: An exit signal should be sent to the receiver to terminate the process
     let receiver_main = r#"
 use peppygen::NodeBuilder;
-use peppygen::consumed_topics::uvc_camera_video_stream::on_next_message_received;
+use peppygen::consumed_topics::uvc_camera_video_stream::subscribe;
 use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let (producer, frame) = on_next_message_received(&node_runner).await?;
-        println!(
-            "got {}x{} frame encoded as {} from {}/{}",
-            frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
-        );
+        let mut subscription = subscribe(&node_runner).await?;
+        if let Some((producer, frame)) = subscription.next().await? {
+            println!(
+                "got {}x{} frame encoded as {} from {}/{}",
+                frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
+            );
+        }
         Ok(())
     })
 }
