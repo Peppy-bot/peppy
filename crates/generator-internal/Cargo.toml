@@ -36,6 +36,9 @@ json5-pretty = { workspace = true }
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
+# Lets the scaffold test gate itself on the same PEPPY_CROSS_BUILD predicate the
+# build script uses, so the two never drift.
+peppylib-build-policy = { workspace = true }
 peppylib = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 rstest = { workspace = true }

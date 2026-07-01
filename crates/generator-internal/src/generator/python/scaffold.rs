@@ -384,9 +384,20 @@ mod tests {
     /// regressions where a new target is added to the release pipeline but the
     /// cross-compilation step is missing or broken. Only enforced on macOS where
     /// all release builds (including cross-compilation) originate.
+    ///
+    /// The Linux container bindings (linux-aarch64 and linux-x86_64) are produced
+    /// only in a cross build (PEPPY_CROSS_BUILD, set by scripts/build_release.sh
+    /// and the CI workflow); a regular build produces only the host dynamic lib,
+    /// so the embedded set lacks every Linux platform and this test has nothing to
+    /// assert and skips. The gate uses the same predicate the build script does,
+    /// so the two never disagree.
     #[test]
     #[cfg(target_os = "macos")]
     fn embedded_peppylib_contains_all_release_platform_dynamic_lib() {
+        if !peppylib_build_policy::cross_build_requested() {
+            return;
+        }
+
         let required = [
             "_peppylib.abi3.macos-aarch64.so",
             "_peppylib.abi3.linux-aarch64.so",

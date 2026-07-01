@@ -45,26 +45,32 @@ pub fn should_build_host(present: bool, current: bool, force: bool) -> bool {
     force || !present || !current
 }
 
-/// Whether a Linux `.so` must be (re)cross-compiled.
+/// Whether the caller requested a cross-platform build by setting
+/// `PEPPY_CROSS_BUILD` (scripts/build_release.sh and the CI workflow do). Only a
+/// cross build produces the Linux container bindings; a plain `cargo build`
+/// builds only the host dynamic lib and skips the slow zig cross-compile, so
+/// local dev builds stay fast.
 ///
-/// It is built when forced or missing (so the generator can always scaffold
-/// container targets), or when stale during a release build. A present-but-stale
-/// Linux `.so` is left alone in debug so editing peppylib does not pay the slow
-/// zig cross-compile on every `cargo build` / `cargo test`. `force` (the release
-/// path, or a developer iterating on container bindings) rebuilds unconditionally.
-pub fn should_cross_compile(
-    profile: BuildProfile,
-    present: bool,
-    stale: bool,
-    force: bool,
-) -> bool {
-    if force || !present {
-        return true;
-    }
-    if !stale {
-        return false;
-    }
-    profile == BuildProfile::Release
+/// Any non-empty value other than "0" counts as set, matching the
+/// `PEPPYLIB_REBUILD` convention.
+pub fn cross_build_requested() -> bool {
+    std::env::var("PEPPY_CROSS_BUILD").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Whether a Linux `.so` cross-compile must run for a target.
+///
+/// The build host is macOS, so every Linux target is a cross-compile, and all of
+/// them are release-only. A regular `cargo build` therefore produces only the
+/// host dynamic lib, exactly like a Linux build (which likewise builds only its
+/// own native host `.so`); this keeps the two platforms consistent and a plain
+/// build fast. The Linux bindings are built solely in a cross build
+/// (`cross_build`, from [`cross_build_requested`], set by
+/// `scripts/build_release.sh` and CI), where a target is (re)built when a rebuild
+/// is forced, the `.so` is missing, or its recorded state is stale. `force`
+/// (`PEPPYLIB_REBUILD`) alone never triggers a Linux build: it refreshes the host
+/// artifact, while the Linux bindings stay gated on the cross-build flag.
+pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force: bool) -> bool {
+    cross_build && (force || !present || stale)
 }
 
 #[cfg(test)]
@@ -93,13 +99,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_linux_so_always_cross_compiles() {
-        for profile in [BuildProfile::Debug, BuildProfile::Release] {
+    fn linux_so_is_release_only() {
+        // Without a cross build a Linux .so is never produced, regardless of
+        // whether it is missing or stale, and not even under `force` (which
+        // refreshes the host build, not a Linux cross-compile). This matches a
+        // Linux `cargo build`, which likewise builds only its own host .so.
+        for present in [false, true] {
             for stale in [false, true] {
                 for force in [false, true] {
                     assert!(
-                        should_cross_compile(profile, false, stale, force),
-                        "missing target must always build ({profile:?}, stale={stale}, force={force})"
+                        !should_cross_compile(false, present, stale, force),
+                        "Linux .so must not build without a cross build \
+                         (present={present}, stale={stale}, force={force})"
                     );
                 }
             }
@@ -107,50 +118,15 @@ mod tests {
     }
 
     #[test]
-    fn stale_linux_so_skips_in_debug_but_rebuilds_in_release() {
-        assert!(!should_cross_compile(
-            BuildProfile::Debug,
-            true,
-            true,
-            false
-        ));
-        assert!(should_cross_compile(
-            BuildProfile::Release,
-            true,
-            true,
-            false
-        ));
+    fn linux_so_builds_under_cross_build_when_missing_stale_or_forced() {
+        assert!(should_cross_compile(true, false, false, false)); // missing
+        assert!(should_cross_compile(true, true, true, false)); // stale
+        assert!(should_cross_compile(true, true, false, true)); // forced
     }
 
     #[test]
-    fn force_rebuilds_linux_so_unconditionally() {
-        // Force overrides both the debug skip and the not-stale skip, in either
-        // profile. This is the release guarantee against inputs the source hash
-        // does not cover.
-        assert!(should_cross_compile(BuildProfile::Debug, true, true, true));
-        assert!(should_cross_compile(BuildProfile::Debug, true, false, true));
-        assert!(should_cross_compile(
-            BuildProfile::Release,
-            true,
-            false,
-            true
-        ));
-    }
-
-    #[test]
-    fn current_linux_so_is_skipped_without_force() {
-        assert!(!should_cross_compile(
-            BuildProfile::Debug,
-            true,
-            false,
-            false
-        ));
-        assert!(!should_cross_compile(
-            BuildProfile::Release,
-            true,
-            false,
-            false
-        ));
+    fn linux_so_reused_under_cross_build_when_present_and_fresh() {
+        assert!(!should_cross_compile(true, true, false, false));
     }
 
     #[test]

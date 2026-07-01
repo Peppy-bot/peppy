@@ -12,6 +12,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI does the full cross-platform peppylib build: cross-compile the .so for
+  # every Linux arch. A plain `cargo build` leaves this unset and, like a Linux
+  # build, produces only the host dynamic lib, so local dev builds stay fast; the
+  # release path and CI turn it on. On a warm build cache this is a no-op (present,
+  # fresh artifacts are reused); it only pays the cross-build cost when the cache
+  # is cold. Cross-arch apptainer is separate, gated by PEPPY_CROSS_ARCH.
+  PEPPY_CROSS_BUILD: "1"
 
 jobs:
   test:

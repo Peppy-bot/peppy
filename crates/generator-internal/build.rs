@@ -344,6 +344,9 @@ mod peppylib_build {
         }
         println!("cargo:rerun-if-env-changed={REBUILD_ENV_VAR}");
         println!("cargo:rerun-if-env-changed={PREBUILT_SO_DIR_ENV}");
+        // Toggling the cross-build flag must re-run build.rs so the Linux .so are
+        // (re)built or skipped to match, instead of replaying a stale decision.
+        println!("cargo:rerun-if-env-changed=PEPPY_CROSS_BUILD");
     }
 
     /// Returns true if `pixi` is available on PATH.
@@ -872,30 +875,29 @@ mod peppylib_build {
             println!("cargo:warning=Skipping peppylib-py host native build (sources unchanged).");
         }
 
-        // Linux extensions (macOS only): rebuilt when missing, or when stale
-        // during a release or forced build. A present-but-stale Linux `.so` is
-        // left alone on debug builds to keep `cargo build`/`cargo test` fast.
+        // Linux container bindings (macOS only). The build host is macOS, so
+        // every Linux `.so` is a cross-compile, and all are release-only: like a
+        // Linux `cargo build` (which builds only its own native host `.so`), a
+        // regular build here produces only the host dynamic lib. The Linux
+        // bindings are built solely under PEPPY_CROSS_BUILD (set by
+        // scripts/build_release.sh and CI), so a plain `cargo build` never pays
+        // the slow zig cross-compile and the two platforms stay consistent.
         #[cfg(target_os = "macos")]
         {
+            let cross_build = peppylib_build_policy::cross_build_requested();
             for target in LINUX_CROSS_TARGETS {
                 let suffix = target.platform_suffix;
                 let target_so = so_dir.join(format!("_peppylib.abi3.{suffix}.so"));
                 let target_state = (current_hash.clone(), "release".to_string());
                 let stale = state.get(suffix) != Some(&target_state);
                 if peppylib_build_policy::should_cross_compile(
-                    profile,
+                    cross_build,
                     target_so.exists(),
                     stale,
                     force,
                 ) {
                     cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &so_dir);
                     state.insert(suffix.to_string(), target_state);
-                } else if stale {
-                    println!(
-                        "cargo:warning=peppylib-py {suffix} .so is STALE and was NOT cross-compiled \
-                         (debug build). Run a release build or `{REBUILD_ENV_VAR}=1 cargo build \
-                         -p generator` to refresh container bindings."
-                    );
                 }
             }
         }
