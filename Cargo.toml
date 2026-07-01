@@ -55,7 +55,8 @@ peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 # for everyone — standalone clones and CI build the pinned revision with no edits, and
 # Cargo.lock stays git-resolved. For LOCAL co-development of public-peppy-libs, the
 # superproject can opt in to redirecting them to the in-tree checkout via
-# `scripts/local-libs.sh on` (a gitignored .cargo/config.toml [patch]); off by default.
+# `<superproject-root>/scripts/local-libs.sh on` (a gitignored [patch] in the
+# superproject's .cargo/config.toml, one level above this repo); off by default.
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]

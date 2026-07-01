@@ -4,6 +4,10 @@ version = "0.0.1"
 description = "Release scripts for peppy"
 channels = ["https://prefix.dev/github-releases", "conda-forge"]
 platforms = ["linux-64", "osx-arm64", "linux-aarch64"]
+# pixi.lock uses format v7, which pixi < 0.68 cannot parse and would silently
+# re-resolve and rewrite. 0.72 is the version this workspace is developed and
+# tested with; keep runners and dev machines on it.
+requires-pixi = ">=0.72"
 
 [dependencies]
 python = ">=3.13,<3.14"

@@ -223,15 +223,43 @@ mod peppylib_build {
         format!("{os}-{arch}")
     }
 
+    /// Directory served as `PIXI_HOME` to every pixi invocation: holds a
+    /// `config.toml` that detaches pixi environments into the peppy cache dir.
+    /// Without it pixi materializes `.pixi/envs` (hundreds of MB) inside
+    /// peppylib-py's directory, which for release builds is the immutable,
+    /// machine-shared cargo checkout of public-peppy-libs. Detached
+    /// environments are keyed by manifest path, so distinct checkouts still
+    /// get distinct environments.
+    fn pixi_home_with_detached_envs() -> PathBuf {
+        let cache = build_helpers::cache_dir("peppylib-py");
+        let pixi_home = cache.join("pixi-home");
+        std::fs::create_dir_all(&pixi_home)
+            .unwrap_or_else(|e| panic!("failed to create pixi home {pixi_home:?}: {e}"));
+        let config = format!(
+            "detached-environments = \"{}\"\n",
+            cache.join("pixi-envs").display()
+        );
+        build_helpers::write_if_changed(&pixi_home.join("config.toml"), config.as_bytes());
+        pixi_home
+    }
+
     /// Runs a pixi task and panics on failure.
+    ///
+    /// Runs with `--frozen` so pixi installs exactly the committed `pixi.lock`
+    /// and never rewrites it. peppylib-py is usually read from an immutable
+    /// cargo checkout that the Lima VM build resolves independently; an
+    /// in-place re-lock (for example from a pixi too old for the lock format)
+    /// would make the host and VM disagree about the sources and poison the
+    /// recorded `.so` hash.
     fn run_pixi_task(peppylib_py_dir: &Path, task: &str, target_dir: &Path) {
         let output = Command::new("sh")
             .args([
                 "-c",
-                &format!("ulimit -n 10240 && exec pixi run -e default {task}"),
+                &format!("ulimit -n 10240 && exec pixi run --frozen -e default {task}"),
             ])
             .current_dir(peppylib_py_dir)
             .env("CARGO_TARGET_DIR", target_dir)
+            .env("PIXI_HOME", pixi_home_with_detached_envs())
             .env_remove("RUSTC")
             .env_remove("RUSTDOC")
             .stdin(std::process::Stdio::null())
@@ -369,8 +397,10 @@ mod peppylib_build {
         target_dir: &Path,
     ) {
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
-        // when multiple build scripts run pixi on the same environment.
-        let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
+        // when multiple build scripts run pixi on the same environment. Lives in
+        // the peppy cache dir next to the detached environments, never inside
+        // the (possibly immutable) peppylib-py checkout.
+        let lock_path = build_helpers::cache_dir("peppylib-py").join("pixi-build.lock");
         let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
         println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
@@ -734,7 +764,10 @@ mod peppylib_build {
                 recorded == Some(current_hash),
                 "prebuilt peppylib .so {name} in {so_dir:?} was built from stale \
                  sources (recorded {recorded:?}, current {current_hash}); rebuild \
-                 the host artifacts before cross-building"
+                 the host artifacts before cross-building. If a rebuild does not \
+                 fix this, the host and VM copies of peppyos-shared differ for \
+                 the same pinned revision: run `git status` in the cargo checkout \
+                 of public-peppy-libs on both sides to find local modifications"
             );
         }
     }
