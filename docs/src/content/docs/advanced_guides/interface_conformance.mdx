@@ -260,8 +260,8 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
 
     frames_by_producer: dict[ProducerRef, Frame] = {}
 
-    while True:
-        producer, frame = await extras_video_stream.on_next_message_received(node_runner)
+    subscription = await extras_video_stream.subscribe(node_runner)
+    async for producer, frame in subscription:
         # Key by the returned ProducerRef (its full core_node/instance_id
         # identity); do not compare against a hard-coded name.
         frames_by_producer[producer] = frame
@@ -276,9 +276,8 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
 
     let mut frames_by_producer: HashMap<ProducerRef, Frame> = HashMap::new();
 
-    loop {
-        let (producer, frame) =
-            extras_video_stream::on_next_message_received(&node_runner).await?;
+    let mut subscription = extras_video_stream::subscribe(&node_runner).await?;
+    while let Some((producer, frame)) = subscription.next().await? {
         // Key by the returned producer identity; do not compare against a
         // hard-coded name.
         frames_by_producer.insert(producer, frame);

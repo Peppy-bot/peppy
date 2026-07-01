@@ -427,18 +427,28 @@ fn consumed_topic() {
         ],
     );
 
-    // Subscriber function signature — the producer identity is returned with
-    // every message as the full `peppylib::messaging::ProducerRef`; it never
-    // appears as a user-facing core_node (or instance_id) parameter.
+    // Held-subscription API — `subscribe()` returns a `Subscription` and the
+    // per-message `next()` yields the producer identity as the full
+    // `peppylib::messaging::ProducerRef`; it never appears as a user-facing
+    // core_node (or instance_id) parameter. A closed subscription is `Ok(None)`.
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn on_next_message_received(",
+            "pub struct Subscription",
+            "pub async fn subscribe(",
             "node_runner: &crate::NodeRunner",
-            "-> crate::Result<(peppylib::messaging::ProducerRef, Message)>",
+            "-> crate::Result<Subscription>",
+            "pub async fn next(",
+            "-> crate::Result<Option<(peppylib::messaging::ProducerRef, Message)>>",
+            "self.inner.on_next_message().await",
+            "return Ok(None);",
             "peppylib::messaging::ProducerRef::new(",
-            "Ok((producer, message))",
+            "Ok(Some((producer, message)))",
         ],
+    );
+    assert!(
+        !rendered.contains("on_next_message_received"),
+        "the per-call on_next_message_received API must be gone; got: {rendered}"
     );
     assert!(
         !rendered.contains("from_core_node"),
@@ -463,13 +473,25 @@ fn consumed_topic() {
         ],
     );
 
-    // Error variants
-    assert_contains_all(
-        &rendered,
-        &[
-            "crate::Error::TopicSubscribe",
-            "crate::Error::SubscriptionClosed",
-        ],
+    // Error variant — subscribing maps the failure to `TopicSubscribe`; a
+    // closed subscription is no longer an error (it surfaces as `Ok(None)`).
+    assert_contains_all(&rendered, &["crate::Error::TopicSubscribe"]);
+    assert!(
+        !rendered.contains("crate::Error::SubscriptionClosed"),
+        "closed subscriptions now return Ok(None), not SubscriptionClosed; got: {rendered}"
+    );
+
+    // Regression guard for the dropped-message bug: the topic is subscribed
+    // exactly once (in `subscribe`), never per `next` call. The old
+    // `on_next_message_received` re-subscribed on every call, so anything
+    // published in the re-subscribe gap was silently lost; with a held
+    // subscription the buffer keeps every message between `next` calls.
+    assert_eq!(
+        rendered
+            .matches("peppylib::TopicMessenger::subscribe(")
+            .count(),
+        1,
+        "topic must be subscribed once, not per next() call; got: {rendered}"
     );
 }
 

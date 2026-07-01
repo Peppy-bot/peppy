@@ -53,7 +53,7 @@ use services::{
     deserialize_fields_from_format,
 };
 use topics::{
-    ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_publisher,
+    ConsumedTopicSubscriptionSpec, build_consumed_topic_subscription, build_topic_publisher,
     consumed_to_target_expression,
 };
 use type_mapping::{render_tokens, unused_params_stmt};
@@ -1095,7 +1095,6 @@ impl LanguageGenerator for RustGenerator {
             .collect();
         context.add_struct(args_struct_ident.clone(), args_fields);
 
-        let callback_fn_ident = Ident::new("on_next_message_received", Span::call_site());
         let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
 
         let encoding = self
@@ -1106,8 +1105,7 @@ impl LanguageGenerator for RustGenerator {
                 &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = build_consumed_topic_callback(ConsumedTopicCallbackSpec {
-            fn_name: &callback_fn_ident,
+        let method_tokens = build_consumed_topic_subscription(ConsumedTopicSubscriptionSpec {
             helper_fn_ident: &helper_fn_ident,
             args_struct_ident: &args_struct_ident,
             params: &params,

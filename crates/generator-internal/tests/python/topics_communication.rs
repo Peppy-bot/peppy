@@ -135,18 +135,35 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     init_python_user_node(&user_node_receiver);
     let receiver_main = r#"
 import asyncio
+import os
+import sys
 from peppygen import NodeBuilder
 from peppygen.exposed_services import frame_received_ack
 from peppygen.consumed_topics import uvc_camera_video_stream
 
 async def receive_frames(node_runner, frame_received):
-    print("receiver: about to subscribe", flush=True)
-    producer, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
-    print(
-        f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {producer.core_node}/{producer.instance_id}",
-        flush=True,
-    )
-    frame_received.set()
+    # `next()` returns None once the subscription has closed; unpacking that
+    # directly would raise an opaque TypeError that asyncio swallows as an
+    # unhandled task exception, so the ack task would hang on the event until
+    # the test's wait timeout. Fail fast to stderr + os._exit(1) instead, so the
+    # harness sees the exit and panics with the captured stderr (matches the
+    # wire_compat.rs receiver).
+    try:
+        print("receiver: about to subscribe", flush=True)
+        subscription = await uvc_camera_video_stream.subscribe(node_runner)
+        received = await subscription.next()
+        if received is None:
+            print("receive failed: subscription closed before any frame", file=sys.stderr, flush=True)
+            os._exit(1)
+        producer, frame = received
+        print(
+            f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {producer.core_node}/{producer.instance_id}",
+            flush=True,
+        )
+        frame_received.set()
+    except BaseException as e:
+        print(f"receive failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        os._exit(1)
 
 async def expose_frame_received_ack(node_runner, frame_received):
     await frame_received.wait()
