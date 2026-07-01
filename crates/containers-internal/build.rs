@@ -4,12 +4,12 @@ mod apptainer_build {
     use std::process::Command;
     use std::time::Duration;
 
-    const APPTAINER_VERSION: &str = "1.5.1";
+    const APPTAINER_VERSION: &str = "1.5.2";
     /// SHA-256 of `apptainer-{APPTAINER_VERSION}.tar.gz` from the GitHub release.
     /// Bump alongside `APPTAINER_VERSION`; both `verify_apptainer_checksum`
     /// call sites (host build, Lima guest build) consume this constant.
     const APPTAINER_SHA256: &str =
-        "ae00a6a2f1949a8f245c082660fd2990d61a6543159c9a28eede7966d89efe62";
+        "0dc689f4b1036941837f38376313082d953eec920520e295525d89e0f0e04f98";
 
     /// Pinned gocryptfs version. Apptainer auto-discovers gocryptfs in
     /// `${prefix}/libexec/apptainer/bin/` (ahead of `$PATH`) and uses it for
@@ -23,10 +23,32 @@ mod apptainer_build {
     const GOCRYPTFS_ARM64_SHA256: &str =
         "64576d550ab8af3f1dc729e93779540c5ecc00967d0185aae51a29a3755d86d0";
 
-    const LIMA_VERSION: &str = "2.1.2";
+    const LIMA_VERSION: &str = "2.1.3";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
-        "7081d03d01511f20c4a3b38d8120428ef1c66e4b21ec9b54017bc65da60b031f";
+        "52bcf0780fcb28128ac9f6924d4410a6bc7c92fa80c9a858d89ae34ec3ce4f35";
+    /// SHA-256 of `lima-additional-guestagents-{LIMA_VERSION}-Darwin-arm64.tar.gz`.
+    /// This archive carries the cross-architecture (Linux-x86_64, ...) guest
+    /// agents that the main Lima package omits. The guest agent MUST come from
+    /// the same pinned Lima version as the host `limactl`: a version-skewed
+    /// agent cannot speak to the host and leaves cross-arch VMs stuck in a
+    /// DEGRADED state. Bump alongside `LIMA_VERSION`.
+    const LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256: &str =
+        "ee85b79aa7ebebf71039d6fb145695c5697ff870f6c88bf4150a6bd72813b78c";
     const LIMA_INSTANCE: &str = "peppy";
+
+    /// Prebuilt amd64 Ubuntu base rootfs. On an Apple Silicon host the x86_64
+    /// apptainer build runs the amd64 toolchain under Rosetta 2 inside a native
+    /// aarch64 VZ VM (instead of slow QEMU full-system emulation). We `chroot`
+    /// into this rootfs so every build binary is amd64 and emits genuine x86_64
+    /// output. Pinned + SHA-verified like every other download. Bump together.
+    const UBUNTU_BASE_VERSION: &str = "24.04.4";
+    const UBUNTU_BASE_AMD64_SHA256: &str =
+        "c1e67ef7b17a6300e136118bd1dc04725009cb376c1aad10abcf8cd453628d58";
+
+    /// Apt packages needed to build apptainer from source. Shared by the native
+    /// build (full guest) and the Rosetta build (minimal amd64 chroot, which is
+    /// why `curl`/`ca-certificates` are listed explicitly).
+    const APPTAINER_BUILD_DEPS: &str = "golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
     /// Must match the `--prefix` used at build time.
@@ -95,9 +117,27 @@ mod apptainer_build {
         )
     }
 
+    /// URL for the `lima-additional-guestagents` archive (cross-arch guest
+    /// agents). The host is always Darwin/arm64, so we only need that variant;
+    /// it bundles the Linux-x86_64 (and other) agents pushed into cross-arch VMs.
+    fn lima_additional_guestagents_url(version: &str) -> String {
+        format!(
+            "https://github.com/lima-vm/lima/releases/download/v{version}/lima-additional-guestagents-{version}-Darwin-arm64.tar.gz"
+        )
+    }
+
+    /// URL for the prebuilt amd64 Ubuntu base rootfs (Rosetta build path).
+    fn ubuntu_base_amd64_url(version: &str) -> String {
+        // The release directory is keyed by the `major.minor` series even though
+        // the tarball name carries the full point-release version.
+        format!(
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-{version}-base-amd64.tar.gz"
+        )
+    }
+
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.1.2", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.1.3", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
             _ => None,
         }
     }
@@ -123,39 +163,35 @@ mod apptainer_build {
         }
     }
 
-    /// Download the Lima release archive to `dest`.
-    fn download_lima_archive(
-        dest: &Path,
-        version: &str,
-        os: &str,
-        arch: &str,
-        expected_sha256: &str,
-    ) -> bool {
-        let url = lima_archive_url(version, os, arch);
+    /// Download `url` to `dest` and verify it against `expected_sha256`.
+    /// Deletes the file and returns false on download failure or checksum
+    /// mismatch (so a corrupt download is never reused). `label` names the
+    /// artifact in log messages.
+    fn download_and_verify(url: &str, dest: &Path, expected_sha256: &str, label: &str) -> bool {
         let status = Command::new("curl")
-            .args(["-fsSL", &url, "-o"])
+            .args(["-fsSL", url, "-o"])
             .arg(dest)
             .status();
 
         match status {
             Ok(s) if s.success() => {
-                if !build_helpers::verify_sha256(dest, expected_sha256, "Lima archive") {
-                    std::fs::remove_file(dest).ok();
-                    return false;
+                if build_helpers::verify_sha256(dest, expected_sha256, label) {
+                    return true;
                 }
-                true
+                std::fs::remove_file(dest).ok();
+                false
             }
             Ok(s) => {
                 println!(
-                    "cargo:warning=Failed to download Lima archive from {} (exit: {})",
-                    url, s
+                    "cargo:warning=Failed to download {} from {} (exit: {})",
+                    label, url, s
                 );
                 false
             }
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to run curl to download Lima archive: {}",
-                    e
+                    "cargo:warning=Failed to run curl to download {}: {}",
+                    label, e
                 );
                 false
             }
@@ -220,7 +256,8 @@ mod apptainer_build {
 
         let downloads_dir = build_helpers::cache_dir("downloads");
         let archive_path = downloads_dir.join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
-        if !download_lima_archive(&archive_path, version, os, arch, expected_sha256) {
+        let url = lima_archive_url(version, os, arch);
+        if !download_and_verify(&url, &archive_path, expected_sha256, "Lima archive") {
             return None;
         }
 
@@ -242,6 +279,72 @@ mod apptainer_build {
         Some(cache_dir)
     }
 
+    /// Ensure the cross-architecture guest agent
+    /// `lima-guestagent.Linux-{lima_arch}.gz` is present in the cached Lima
+    /// `share/lima` directory and comes from the pinned [`LIMA_VERSION`].
+    ///
+    /// The main Lima archive ships only the host-native agent, so cross-arch
+    /// VMs (x86_64 under QEMU on Apple Silicon) need their agent supplied
+    /// separately. Sourcing it from the pinned `lima-additional-guestagents`
+    /// release (rather than whatever version Homebrew happens to have installed)
+    /// keeps host and guest agent in lockstep; a mismatch leaves the VM stuck in
+    /// a DEGRADED state because the host cannot reach the guest agent.
+    ///
+    /// The agent is copied unconditionally so a previously cached, version-
+    /// skewed agent (e.g. a Homebrew copy left by an older build) is replaced.
+    fn ensure_cross_guest_agent(lima_share: &Path, lima_arch: &str) -> bool {
+        let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
+        let extract_dir = build_helpers::cache_dir(&format!(
+            "lima-additional-guestagents-{}-Darwin-arm64",
+            LIMA_VERSION
+        ));
+        let src_agent = extract_dir.join("share/lima").join(&agent_name);
+
+        if !src_agent.exists() {
+            println!(
+                "cargo:warning=Fetching pinned Lima {} guest agent for {}...",
+                LIMA_VERSION, lima_arch
+            );
+            let downloads_dir = build_helpers::cache_dir("downloads");
+            let archive_path = downloads_dir.join(format!(
+                "lima-additional-guestagents-{}-Darwin-arm64.tar.gz",
+                LIMA_VERSION
+            ));
+            let url = lima_additional_guestagents_url(LIMA_VERSION);
+            if !download_and_verify(
+                &url,
+                &archive_path,
+                LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256,
+                "Lima additional guest agents archive",
+            ) {
+                return false;
+            }
+            let extracted = extract_lima_archive(&archive_path, &extract_dir);
+            std::fs::remove_file(&archive_path).ok();
+            if !extracted {
+                return false;
+            }
+        }
+
+        if !src_agent.exists() {
+            println!(
+                "cargo:warning=Guest agent {} missing from pinned Lima {} additional agents",
+                agent_name, LIMA_VERSION
+            );
+            return false;
+        }
+
+        let dest = lima_share.join(&agent_name);
+        if let Err(e) = std::fs::copy(&src_agent, &dest) {
+            println!(
+                "cargo:warning=Failed to install guest agent {} into {:?}: {}",
+                agent_name, lima_share, e
+            );
+            return false;
+        }
+        true
+    }
+
     // -----------------------------------------------------------------------
     // Lima instance management (macOS)
     // -----------------------------------------------------------------------
@@ -250,6 +353,45 @@ mod apptainer_build {
     /// the instance as unusable. A healthy guest answers in about a second; the
     /// generous budget only matters for a wedged guest we are about to recreate.
     const LIMA_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Whether the x86_64 apptainer build can take the fast Rosetta path: a
+    /// native aarch64 macOS host with Rosetta 2 installed. Rosetta translates
+    /// the amd64 build toolchain inside a native aarch64 VZ VM, far faster than
+    /// QEMU full-system emulation, while still emitting genuine x86_64 binaries.
+    /// Set `PEPPY_NO_ROSETTA=1` to force the QEMU fallback.
+    fn rosetta_available() -> bool {
+        env::var("PEPPY_NO_ROSETTA").unwrap_or_default() != "1"
+            && std::env::consts::ARCH == "aarch64"
+            && std::env::consts::OS == "macos"
+            && Path::new("/Library/Apple/usr/libexec/oah").exists()
+    }
+
+    /// vCPUs to give a build VM: most of the host's cores, leaving two for the
+    /// host. More cores speed up `make -j` and engage multi-threaded TCG on the
+    /// QEMU fallback path.
+    fn build_vm_cpus() -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get().saturating_sub(2))
+            .unwrap_or(4)
+            .clamp(2, 8)
+    }
+
+    /// Query an instance's hypervisor type (`vz`, `qemu`, ...). Returns `None`
+    /// when the instance does not exist or the query fails. Used to detect a
+    /// stale instance whose VM type no longer matches the desired strategy
+    /// (e.g. a leftover QEMU x86_64 VM after switching to the Rosetta path).
+    fn lima_instance_vmtype(lima: &LimaConfig) -> Option<String> {
+        let output = lima
+            .lima_command()
+            .args(["list", "--format", "{{.VMType}}", lima.instance])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let vmtype = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!vmtype.is_empty()).then_some(vmtype)
+    }
 
     /// Ensure the peppy Lima instance exists and its guest is reachable.
     ///
@@ -267,28 +409,57 @@ mod apptainer_build {
     /// When `arch` is `Some`, an `--arch=<value>` flag is passed to
     /// `limactl start` so the VM runs under QEMU emulation for a
     /// non-native architecture.
-    fn ensure_lima_instance(lima: &LimaConfig, template: &str, arch: Option<&str>) -> bool {
-        let started = match lima_instance_status(lima) {
-            None => return create_lima_instance(lima, template, arch),
-            Some(status) if status == "Running" => true,
+    fn ensure_lima_instance(
+        lima: &LimaConfig,
+        template: &str,
+        arch: Option<&str>,
+        rosetta: bool,
+    ) -> bool {
+        // Rosetta and native builds run on VZ; only a QEMU cross-arch fallback
+        // uses qemu. If an existing instance has the wrong backend (e.g. a
+        // leftover QEMU x86_64 VM from before the Rosetta switch), delete it so
+        // it is recreated with the right one instead of being silently reused.
+        let desired_vmtype = if arch.is_some() && !rosetta {
+            "qemu"
+        } else {
+            "vz"
+        };
+        if lima_instance_vmtype(lima).is_some_and(|t| t != desired_vmtype) {
+            println!(
+                "cargo:warning=Lima {} has the wrong VM type for this build; recreating it as {}...",
+                lima.instance, desired_vmtype
+            );
+            delete_lima_instance(lima);
+        }
+
+        match lima_instance_status(lima) {
+            None => {
+                create_lima_instance(lima, template, arch, rosetta);
+            }
+            Some(status) if status == "Running" => {}
             Some(_) => {
                 println!("cargo:warning=Starting Lima {} instance...", lima.instance);
-                start_existing_lima_instance(lima)
+                start_existing_lima_instance(lima);
             }
-        };
+        }
 
-        // A successful start (or a `Running` status) does not guarantee the
-        // guest is up. Probe it; a reachable guest is ready to use.
-        if started && lima_guest_reachable(lima) {
+        // `limactl start` can exit non-zero when the guest agent is unreachable
+        // (seen with cross-arch VMs under QEMU emulation) even though the guest
+        // is fully usable over SSH. The build only ever drives the guest via
+        // `limactl shell` (SSH), so SSH reachability, not the start exit code or
+        // guest-agent health, is the authoritative readiness signal. The
+        // create/start results above are therefore intentionally not consumed.
+        if lima_guest_reachable(lima) {
             return true;
         }
 
         println!(
-            "cargo:warning=Lima {} instance is unusable (guest unreachable); deleting and recreating it from scratch...",
+            "cargo:warning=Lima {} instance is unusable (guest unreachable over SSH); deleting and recreating it from scratch...",
             lima.instance
         );
         delete_lima_instance(lima);
-        create_lima_instance(lima, template, arch)
+        create_lima_instance(lima, template, arch, rosetta);
+        lima_guest_reachable(lima)
     }
 
     /// Query an instance's status via Go-template output (avoids brittle JSON
@@ -339,15 +510,22 @@ mod apptainer_build {
         }
     }
 
-    /// Create and start a fresh instance. A successful `limactl start` only
-    /// returns once Lima has seen the guest come up, so the result needs no
-    /// extra reachability probe.
-    fn create_lima_instance(lima: &LimaConfig, template: &str, arch: Option<&str>) -> bool {
+    /// Create and start a fresh instance via `limactl start`. The returned
+    /// success flag is advisory: `ensure_lima_instance` confirms real
+    /// readiness with an SSH reachability probe, because `limactl start` can
+    /// exit non-zero on guest-agent issues that do not affect SSH usability.
+    fn create_lima_instance(
+        lima: &LimaConfig,
+        template: &str,
+        arch: Option<&str>,
+        rosetta: bool,
+    ) -> bool {
         println!(
             "cargo:warning=Creating Lima {} instance with {} (this may take a few minutes on first run)...",
             lima.instance, template
         );
         let name_flag = format!("--name={}", lima.instance);
+        let cpus_flag = format!("--cpus={}", build_vm_cpus());
         let mut cmd = lima.lima_command();
         cmd.args([
             "start",
@@ -356,8 +534,13 @@ mod apptainer_build {
             "--mount-writable",
             "--containerd=none",
             "--memory=12",
+            &cpus_flag,
         ]);
-        if let Some(a) = arch {
+        if rosetta {
+            // Native aarch64 VZ VM with Rosetta: the x86_64 toolchain runs
+            // translated, so no `--arch` (which would force QEMU emulation).
+            cmd.args(["--vm-type=vz", "--rosetta"]);
+        } else if let Some(a) = arch {
             cmd.arg(format!("--arch={}", a));
         }
         cmd.arg(template);
@@ -694,20 +877,23 @@ mod apptainer_build {
         true
     }
 
-    /// Build apptainer from source inside a Lima VM.
+    /// Build apptainer from source inside a Lima VM and copy the result back.
     ///
-    /// Starts a Lima VM of the target architecture (using `--arch` for
-    /// non-native targets so QEMU emulates the correct ISA), builds
-    /// apptainer natively inside it, then copies the result back to the host.
-    /// This avoids cross-compilation entirely — the binary is guaranteed to
-    /// match the target because it is built on the target architecture.
+    /// Strategy by target:
+    /// * Native arch: build directly in a VZ VM.
+    /// * x86_64 on an Apple Silicon host with Rosetta: build inside an amd64
+    ///   `chroot` in a native aarch64 VZ VM, so the toolchain runs under Rosetta
+    ///   (fast) yet emits genuine x86_64 binaries.
+    /// * x86_64 without Rosetta: fall back to a QEMU full-system VM (slow).
+    ///
+    /// Every path builds from source for the target ISA, so the binary is
+    /// guaranteed to match the target.
     fn build_apptainer_from_source_via_lima(
         lima: &LimaConfig,
         version: &str,
         install_dir: &Path,
         target_arch: &str,
     ) -> bool {
-        // Map Rust arch names to Lima --arch values.
         let lima_arch = match target_arch {
             "x86_64" => "x86_64",
             "aarch64" => "aarch64",
@@ -720,17 +906,21 @@ mod apptainer_build {
             }
         };
 
-        // Only pass --arch when the target differs from the host.
-        let arch_flag = if target_arch != std::env::consts::ARCH {
+        let is_cross = target_arch != std::env::consts::ARCH;
+        let use_rosetta = is_cross && target_arch == "x86_64" && rosetta_available();
+        // Only the QEMU cross-arch fallback needs `--arch` (and a matching guest
+        // agent). The Rosetta path runs a native aarch64 VZ VM.
+        let arch_flag = if is_cross && !use_rosetta {
             Some(lima_arch)
         } else {
             None
         };
 
-        // Cross-arch VMs need a guest agent binary for the target
-        // architecture.  The main Lima package only ships the native agent;
-        // additional agents come from brew's `lima-additional-guestagents`.
-        // Copy any missing agents into the Lima share directory.
+        // The QEMU fallback runs a foreign-arch VM, which needs the matching
+        // guest agent. Sourcing it from the pinned Lima version keeps host and
+        // guest agent in lockstep. A failure here is not fatal: the build drives
+        // the guest only over SSH (`limactl shell`), and `ensure_lima_instance`
+        // treats SSH reachability, not guest-agent health, as readiness.
         if arch_flag.is_some() {
             let lima_share = lima
                 .limactl
@@ -739,78 +929,173 @@ mod apptainer_build {
                 .parent()
                 .unwrap()
                 .join("share/lima");
-            let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
-            let dest = lima_share.join(&agent_name);
-            if !dest.exists() {
-                let brew_src = PathBuf::from("/opt/homebrew/share/lima").join(&agent_name);
-                if brew_src.exists() {
-                    println!(
-                        "cargo:warning=Copying {} guest agent from Homebrew",
-                        lima_arch
-                    );
-                    std::fs::copy(&brew_src, &dest).ok();
-                } else {
-                    println!(
-                        "cargo:warning=Guest agent {} not found; install lima-additional-guestagents via Homebrew",
-                        agent_name
-                    );
-                }
+            if !ensure_cross_guest_agent(&lima_share, lima_arch) {
+                println!(
+                    "cargo:warning=Could not provision the pinned {} guest agent; \
+                     falling back to SSH-only readiness (cross-arch VM start may be slower)",
+                    lima_arch
+                );
             }
         }
 
-        if !ensure_lima_instance(lima, LIMA_TEMPLATE, arch_flag) {
+        if !ensure_lima_instance(lima, LIMA_TEMPLATE, arch_flag, use_rosetta) {
             println!(
                 "cargo:warning=Could not ensure a running Lima instance for apptainer source build"
             );
             return false;
         }
 
+        let strategy = if use_rosetta {
+            "an amd64 chroot under Rosetta (fast)"
+        } else if is_cross {
+            "QEMU full-system emulation (slow)"
+        } else {
+            "a native VM"
+        };
         println!(
-            "cargo:warning=Building apptainer {} for {} from source inside Lima VM (this may take several minutes)...",
-            version, target_arch
+            "cargo:warning=Building apptainer {} for {} via {} (this may take several minutes)...",
+            version, target_arch, strategy
         );
 
         let guest_install_dir = GUEST_APPTAINER_DIR;
+        let build_script = if use_rosetta {
+            rosetta_build_script(version, guest_install_dir)
+        } else {
+            native_build_script(version, guest_install_dir)
+        };
 
-        let build_script = format!(
+        let label = format!("apptainer-build-{}", target_arch);
+        let mut cmd = lima.lima_command();
+        cmd.args(["shell", lima.instance, "--", "bash", "-c", &build_script]);
+        if !build_helpers::run_command_streaming(&mut cmd, &label).success {
+            return false;
+        }
+
+        copy_lima_result_to_host(lima, guest_install_dir, install_dir)
+    }
+
+    /// The apptainer build commands shared by every strategy: download + verify
+    /// the source, configure, compile, install to `install_dir`. Runs without
+    /// `sudo` (callers supply root where the environment needs it), and is
+    /// embedded verbatim into a quoted `bash` here-doc on the Rosetta path, so
+    /// its `$(nproc)` and quoting must survive unexpanded.
+    fn apptainer_compile_steps(version: &str, install_dir: &str) -> String {
+        format!(
+            r#"cd /tmp
+rm -rf apptainer-{version} apptainer-{version}.tar.gz {install_dir}
+echo "=== Downloading apptainer {version} source ==="
+curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
+echo "=== Verifying apptainer source tarball SHA-256 ==="
+echo "{sha}  apptainer-{version}.tar.gz" | sha256sum -c -
+tar -xzf apptainer-{version}.tar.gz
+cd apptainer-{version}
+echo "{version}" > VERSION
+echo "=== Configuring apptainer ==="
+./mconfig --without-suid --prefix={install_dir}
+echo "=== Compiling apptainer ==="
+make -C builddir -j"$(nproc)"
+echo "=== Installing apptainer ==="
+make -C builddir install
+rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
+            version = version,
+            install_dir = install_dir,
+            sha = APPTAINER_SHA256,
+        )
+    }
+
+    /// Build script for a native or QEMU-emulated VM: install deps in the full
+    /// guest (waiting out cloud-init's apt lock), then run the shared steps.
+    fn native_build_script(version: &str, install_dir: &str) -> String {
+        format!(
             r#"set -eu
 echo "=== Waiting for apt lock ==="
 while sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 echo "=== Installing build dependencies ==="
 sudo apt-get update -qq
-sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup
-cd /tmp
-sudo rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
-echo "=== Downloading apptainer {version} source ==="
-curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
-echo "=== Verifying apptainer source tarball SHA-256 ==="
-echo "{expected_sha256}  apptainer-{version}.tar.gz" | sha256sum -c -
-tar -xzf apptainer-{version}.tar.gz
-cd apptainer-{version}
-echo "{version}" > VERSION
-echo "=== Configuring apptainer ==="
-./mconfig --without-suid --prefix={guest_install_dir}
-echo "=== Compiling apptainer (this is the slow part under QEMU) ==="
-make -C builddir -j"$(nproc)"
-echo "=== Installing apptainer ==="
-make -C builddir install
-rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz
+sudo apt-get install -y -qq {deps}
+{compile}
 echo "=== Apptainer build complete ==="
 "#,
-            version = version,
-            guest_install_dir = guest_install_dir,
-            expected_sha256 = APPTAINER_SHA256,
-        );
+            deps = APPTAINER_BUILD_DEPS,
+            compile = apptainer_compile_steps(version, install_dir),
+        )
+    }
 
-        let label = format!("apptainer-build-{}", target_arch);
-        let mut cmd = lima.lima_command();
-        cmd.args(["shell", lima.instance, "--", "bash", "-c", &build_script]);
-        let run = build_helpers::run_command_streaming(&mut cmd, &label);
-        if !run.success {
-            return false;
-        }
+    /// Build script for the Rosetta path: unpack a pinned amd64 rootfs, bind the
+    /// kernel filesystems, then run the shared steps inside an amd64 `chroot`
+    /// where every binary executes via Rosetta. The result is moved out of the
+    /// chroot to the guest path the copy-back expects and chowned to the Lima
+    /// user so the (non-root) tar pipe can read it.
+    fn rosetta_build_script(version: &str, install_dir: &str) -> String {
+        format!(
+            r#"set -eu
+ROOT=/amd64
 
-        copy_lima_result_to_host(lima, guest_install_dir, install_dir)
+# Unmount everything under $ROOT and delete the tree, in a way that can NEVER
+# let `rm` walk into a live /proc, /sys or the rbind of the guest /dev (doing so
+# deletes the guest's own device nodes). Each mountpoint under $ROOT is
+# unmounted, retrying and falling back to a lazy detach (which drops the path
+# from the mount table at once), then we refuse to delete unless the mount table
+# confirms nothing under $ROOT remains.
+peppy_teardown_root() {{
+    tries=0
+    while [ "$tries" -lt 8 ]; do
+        mounts=$(cut -d' ' -f2 /proc/self/mounts | grep -E "^$ROOT(/|$)" || true)
+        if [ -z "$mounts" ]; then
+            break
+        fi
+        for mp in $mounts; do
+            sudo umount "$mp" 2>/dev/null || sudo umount -l "$mp" 2>/dev/null || true
+        done
+        tries=$((tries + 1))
+    done
+    if cut -d' ' -f2 /proc/self/mounts | grep -qE "^$ROOT(/|$)"; then
+        echo "rosetta-build: mounts still present under $ROOT; refusing rm to protect the guest /dev" >&2
+        return 1
+    fi
+    sudo rm -rf "$ROOT"
+}}
+
+# Always tear the chroot down on exit, so a failed build never leaves $ROOT
+# mounted for the next run to trip over (every run starts from a clean state).
+trap peppy_teardown_root EXIT
+
+echo "=== Preparing pinned amd64 rootfs (Rosetta) ==="
+peppy_teardown_root
+sudo mkdir -p "$ROOT"
+curl -fsSL {rootfs_url} -o /tmp/amd64base.tar.gz
+echo "=== Verifying amd64 rootfs SHA-256 ==="
+echo "{rootfs_sha}  /tmp/amd64base.tar.gz" | sha256sum -c -
+sudo tar -xzf /tmp/amd64base.tar.gz -C "$ROOT"
+sudo mount -t proc proc "$ROOT/proc"
+sudo mount --rbind /sys "$ROOT/sys" && sudo mount --make-rslave "$ROOT/sys"
+sudo mount --rbind /dev "$ROOT/dev" && sudo mount --make-rslave "$ROOT/dev"
+sudo mount -t devpts devpts "$ROOT/dev/pts" 2>/dev/null || true
+sudo cp /etc/resolv.conf "$ROOT/etc/resolv.conf"
+sudo tee "$ROOT/peppy-apptainer-build.sh" >/dev/null <<'PEPPY_BUILD_EOF'
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+echo "=== Installing build dependencies (amd64, via Rosetta) ==="
+apt-get update -qq
+apt-get install -y -qq {deps}
+{compile}
+echo "=== Apptainer build complete ==="
+PEPPY_BUILD_EOF
+echo "=== Building apptainer in amd64 chroot (Rosetta) ==="
+sudo chroot "$ROOT" bash /peppy-apptainer-build.sh
+echo "=== Exporting result from chroot ==="
+sudo rm -rf {install_dir}
+sudo mkdir -p "$(dirname {install_dir})"
+sudo cp -a "$ROOT{install_dir}" {install_dir}
+sudo chown -R "$(id -u):$(id -g)" {install_dir}
+echo "=== Apptainer build complete ==="
+# The EXIT trap (peppy_teardown_root) unmounts and removes $ROOT from here.
+"#,
+            rootfs_url = ubuntu_base_amd64_url(UBUNTU_BASE_VERSION),
+            rootfs_sha = UBUNTU_BASE_AMD64_SHA256,
+            deps = APPTAINER_BUILD_DEPS,
+            compile = apptainer_compile_steps(version, install_dir),
+        )
     }
 
     /// Copy a directory from the Lima guest to the host via tar pipe.
@@ -889,6 +1174,7 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_CROSS_ARCH");
+        println!("cargo:rerun-if-env-changed=PEPPY_NO_ROSETTA");
     }
 
     fn emit_constant_env_vars() {
