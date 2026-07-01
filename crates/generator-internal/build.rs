@@ -343,6 +343,7 @@ mod peppylib_build {
             println!("cargo:rerun-if-changed={}", py_file.display());
         }
         println!("cargo:rerun-if-env-changed={REBUILD_ENV_VAR}");
+        println!("cargo:rerun-if-env-changed={PREBUILT_SO_DIR_ENV}");
     }
 
     /// Returns true if `pixi` is available on PATH.
@@ -359,7 +360,7 @@ mod peppylib_build {
     /// Builds the native `.so` via pixi and renames it to a platform-suffixed name.
     fn build_native_so(
         peppylib_py_dir: &Path,
-        peppylib_dir: &Path,
+        so_dir: &Path,
         so_path: &Path,
         pixi_task: &str,
         target_dir: &Path,
@@ -379,7 +380,7 @@ mod peppylib_build {
         );
 
         let host_suffix = host_platform_suffix();
-        let native_so_path = peppylib_dir.join(format!("_peppylib.abi3.{host_suffix}.so"));
+        let native_so_path = so_dir.join(format!("_peppylib.abi3.{host_suffix}.so"));
         std::fs::rename(so_path, &native_so_path).unwrap_or_else(|e| {
             panic!(
                 "failed to rename {:?} to {:?}: {e}",
@@ -413,7 +414,7 @@ mod peppylib_build {
         target: &LinuxCrossTarget,
         peppylib_py_dir: &Path,
         target_dir: &Path,
-        peppylib_dir: &Path,
+        so_dir: &Path,
     ) {
         println!(
             "cargo:warning=Cross-compiling peppylib-py for {} via pixi ({})…",
@@ -426,8 +427,7 @@ mod peppylib_build {
         let wheels_dir = target_dir.join("wheels");
         let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
 
-        let linux_so_path =
-            peppylib_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
+        let linux_so_path = so_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
         std::fs::write(&linux_so_path, &linux_so_bytes)
             .unwrap_or_else(|e| panic!("failed to write linux .so to {:?}: {e}", linux_so_path));
 
@@ -445,6 +445,20 @@ mod peppylib_build {
     /// a debug build. Set by the release build path and available to developers
     /// iterating on container bindings.
     const REBUILD_ENV_VAR: &str = "PEPPYLIB_REBUILD";
+
+    /// Env var pointing at a directory of host-built `.so` to consume read-only
+    /// instead of building. Set by the release cross-build inside the Lima VM,
+    /// which has no pixi: the host build already cross-compiled every platform's
+    /// binding into a peppy-owned cache dir (mounted into the VM), so the in-VM
+    /// build embeds those directly rather than fetching and seeding a cargo
+    /// checkout. When set, no pixi is invoked and no `.so` is written anywhere.
+    const PREBUILT_SO_DIR_ENV: &str = "PEPPYLIB_PREBUILT_SO_DIR";
+
+    /// True for a platform-suffixed native extension (`_peppylib.abi3.<plat>.so`),
+    /// excluding the canonical `_peppylib.abi3.so` Python imports at runtime.
+    fn is_platform_so_name(name: &str) -> bool {
+        name.starts_with("_peppylib.abi3.") && name.ends_with(".so") && name != "_peppylib.abi3.so"
+    }
 
     /// This build script's own source, embedded so it can be mixed into every
     /// `.so` hash. The build logic is itself an input to the compiled artifact:
@@ -490,7 +504,7 @@ mod peppylib_build {
     /// own Rust bindings and build manifests, plus the source of every dependency
     /// crate. This is the single source of truth shared by the content hash and the
     /// rerun registration so they cannot drift apart. The peppylib package `.py`
-    /// files are deliberately excluded; they are embedded alongside the `.so` but
+    /// files are deliberately excluded; they are embedded for scaffolding but
     /// never affect the compiled binary.
     fn so_rebuild_input_files(peppylib_py_dir: &Path) -> Vec<PathBuf> {
         let mut files = super::collect_crate_source_files(&peppylib_py_dir.join("src"), false);
@@ -556,8 +570,8 @@ mod peppylib_build {
     /// Reads the per-platform build state, mapping each platform suffix to the
     /// `(source_hash, profile)` its `.so` was last built from. A missing or
     /// malformed marker parses to an empty map (everything treated as stale).
-    fn read_build_state(peppylib_dir: &Path) -> BTreeMap<String, (String, String)> {
-        let Ok(contents) = std::fs::read_to_string(peppylib_dir.join(BUILD_STATE_MARKER)) else {
+    fn read_build_state(so_dir: &Path) -> BTreeMap<String, (String, String)> {
+        let Ok(contents) = std::fs::read_to_string(so_dir.join(BUILD_STATE_MARKER)) else {
             return BTreeMap::new();
         };
         contents
@@ -574,22 +588,22 @@ mod peppylib_build {
 
     /// Writes the per-platform build state, using write_if_changed to avoid
     /// touching the file (and its mtime) on no-op builds.
-    fn write_build_state(peppylib_dir: &Path, state: &BTreeMap<String, (String, String)>) {
+    fn write_build_state(so_dir: &Path, state: &BTreeMap<String, (String, String)>) {
         let body: String = state
             .iter()
             .map(|(platform, (hash, profile))| format!("{platform}\t{hash}\t{profile}\n"))
             .collect();
-        build_helpers::write_if_changed(&peppylib_dir.join(BUILD_STATE_MARKER), body.as_bytes());
+        build_helpers::write_if_changed(&so_dir.join(BUILD_STATE_MARKER), body.as_bytes());
     }
 
     /// Removes `.so` files (and their state entries) for platforms that are no
     /// longer built, so a removed target does not leave a stale artifact behind.
     fn prune_orphan_so_files(
-        peppylib_dir: &Path,
+        so_dir: &Path,
         state: &mut BTreeMap<String, (String, String)>,
         current_platforms: &[String],
     ) {
-        let Ok(entries) = std::fs::read_dir(peppylib_dir) else {
+        let Ok(entries) = std::fs::read_dir(so_dir) else {
             return;
         };
         for entry in entries.flatten() {
@@ -610,28 +624,32 @@ mod peppylib_build {
 
     /// Computes a combined SHA-256 hash of all platform `.so` files **and**
     /// every `.py` file in the peppylib package, emitting it as the
-    /// `PEPPYLIB_SO_HASH` env var for cache invalidation. Including the `.py`
-    /// files in the hash ensures a Python-side edit (rename, new export, etc.)
-    /// invalidates the cached embed even when the native `.so` is unchanged.
-    fn compute_and_emit_so_hash(peppylib_dir: &Path) {
+    /// `PEPPYLIB_SO_HASH` env var for cache invalidation. The `.py` wrappers live
+    /// in the source checkout (`peppylib_dir`); the compiled `.so` live in the
+    /// peppy-owned `so_dir`. Including the `.py` files ensures a Python-side edit
+    /// (rename, new export, etc.) invalidates the cached embed even when the
+    /// native `.so` is unchanged.
+    fn compute_and_emit_so_hash(peppylib_dir: &Path, so_dir: &Path) {
         use sha2::{Digest, Sha256};
 
-        let mut hasher = Sha256::new();
-        let mut hashed_files: Vec<_> = super::walkdir(peppylib_dir)
+        let mut hashed_files: Vec<PathBuf> = super::walkdir(peppylib_dir)
             .into_iter()
             .filter(|p| {
-                if p.components().any(|c| c.as_os_str() == "__pycache__") {
-                    return false;
-                }
-                if p.extension().is_some_and(|ext| ext == "py") {
-                    return true;
-                }
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("_peppylib.abi3.") && n.ends_with(".so"))
+                !p.components().any(|c| c.as_os_str() == "__pycache__")
+                    && p.extension().is_some_and(|ext| ext == "py")
             })
             .collect();
-        hashed_files.sort();
+        hashed_files.extend(super::walkdir(so_dir).into_iter().filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_platform_so_name)
+        }));
+        // Keyed by filename: the `.py` and `.so` come from two dirs but their
+        // names never collide, and the pre-split layout sorted by path within one
+        // dir, so filename order keeps the hash stable and deterministic.
+        hashed_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        let mut hasher = Sha256::new();
         for file in &hashed_files {
             let bytes = std::fs::read(file)
                 .unwrap_or_else(|e| panic!("failed to read {:?} for hashing: {e}", file));
@@ -643,19 +661,115 @@ mod peppylib_build {
         println!("cargo:rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
     }
 
+    /// Emits `embedded_peppylib_so.rs` into OUT_DIR: a `PEPPYLIB_PLATFORM_SO`
+    /// table mapping each platform-suffixed `.so` filename to its bytes via
+    /// `include_bytes!`. The scaffolder consumes this table to write the target
+    /// platform's native extension. This mirrors [`embed_ruff_binary`]: build
+    /// artifacts are embedded through OUT_DIR rather than a compile-time source
+    /// path, so the `.so` can live in a peppy-owned cache dir instead of being
+    /// written into the shared source checkout.
+    fn generate_embedded_peppylib_so(so_dir: &Path) {
+        let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        let generated = out_dir.join("embedded_peppylib_so.rs");
+
+        let mut so_files: Vec<PathBuf> = std::fs::read_dir(so_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(is_platform_so_name)
+            })
+            .collect();
+        so_files.sort();
+
+        let mut entries = String::new();
+        for so in &so_files {
+            let name = so.file_name().and_then(|n| n.to_str()).unwrap();
+            entries.push_str(&format!("    ({name:?}, include_bytes!({so:?})),\n"));
+            // A changed `.so` must recompile the scaffolder that embeds it.
+            println!("cargo:rerun-if-changed={}", so.display());
+        }
+
+        let content = format!(
+            "// @generated by generator-internal/build.rs. Platform-suffixed peppylib\n\
+             // native extensions, embedded from a peppy-owned cache dir.\n\
+             pub const PEPPYLIB_PLATFORM_SO: &[(&str, &[u8])] = &[\n{entries}];\n"
+        );
+        build_helpers::write_if_changed(&generated, content.as_bytes());
+    }
+
+    /// Verify the host-built `.so` a release cross-build is about to embed are
+    /// present and were built from the current sources. Reads the same
+    /// `.so-build-state` marker the producing build writes, and fails loudly on a
+    /// missing, empty, or stale binding so a release can never ship bindings that
+    /// mismatch the sources compiled around them.
+    fn verify_prebuilt_so(so_dir: &Path, current_hash: &str) {
+        let state = read_build_state(so_dir);
+        let mut platform_so: Vec<String> = std::fs::read_dir(so_dir)
+            .unwrap_or_else(|e| panic!("{PREBUILT_SO_DIR_ENV}={so_dir:?} cannot be read: {e}"))
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| is_platform_so_name(name))
+            .collect();
+        platform_so.sort();
+
+        assert!(
+            !platform_so.is_empty(),
+            "{PREBUILT_SO_DIR_ENV}={so_dir:?} holds no peppylib .so; run the host \
+             build before cross-building"
+        );
+        for name in &platform_so {
+            let suffix = name
+                .strip_prefix("_peppylib.abi3.")
+                .and_then(|s| s.strip_suffix(".so"))
+                .expect("is_platform_so_name guarantees the prefix and suffix");
+            let recorded = state.get(suffix).map(|(h, _)| h.as_str());
+            assert!(
+                recorded == Some(current_hash),
+                "prebuilt peppylib .so {name} in {so_dir:?} was built from stale \
+                 sources (recorded {recorded:?}, current {current_hash}); rebuild \
+                 the host artifacts before cross-building"
+            );
+        }
+    }
+
     pub fn run() {
-        // peppylib-py and all its `.so` dependency crates live in the shared
+        // peppylib-py and its `.so` dependency crates live in the shared
         // workspace (peppyos-shared), located via build-helpers so every path
         // resolves in the superproject and from a cargo git checkout of
-        // public-peppy-libs alike — no reach across a submodule boundary.
+        // public-peppy-libs alike. Only the Python wrappers are read from here;
+        // the compiled `.so` are produced into a peppy-owned cache dir, never
+        // written back into the immutable, cross-run cargo checkout.
         let peppylib_py_dir = build_helpers::peppyos_shared_dir().join("peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
-        let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         register_rerun_triggers(&peppylib_py_dir);
 
-        let profile = peppylib_build_policy::BuildProfile::from_env();
         let current_hash = compute_source_hash(&peppylib_py_dir);
+
+        // Release cross-builds run inside the Lima VM, which has no pixi and must
+        // not touch the cargo checkout. They consume the host-built `.so` from an
+        // explicit directory (mounted from the host) instead of building.
+        if let Some(prebuilt) = std::env::var_os(PREBUILT_SO_DIR_ENV) {
+            let so_dir = PathBuf::from(prebuilt);
+            verify_prebuilt_so(&so_dir, &current_hash);
+            generate_embedded_peppylib_so(&so_dir);
+            compute_and_emit_so_hash(&peppylib_dir, &so_dir);
+            return;
+        }
+
+        // Persistent, peppy-owned home for the built `.so` and their
+        // `.so-build-state` marker, rooted outside the cargo checkout so release
+        // staging never depends on cargo's git-cache layout (checkout dir names,
+        // leftover checkouts from prior runs).
+        let so_dir = build_helpers::cache_dir("peppylib-py").join("so");
+        std::fs::create_dir_all(&so_dir)
+            .unwrap_or_else(|e| panic!("failed to create peppylib .so dir {so_dir:?}: {e}"));
+
+        let profile = peppylib_build_policy::BuildProfile::from_env();
         let host = host_platform_suffix();
 
         // Every platform this machine produces: the host always, plus the Linux
@@ -671,13 +785,19 @@ mod peppylib_build {
         #[cfg(not(target_os = "macos"))]
         let platforms: Vec<String> = vec![host.clone()];
 
+        // The transient in-place output of `maturin develop`, which lands next to
+        // the Python package in the checkout. It is moved into `so_dir` right
+        // after the host build and removed below, so the checkout keeps no
+        // artifact between runs.
+        let so_path = peppylib_dir.join("_peppylib.abi3.so");
+
         // When pixi is unavailable we cannot rebuild, so fail only if an artifact
         // is actually missing or built from stale sources; otherwise serve what
         // exists.
         if !is_pixi_available() {
-            let state = read_build_state(&peppylib_dir);
+            let state = read_build_state(&so_dir);
             let needs_rebuild = platforms.iter().any(|p| {
-                let so = peppylib_dir.join(format!("_peppylib.abi3.{p}.so"));
+                let so = so_dir.join(format!("_peppylib.abi3.{p}.so"));
                 !so.exists() || state.get(p).map(|(h, _)| h.as_str()) != Some(current_hash.as_str())
             });
             assert!(
@@ -690,7 +810,8 @@ mod peppylib_build {
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
-            compute_and_emit_so_hash(&peppylib_dir);
+            generate_embedded_peppylib_so(&so_dir);
+            compute_and_emit_so_hash(&peppylib_dir, &so_dir);
             return;
         }
 
@@ -711,7 +832,7 @@ mod peppylib_build {
         let dep_hash = compute_dep_hash();
         let target_dir =
             build_helpers::cache_dir("peppylib-py").join(format!("target-{}", &dep_hash[..16]));
-        let mut state = read_build_state(&peppylib_dir);
+        let mut state = read_build_state(&so_dir);
         let force = std::env::var(REBUILD_ENV_VAR).is_ok_and(|v| !v.is_empty() && v != "0");
 
         // A forced rebuild discards the cached target so maturin recompiles every
@@ -735,13 +856,13 @@ mod peppylib_build {
         // so local host scaffolding always matches current sources. The recorded
         // source hash already covers the dependency crates, so a dependency change
         // surfaces here as a stale hash and triggers a rebuild.
-        let host_so = peppylib_dir.join(format!("_peppylib.abi3.{host}.so"));
+        let host_so = so_dir.join(format!("_peppylib.abi3.{host}.so"));
         let host_state = (current_hash.clone(), profile.tag().to_string());
         let host_current = state.get(&host) == Some(&host_state);
         if peppylib_build_policy::should_build_host(host_so.exists(), host_current, force) {
             build_native_so(
                 &peppylib_py_dir,
-                &peppylib_dir,
+                &so_dir,
                 &so_path,
                 profile.tag(),
                 &target_dir,
@@ -758,7 +879,7 @@ mod peppylib_build {
         {
             for target in LINUX_CROSS_TARGETS {
                 let suffix = target.platform_suffix;
-                let target_so = peppylib_dir.join(format!("_peppylib.abi3.{suffix}.so"));
+                let target_so = so_dir.join(format!("_peppylib.abi3.{suffix}.so"));
                 let target_state = (current_hash.clone(), "release".to_string());
                 let stale = state.get(suffix) != Some(&target_state);
                 if peppylib_build_policy::should_cross_compile(
@@ -767,7 +888,7 @@ mod peppylib_build {
                     stale,
                     force,
                 ) {
-                    cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
+                    cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &so_dir);
                     state.insert(suffix.to_string(), target_state);
                 } else if stale {
                     println!(
@@ -779,15 +900,17 @@ mod peppylib_build {
             }
         }
 
-        prune_orphan_so_files(&peppylib_dir, &mut state, &platforms);
-        write_build_state(&peppylib_dir, &state);
+        prune_orphan_so_files(&so_dir, &mut state, &platforms);
+        write_build_state(&so_dir, &state);
 
-        // Guard against partial rebuilds leaving an unsuffixed .so behind.
+        // Guard against `maturin develop` leaving its unsuffixed .so behind in the
+        // checkout; the build artifact now lives in `so_dir`.
         if so_path.exists() {
             std::fs::remove_file(&so_path).ok();
         }
 
-        compute_and_emit_so_hash(&peppylib_dir);
+        generate_embedded_peppylib_so(&so_dir);
+        compute_and_emit_so_hash(&peppylib_dir, &so_dir);
     }
 }
 

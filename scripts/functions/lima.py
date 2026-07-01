@@ -31,15 +31,14 @@ GO_LINUX_ARM64_SHA256 = (
     "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129"
 )
 
-# The peppylib package dir inside the shared `nodes_shared_code` checkout, where
-# the generator build script reads the platform-suffixed bindings it embeds.
-PEPPYLIB_SO_RELDIR = "peppyos-shared/peppylib-py/peppylib"
-
-# Every release platform's binding plus the build-state marker. The generator
-# embeds all of them and selects one at deploy time, so the in-VM build needs
-# the full set present. Source of truth for the suffixes:
-# crates/generator-internal/src/generator/python/scaffold.rs (the embedded
-# platform .so set); mirrored here because it crosses the Rust/Python boundary.
+# Every release platform's binding plus the build-state marker. The host build
+# cross-compiles all of them into the peppy-owned .so dir; the in-VM build reads
+# that dir (via PEPPYLIB_PREBUILT_SO_DIR) and embeds all of them, selecting one at
+# deploy time. We verify the full set is present before starting the VM build so a
+# missing host artifact fails here rather than deep inside cargo. Source of truth
+# for the suffixes: crates/generator-internal/src/generator/python/scaffold.rs
+# (the embedded platform .so set); mirrored here because it crosses the
+# Rust/Python boundary.
 RELEASE_PLATFORM_SO = (
     "_peppylib.abi3.linux-aarch64.so",
     "_peppylib.abi3.linux-x86_64.so",
@@ -230,98 +229,39 @@ sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
     console.print("Rust toolchain installed in Lima VM.")
 
 
-def _locked_nodes_shared_rev(repo_root: Path) -> str:
-    """Return the nodes_shared_code git revision pinned in Cargo.lock.
+def _prebuilt_peppylib_so_dir() -> Path:
+    """Host directory holding the peppylib native bindings the release embeds.
 
-    The in-VM build resolves the shared crates to a cargo checkout named by this
-    rev, so the staged .so files must come from the host checkout of the same
-    rev for their recorded source hash to match what the in-VM build recomputes.
+    Mirrors build-helpers' `cache_dir("peppylib-py")/so`, rooted at $HOME exactly
+    as the Rust side resolves it (not the PEPPY_HOME override). The native
+    aarch64-apple-darwin build populates it. Lima mounts the host home into the
+    guest at the same path, so the in-VM build reads the bindings straight from
+    here via PEPPYLIB_PREBUILT_SO_DIR, with no cargo-cache staging.
     """
-    lock_path = repo_root / "Cargo.lock"
-    try:
-        contents = lock_path.read_text()
-    except OSError as exc:
-        raise ReleaseError(f"could not read {lock_path}: {exc}") from exc
-
-    marker = "nodes_shared_code#"
-    for line in contents.splitlines():
-        index = line.find(marker)
-        if index != -1:
-            return line[index + len(marker):].strip().rstrip('"')
-
-    raise ReleaseError(
-        "no nodes_shared_code git revision found in Cargo.lock; cannot locate "
-        "the host-built peppylib bindings to stage into the Lima VM"
-    )
+    return Path.home() / ".peppy" / "tmp" / "peppylib-py" / "so"
 
 
-def stage_prebuilt_peppylib_so(limactl: Path, repo_root: Path) -> None:
-    """Seed the VM's cargo checkout with the host-built peppylib .so files.
+def require_prebuilt_peppylib_so() -> Path:
+    """Return the prebuilt .so dir, failing loudly if the host build has not run.
 
-    `cargo build` inside the VM resolves nodes_shared_code into the VM's own
-    CARGO_HOME, a pristine checkout with no compiled bindings. The generator
-    build script cannot rebuild them there (the VM has no pixi), so it aborts on
-    the missing .so. The host build (release iteration 1) already cross-compiled
-    every release platform's .so into the host cargo checkout, which Lima mounts
-    into the guest at the same path. Copy that full set (the generator embeds
-    all platforms and picks one at deploy time) plus the .so-build-state marker,
-    keyed to the Cargo.lock-pinned rev so the host and guest checkouts always
-    hold identical sources and the in-VM staleness guard passes.
-
-    Fails loudly if the host bindings are absent (the host build must run first)
-    rather than silently producing a release with missing or stale bindings.
+    The in-VM build cannot produce the bindings (the VM has no pixi), so every
+    release platform's .so and the build-state marker must already exist. Checking
+    here surfaces a missing host artifact before the VM build starts instead of as
+    an opaque failure deep inside cargo.
     """
-    short_rev = _locked_nodes_shared_rev(repo_root)[:7]
-    host_cargo_home = os.environ.get(
-        "CARGO_HOME", str(Path.home() / ".cargo")
-    )
-    host_peppylib = (
-        f"{host_cargo_home}/git/checkouts/nodes_shared_code-*/{short_rev}"
-        f"/{PEPPYLIB_SO_RELDIR}"
-    )
-    vm_peppylib = (
-        f"{GUEST_CARGO_HOME}/git/checkouts/nodes_shared_code-*/{short_rev}"
-        f"/{PEPPYLIB_SO_RELDIR}"
-    )
-    required = " ".join((*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER))
-
-    stage_script = f"""\
-set -eu
-export RUSTUP_HOME={GUEST_RUSTUP_HOME}
-export CARGO_HOME={GUEST_CARGO_HOME}
-export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
-export RUSTC_WRAPPER=""
-cd {repo_root}
-cargo fetch --locked
-src=$(ls -d {host_peppylib} 2>/dev/null | head -1)
-if [ -z "$src" ]; then
-  echo "stage-peppylib: no host-built peppylib checkout for rev {short_rev} \
-under {host_cargo_home} (run the host build first)" >&2
-  exit 3
-fi
-for f in {required}; do
-  if [ ! -f "$src/$f" ]; then
-    echo "stage-peppylib: host checkout $src is missing $f" >&2
-    exit 4
-  fi
-done
-dst=$(ls -d {vm_peppylib} 2>/dev/null | head -1)
-if [ -z "$dst" ]; then
-  echo "stage-peppylib: VM cargo checkout for rev {short_rev} not found \
-after 'cargo fetch'" >&2
-  exit 5
-fi
-cp -f "$src"/_peppylib.abi3.*.so "$dst"/
-cp -f "$src/{SO_BUILD_STATE_MARKER}" "$dst"/{SO_BUILD_STATE_MARKER}
-echo "stage-peppylib: staged peppylib bindings from $src into $dst"
-"""
-    console.print("Staging host-built peppylib bindings into Lima VM...")
-    result = _lima_shell(limactl, stage_script)
-    if result.returncode != 0:
+    so_dir = _prebuilt_peppylib_so_dir()
+    missing = [
+        name
+        for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
+        if not (so_dir / name).is_file()
+    ]
+    if missing:
         raise ReleaseError(
-            "failed to stage prebuilt peppylib .so into Lima VM "
-            f"(exit {result.returncode})"
+            f"prebuilt peppylib bindings missing from {so_dir}: "
+            f"{', '.join(missing)}. Run the host build (aarch64-apple-darwin) "
+            "before cross-building Linux targets."
         )
+    return so_dir
 
 
 def cargo_build_in_lima(
@@ -330,8 +270,13 @@ def cargo_build_in_lima(
     target_triple: str,
     repo_root: Path,
 ) -> None:
-    """Run cargo build inside the Lima VM for a Linux target."""
-    stage_prebuilt_peppylib_so(limactl, repo_root)
+    """Run cargo build inside the Lima VM for a Linux target.
+
+    The VM has no pixi, so it cannot build the peppylib bindings. It reads the
+    host-built .so directly from PEPPYLIB_PREBUILT_SO_DIR (the host home is mounted
+    into the guest), so the host build must have run first.
+    """
+    so_dir = require_prebuilt_peppylib_so()
 
     cross_linker_lines: list[str] = []
     if "x86_64" in target_triple:
@@ -352,6 +297,7 @@ export GOTOOLCHAIN=local
 export PEPPY_GIT_TAG={tag}
 export PEPPY_CROSS_ARCH=1
 export RUSTC_WRAPPER=""
+export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
 {cross_linker}
 cd {repo_root}
 cargo build -p peppy --release --locked --target {target_triple} -j 8

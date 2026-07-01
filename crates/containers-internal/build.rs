@@ -69,7 +69,8 @@ mod apptainer_build {
     /// absent: it is pinned and SHA-verified via `GO_VERSION` (see
     /// `apptainer_compile_steps`) rather than taken from apt, which ships a Go
     /// too old for apptainer's `mconfig`.
-    const APPTAINER_BUILD_DEPS: &str = "libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates";
+    const APPTAINER_BUILD_DEPS: &str =
+        "libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
     /// Must match the `--prefix` used at build time.

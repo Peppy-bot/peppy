@@ -14,27 +14,22 @@ from functions.lima import (
     GUEST_RUSTUP_HOME,
     LIMA_INSTANCE,
     LIMA_TEMPLATE,
-    _locked_nodes_shared_rev,
+    RELEASE_PLATFORM_SO,
+    SO_BUILD_STATE_MARKER,
     cargo_build_in_lima,
     ensure_lima_vm,
     find_limactl,
-    stage_prebuilt_peppylib_so,
+    require_prebuilt_peppylib_so,
 )
 
-# A representative Cargo.lock rev for nodes_shared_code; its 7-char prefix
-# `c420252` names the cargo git checkout the staging step targets.
-_NODES_SHARED_REV = "c42025204f95702dbdb87112842e33816f440381"
 
-
-def _write_cargo_lock(repo_root: Path, rev: str = _NODES_SHARED_REV) -> None:
-    """Write a minimal Cargo.lock pinning nodes_shared_code at `rev`."""
-    repo_root.mkdir(parents=True, exist_ok=True)
-    (repo_root / "Cargo.lock").write_text(
-        '[[package]]\n'
-        'name = "peppylib"\n'
-        'version = "0.0.1"\n'
-        f'source = "git+https://github.com/Peppy-bot/nodes_shared_code#{rev}"\n'
-    )
+def _populate_so_dir(base: Path) -> Path:
+    """Create a peppylib .so dir holding the full release set plus the marker."""
+    so_dir = base / "so"
+    so_dir.mkdir(parents=True)
+    for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER):
+        (so_dir / name).write_bytes(b"x")
+    return so_dir
 
 
 def test_find_limactl_from_build_output(tmp_path: Path) -> None:
@@ -149,9 +144,10 @@ def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
 def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "repo"
+    so_dir = _populate_so_dir(tmp_path)
 
     with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima.stage_prebuilt_peppylib_so"):
+         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
         mock_shell.return_value = MagicMock(returncode=0)
         cargo_build_in_lima(
             limactl, "v0.1.0", "aarch64-unknown-linux-gnu", repo_root
@@ -163,6 +159,8 @@ def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
     assert f"CARGO_HOME={GUEST_CARGO_HOME}" in script
     assert "PEPPY_GIT_TAG=v0.1.0" in script
     assert 'RUSTC_WRAPPER=""' in script
+    # The in-VM build embeds the host-built bindings straight from this dir.
+    assert f"PEPPYLIB_PREBUILT_SO_DIR={so_dir}" in script
     assert "--target aarch64-unknown-linux-gnu" in script
     assert "-j 8" in script
     assert str(repo_root) in script
@@ -171,9 +169,10 @@ def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
 def test_cargo_build_in_lima_sets_cross_linker_for_x86_64(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "repo"
+    so_dir = _populate_so_dir(tmp_path)
 
     with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima.stage_prebuilt_peppylib_so"):
+         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
         mock_shell.return_value = MagicMock(returncode=0)
         cargo_build_in_lima(
             limactl, "v0.1.0", "x86_64-unknown-linux-gnu", repo_root
@@ -186,9 +185,10 @@ def test_cargo_build_in_lima_sets_cross_linker_for_x86_64(tmp_path: Path) -> Non
 def test_cargo_build_in_lima_no_cross_linker_for_aarch64(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "repo"
+    so_dir = _populate_so_dir(tmp_path)
 
     with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima.stage_prebuilt_peppylib_so"):
+         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
         mock_shell.return_value = MagicMock(returncode=0)
         cargo_build_in_lima(
             limactl, "v0.1.0", "aarch64-unknown-linux-gnu", repo_root
@@ -202,9 +202,10 @@ def test_cargo_build_in_lima_no_cross_linker_for_aarch64(tmp_path: Path) -> None
 def test_cargo_build_in_lima_raises_on_failure(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "repo"
+    so_dir = _populate_so_dir(tmp_path)
 
     with patch("functions.lima._lima_shell") as mock_shell, \
-         patch("functions.lima.stage_prebuilt_peppylib_so"):
+         patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
         mock_shell.return_value = MagicMock(returncode=1)
         with pytest.raises(ReleaseError, match="cargo build for .* failed in Lima VM"):
             cargo_build_in_lima(
@@ -212,79 +213,34 @@ def test_cargo_build_in_lima_raises_on_failure(tmp_path: Path) -> None:
             )
 
 
-def test_locked_nodes_shared_rev_parses(tmp_path: Path) -> None:
-    _write_cargo_lock(tmp_path)
-    assert _locked_nodes_shared_rev(tmp_path) == _NODES_SHARED_REV
+def test_require_prebuilt_peppylib_so_returns_dir_when_complete(tmp_path: Path) -> None:
+    so_dir = _populate_so_dir(tmp_path)
+    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
+        assert require_prebuilt_peppylib_so() == so_dir
 
 
-def test_locked_nodes_shared_rev_missing_raises(tmp_path: Path) -> None:
-    (tmp_path / "Cargo.lock").write_text(
-        '[[package]]\nname = "other"\nversion = "1.0.0"\n'
-    )
-    with pytest.raises(ReleaseError, match="no nodes_shared_code git revision"):
-        _locked_nodes_shared_rev(tmp_path)
+def test_require_prebuilt_peppylib_so_raises_when_incomplete(tmp_path: Path) -> None:
+    so_dir = tmp_path / "so"
+    so_dir.mkdir()
+    # Only one platform's binding is present; the rest and the marker are missing.
+    (so_dir / RELEASE_PLATFORM_SO[0]).write_bytes(b"x")
+
+    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
+        with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
+            require_prebuilt_peppylib_so()
 
 
-def test_stage_prebuilt_peppylib_so_constructs_command(tmp_path: Path) -> None:
+def test_cargo_build_in_lima_requires_prebuilt_so(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "repo"
-    _write_cargo_lock(repo_root)
-    cargo_home = tmp_path / "host-cargo"
+    so_dir = tmp_path / "so"  # never created: every binding is missing
 
-    with patch("functions.lima._lima_shell") as mock_shell, \
-         patch.dict(os.environ, {"CARGO_HOME": str(cargo_home)}):
-        mock_shell.return_value = MagicMock(returncode=0)
-        stage_prebuilt_peppylib_so(limactl, repo_root)
+    with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir), \
+         patch("functions.lima._lima_shell") as mock_shell:
+        with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
+            cargo_build_in_lima(
+                limactl, "v0.1.0", "x86_64-unknown-linux-gnu", repo_root
+            )
 
-    mock_shell.assert_called_once()
-    script = mock_shell.call_args[0][1]
-    # Materialises the checkout before seeding it, with the sccache wrapper
-    # neutralised so `cargo fetch` does not try to invoke a missing sccache.
-    assert 'RUSTC_WRAPPER=""' in script
-    assert "cargo fetch --locked" in script
-    # Keyed to the locked rev's 7-char prefix, on both source and destination.
-    assert "c420252" in script
-    assert str(cargo_home) in script
-    assert GUEST_CARGO_HOME in script
-    assert "peppyos-shared/peppylib-py/peppylib" in script
-    # The full release set is required and copied (embed selects at deploy time).
-    assert "_peppylib.abi3.linux-aarch64.so" in script
-    assert "_peppylib.abi3.linux-x86_64.so" in script
-    assert "_peppylib.abi3.macos-aarch64.so" in script
-    assert ".so-build-state" in script
-
-
-def test_stage_prebuilt_peppylib_so_raises_on_failure(tmp_path: Path) -> None:
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
-    _write_cargo_lock(repo_root)
-
-    with patch("functions.lima._lima_shell") as mock_shell:
-        mock_shell.return_value = MagicMock(returncode=4)
-        with pytest.raises(
-            ReleaseError, match="stage prebuilt peppylib .so into Lima VM"
-        ):
-            stage_prebuilt_peppylib_so(limactl, repo_root)
-
-
-def test_cargo_build_in_lima_stages_before_building(tmp_path: Path) -> None:
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
-    order: list[str] = []
-
-    def record_build(*_args: object, **_kwargs: object) -> MagicMock:
-        order.append("build")
-        return MagicMock(returncode=0)
-
-    with patch(
-        "functions.lima.stage_prebuilt_peppylib_so",
-        side_effect=lambda *_a: order.append("stage"),
-    ) as mock_stage, patch(
-        "functions.lima._lima_shell", side_effect=record_build
-    ):
-        cargo_build_in_lima(
-            limactl, "v0.1.0", "x86_64-unknown-linux-gnu", repo_root
-        )
-
-    assert order == ["stage", "build"]
-    mock_stage.assert_called_once_with(limactl, repo_root)
+    # The VM build must not start when the host bindings are absent.
+    mock_shell.assert_not_called()
