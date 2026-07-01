@@ -15,6 +15,22 @@ GUEST_RUST_DIR = "/opt/peppy-rust"
 GUEST_RUSTUP_HOME = f"{GUEST_RUST_DIR}/rustup"
 GUEST_CARGO_HOME = f"{GUEST_RUST_DIR}/cargo"
 
+# Pinned Go toolchain for the in-VM Linux target builds. The containers crate
+# builds apptainer from source, whose `mconfig` needs a Go newer than Ubuntu's
+# `golang-go`; we install the official toolchain (SHA-verified) and pin it with
+# `GOTOOLCHAIN=local` so the build never silently downloads a toolchain. These
+# values MUST stay in sync with the GO_VERSION / GO_LINUX_*_SHA256 constants in
+# crates/containers-internal/build.rs; this duplication crosses the Rust/Python
+# boundary the same way RELEASE_PLATFORM_SO does.
+GUEST_GO_DIR = "/usr/local/go"
+GO_VERSION = "1.25.7"
+GO_LINUX_AMD64_SHA256 = (
+    "12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005"
+)
+GO_LINUX_ARM64_SHA256 = (
+    "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129"
+)
+
 # The peppylib package dir inside the shared `nodes_shared_code` checkout, where
 # the generator build script reads the platform-suffixed bindings it embeds.
 PEPPYLIB_SO_RELDIR = "peppyos-shared/peppylib-py/peppylib"
@@ -140,8 +156,42 @@ def ensure_lima_vm(limactl: Path) -> None:
     )
 
 
+def _ensure_pinned_go_in_vm(limactl: Path) -> None:
+    """Install the pinned Go toolchain in the Lima VM if missing or wrong version.
+
+    Idempotent: skips the download when the correct version is already present.
+    Kept separate from the Rust setup so it also runs on VMs that already have
+    Rust but predate Go pinning.
+    """
+    install_script = f"""\
+set -eu
+go_arch=$(dpkg --print-architecture)
+case "$go_arch" in
+  arm64) go_sha={GO_LINUX_ARM64_SHA256} ;;
+  amd64) go_sha={GO_LINUX_AMD64_SHA256} ;;
+  *) echo "unsupported architecture for pinned Go toolchain: $go_arch" >&2; exit 1 ;;
+esac
+if [ -x {GUEST_GO_DIR}/bin/go ] && {GUEST_GO_DIR}/bin/go version | grep -q "go{GO_VERSION} "; then
+    exit 0
+fi
+curl -fsSL "https://go.dev/dl/go{GO_VERSION}.linux-$go_arch.tar.gz" -o /tmp/go-{GO_VERSION}.tar.gz
+echo "$go_sha  /tmp/go-{GO_VERSION}.tar.gz" | sha256sum -c -
+sudo rm -rf {GUEST_GO_DIR}
+sudo tar -C /usr/local -xzf /tmp/go-{GO_VERSION}.tar.gz
+rm -f /tmp/go-{GO_VERSION}.tar.gz
+"""
+    console.print(f"Ensuring pinned Go {GO_VERSION} in Lima VM...")
+    result = _lima_shell(limactl, install_script)
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to install pinned Go {GO_VERSION} in Lima VM "
+            f"(exit {result.returncode})"
+        )
+
+
 def ensure_rust_in_vm(limactl: Path) -> None:
     """Install Rust and cross-compilation tools inside the Lima VM if missing."""
+    _ensure_pinned_go_in_vm(limactl)
     check = _run_limactl(
         limactl,
         [
@@ -170,7 +220,7 @@ export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 rustup target add x86_64-unknown-linux-gnu
 sudo apt-get update -qq
 sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
-    golang-go libseccomp-dev make pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
+    libseccomp-dev make pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
 """
     result = _lima_shell(limactl, install_script)
     if result.returncode != 0:
@@ -297,7 +347,8 @@ def cargo_build_in_lima(
 set -eu
 export RUSTUP_HOME={GUEST_RUSTUP_HOME}
 export CARGO_HOME={GUEST_CARGO_HOME}
-export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
+export PATH="{GUEST_GO_DIR}/bin:{GUEST_CARGO_HOME}/bin:$PATH"
+export GOTOOLCHAIN=local
 export PEPPY_GIT_TAG={tag}
 export PEPPY_CROSS_ARCH=1
 export RUSTC_WRAPPER=""

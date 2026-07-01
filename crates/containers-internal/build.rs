@@ -11,6 +11,24 @@ mod apptainer_build {
     const APPTAINER_SHA256: &str =
         "0dc689f4b1036941837f38376313082d953eec920520e295525d89e0f0e04f98";
 
+    /// Pinned Go toolchain used to compile apptainer from source. Apptainer's
+    /// `mconfig` enforces a minimum Go version (`hstgo_version` in the release
+    /// tarball, currently 1.25.7). Ubuntu's `golang-go` is older than that, so
+    /// rather than lean on Go's `GOTOOLCHAIN=auto` to silently fetch a toolchain
+    /// mid-build (needs network during `make`, and breaks if auto-download is
+    /// ever disabled), we download and SHA-verify the official toolchain up
+    /// front and pin it with `GOTOOLCHAIN=local`. This version MUST satisfy the
+    /// apptainer `mconfig` requirement: bump it alongside `APPTAINER_VERSION`.
+    /// Keep in sync with the same constants in `scripts/functions/lima.py`,
+    /// which pins Go for the in-VM Linux target builds.
+    const GO_VERSION: &str = "1.25.7";
+    /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from https://go.dev/dl.
+    const GO_LINUX_AMD64_SHA256: &str =
+        "12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005";
+    /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from https://go.dev/dl.
+    const GO_LINUX_ARM64_SHA256: &str =
+        "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129";
+
     /// Pinned gocryptfs version. Apptainer auto-discovers gocryptfs in
     /// `${prefix}/libexec/apptainer/bin/` (ahead of `$PATH`) and uses it for
     /// encrypted overlay/image support. Shipping it alongside apptainer means
@@ -47,8 +65,11 @@ mod apptainer_build {
 
     /// Apt packages needed to build apptainer from source. Shared by the native
     /// build (full guest) and the Rosetta build (minimal amd64 chroot, which is
-    /// why `curl`/`ca-certificates` are listed explicitly).
-    const APPTAINER_BUILD_DEPS: &str = "golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates";
+    /// why `curl`/`ca-certificates` are listed explicitly). Go is deliberately
+    /// absent: it is pinned and SHA-verified via `GO_VERSION` (see
+    /// `apptainer_compile_steps`) rather than taken from apt, which ships a Go
+    /// too old for apptainer's `mconfig`.
+    const APPTAINER_BUILD_DEPS: &str = "libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
     /// Must match the `--prefix` used at build time.
@@ -974,14 +995,41 @@ mod apptainer_build {
         copy_lima_result_to_host(lima, guest_install_dir, install_dir)
     }
 
-    /// The apptainer build commands shared by every strategy: download + verify
-    /// the source, configure, compile, install to `install_dir`. Runs without
-    /// `sudo` (callers supply root where the environment needs it), and is
-    /// embedded verbatim into a quoted `bash` here-doc on the Rosetta path, so
-    /// its `$(nproc)` and quoting must survive unexpanded.
+    /// The apptainer build commands shared by every strategy: install the pinned
+    /// Go toolchain, download + verify the source, configure, compile, install
+    /// to `install_dir`. Runs without `sudo` (callers supply root where the
+    /// environment needs it), and is embedded verbatim into a quoted `bash`
+    /// here-doc on the Rosetta path, so its `$(nproc)`, `$go_arch` and other
+    /// shell expansions must survive unexpanded until the guest runs them.
+    ///
+    /// Go is installed to a fixed guest path and pinned with `GOTOOLCHAIN=local`
+    /// so the compile never silently downloads a toolchain over the network. The
+    /// path lives outside the apptainer source/install trees this script wipes,
+    /// so it survives and is reused across rebuilds in a long-lived guest.
     fn apptainer_compile_steps(version: &str, install_dir: &str) -> String {
         format!(
-            r#"cd /tmp
+            r#"echo "=== Ensuring pinned Go {go_version} ==="
+# dpkg's architecture (not `uname -m`) is what we want: inside the amd64 Rosetta
+# chroot the kernel is still aarch64, but the toolchain that must run there is
+# amd64, and dpkg reports amd64. Its values (amd64/arm64) match Go's names.
+go_arch=$(dpkg --print-architecture)
+case "$go_arch" in
+  arm64) go_sha={go_arm64_sha} ;;
+  amd64) go_sha={go_amd64_sha} ;;
+  *) echo "unsupported architecture for pinned Go toolchain: $go_arch" >&2; exit 1 ;;
+esac
+go_root=/tmp/peppy/go-{go_version}
+if [ ! -x "$go_root/bin/go" ]; then
+  rm -rf "$go_root"
+  mkdir -p "$go_root"
+  curl -fsSL "https://go.dev/dl/go{go_version}.linux-$go_arch.tar.gz" -o /tmp/go-{go_version}.tar.gz
+  echo "$go_sha  /tmp/go-{go_version}.tar.gz" | sha256sum -c -
+  tar -C "$go_root" --strip-components=1 -xzf /tmp/go-{go_version}.tar.gz
+  rm -f /tmp/go-{go_version}.tar.gz
+fi
+export PATH="$go_root/bin:$PATH"
+export GOTOOLCHAIN=local
+cd /tmp
 rm -rf apptainer-{version} apptainer-{version}.tar.gz {install_dir}
 echo "=== Downloading apptainer {version} source ==="
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
@@ -1000,6 +1048,9 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             version = version,
             install_dir = install_dir,
             sha = APPTAINER_SHA256,
+            go_version = GO_VERSION,
+            go_amd64_sha = GO_LINUX_AMD64_SHA256,
+            go_arm64_sha = GO_LINUX_ARM64_SHA256,
         )
     }
 
@@ -1251,6 +1302,24 @@ echo "=== Apptainer build complete ==="
         for target in &targets {
             let target_cache = apptainer_cache_dir(APPTAINER_VERSION, target);
             let sentinel = apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
+
+            // Serialize the whole per-architecture sequence (cache check, guest
+            // build, gocryptfs install, sentinel write) across concurrent build
+            // invocations. Two cargo runs sharing a machine (for example an IDE
+            // `cargo check` alongside `build_release`) otherwise race twice: the
+            // guest build script deletes and recreates a fixed path under the
+            // guest /tmp on every run, wiping another run's source tree
+            // mid-compile, and `copy_lima_result_to_host` removes and repopulates
+            // `target_cache`, wiping another run's freshly installed gocryptfs.
+            // The native host path guards its shared source tree the same way.
+            // The lock is per-architecture because each architecture builds in
+            // its own guest, so different architectures never collide. Checking
+            // the sentinel under the lock also lets a waiting run skip a rebuild
+            // the run ahead of it already finished.
+            let lock_path = build_helpers::cache_dir("apptainer-source")
+                .join(format!(".lima-build-{}.lock", target));
+            let _build_lock = build_helpers::acquire_file_lock(&lock_path);
+
             if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
                 println!(
                     "cargo:warning=Apptainer {} for {} already cached",
