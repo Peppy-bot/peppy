@@ -337,7 +337,7 @@ fn main() -> Result<()> {
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -694,7 +694,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -1008,7 +1008,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -1372,7 +1372,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -1742,7 +1742,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -2123,7 +2123,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -2288,7 +2288,7 @@ fn main() -> Result<()> {
 ///
 /// In-library parity is
 /// `concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned`
-/// in `nodes_shared_code/peppyos-shared/peppylib-rs/tests/actions.rs`.
+/// in `public-peppy-libs/peppyos-shared/peppylib-rs/tests/actions.rs`.
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]
@@ -2505,7 +2505,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 

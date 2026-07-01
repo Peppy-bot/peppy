@@ -112,6 +112,22 @@ fn make_install_context(
             std::env::var_os(config::consts::PEPPY_HOME_ENV),
         )),
         autostart,
+        // Crash-only supervision: the daemon supervises its own NORMAL restarts
+        // in-process (a namespace change rebuilds the generation under the same
+        // PID), so the OS supervisor must recover ONLY a genuine crash or the
+        // `exit(RESTART_EXIT_CODE)` fallback (port-stuck / flap-cap), never a
+        // clean `service stop` (exit 0). `RestartPolicy::OnFailure` gives exactly
+        // that on both platforms via the `service_manager` crate (verified against
+        // 0.11): systemd `Restart=on-failure`, launchd `KeepAlive { SuccessfulExit
+        // = false }`. A clean stop therefore stays stopped.
+        //
+        // FOLLOW-UP: systemd's default `StartLimitBurst` could give up after a few
+        // rapid `exit(RESTART_EXIT_CODE)` fallbacks; the in-process flap backstop
+        // already caps that, but `StartLimitIntervalSec=0` would also disable the
+        // unit-side limit. The `service_manager` 0.11 generic API does not expose
+        // it (its own TODO maps `reset_after_secs` -> `StartLimitIntervalSec`), so
+        // it would require overriding `ServiceInstallCtx.contents` with a fully
+        // rendered unit; deferred until flapping is actually observed.
         restart_policy: RestartPolicy::OnFailure {
             delay_secs: Some(5),
             max_retries: None,

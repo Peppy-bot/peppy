@@ -1,6 +1,7 @@
 mod action_loop;
 mod clock;
 mod datastore;
+mod health;
 mod info;
 mod node;
 mod ping;
@@ -117,6 +118,11 @@ pub struct CoreNodeConfig {
     /// Daemon-global messaging mode + peer buffer sizes, injected into every
     /// spawned node's runtime config (see `node::run`).
     pub peppy_config: config::peppy_config::PeppyConfig,
+    /// The daemon's organization namespace for this generation (`"local"` when
+    /// logged out, else the org id). Stamped onto every spawned node's
+    /// `discovery.organization_id` so the node opens its session under the same
+    /// namespace as the daemon.
+    pub organization_namespace: String,
     /// Cancelled at the start of daemon shutdown to stop the core node's own
     /// clock + heartbeat publishers before the messaging session is closed, so
     /// they do not spin against a closed session logging a failed publish on
@@ -141,6 +147,9 @@ pub struct CoreNode {
     /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
     peppy_config: config::peppy_config::PeppyConfig,
+    /// The daemon's organization namespace for this generation, stamped onto
+    /// every spawned node so it opens its session under the daemon's namespace.
+    organization_namespace: String,
     /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
     /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
     shutdown_token: CancellationToken,
@@ -210,6 +219,7 @@ impl CoreNode {
             root_dir,
             peppy_dirs,
             peppy_config,
+            organization_namespace,
             shutdown_token,
         } = config;
 
@@ -268,6 +278,7 @@ impl CoreNode {
             heartbeat_interval,
             daemon_use_sim_time,
             peppy_config,
+            organization_namespace,
             shutdown_token,
             started: AtomicBool::new(false),
         }
@@ -359,6 +370,14 @@ impl CoreNode {
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
+            )
+            .boxed(),
+            health::listen_for_health(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.start_time,
             )
             .boxed(),
             clock::listen_for_clock(
@@ -458,7 +477,10 @@ impl CoreNode {
                         health_monitor_timeout: self.health_monitor_timeout,
                     },
                     use_sim_time: self.daemon_use_sim_time,
-                    daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
+                        &self.peppy_config,
+                        self.organization_namespace.clone(),
+                    ),
                     shutdown_token: self.shutdown_token.clone(),
                 },
             )
@@ -536,7 +558,10 @@ impl CoreNode {
                     peppy_dirs: self.peppy_dirs.clone(),
                     health_monitor_interval: self.health_monitor_interval,
                     health_monitor_timeout: self.health_monitor_timeout,
-                    daemon_defaults: node::DaemonDefaults::from_peppy_config(&self.peppy_config),
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
+                        &self.peppy_config,
+                        self.organization_namespace.clone(),
+                    ),
                     shutdown_token: self.shutdown_token.clone(),
                 },
             )

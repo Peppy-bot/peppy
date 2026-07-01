@@ -22,6 +22,8 @@ pub struct LoginCommand {
     pub api_url: Option<String>,
     /// Suppress the automatic browser launch.
     pub no_browser: bool,
+    /// Skip the daemon-restart confirmation prompt.
+    pub yes: bool,
     /// Test seam: override the peppy data dirs (defaults to the global root).
     /// Both the credentials file and `peppy_config.json5` derive from it, so a
     /// test isolates all auth state under one tempdir without touching
@@ -30,7 +32,7 @@ pub struct LoginCommand {
 }
 
 impl Command for LoginCommand {
-    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
+    fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
         // Loads (and seeds/completes) peppy_config.json5 with the same strict,
         // fail-loud semantics the daemon uses; resource_servers supplies the
@@ -39,6 +41,15 @@ impl Command for LoginCommand {
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
+
+        // Warn (before authentication begins) that a login changing the
+        // organization namespace restarts the daemon and wipes the running node
+        // stack. Bypassed by `--yes`, and skipped when no daemon is running or
+        // its node stack holds no user nodes (so the restart wipes nothing).
+        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)? {
+            println!("Login aborted.");
+            return Ok(());
+        }
 
         let cfg = cli_config::fetch(&http, &api_url)?;
         let endpoints = discovery::discover(&http, &cfg.issuer)?;
@@ -53,9 +64,19 @@ impl Command for LoginCommand {
         )?;
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
-        let mut creds = storage::load(&creds_path)?;
+        // Load-resilient: a malformed / pre-`organization_id` / version-mismatched
+        // file fails to parse with `Error::Auth`; start fresh rather than wedge
+        // login on it (the stale file self-heals on this save).
+        let mut creds = match storage::load(&creds_path) {
+            Ok(creds) => creds,
+            Err(Error::Auth(_)) => storage::Credentials::default(),
+            Err(e) => return Err(e),
+        };
         let pc = client::creds_from_login(&cfg, &api_url, &tokens);
         creds.session = Some(pc.clone());
+        // Drop any cached router config: it is identity-bound, and this login may
+        // be a different user/backend. The next remote connect re-pulls.
+        creds.router = None;
         storage::save(&creds_path, &creds)?;
 
         // Fetch identity using the in-memory credential (the token was minted
@@ -84,6 +105,18 @@ impl Command for LoginCommand {
                 );
             }
         }
-        Ok(())
+
+        // Federation lives in the running daemon, which would otherwise only see
+        // this login on its next poll. Poke it so it re-resolves the now-saved
+        // credentials and federates immediately. Strict: if federation cannot be
+        // established (no daemon, unreachable/untrusted router, apply timeout, or
+        // no upstream), this returns an actionable error and the command exits
+        // non-zero. The credentials were already saved above, so the user stays
+        // authenticated — only the command fails.
+        super::poke_federation_and_report(
+            &dirs,
+            config.federation.connect_timeout_secs,
+            super::FederationPokeAction::Login,
+        )
     }
 }

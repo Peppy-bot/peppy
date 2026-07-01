@@ -10,10 +10,10 @@ async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Ta
 
 
 async def receive_messages(node_runner: NodeRunner):
-    while True:
-        producer, message = await hello_world_param_message_stream.on_next_message_received(
-            node_runner,
-        )
+    # Subscribe once; the held subscription buffers every message in order, so
+    # iterating never drops a message published between iterations.
+    subscription = await hello_world_param_message_stream.subscribe(node_runner)
+    async for producer, message in subscription:
         print(f"Received from {producer.instance_id}: {message.message}")
 
 

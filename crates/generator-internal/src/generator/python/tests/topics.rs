@@ -553,15 +553,39 @@ fn consumed_topic() {
         ],
     );
 
-    // Subscriber function signature — the producer identity is returned with
-    // every message as a structured `peppylib.ProducerRef` (its full
-    // `(core_node, instance_id)` pair); it never appears as a user-facing
-    // core_node (or instance_id) parameter.
+    // Held-subscription API — `subscribe()` returns a `Subscription` whose
+    // `next()` yields the producer identity as a structured
+    // `peppylib.ProducerRef` (its full `(core_node, instance_id)` pair); it
+    // never appears as a user-facing core_node (or instance_id) parameter. The
+    // class is also async-iterable via `__aiter__` / `__anext__`.
     assert_contains_all(
         &rendered,
         &[
-            "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[peppylib.ProducerRef, Message]:",
+            "class Subscription:",
+            "async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:",
+            "async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:",
+            "def __aiter__(self) -> \"Subscription\":",
+            "async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:",
+            "return Subscription(inner)",
         ],
+    );
+
+    // `__anext__` must terminate async iteration by raising `StopAsyncIteration`
+    // once `next()` reports the subscription has closed (returns None). Without
+    // this stop path, an `async for` over the subscription would hang or keep
+    // yielding past completion, so assert the full delegate-to-`next` body.
+    assert_contains_all(
+        &rendered,
+        &[
+            "result = await self.next()",
+            "if result is None:",
+            "raise StopAsyncIteration",
+            "return result",
+        ],
+    );
+    assert!(
+        !rendered.contains("on_next_message_received"),
+        "the per-call on_next_message_received API must be gone; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("from_core_node"),
@@ -586,16 +610,30 @@ fn consumed_topic() {
         ],
     );
 
-    // on_next_message_received body: receive, deserialize, return
+    // next() body: receive (None once closed), deserialize, return.
     assert_contains_all(
         &rendered,
         &[
-            "raw_message = await subscription.on_next_message()",
-            "payload = raw_message.payload",
+            "raw_message = await self._inner.on_next_message()",
+            "if raw_message is None:",
+            "return None",
             "producer = raw_message.producer",
-            "message = _deserialize_payload(payload)",
+            "message = _deserialize_payload(raw_message.payload)",
             "return producer, message",
         ],
+    );
+
+    // Regression guard for the dropped-message bug: the topic is subscribed
+    // exactly once (in `subscribe`), never per `next` call. The old
+    // `on_next_message_received` re-subscribed on every call, so anything
+    // published in the re-subscribe gap was silently lost; with a held
+    // subscription the buffer keeps every message between `next` calls.
+    assert_eq!(
+        rendered
+            .matches("peppylib.TopicMessenger.subscribe(")
+            .count(),
+        1,
+        "topic must be subscribed once, not per next() call; rendered:\n{rendered}"
     );
 }
 

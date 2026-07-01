@@ -161,9 +161,10 @@ pub fn build_consumed_topic(
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
-    // Optional covers any Optional fields in the dataclasses; Tuple wraps the
-    // `(producer, message)` pair returned by on_next_message_received (the
-    // producer itself is a structured `peppylib.ProducerRef`).
+    // Optional covers any Optional fields in the dataclasses and the closed
+    // sentinel of `Subscription.next`; Tuple wraps the `(producer, message)`
+    // pair each message yields (the producer itself is a structured
+    // `peppylib.ProducerRef`).
     builder.add_import("from typing import Optional, Tuple");
 
     // Add capnp imports and a lazy, cached schema loader.
@@ -190,15 +191,58 @@ pub fn build_consumed_topic(
         "_deserialize_payload",
     );
 
-    // Generate on_next_message_received function
+    // Generate the held-subscription consumer API. `subscribe()` returns a
+    // `Subscription` whose buffer keeps every message in arrival order, so
+    // looping on `next()` (or `async for`) never drops a message published
+    // between calls.
     builder.add_import("import peppylib");
+
     builder.blank_line();
-    builder.line(
-        "async def on_next_message_received(node_runner: peppylib.NodeRunner) -> Tuple[peppylib.ProducerRef, Message]:",
-    );
+    builder.line("class Subscription:");
+    builder.indent();
+    builder
+        .line("\"\"\"A held subscription whose buffer keeps every message in arrival order.\"\"\"");
+    builder.blank_line();
+    builder.line("def __init__(self, inner) -> None:");
+    builder.indent();
+    builder.line("self._inner = inner");
+    builder.dedent();
+    builder.blank_line();
+    // `next()` mirrors the Rust `Subscription::next`: a message tuple, or
+    // `None` once the subscription has closed.
+    builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
+    builder.indent();
+    builder.line("raw_message = await self._inner.on_next_message()");
+    builder.line("if raw_message is None:");
+    builder.indent();
+    builder.line("return None");
+    builder.dedent();
+    builder.line("producer = raw_message.producer");
+    builder.line("message = _deserialize_payload(raw_message.payload)");
+    builder.line("return producer, message");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("def __aiter__(self) -> \"Subscription\":");
+    builder.indent();
+    builder.line("return self");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:");
+    builder.indent();
+    builder.line("result = await self.next()");
+    builder.line("if result is None:");
+    builder.indent();
+    builder.line("raise StopAsyncIteration");
+    builder.dedent();
+    builder.line("return result");
+    builder.dedent();
+    builder.dedent();
+
+    builder.blank_line();
+    builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
-    builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
+    builder.line("inner = await peppylib.TopicMessenger.subscribe(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
@@ -227,12 +271,7 @@ pub fn build_consumed_topic(
     ));
     builder.dedent();
     builder.line(")");
-    builder.line("raw_message = await subscription.on_next_message()");
-    builder.line("payload = raw_message.payload");
-    builder.line("producer = raw_message.producer");
-    builder.line("message = _deserialize_payload(payload)");
-    builder.line("return producer, message");
-
+    builder.line("return Subscription(inner)");
     builder.dedent();
 
     Ok(builder.build())

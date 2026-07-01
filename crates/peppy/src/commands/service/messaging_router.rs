@@ -4,6 +4,7 @@ use pmi::{Messenger, MessengerBackend, RouterHealthChecker};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 /// How often the watchdog probes the router while it appears healthy.
@@ -56,6 +57,9 @@ pub struct MessagingRouter {
     /// duration: `force_kill_deadline(grace)` (hook grace + event-loop join +
     /// interpreter finalize) plus the reap budget and a small margin.
     teardown_budget: Duration,
+    /// Shared coordinator token: the task tears down when it is cancelled (an
+    /// in-process restart) or on a real OS shutdown signal.
+    teardown_token: CancellationToken,
 }
 
 impl MessagingRouter {
@@ -64,12 +68,14 @@ impl MessagingRouter {
         messaging_ready: watch::Sender<bool>,
         core_node_done: Option<watch::Receiver<bool>>,
         teardown_budget: Duration,
+        teardown_token: CancellationToken,
     ) -> Self {
         Self {
             messenger,
             messaging_ready,
             core_node_done,
             teardown_budget,
+            teardown_token,
         }
     }
 }
@@ -81,6 +87,7 @@ impl ServeAsyncCommand for MessagingRouter {
         let messaging_ready = self.messaging_ready;
         let core_node_done = self.core_node_done;
         let teardown_budget = self.teardown_budget;
+        let teardown_token = self.teardown_token;
 
         let future = Box::pin(async move {
             {
@@ -109,24 +116,14 @@ impl ServeAsyncCommand for MessagingRouter {
                 Some(checker) => {
                     tokio::select! {
                         // The watchdog loops for the daemon's lifetime; in
-                        // practice only a shutdown signal resolves this select.
+                        // practice only shutdown (a real signal or an in-process
+                        // restart via the shared token) resolves this select.
                         _ = run_router_watchdog(&messenger, &checker) => {}
-                        res = super::shutdown_signal::shutdown_signal() => {
-                            res.map_err(|e| {
-                                Error::ExecutionFailed(format!("Failed to listen for shutdown signal: {}", e))
-                            })?;
-                        }
+                        _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
                     }
                 }
                 None => {
-                    super::shutdown_signal::shutdown_signal()
-                        .await
-                        .map_err(|e| {
-                            Error::ExecutionFailed(format!(
-                                "Failed to listen for shutdown signal: {}",
-                                e
-                            ))
-                        })?;
+                    super::shutdown_signal::shutdown_or_token(&teardown_token).await;
                 }
             }
 

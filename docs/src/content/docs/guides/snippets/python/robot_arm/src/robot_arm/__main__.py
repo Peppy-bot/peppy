@@ -16,11 +16,15 @@ async def handle_commands(node_runner: NodeRunner):
         print(f"Failed to declare joint_states publisher: {e}", file=sys.stderr)
         return
 
-    while True:
-        producer, command = await controller_joint_commands.on_next_message_received(
-            node_runner,
-        )
+    # Subscribe once; the held subscription buffers commands in order, so
+    # iterating never drops one published between iterations.
+    try:
+        subscription = await controller_joint_commands.subscribe(node_runner)
+    except Exception as e:
+        print(f"Failed to subscribe to controller_joint_commands: {e}", file=sys.stderr)
+        return
 
+    async for producer, command in subscription:
         print(
             f"received from {producer.core_node}/{producer.instance_id}: "
             f"target={command.target_positions} max_vel={command.max_velocity}"

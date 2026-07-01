@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// Facade for the `ruff` Python linter/formatter binary.
 ///
@@ -20,10 +21,7 @@ impl RuffFacade {
 
     /// Formats Python files at the given path using `ruff format`.
     pub fn format(&self, path: &Path) -> std::io::Result<()> {
-        let output = Command::new(&self.ruff_path)
-            .args(["format", "--quiet"])
-            .arg(path)
-            .output()?;
+        let output = self.run(&["format", "--quiet"], path)?;
 
         if !output.status.success() {
             return Err(std::io::Error::other(format!(
@@ -37,10 +35,7 @@ impl RuffFacade {
 
     /// Lints and auto-fixes Python files at the given path using `ruff check --fix`.
     pub fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
-        let output = Command::new(&self.ruff_path)
-            .args(["check", "--fix", "--quiet"])
-            .arg(path)
-            .output()?;
+        let output = self.run(&["check", "--fix", "--quiet"], path)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -53,6 +48,37 @@ impl RuffFacade {
         }
 
         Ok(())
+    }
+
+    /// Runs the bundled `ruff` with `args` against `path`, retrying transient
+    /// cross-process exec failures.
+    ///
+    /// The bundled binary is extracted to one machine-global temp path
+    /// (`$TMPDIR/peppy_ruff_binary_<version>`) shared by every peppy process. When
+    /// several processes — e.g. the test binaries `cargo test` runs in parallel —
+    /// extract it on a cold cache, one can `execve` the file while another extractor
+    /// still holds it open for writing, and the kernel returns `ETXTBSY` ("Text file
+    /// busy"). That handle closes within milliseconds, so a bounded backoff-retry
+    /// clears it deterministically. The `OnceLock` in `bundled_ruff_binary` only
+    /// dedups extraction *within* a process; it cannot serialize separate processes,
+    /// which is why the guard for that race lives here at the exec.
+    fn run(&self, args: &[&str], path: &Path) -> std::io::Result<std::process::Output> {
+        // ~50 attempts with a 10ms→100ms capped backoff (worst case a few seconds,
+        // never reached in practice — the race clears in one or two retries).
+        const MAX_RETRIES: u32 = 50;
+
+        let mut attempt = 0u32;
+        loop {
+            match Command::new(&self.ruff_path).args(args).arg(path).output() {
+                Ok(output) => return Ok(output),
+                Err(e) if is_transient_exec_error(&e) && attempt < MAX_RETRIES => {
+                    attempt += 1;
+                    let backoff = Duration::from_millis((10 * attempt as u64).min(100));
+                    std::thread::sleep(backoff);
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn resolve_ruff_binary() -> std::io::Result<PathBuf> {
@@ -71,9 +97,12 @@ impl RuffFacade {
     fn bundled_ruff_binary() -> std::io::Result<PathBuf> {
         use std::sync::OnceLock;
 
-        // Ensure the embedded binary is extracted to disk exactly once per process.
-        // Multiple test threads share the same PID, so without this guard they race
-        // on the same temp file and hit ENOENT / ETXTBSY on Linux.
+        // Extract the embedded binary to disk exactly once per process. Multiple
+        // test threads share a PID, so without this guard they'd race on the shared
+        // temp path. This only dedups *within* a process, though — separate peppy
+        // processes (e.g. parallel `cargo test` binaries) still extract the same
+        // machine-global path concurrently, so the exec is retried on the resulting
+        // transient ENOENT / ETXTBSY in `RuffFacade::run`.
         static EXTRACTED: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
 
         let result = EXTRACTED
@@ -129,6 +158,21 @@ impl RuffFacade {
     }
 }
 
+/// Whether a failed `execve` of the bundled binary is a transient cross-process
+/// race worth retrying. `ETXTBSY` (errno 26 on Linux/macOS/BSD) means another
+/// extractor still holds the file open for writing; `NotFound` is a momentary view
+/// of the published path mid-replace. Both clear within milliseconds. Anything else
+/// (a real `EACCES`, a corrupt binary) is returned to the caller unchanged.
+fn is_transient_exec_error(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    // No stable `ErrorKind` maps to ETXTBSY, so match the raw errno (26 across
+    // Linux/macOS/BSD). Guarded to unix so a same-numbered errno elsewhere can't
+    // masquerade as it.
+    cfg!(unix) && e.raw_os_error() == Some(26)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +203,23 @@ mod tests {
                 "ruff binary should be executable"
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classifies_etxtbsy_and_enoent_as_transient() {
+        // ETXTBSY (26): a concurrent extractor holds the binary open for writing.
+        assert!(is_transient_exec_error(&std::io::Error::from_raw_os_error(
+            26
+        )));
+        // ENOENT (2): the published path observed mid-replace.
+        assert!(is_transient_exec_error(&std::io::Error::from_raw_os_error(
+            2
+        )));
+        // EACCES (13) is a genuine failure — never retried.
+        assert!(!is_transient_exec_error(
+            &std::io::Error::from_raw_os_error(13)
+        ));
     }
 
     #[test]

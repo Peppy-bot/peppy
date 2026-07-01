@@ -159,7 +159,7 @@ fn poll_for_token(
     client_id: &str,
     da: &DeviceAuthResponse,
 ) -> Result<TokenSet> {
-    let spinner = spinner();
+    let spinner = crate::terminal::spinner("Waiting for you to approve in the browser…");
     let deadline = now_unix() + da.expires_in;
     let mut interval = da.interval.max(1);
 
@@ -200,18 +200,6 @@ fn poll_for_token(
         pb.finish_and_clear();
     }
     result
-}
-
-/// A steady-tick spinner shown while waiting for browser approval, but only on a
-/// real terminal so piped/CI output stays clean.
-fn spinner() -> Option<indicatif::ProgressBar> {
-    if !std::io::stderr().is_terminal() {
-        return None;
-    }
-    let pb = indicatif::ProgressBar::new_spinner();
-    pb.set_message("Waiting for you to approve in the browser…");
-    pb.enable_steady_tick(Duration::from_millis(120));
-    Some(pb)
 }
 
 #[cfg(test)]

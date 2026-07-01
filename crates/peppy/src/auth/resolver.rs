@@ -76,6 +76,16 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
     Ok(session_credential(creds_path, &updated))
 }
 
+/// The `PEPPY_API_KEY` PAT from the environment, if set to a non-empty value —
+/// the single source of the "PAT from env" convention shared by the commands that
+/// resolve a credential outside [`resolve`]'s injected-`pat` path (e.g. `whoami`,
+/// router federation). Centralizes the env-var name and the empty-string guard.
+pub fn pat_from_env() -> Option<String> {
+    std::env::var("PEPPY_API_KEY")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
 /// Builds a refreshable session [`Credential`] from the cached `pc`.
 pub(crate) fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {

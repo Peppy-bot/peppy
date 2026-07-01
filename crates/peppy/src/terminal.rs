@@ -34,6 +34,26 @@ fn no_color_from_env(value: Option<String>) -> bool {
     value.is_some_and(|v| !v.is_empty())
 }
 
+/// A steady-tick spinner for a user-visible wait (browser approval, the daemon
+/// establishing federation, …). The single source of truth for the spinner look
+/// so every wait shows the *same* loader: default braille frames, a `120 ms`
+/// tick, and `{spinner} {msg}` rendered to stderr.
+///
+/// Returns `None` when stderr is not a real terminal, so piped/CI output stays
+/// clean (the caller just gets no spinner). The caller is responsible for ending
+/// it with [`indicatif::ProgressBar::finish_and_clear`] once the wait is over.
+pub(crate) fn spinner(
+    message: impl Into<std::borrow::Cow<'static, str>>,
+) -> Option<indicatif::ProgressBar> {
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+    let pb = indicatif::ProgressBar::new_spinner();
+    pb.set_message(message);
+    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+    Some(pb)
+}
+
 /// A fixed-height scrolling output region for the terminal.
 ///
 /// This struct manages displaying a fixed number of lines in the terminal,

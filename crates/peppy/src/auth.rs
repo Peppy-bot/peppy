@@ -26,9 +26,10 @@ pub mod http;
 pub mod profile;
 pub mod refresh;
 pub mod resolver;
+pub mod router;
 pub mod storage;
 
 pub use cli_config::CliConfig;
 pub use client::Principal;
 pub use resolver::{Credential, CredentialKind};
-pub use storage::{Credentials, ProfileCreds};
+pub use storage::{Credentials, ProfileCreds, RouterSession};

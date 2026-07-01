@@ -365,7 +365,7 @@ if __name__ == "__main__":
     let producer_runtime_config_str = producer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -724,7 +724,7 @@ if __name__ == "__main__":
     let producer_runtime_config_str = producer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -1044,7 +1044,8 @@ from peppygen.consumed_topics import producer_telemetry_feed
 
 async def receive_one(node_runner, msg_received):
     try:
-        producer, msg = await producer_telemetry_feed.on_next_message_received(node_runner)
+        subscription = await producer_telemetry_feed.subscribe(node_runner)
+        producer, msg = await subscription.next()
         print(
             f"received message status={msg.status} readings={list(msg.readings)} "
             f"sequence={msg.sequence} timestamp={msg.timestamp} from {producer.core_node}/{producer.instance_id}",
@@ -1080,7 +1081,7 @@ if __name__ == "__main__":
     let producer_runtime_config_str = producer_runtime_config_path.to_str().unwrap().to_owned();
     let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 

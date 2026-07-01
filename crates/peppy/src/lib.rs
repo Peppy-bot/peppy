@@ -25,6 +25,7 @@
 pub mod auth;
 pub mod commands;
 pub mod context;
+pub(crate) mod daemon_control;
 mod daemon_state;
 pub mod error;
 pub(crate) mod terminal;
