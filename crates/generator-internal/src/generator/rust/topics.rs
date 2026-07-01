@@ -7,7 +7,7 @@ use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub struct ConsumedTopicCallbackSpec<'a> {
+pub struct ConsumedTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -240,8 +240,10 @@ pub fn sender_target_expression(
     }
 }
 
-pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
-    let ConsumedTopicCallbackSpec {
+pub fn build_consumed_topic_subscription(
+    spec: ConsumedTopicSubscriptionSpec,
+) -> Result<TokenStream> {
+    let ConsumedTopicSubscriptionSpec {
         helper_fn_ident,
         args_struct_ident,
         params,

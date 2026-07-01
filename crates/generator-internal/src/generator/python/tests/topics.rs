@@ -569,6 +569,20 @@ fn consumed_topic() {
             "return Subscription(inner)",
         ],
     );
+
+    // `__anext__` must terminate async iteration by raising `StopAsyncIteration`
+    // once `next()` reports the subscription has closed (returns None). Without
+    // this stop path, an `async for` over the subscription would hang or keep
+    // yielding past completion, so assert the full delegate-to-`next` body.
+    assert_contains_all(
+        &rendered,
+        &[
+            "result = await self.next()",
+            "if result is None:",
+            "raise StopAsyncIteration",
+            "return result",
+        ],
+    );
     assert!(
         !rendered.contains("on_next_message_received"),
         "the per-call on_next_message_received API must be gone; rendered:\n{rendered}"

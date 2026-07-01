@@ -53,7 +53,7 @@ use services::{
     deserialize_fields_from_format,
 };
 use topics::{
-    ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_publisher,
+    ConsumedTopicSubscriptionSpec, build_consumed_topic_subscription, build_topic_publisher,
     consumed_to_target_expression,
 };
 use type_mapping::{render_tokens, unused_params_stmt};
@@ -1105,7 +1105,7 @@ impl LanguageGenerator for RustGenerator {
                 &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = build_consumed_topic_callback(ConsumedTopicCallbackSpec {
+        let method_tokens = build_consumed_topic_subscription(ConsumedTopicSubscriptionSpec {
             helper_fn_ident: &helper_fn_ident,
             args_struct_ident: &args_struct_ident,
             params: &params,

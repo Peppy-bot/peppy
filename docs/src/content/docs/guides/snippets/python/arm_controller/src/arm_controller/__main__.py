@@ -22,7 +22,12 @@ async def control_loop(node_runner: NodeRunner):
 
     # Subscribe once; the held subscription buffers state messages in order, so
     # the loop never misses one published between iterations.
-    subscription = await arm_joint_states.subscribe(node_runner)
+    try:
+        subscription = await arm_joint_states.subscribe(node_runner)
+    except Exception as e:
+        print(f"Failed to subscribe to arm_joint_states: {e}", file=sys.stderr)
+        return
+
     while True:
         try:
             received = await subscription.next()

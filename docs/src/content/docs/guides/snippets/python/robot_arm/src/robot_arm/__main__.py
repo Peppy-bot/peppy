@@ -18,7 +18,12 @@ async def handle_commands(node_runner: NodeRunner):
 
     # Subscribe once; the held subscription buffers commands in order, so
     # iterating never drops one published between iterations.
-    subscription = await controller_joint_commands.subscribe(node_runner)
+    try:
+        subscription = await controller_joint_commands.subscribe(node_runner)
+    except Exception as e:
+        print(f"Failed to subscribe to controller_joint_commands: {e}", file=sys.stderr)
+        return
+
     async for producer, command in subscription:
         print(
             f"received from {producer.core_node}/{producer.instance_id}: "
