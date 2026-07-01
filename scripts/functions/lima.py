@@ -155,6 +155,23 @@ def ensure_lima_vm(limactl: Path) -> None:
     )
 
 
+def stop_lima_vm(limactl: Path) -> None:
+    """Stop the peppy Lima VM so it stops consuming host RAM after the build.
+
+    Best-effort: a stop failure (the VM was never created, or is already stopped)
+    is warned, not raised, so cleanup never masks the build's own outcome. The
+    instance is stopped, not deleted, so its disk and provisioning survive for a
+    fast restart on the next build.
+    """
+    console.print(f"Stopping Lima VM '{LIMA_INSTANCE}' to free memory...")
+    result = _run_limactl(limactl, ["stop", LIMA_INSTANCE])
+    if result.returncode != 0:
+        console.print(
+            f"[yellow]Warning: failed to stop Lima VM '{LIMA_INSTANCE}' "
+            f"(exit {result.returncode}); it may still be running.[/yellow]"
+        )
+
+
 def _ensure_pinned_go_in_vm(limactl: Path) -> None:
     """Install the pinned Go toolchain in the Lima VM if missing or wrong version.
 

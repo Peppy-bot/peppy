@@ -20,6 +20,7 @@ from functions.lima import (
     ensure_lima_vm,
     find_limactl,
     require_prebuilt_peppylib_so,
+    stop_lima_vm,
 )
 
 
@@ -228,6 +229,23 @@ def test_require_prebuilt_peppylib_so_raises_when_incomplete(tmp_path: Path) -> 
     with patch("functions.lima._prebuilt_peppylib_so_dir", return_value=so_dir):
         with pytest.raises(ReleaseError, match="prebuilt peppylib bindings missing"):
             require_prebuilt_peppylib_so()
+
+
+def test_stop_lima_vm_issues_stop(tmp_path: Path) -> None:
+    limactl = tmp_path / "limactl"
+    with patch("functions.lima._run_limactl") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        stop_lima_vm(limactl)
+    mock_run.assert_called_once_with(limactl, ["stop", LIMA_INSTANCE])
+
+
+def test_stop_lima_vm_best_effort_on_failure(tmp_path: Path) -> None:
+    limactl = tmp_path / "limactl"
+    with patch("functions.lima._run_limactl") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1)
+        # Must not raise: cleanup should never mask the build's own outcome.
+        stop_lima_vm(limactl)
+    mock_run.assert_called_once()
 
 
 def test_cargo_build_in_lima_requires_prebuilt_so(tmp_path: Path) -> None:

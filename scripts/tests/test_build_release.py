@@ -110,6 +110,7 @@ def test_run_full_rejects_non_macos(mock_platform: MagicMock) -> None:
         _run_full()
 
 
+@patch("functions.build_release.stop_lima_vm")
 @patch("functions.build_release.verify_all_releases")
 @patch("functions.build_release.ensure_rust_in_vm")
 @patch("functions.build_release.ensure_lima_vm")
@@ -123,6 +124,7 @@ def test_build_all_targets_on_macos_builds_three(
     mock_ensure_vm: MagicMock,
     mock_ensure_rust: MagicMock,
     mock_verify: MagicMock,
+    mock_stop: MagicMock,
     tmp_path: Path,
 ) -> None:
     limactl = tmp_path / "limactl"
@@ -166,6 +168,53 @@ def test_build_all_targets_on_macos_builds_three(
 
     mock_ensure_vm.assert_called_once()
     mock_ensure_rust.assert_called_once()
+    # The Lima VM must be stopped once the build completes so it frees host RAM.
+    mock_stop.assert_called_once_with(limactl)
+
+
+@patch("functions.build_release.stop_lima_vm")
+@patch("functions.build_release.verify_all_releases")
+@patch("functions.build_release.ensure_rust_in_vm")
+@patch("functions.build_release.ensure_lima_vm")
+@patch("functions.build_release.find_limactl")
+@patch("functions.build_release.is_macos_arm64", return_value=True)
+@patch("functions.build_release.build_and_package")
+def test_build_all_targets_stops_vm_when_linux_build_fails(
+    mock_build: MagicMock,
+    mock_platform: MagicMock,
+    mock_find_lima: MagicMock,
+    mock_ensure_vm: MagicMock,
+    mock_ensure_rust: MagicMock,
+    mock_verify: MagicMock,
+    mock_stop: MagicMock,
+    tmp_path: Path,
+) -> None:
+    limactl = tmp_path / "limactl"
+    mock_find_lima.return_value = limactl
+
+    def build_side_effect(
+        tag: str, triple: str, repo_root: Path, *, limactl: Path | None = None
+    ) -> BuildArtifact:
+        if "linux" in triple:
+            raise ReleaseError("linux build blew up")
+        return BuildArtifact(
+            asset_name="peppy-test.tgz",
+            asset_path=tmp_path / "test.tgz",
+            target_triple=triple,
+        )
+
+    mock_build.side_effect = build_side_effect
+
+    with pytest.raises(ReleaseError, match="linux build blew up"):
+        _build_all_targets(
+            "v0.1.0",
+            ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            tmp_path,
+        )
+
+    # The VM was started for the linux target, so it must be stopped even though
+    # the build raised: cleanup runs in `finally`.
+    mock_stop.assert_called_once_with(limactl)
 
 
 def _setup_run_full_mocks(

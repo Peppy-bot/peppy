@@ -49,7 +49,7 @@ from .github import (
     publish_release,
     replace_and_upload_asset,
 )
-from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl
+from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl, stop_lima_vm
 from .verify_release import verify_all_releases
 from .release_notes import (
     ReleaseNotesInput,
@@ -279,24 +279,31 @@ def _build_all_targets(
     artifacts: list[BuildArtifact] = []
     limactl: Path | None = None
 
-    for triple in targets:
-        if "linux" in triple and is_macos_arm64():
-            if limactl is None:
-                limactl = find_limactl(repo_root)
-                ensure_lima_vm(limactl)
-                ensure_rust_in_vm(limactl)
-            artifact = build_and_package(tag, triple, repo_root, limactl=limactl)
-        else:
-            artifact = build_and_package(tag, triple, repo_root)
-        artifacts.append(artifact)
+    try:
+        for triple in targets:
+            if "linux" in triple and is_macos_arm64():
+                if limactl is None:
+                    limactl = find_limactl(repo_root)
+                    ensure_lima_vm(limactl)
+                    ensure_rust_in_vm(limactl)
+                artifact = build_and_package(tag, triple, repo_root, limactl=limactl)
+            else:
+                artifact = build_and_package(tag, triple, repo_root)
+            artifacts.append(artifact)
 
-    # Verify the release archives that were actually built
-    if artifacts:
-        dist_dir = artifacts[0].asset_path.parent
-        verify_all_releases(dist_dir, targets)
-        console.print("[green]All release archives verified successfully.[/green]")
+        # Verify the release archives that were actually built
+        if artifacts:
+            dist_dir = artifacts[0].asset_path.parent
+            verify_all_releases(dist_dir, targets)
+            console.print("[green]All release archives verified successfully.[/green]")
 
-    return artifacts
+        return artifacts
+    finally:
+        # The Lima VM is only started for Linux cross-builds. Stop it once the
+        # build finishes (successfully or not) so it does not keep holding host
+        # RAM. ensure_lima_vm restarts a stopped instance on the next release.
+        if limactl is not None:
+            stop_lima_vm(limactl)
 
 
 def _run_local() -> None:

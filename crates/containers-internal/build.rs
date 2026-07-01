@@ -185,6 +185,20 @@ mod apptainer_build {
         }
     }
 
+    /// Stops a Lima instance when dropped so a build never leaves a VM consuming
+    /// host RAM, on the happy path or a panic. Armed only while an instance we
+    /// started is in use, and dropped under the per-arch build lock so it never
+    /// stops a VM a concurrent build legitimately reuses.
+    struct LimaStopGuard<'a> {
+        lima: &'a LimaConfig,
+    }
+
+    impl Drop for LimaStopGuard<'_> {
+        fn drop(&mut self) {
+            stop_lima_instance(self.lima);
+        }
+    }
+
     /// Download `url` to `dest` and verify it against `expected_sha256`.
     /// Deletes the file and returns false on download failure or checksum
     /// mismatch (so a corrupt download is never reused). `label` names the
@@ -515,6 +529,23 @@ mod apptainer_build {
         cmd.args(["start", lima.instance]);
         let label = format!("lima-start-{}", lima.instance);
         build_helpers::run_command_streaming(&mut cmd, &label).success
+    }
+
+    /// Stop a running instance so it stops consuming host RAM once its build is
+    /// done. Best-effort: `limactl stop` on an already-stopped or absent instance
+    /// is not worth failing the build over. The instance is stopped, not deleted,
+    /// so its disk and provisioning survive for a fast restart next build.
+    fn stop_lima_instance(lima: &LimaConfig) {
+        let mut cmd = lima.lima_command();
+        cmd.args(["stop", lima.instance]);
+        let label = format!("lima-stop-{}", lima.instance);
+        if !build_helpers::run_command_streaming(&mut cmd, &label).success {
+            println!(
+                "cargo:warning=Failed to stop Lima {} instance; it may still be \
+                 consuming host memory (stop it with `limactl stop {}`)",
+                lima.instance, lima.instance
+            );
+        }
     }
 
     /// Force-delete an instance (stops it first if running). Best-effort: a
@@ -1347,6 +1378,12 @@ echo "=== Apptainer build complete ==="
                 lima_home: lima.lima_home.clone(),
                 instance: instance_name,
             };
+
+            // Stop this arch's VM when the iteration ends (build finished or
+            // panicked) so it never lingers in host RAM. Declared after
+            // `_build_lock`, so it drops (and stops the VM) before the lock
+            // releases, keeping a queued build from observing a half-stopped VM.
+            let _stop_guard = LimaStopGuard { lima: &target_lima };
 
             let ok = build_apptainer_from_source_via_lima(
                 &target_lima,
