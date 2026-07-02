@@ -533,7 +533,7 @@ fn consumed_action() {
         ],
     );
 
-    // GoalResponseData dataclass (no GoalResponse wrapper — data lives on ActionHandle)
+    // GoalResponseData dataclass (no GoalResponse wrapper; data lives on ActionHandle)
     assert_contains_all(&rendered, &["class GoalResponseData:", "accepted: bool"]);
 
     // CancelState enum + CancelResponse dataclass (no per-action cancel data).

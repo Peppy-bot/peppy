@@ -26,7 +26,7 @@ pub enum RepoCommands {
     ///
     /// Creates the file if it does not exist, otherwise appends any default
     /// entries that are missing without touching existing user entries.
-    /// Operates on the local config file directly — no daemon required.
+    /// Operates on the local config file directly; no daemon required.
     Init,
     /// List configured repositories
     List,

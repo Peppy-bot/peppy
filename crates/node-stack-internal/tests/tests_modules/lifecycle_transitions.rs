@@ -179,7 +179,7 @@ async fn stop_instance_returns_false_when_instance_not_tracked() {
 #[tokio::test]
 async fn stop_instance_skips_starting_instances() {
     // stop_instance only acts on Running instances. A Starting instance is
-    // an in-flight prepare_and_spawn that hasn't been committed yet — it
+    // an in-flight prepare_and_spawn that hasn't been committed yet; it
     // can't be stopped via the messenger because it hasn't subscribed.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let harness = real_lifecycle::lifecycle_harness();
@@ -187,7 +187,7 @@ async fn stop_instance_skips_starting_instances() {
     let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
 
     // Drive prepare_and_spawn to produce a Starting instance, but do NOT
-    // commit_started — the instance stays in Starting.
+    // commit_started; the instance stays in Starting.
     let id = Name::new("starting-inst").unwrap();
     let (mut child, _started_ctx) = NodeEntity::prepare_and_spawn(
         &handle,
@@ -379,7 +379,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
 
 #[tokio::test]
 async fn concurrent_builds_are_rejected_immediately() {
-    // Process node (no container) — `NodeEntity::build` runs the pure-Rust
+    // Process node (no container): `NodeEntity::build` runs the pure-Rust
     // archive path, no apptainer required.
     let stack = NodeStack::new(
         crate::helpers::config_common::core_node_config(),
@@ -840,7 +840,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         );
     }
 
-    // The child process is dead — kill_and_collect_error called child.kill() + child.wait().
+    // The child process is dead: kill_and_collect_error called child.kill() + child.wait().
     // Best-effort verification: the PID should no longer be a running process.
     // (Use `kill -0` which returns success only if the process exists.)
     let still_alive = std::process::Command::new("kill")
@@ -985,7 +985,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
         other => panic!("expected DuplicateInstanceId, got {:?}", other),
     }
 
-    // The entity remained in Ready with exactly the original instance —
+    // The entity remained in Ready with exactly the original instance;
     // no Starting instance was registered.
     let guard = handle.read();
     match guard.stage() {
@@ -1012,8 +1012,8 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
 // These tests verify the rejection rules embedded in `NodeEntity::build` and
 // `NodeEntity::prepare_and_spawn` by exercising the pure validators
 // (`NodeStage::ensure_buildable` / `ensure_spawnable`) that production code
-// dispatches through. They construct `NodeStage` values directly — no entity,
-// no backdoor — which is why they cover stages like `Building` that have no
+// dispatches through. They construct `NodeStage` values directly (no entity,
+// no backdoor), which is why they cover stages like `Building` that have no
 // non-racy real-lifecycle production path.
 //
 // The happy path (and the rejection-from-Added integration cases) are still

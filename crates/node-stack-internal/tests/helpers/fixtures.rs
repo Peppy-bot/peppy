@@ -3,7 +3,7 @@
 //!
 //! Every call that formerly produced a `Ready` entity now spawns a real
 //! subprocess (a portable `sh` loop), so callers must hold onto the returned
-//! [`RunningInstanceGuard`] for the duration of the test — dropping it calls
+//! [`RunningInstanceGuard`] for the duration of the test; dropping it calls
 //! `stop_instance` and SIGTERMs the child.
 
 #![allow(dead_code)] // Some helpers are reserved for future tests.
@@ -30,7 +30,7 @@ pub async fn push_built(
     real_lifecycle::build_ready(stack, harness, config, config_path).await
 }
 
-/// Pushes a config, builds, and spawns one `Running` instance — the
+/// Pushes a config, builds, and spawns one `Running` instance; the
 /// equivalent of the old `Started` stage with one instance. Returns the
 /// guard; drop it to clean up the child process.
 pub async fn push_started(

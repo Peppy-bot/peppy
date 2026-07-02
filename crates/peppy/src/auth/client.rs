@@ -52,11 +52,11 @@ pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result
 /// The connection config the backend hands the CLI for the caller's private
 /// per-user zenoh router. Deserialized tolerantly (unknown fields ignored) so a
 /// backend that adds fields still parses. The CA the router is validated against
-/// is **not** part of this response — it is CLI-side deployment config (the
+/// is **not** part of this response; it is CLI-side deployment config (the
 /// trust root the gateway's routers present a cert chained to).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ZenohRouterConfig {
-    /// The Zenoh locator to dial, `<scheme>/<host>:<port>` — e.g.
+    /// The Zenoh locator to dial, `<scheme>/<host>:<port>`, e.g.
     /// `tls/7f3a….zenoh.localhost:7443`. The host is the capability subdomain
     /// (the SNI the gateway routes on); TLS terminates at the user's router.
     pub endpoint: String,

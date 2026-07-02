@@ -73,7 +73,7 @@ const NODE_CONFIG: &str = r#"{
 ///   3. Each leaf's declare_publisher body passes the matching sender target to
 ///      the messenger: `peppylib.SenderTarget.interface(...)` for conformed
 ///      leaves and `peppylib.SenderTarget.node(...)` for the native leaf.
-///   4. The per-interface marker fields land in their own files — proof the
+///   4. The per-interface marker fields land in their own files, proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
 fn nests_conformed_topics_under_iface_name_and_tag() {
@@ -111,7 +111,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         "native video_stream.py should exist at {native_path:?}",
     );
 
-    // Conformed artifacts nest one level deeper than the rust scaffold —
+    // Conformed artifacts nest one level deeper than the rust scaffold:
     // category dir, then iface_name, then iface_tag.
     let depth_v1 = emit_dir.join("depth_camera/v1/video_stream.py");
     let depth_v2 = emit_dir.join("depth_camera/v2/video_stream.py");
@@ -120,7 +120,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         assert!(path.exists(), "expected conformed topic at {path:?}");
     }
 
-    // __init__.py chain — each intermediate directory imports its children.
+    // __init__.py chain: each intermediate directory imports its children.
     let root_init = fs::read_to_string(emit_dir.join("__init__.py")).expect("root __init__.py");
     for expected in [
         "from . import video_stream",
@@ -176,9 +176,9 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
 
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
     // which is independent of the calling file's depth. This regressed once
-    // when the loader used `_PKG_DIR = Path(__file__).parent.parent` — fine
+    // when the loader used `_PKG_DIR = Path(__file__).parent.parent` (fine
     // for the flat native path but two levels short for nested conformed
-    // artifacts at `peppygen/<category>/<iface>/<tag>/<leaf>.py`, which made
+    // artifacts at `peppygen/<category>/<iface>/<tag>/<leaf>.py`), which made
     // `capnp.load()` raise silently inside the asyncio loop and hung the
     // consumer. All four files (native + three conformed) should now produce
     // the same loader form.

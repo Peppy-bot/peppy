@@ -43,13 +43,13 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
     };
 
     // `info.run_log_paths` is aligned 1:1 with `info.instances` (same
-    // order, same length) — see `NodeInfo` in
+    // order, same length); see `NodeInfo` in
     // crates/core-node-internal/src/encoding/node/info.rs. `format_node_info`
     // consumes them via `.zip()`, which would silently truncate on drift.
     // Fail loud here instead so encoding/version mismatches surface clearly.
     if info.instances.len() != info.run_log_paths.len() {
         return Err(Error::ExecutionFailed(format!(
-            "daemon returned mismatched node_info lengths: {} instances vs {} run log paths — this is an internal encoding bug",
+            "daemon returned mismatched node_info lengths: {} instances vs {} run log paths; this is an internal encoding bug",
             info.instances.len(),
             info.run_log_paths.len(),
         )));
@@ -94,7 +94,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         let _ = writeln!(out, "Container: {}", container.def_file);
     }
 
-    // Node stack status — the daemon only answers node_info requests for
+    // Node stack status: the daemon only answers node_info requests for
     // nodes that are in the stack, so we always have a stage + instance list.
     let _ = writeln!(out);
     let _ = writeln!(out, "Node Stack Status");
@@ -120,7 +120,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     }
 
     // Logs grouped under <name>:<tag>. Only printed when at least one
-    // log path is available — if neither the add log nor any run log
+    // log path is available; if neither the add log nor any run log
     // is set, the section is suppressed entirely.
     let has_add_log = response.add_log_path.is_some();
     let has_run_logs = !response.run_log_paths.is_empty();
@@ -135,7 +135,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         if has_run_logs {
             let _ = writeln!(out, "  Run logs:");
             // `run_log_paths` is aligned 1:1 with `instances` (same
-            // order, same length) — see the info handler.
+            // order, same length); see the info handler.
             for (instance, log_path) in response.instances.iter().zip(response.run_log_paths.iter())
             {
                 let _ = writeln!(

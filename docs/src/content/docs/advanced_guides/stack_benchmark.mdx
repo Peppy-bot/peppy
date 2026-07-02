@@ -69,13 +69,13 @@ Synthetic probes: handler-free round-trips, schema-sized payloads (200 samples/i
 ┌──────────────────┬──────────┬────────────┬────────┬────────┬────────┬─────┬──────┬────────────────────┐
 │ edge             │ binding  │ measure    │ p50    │ p90    │ mean   │ n   │ Δp50 │ note               │
 ├──────────────────┼──────────┼────────────┼────────┼────────┼────────┼─────┼──────┼────────────────────┤
-│ brain:v1         │ left_arm │ act-probe  │ 240µs  │ 310µs  │ 255µs  │ 200 │ —    │ payload 32B → 16B  │
+│ brain:v1         │ left_arm │ act-probe  │ 240µs  │ 310µs  │ 255µs  │ 200 │ -    │ payload 32B → 16B  │
 │ → arm:v1         │          │            │        │        │        │     │      │                    │
 │   /move_arm      │          │            │        │        │        │     │      │                    │
-│ brain:v1         │ camera   │ node-probe │ 195µs  │ 250µs  │ 207µs  │ 200 │ —    │ camera:v1; payload │
+│ brain:v1         │ camera   │ node-probe │ 195µs  │ 250µs  │ 207µs  │ 200 │ -    │ camera:v1; payload │
 │ ➔ camera_mock:v1 │          │            │        │        │        │     │      │ 0B → ≥56B          │
 │   /frames        │          │            │        │        │        │     │      │                    │
-│ brain:v1         │ camera   │ svc-probe  │ 180µs  │ 220µs  │ 191µs  │ 200 │ —    │ camera:v1; payload │
+│ brain:v1         │ camera   │ svc-probe  │ 180µs  │ 220µs  │ 191µs  │ 200 │ -    │ camera:v1; payload │
 │ ➔ camera_mock:v1 │          │            │        │        │        │     │      │ 0B → ≥32B          │
 │   /frame_info    │          │            │        │        │        │     │      │                    │
 └──────────────────┴──────────┴────────────┴────────┴────────┴────────┴─────┴──────┴────────────────────┘
@@ -91,7 +91,7 @@ Real traffic: observe-only one-way delivery of live topic messages (200 samples/
 ┌──────────────────┬──────────┬───────────┬────────┬────────┬────────┬─────┬──────┬────────────┐
 │ edge             │ binding  │ clock     │ p50    │ p90    │ mean   │ n   │ Δp50 │ note       │
 ├──────────────────┼──────────┼───────────┼────────┼────────┼────────┼─────┼──────┼────────────┤
-│ brain:v1         │ camera   │ same-host │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ —    │ camera:v1  │
+│ brain:v1         │ camera   │ same-host │ 1.20ms │ 1.80ms │ 1.31ms │ 200 │ -    │ camera:v1  │
 │ ➔ camera_mock:v1 │          │           │        │        │        │     │      │            │
 │   /frames        │          │           │        │        │        │     │      │            │
 └──────────────────┴──────────┴───────────┴────────┴────────┴────────┴─────┴──────┴────────────┘

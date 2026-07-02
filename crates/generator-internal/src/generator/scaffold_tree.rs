@@ -2,7 +2,7 @@
 //!
 //! `InterfaceArtifact::module_path` describes where each generated symbol
 //! lives under its category directory. Both languages walk the same tree
-//! shape — directories keyed by raw segment, leaves keyed by their final
+//! shape: directories keyed by raw segment, leaves keyed by their final
 //! segment. Only the per-file/per-`__init__` rendering differs.
 
 use super::naming::unique_module_name;
@@ -63,7 +63,7 @@ fn insert_into_tree(node: &mut ModuleTree, path: &[String], artifact: InterfaceA
 /// One entry in a directory's module index, in deterministic write order
 /// (leaves first, then sub-directories).
 pub(crate) struct ModuleEntry {
-    /// The sanitized, dedup-suffixed module name — the on-disk file/dir stem.
+    /// The sanitized, dedup-suffixed module name: the on-disk file/dir stem.
     pub module_name: String,
     /// The original (raw) segment before sanitization, for languages that emit
     /// a provenance comment when the two differ.
@@ -74,8 +74,8 @@ pub(crate) struct ModuleEntry {
 
 /// Language-specific rendering for the otherwise-identical module-tree walk.
 ///
-/// The traversal — directory creation, per-level sibling-name de-duplication,
-/// and recursion order — lives in [`write_module_tree`]; implementors only
+/// The traversal (directory creation, per-level sibling-name de-duplication,
+/// and recursion order) lives in [`write_module_tree`]; implementors only
 /// decide how a single leaf file and a single directory index file are written.
 pub(crate) trait TreeWriter {
     /// Sanitizes a raw path segment into a valid module name for the target

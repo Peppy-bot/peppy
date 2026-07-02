@@ -26,7 +26,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 
 /// Summarize raw nanosecond samples into p50 / p90 / mean / count.
 ///
-/// The input is not required to be sorted — it is copied and sorted internally.
+/// The input is not required to be sorted; it is copied and sorted internally.
 /// An empty input yields an all-zero [`Summary`].
 pub fn summarize(samples: &[u64]) -> Summary {
     if samples.is_empty() {

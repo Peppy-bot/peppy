@@ -54,16 +54,16 @@ impl From<&NodeEntity> for SerializedNode {
 /// Per-instance state (Starting, Running, or a terminal Finished/Failed) lives
 /// on each [`TrackedNodeInstance`] inside `Ready.instances`.
 ///
-/// - `Added` — config registered, no artifact, no instances.
-/// - `Building` — `build()` is running its I/O. Acts as the concurrency
+/// - `Added`: config registered, no artifact, no instances.
+/// - `Building`: `build()` is running its I/O. Acts as the concurrency
 ///   barrier: a second concurrent `build()` on the same entity sees this
 ///   stage and is rejected immediately with no queueing.
-/// - `Ready` — artifact is on disk. The instances list may be empty (no
+/// - `Ready`: artifact is on disk. The instances list may be empty (no
 ///   instances spawned yet, equivalent to the old `Built` stage) or hold any
 ///   mix of `Starting` (in-flight `prepare_and_spawn`), `Running`, and terminal
 ///   `Finished`/`Failed` instances. A self-exited instance stays listed as
 ///   `Finished` or `Failed` until the stack is cleared or it is stopped.
-/// - `Root` — the synthetic daemon entity. Has no buildable artifact and
+/// - `Root`: the synthetic daemon entity. Has no buildable artifact and
 ///   exactly one `Running` instance (the daemon process itself). The
 ///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
 ///   `stop_instance`, …) all reject this variant: the root cannot be
@@ -121,7 +121,7 @@ impl NodeStage {
     /// Pure validator: returns `Ok(())` if `NodeEntity::prepare_and_spawn`
     /// is allowed from this stage (only `Ready` is), or
     /// `Err(current_stage_name)` otherwise. Mirrors the structural shape
-    /// of [`NodeStage::ensure_buildable`] — see its doc for the rationale.
+    /// of [`NodeStage::ensure_buildable`]; see its doc for the rationale.
     pub fn ensure_spawnable(&self) -> std::result::Result<(), &'static str> {
         match self {
             NodeStage::Ready { .. } => Ok(()),
@@ -153,7 +153,7 @@ pub struct BuildContext<'a> {
     /// Environment variables passed to `build_cmd` (process nodes only). The
     /// daemon prepares this list via `validate_goal_env_vars`,
     /// `inject_rust_build_env`, and `inject_node_runtime_env`. Container
-    /// nodes ignore this field — apptainer build does not consume it.
+    /// nodes ignore this field; apptainer build does not consume it.
     pub env_vars: &'a [(String, String)],
     /// Fired when a `--force` build supersedes this one. The build I/O layer
     /// SIGKILLs and reaps the build subprocess so the superseding build can
@@ -167,7 +167,7 @@ pub struct BuildContext<'a> {
 /// callers don't have to clone heavy state. Messenger-bound parameters
 /// (`signal_target`, ready/health checks) live in the daemon, not here.
 pub struct StartContext<'a> {
-    /// Instance identifier — used for log messages, runtime-config file
+    /// Instance identifier, used for log messages, runtime-config file
     /// naming, and the eventual `TrackedNodeInstance::new`.
     pub instance_id: &'a Name,
     /// The runtime config to write to the per-spawn temp file. For container
@@ -190,7 +190,7 @@ pub struct StartContext<'a> {
     /// Resolved peppy directory layout. Used for `runtime_config_dir()` and
     /// `instances_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
-    /// Output-pipeline plumbing. The entity does not inspect these fields —
+    /// Output-pipeline plumbing. The entity does not inspect these fields;
     /// it forwards them verbatim into `spawn_output_reader_async`.
     pub output_sinks: OutputSinks,
 }
@@ -208,7 +208,7 @@ pub struct OutputSinks {
     /// Gate that the daemon flips to `false` after `commit_started` /
     /// `abort_started` returns, so that further reader-task lines stop being
     /// forwarded onto the daemon's external feedback topic. The reader tasks
-    /// themselves stay alive — only their forwarding is disabled.
+    /// themselves stay alive; only their forwarding is disabled.
     pub publish_enabled: Arc<AtomicBool>,
     /// Hooks invoked by the output reader on first stdout line and on each
     /// successful publish. The daemon implements this for its `FeedbackSync`
@@ -230,14 +230,14 @@ pub struct StartedInstanceCtx {
     /// time. `commit_started`/`abort_started` compare this against the
     /// current entity generation and refuse to mutate the replacement entity
     /// if a concurrent `push_config` has bumped the generation in the
-    /// meantime — they only clean up the stale child/context.
+    /// meantime; they only clean up the stale child/context.
     pub(crate) generation: u64,
 }
 
 /// Process-wide monotonic counter that assigns each `NodeEntity` instance a
 /// unique generation. The build path snapshots this when transitioning into
 /// `Building`, and rejects the publish if the entity it observes after I/O
-/// has a different generation — i.e. a concurrent `push_config` replaced the
+/// has a different generation, i.e. a concurrent `push_config` replaced the
 /// entity contents in the meantime.
 static NEXT_ENTITY_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -247,7 +247,7 @@ fn next_entity_generation() -> u64 {
 
 /// RAII guard for a temporary working directory staged by `node add` and
 /// consumed by `node build`. Removes the directory when the last clone is
-/// dropped — so removing an `Added` entity from the stack also cleans up
+/// dropped, so removing an `Added` entity from the stack also cleans up
 /// its pending working dir on disk.
 #[derive(Debug)]
 pub struct WorkingDirGuard {
@@ -462,7 +462,7 @@ impl NodeEntity {
     /// `push_config` could replace the entity in-place.
     ///
     /// **Failure contract:** on any failure the entity is left in `Building`
-    /// (not rolled back to `Added`). The caller owns cleanup — typically by
+    /// (not rolled back to `Added`). The caller owns cleanup, typically by
     /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
@@ -500,7 +500,7 @@ impl NodeEntity {
         // For process nodes, run the user-defined build_cmd (if any).
         // Defer publishing the artifact into shared storage until *after*
         // we re-confirm the entity is still `Building` under the write
-        // lock — otherwise a stale build could orphan/overwrite an artifact
+        // lock; otherwise a stale build could orphan/overwrite an artifact
         // installed by a competing winner.
         let is_container = container_opt.is_some();
         let io_result: std::result::Result<(), Error> = async {
@@ -651,7 +651,7 @@ impl NodeEntity {
     /// Looks up the instance by id and removes it from the `Ready.instances`
     /// list. Silent no-op if the entity is no longer in `Ready` (concurrent
     /// `push_config` replaced it) or if the instance is missing (already
-    /// removed). Also a no-op if the instance is in `Running` state — that
+    /// removed). Also a no-op if the instance is in `Running` state; that
     /// case shouldn't happen in practice (we only remove things we just
     /// inserted as `Starting`), but defensively we don't touch committed
     /// instances.
@@ -736,7 +736,7 @@ impl NodeEntity {
             };
 
             // Reject duplicate instance ids before any I/O. Atomic with the
-            // append below — both happen under this write lock.
+            // append below; both happen under this write lock.
             if instances
                 .iter()
                 .any(|inst| inst.instance_id() == ctx.instance_id)
@@ -919,7 +919,7 @@ impl NodeEntity {
     /// can watch it for exit (see the process-exit watcher in `node_run`),
     /// turning a self-exit into a terminal `Finished`/`Failed` instance state.
     ///
-    /// Does NOT join the output reader handles — they remain alive past return
+    /// Does NOT join the output reader handles; they remain alive past return
     /// so the daemon keeps streaming the running node's stdout/stderr.
     ///
     /// If a concurrent `push_config` replaced the entity wholesale while the
@@ -1024,7 +1024,7 @@ impl NodeEntity {
                 // Concurrent push_config / stale generation / inconsistent
                 // state: the entity is no longer ours, but the spawned
                 // process and the on-disk artifacts created during this
-                // start *are* — kill the child and clean up the temp files
+                // start *are*; kill the child and clean up the temp files
                 // before returning so nothing orphans.
                 kill_child(&mut child).await;
                 let _ = std::fs::remove_dir_all(&instance_dir);
@@ -1041,7 +1041,7 @@ impl NodeEntity {
     ///
     /// If a concurrent `push_config` replaced the entity wholesale while the
     /// daemon was running its messenger checks, the instance removal is
-    /// silently skipped — the new state takes precedence. The child is still
+    /// silently skipped; the new state takes precedence. The child is still
     /// killed either way.
     pub async fn abort_started(
         handle: &Arc<RwLock<NodeEntity>>,
@@ -1088,7 +1088,7 @@ impl NodeEntity {
     }
 
     /// Constructs the root entity for a [`crate::node_stack::NodeStack`]. The
-    /// root represents the running daemon itself, not a buildable node — it
+    /// root represents the running daemon itself, not a buildable node; it
     /// bypasses the lifecycle because there is no source to build and no
     /// instance to spawn (the daemon's own process is the "instance").
     ///
@@ -1132,7 +1132,7 @@ impl NodeEntity {
         let stage = match (artifact_path, instances.is_empty()) {
             (None, true) => NodeStage::Added { config_path },
             (None, false) => unreachable!(
-                "snapshot with instances must have an artifact_path — \
+                "snapshot with instances must have an artifact_path; \
                  a node cannot have instances without a built artifact"
             ),
             (Some(artifact_path), _) => NodeStage::Ready {
@@ -1178,7 +1178,7 @@ impl NodeEntity {
     /// Removes a `Running` or terminal (`Finished`/`Failed`) instance from a
     /// `Ready` entity. The entity stays in `Ready` regardless of whether the
     /// instance list becomes empty. `Starting` instances are intentionally left
-    /// alone — to clean those up, the caller must use `abort_started`.
+    /// alone; to clean those up, the caller must use `abort_started`.
     ///
     /// Terminal instances are removable here so an explicit stop (or a stack
     /// clear) can clear out a one-shot node that already exited on its own, and
@@ -1253,11 +1253,11 @@ pub struct TrackedNodeInstance {
 
 impl TrackedNodeInstance {
     /// Constructs a new tracked instance. The `state` must be supplied
-    /// explicitly — there is no default. Callers that have just spawned a
+    /// explicitly; there is no default. Callers that have just spawned a
     /// child process and have not yet committed it pass `InstanceState::Starting`;
     /// callers that are reconstructing an entity from a snapshot or test
     /// fixture pass `InstanceState::Running`. `slot_bindings` carries the
-    /// validator-resolved per-slot bindings for this instance — pass an
+    /// validator-resolved per-slot bindings for this instance; pass an
     /// empty map when reconstructing test fixtures or instances whose
     /// manifest has no `depends_on` slots.
     pub fn new(

@@ -285,7 +285,7 @@ Dependencies
   hello_receiver:v1 ➔ hello_world_param:v1
 ```
 
-The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to `(any)`. Because `hello_receiver` declares that dependency with `from_any: true` and we never passed a `--bind`, the slot stays unbound and accepts every `hello_world_param` instance — which is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above. To restrict it to one producer, start the consumer with `--bind hello_world_param@<instance_id>`; the cell would then read `hello_world_param → <instance_id>@<core_node>` (a resolved binding shows the producer as `instance_id@core_node`, its full wire address).
+The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to `(any)`. Because `hello_receiver` declares that dependency with `from_any: true` and we never passed a `--bind`, the slot stays unbound and accepts every `hello_world_param` instance, which is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above. To restrict it to one producer, start the consumer with `--bind hello_world_param@<instance_id>`; the cell would then read `hello_world_param → <instance_id>@<core_node>` (a resolved binding shows the producer as `instance_id@core_node`, its full wire address).
 
 ---
 We'll explore [services](/advanced_guides/services) and [actions](/advanced_guides/actions) in the advanced guides, although they fundamentally work the same way.

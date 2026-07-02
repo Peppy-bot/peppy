@@ -19,7 +19,7 @@ async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> R
     .expect("repo_add poll should succeed")
 }
 
-/// Assert the most recently appended repo got the next-available id —
+/// Assert the most recently appended repo got the next-available id:
 /// exactly `max(other_ids) + 1`. Avoids hardcoding a specific value, which
 /// goes stale every time a default is added to the shipped
 /// `default_repositories.json5`, and catches regressions where ids skip ahead.

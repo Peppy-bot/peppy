@@ -44,14 +44,14 @@ pub struct TimeoutConfig {
 
 /// Parses a node_name:tag argument string into a tuple
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
-    let pos = s.find(':').ok_or_else(|| {
+    let (node_name, tag) = s.split_once(':').ok_or_else(|| {
         format!(
             "invalid node reference '{}': expected node_name:tag format",
             s
         )
     })?;
-    let node_name = s[..pos].trim().to_string();
-    let tag = s[pos + 1..].trim().to_string();
+    let node_name = node_name.trim().to_string();
+    let tag = tag.trim().to_string();
     if node_name.is_empty() {
         return Err(format!(
             "invalid node reference '{}': node_name cannot be empty",
@@ -69,11 +69,11 @@ fn parse_node_ref(s: &str) -> Result<(String, String), String> {
 
 /// Parses a key=value argument string into a tuple
 fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
-    let pos = s
-        .find('=')
+    let (key, value) = s
+        .split_once('=')
         .ok_or_else(|| format!("invalid argument format '{}': expected key=value", s))?;
-    let key = s[..pos].trim().to_string();
-    let value = s[pos + 1..].trim().to_string();
+    let key = key.trim().to_string();
+    let value = value.trim().to_string();
     if key.is_empty() {
         return Err(format!("invalid argument '{}': key cannot be empty", s));
     }
@@ -101,20 +101,6 @@ fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
     }
     pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
     Ok((key.to_string(), value.to_string()))
-}
-
-/// Value parser for the now-removed `--link-id` flag. Always returns an
-/// error pointing the user at the replacement surface. See [`NodeCommands::Run`]
-/// for the hidden, parser-only flag that wires this in.
-fn link_id_removed_error(_: &str) -> Result<String, String> {
-    Err(
-        "--link-id has been removed. Producer-side link_id binding no longer \
-         exists; consumers pin to a specific producer via\n  \
-         peppy node run <node> --bind <KEY>@<PRODUCER_INSTANCE_ID>\n\
-         where KEY is a link_id declared in the consumer's depends_on and \
-         PRODUCER_INSTANCE_ID is the running producer's instance_id (peppy node list)."
-            .to_string(),
-    )
 }
 
 #[derive(Subcommand)]
@@ -152,7 +138,7 @@ pub enum NodeCommands {
         /// peppygen interface code to be regenerated from the current
         /// `peppy.json5`, so the snapshot taken by `node add` is up-to-date.
         ///
-        /// Only valid for local filesystem sources — remote (git/http)
+        /// Only valid for local filesystem sources; remote (git/http)
         /// sources are synced server-side when the daemon fetches them.
         ///
         /// This flag is NOT implied by `--build` or `--run`; it's a
@@ -175,7 +161,7 @@ pub enum NodeCommands {
         run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30).
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG and only make
-        /// sense when `--run` is set — `requires = "run"` so a bare
+        /// sense when `--run` is set; `requires = "run"` so a bare
         /// `peppy node add . frequency=30` errors at parse time instead of
         /// silently ignoring the argument.
         #[arg(value_parser = parse_key_value_arg, requires = "run")]
@@ -190,7 +176,7 @@ pub enum NodeCommands {
         /// (`--bind a@p1,b@p2`). Only valid alongside `--run`: without a
         /// chained run there is no instance to apply the bindings to, so
         /// `requires = "run"` rejects the combination at parse time.
-        /// Validation is shared with `peppy node run` — see
+        /// Validation is shared with `peppy node run`; see
         /// `validate_and_run_instance` for the rule set.
         #[arg(
             long = "bind",
@@ -200,7 +186,7 @@ pub enum NodeCommands {
             requires = "run",
         )]
         binds: Vec<(String, String)>,
-        /// Idle timeout in seconds — resets whenever output is received
+        /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
@@ -220,7 +206,7 @@ pub enum NodeCommands {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
-        /// Idle timeout in seconds — resets whenever output is received
+        /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
@@ -277,19 +263,7 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         binds: Vec<(String, String)>,
-        /// Removed. The `--link-id` flag has been replaced by `--bind
-        /// KEY@VALUE`; the value parser always errors with a migration
-        /// hint. Kept as a hidden clap arg so legacy invocations get a
-        /// clear message instead of a generic "unknown flag" error.
-        #[arg(
-            long = "link-id",
-            hide = true,
-            value_delimiter = ',',
-            value_parser = link_id_removed_error,
-            action = clap::ArgAction::Append,
-        )]
-        _link_id_removed: Vec<String>,
-        /// Idle timeout in seconds — resets whenever output is received
+        /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
@@ -334,7 +308,7 @@ pub enum NodeCommands {
     ///
     /// Takes a reference to a node that has already been added via
     /// `peppy node add`. If the node is not in the stack, the command exits
-    /// with an error — inspecting sources on disk is the job of `node add`,
+    /// with an error; inspecting sources on disk is the job of `node add`,
     /// not `node info`.
     Info {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
@@ -448,7 +422,6 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 binds,
-                _link_id_removed,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -778,19 +751,6 @@ mod tests {
         assert!(msg.contains("reserved"), "msg: {msg}");
     }
 
-    #[test]
-    fn test_link_id_removed_with_migration_hint() {
-        let err = try_parse_run(&["foo:v1", "--link-id", "anything"])
-            .err()
-            .expect("--link-id should error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--link-id has been removed"),
-            "msg should explain removal: {msg}"
-        );
-        assert!(msg.contains("--bind"), "msg should point at --bind: {msg}");
-    }
-
     // ─── `peppy node add` --bind / requires=run parse-time enforcement ───
 
     /// `--bind` on `node add` requires `--run`; the binds parser is the same
@@ -897,8 +857,8 @@ mod tests {
         );
     }
 
-    /// Sanity: a plain `add` with neither run-only flag must keep parsing
-    /// — `requires = "run"` only fires when one of the gated fields is
+    /// Sanity: a plain `add` with neither run-only flag must keep parsing:
+    /// `requires = "run"` only fires when one of the gated fields is
     /// present.
     #[test]
     fn add_without_any_run_only_args_still_parses() {

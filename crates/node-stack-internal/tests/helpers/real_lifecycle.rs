@@ -176,7 +176,7 @@ impl Drop for RunningInstanceGuard {
 /// to flip it to `Running`. Returns a guard that cleans up the child on drop.
 ///
 /// The entity must be in `Ready` (typically produced by [`build_ready`]) and
-/// its `run_cmd` must be spawnable — [`build_ready`] sets this up for you.
+/// its `run_cmd` must be spawnable; [`build_ready`] sets this up for you.
 pub async fn spawn_running_instance(
     handle: EntityHandle,
     harness: &LifecycleHarness,

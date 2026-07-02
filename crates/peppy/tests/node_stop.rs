@@ -168,7 +168,6 @@ async fn node_stop_command_succeeds() {
             instance_id: Some(instance_id.to_string()),
             binds: Vec::new(),
 
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -211,7 +210,7 @@ async fn node_stop_command_succeeds() {
     // Model a node that actually stops when asked: capture the run pid (logged
     // by the run command) and SIGKILL the process when the cooperative shutdown
     // signal arrives. node_stop then observes the process exit within the grace
-    // period — a genuine graceful stop, not a force-kill. (The overridden
+    // period: a genuine graceful stop, not a force-kill. (The overridden
     // `run_cmd` is a bare `sleep`, which would otherwise ignore the signal and
     // be force-killed once the grace period elapsed.)
     let node_pid = {

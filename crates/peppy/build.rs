@@ -14,7 +14,7 @@ fn embed_git_hash() {
     // Resolve the per-worktree git dir and the shared common git dir.
     // For submodules and linked worktrees, `<worktree>/.git` is a file
     // (gitlink), so naively joining `.git/HEAD` under the worktree root
-    // points at a non-existent path — cargo would treat that missing
+    // points at a non-existent path; cargo would treat that missing
     // rerun-if-changed entry as stale and recompile on every build.
     let git_dir = run_git(&["rev-parse", "--absolute-git-dir"]);
     let git_common_dir = run_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);

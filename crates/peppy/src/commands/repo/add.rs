@@ -92,7 +92,7 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
         });
     }
 
-    // Plain URL — but if the user passed `--ref`, try to treat it as a git
+    // Plain URL. But if the user passed `--ref`, try to treat it as a git
     // clone URL first (e.g. `https://github.com/org/repo` without `.git`).
     if git_ref.is_some() {
         if let Ok((repo_url, _repo_path)) = source::parse_git_repo_url_and_path(source_str) {

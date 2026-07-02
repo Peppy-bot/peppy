@@ -124,7 +124,7 @@ pub(crate) struct ExtractedHttpSource {
 /// clone) and an infrastructure failure during the shallow probe (fall back to
 /// full clone).
 enum ShallowCheckError {
-    /// The config was found but is invalid — a full clone would fail the same way.
+    /// The config was found but is invalid; a full clone would fail the same way.
     InvalidConfig(String),
     /// The shallow fetch itself failed (e.g. server doesn't support shallow
     /// clones, network error, ref not found). Fall back to full clone.
@@ -132,7 +132,7 @@ enum ShallowCheckError {
 }
 
 /// Performs a depth-1 shallow fetch into a bare repo and reads the node config
-/// blob directly from the git object database — no working-directory checkout.
+/// blob directly from the git object database, with no working-directory checkout.
 fn shallow_validate_config(
     repo_url: &str,
     repo_relative_path: &Path,
@@ -266,17 +266,31 @@ async fn resolve_git_source(
         .map_err(|_| "repo_url must be valid UTF-8".to_string())?
         .to_owned();
 
-    // --- Phase 1: Shallow probe — validate peppy.json5 without a full clone ---
+    shallow_probe_config(&repo_url_str, &repo_relative_path, repo_ref, &feedback_tx).await?;
+    let checkout_dir = clone_repo_to_temp(&repo_url_str, repo_ref, &feedback_tx).await?;
+    parse_config_from_checkout(checkout_dir, &repo_relative_path, &feedback_tx)
+}
+
+/// Phase 1 of [`resolve_git_source`]: shallow probe to validate peppy.json5
+/// without a full clone. An invalid config fails fast; a probe that cannot
+/// run (shallow fetch unsupported, network error, ref not found) reports the
+/// fallback via feedback and lets the full clone proceed.
+async fn shallow_probe_config(
+    repo_url: &str,
+    repo_relative_path: &Path,
+    repo_ref: Option<&str>,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<(), String> {
     let _ = feedback_tx.send(FeedbackLine {
         stream: FeedbackStream::Stdout,
         line: "Checking node config...".to_string(),
     });
 
-    let probe_url = repo_url_str.clone();
-    let probe_path = repo_relative_path.clone();
+    let probe_url = repo_url.to_owned();
+    let probe_path = repo_relative_path.to_owned();
     let probe_ref = repo_ref.map(str::to_owned);
 
-    let phase1_result = tokio::task::spawn_blocking(move || {
+    let probe_result = tokio::task::spawn_blocking(move || {
         shallow_validate_config(&probe_url, &probe_path, probe_ref.as_deref())
     })
     .await
@@ -285,10 +299,10 @@ async fn resolve_git_source(
     // The shallow probe is only a preflight hint: if it rejects the config,
     // fail fast; otherwise proceed to the full clone and reparse the config
     // from the actual checkout. Never use the probe's parsed value as the
-    // final NodeConfig — the clone is the source of truth.
-    match phase1_result {
-        Ok(_) => {}
-        Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
+    // final NodeConfig; the clone is the source of truth.
+    match probe_result {
+        Ok(_) => Ok(()),
+        Err(ShallowCheckError::InvalidConfig(msg)) => Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
             let _ = feedback_tx.send(FeedbackLine {
                 stream: FeedbackStream::Stdout,
@@ -297,16 +311,25 @@ async fn resolve_git_source(
                     reason
                 ),
             });
+            Ok(())
         }
     }
+}
 
-    // --- Phase 2: Full clone (only reached if config is valid or probe fell back) ---
+/// Phase 2 of [`resolve_git_source`]: full clone into a fresh temp directory.
+/// Owns the temp dir, removing it if the clone fails; on success the caller
+/// takes ownership of the returned path.
+async fn clone_repo_to_temp(
+    repo_url: &str,
+    repo_ref: Option<&str>,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<PathBuf, String> {
     let checkout_dir = tempfile::tempdir()
         .map_err(|e| format!("Failed to create temporary directory: {}", e))?
         .keep();
 
     let clone_checkout_dir = checkout_dir.clone();
-    let clone_repo_url = repo_url_str.clone();
+    let clone_repo_url = repo_url.to_owned();
     let clone_repo_ref = repo_ref.map(str::to_owned);
     let clone_feedback_tx = feedback_tx.clone();
     if let Err(err) = tokio::task::spawn_blocking(move || {
@@ -331,7 +354,19 @@ async fn resolve_git_source(
         return Err(err);
     }
 
-    let candidate_path = checkout_dir.join(&repo_relative_path);
+    Ok(checkout_dir)
+}
+
+/// Phase 3 of [`resolve_git_source`]: locate and parse the node config inside
+/// the cloned checkout (a `.json5` repo_path points at the file itself,
+/// anything else is a directory containing the default config file). On parse
+/// failure the error is surfaced via feedback and the checkout is removed.
+fn parse_config_from_checkout(
+    checkout_dir: PathBuf,
+    repo_relative_path: &Path,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let candidate_path = checkout_dir.join(repo_relative_path);
 
     let config_path = if candidate_path
         .extension()
@@ -349,9 +384,9 @@ async fn resolve_git_source(
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
     // Always parse the config from the cloned checkout. The shallow probe
-    // earlier in this function is only a preflight hint — its result is not
-    // trusted as the final config, since the probe and the clone could in
-    // principle disagree (e.g. a force-push between the two fetches).
+    // in phase 1 is only a preflight hint; its result is not trusted as
+    // the final config, since the probe and the clone could in principle
+    // disagree (e.g. a force-push between the two fetches).
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -400,24 +435,100 @@ fn bundle_file_name(url: &url::Url) -> String {
         .unwrap_or_else(|| "bundle.tar.zst".to_string())
 }
 
+/// Total attempts (initial try plus retries) for a bundle download that
+/// keeps failing transiently.
+const DOWNLOAD_ATTEMPTS: usize = 3;
+/// Backoff before retry N+1; short and growing, since most transient
+/// failures either clear immediately or not at all.
+const DOWNLOAD_RETRY_DELAYS: [Duration; DOWNLOAD_ATTEMPTS - 1] =
+    [Duration::from_millis(250), Duration::from_secs(1)];
+
+/// A failed download attempt, split by whether retrying could help.
+enum DownloadAttemptError {
+    /// Transport-level failure or server-side 5xx; worth retrying.
+    Transient(String),
+    /// Client error (4xx), checksum mismatch, or local I/O failure;
+    /// retrying cannot change the outcome.
+    Fatal(String),
+}
+
+/// Whether a failed HTTP request is worth retrying. Transport-level
+/// failures (I/O, timeout, connection, DNS) and server-side 5xx responses
+/// are transient; anything else (4xx status, bad URI, TLS setup, redirect
+/// loops) will not improve on retry.
+fn is_transient_http_error(err: &HttpError) -> bool {
+    match err {
+        HttpError::StatusCode(code) => *code >= 500,
+        HttpError::Io(_)
+        | HttpError::Timeout(_)
+        | HttpError::ConnectionFailed
+        | HttpError::HostNotFound => true,
+        _ => false,
+    }
+}
+
+/// Downloads the bundle at `url` to `destination`, retrying transient
+/// failures up to [`DOWNLOAD_ATTEMPTS`] times with a short growing backoff.
+/// Non-transient failures (see [`is_transient_http_error`]) and checksum
+/// mismatches surface immediately.
 fn download_http_bundle(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
     feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
 ) -> std::result::Result<(), String> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let err = match download_http_bundle_once(url, destination, expected_sha256, feedback_tx) {
+            Ok(()) => return Ok(()),
+            Err(DownloadAttemptError::Fatal(msg)) => return Err(msg),
+            Err(DownloadAttemptError::Transient(msg)) if attempt >= DOWNLOAD_ATTEMPTS => {
+                return Err(msg);
+            }
+            Err(DownloadAttemptError::Transient(msg)) => msg,
+        };
+        let delay = DOWNLOAD_RETRY_DELAYS[attempt - 1];
+        if let Some(tx) = feedback_tx {
+            let _ = tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!(
+                    "Download attempt {attempt} of {DOWNLOAD_ATTEMPTS} failed ({err}); retrying in {delay:?}"
+                ),
+            });
+        }
+        std::thread::sleep(delay);
+    }
+}
+
+/// One download attempt. Only the HTTP request and response-body reads can
+/// yield [`DownloadAttemptError::Transient`]; local file I/O and checksum
+/// verification are always fatal.
+fn download_http_bundle_once(
+    url: &url::Url,
+    destination: &Path,
+    expected_sha256: Option<&str>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+) -> std::result::Result<(), DownloadAttemptError> {
     use sha2::{Digest, Sha256};
 
     let expected_bytes = expected_sha256
         .map(|hex| decode_sha256_hex(hex).map_err(|e| format!("Invalid SHA256 for {}: {}", url, e)))
-        .transpose()?;
+        .transpose()
+        .map_err(DownloadAttemptError::Fatal)?;
 
     let response = ureq::get(url.as_str()).call().map_err(|err| {
+        let transient = is_transient_http_error(&err);
         let reason = match err {
             HttpError::StatusCode(code) => format!("unexpected status code {code}"),
             other => other.to_string(),
         };
-        format!("Failed to download bundle from {}: {}", url, reason)
+        let msg = format!("Failed to download bundle from {}: {}", url, reason);
+        if transient {
+            DownloadAttemptError::Transient(msg)
+        } else {
+            DownloadAttemptError::Fatal(msg)
+        }
     })?;
 
     let total_size: Option<u64> = response
@@ -428,11 +539,11 @@ fn download_http_bundle(
 
     let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination).map_err(|e| {
-        format!(
+        DownloadAttemptError::Fatal(format!(
             "Failed to create bundle file {}: {}",
             destination.display(),
             e
-        )
+        ))
     })?;
 
     let mut hasher = expected_bytes.as_ref().map(|_| Sha256::new());
@@ -440,19 +551,24 @@ fn download_http_bundle(
     let mut bytes_downloaded: u64 = 0;
     let mut last_report = Instant::now();
     loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|e| format!("Failed to read response body from {}: {}", url, e))?;
+        let read = reader.read(&mut buffer).map_err(|e| {
+            // A connection dropped mid-transfer is as transient as one that
+            // never opened; the retry restarts from File::create's truncate.
+            DownloadAttemptError::Transient(format!(
+                "Failed to read response body from {}: {}",
+                url, e
+            ))
+        })?;
         if read == 0 {
             break;
         }
         bytes_downloaded += read as u64;
         file.write_all(&buffer[..read]).map_err(|e| {
-            format!(
+            DownloadAttemptError::Fatal(format!(
                 "Failed to write bundle file {}: {}",
                 destination.display(),
                 e
-            )
+            ))
         })?;
         if let Some(ref mut h) = hasher {
             h.update(&buffer[..read]);
@@ -483,23 +599,23 @@ fn download_http_bundle(
         }
     }
     file.flush().map_err(|e| {
-        format!(
+        DownloadAttemptError::Fatal(format!(
             "Failed to flush bundle file {}: {}",
             destination.display(),
             e
-        )
+        ))
     })?;
 
     if let Some((hasher, expected)) = hasher.zip(expected_bytes) {
         let computed = hasher.finalize();
         if computed.as_slice() != expected.as_slice() {
             std::fs::remove_file(destination).ok();
-            return Err(format!(
+            return Err(DownloadAttemptError::Fatal(format!(
                 "SHA256 checksum mismatch for {}: expected {}, computed {}",
                 url,
                 expected_sha256.unwrap_or_default(),
                 encode_hex(computed.as_slice()),
-            ));
+            )));
         }
     }
 
@@ -929,6 +1045,39 @@ pub(crate) async fn run_node_add(
     }
 }
 
+/// Admits a `node_add` goal through the concurrency gate, aborting any
+/// superseded task. Returns the admitted generation, or the rejection
+/// message when another action is already running (and `--force` was not
+/// set).
+fn admit_node_add_goal(
+    gate: &ConcurrencyGate,
+    goal: &NodeAddGoal,
+) -> std::result::Result<u64, String> {
+    if goal.force {
+        debug!("Force flag set: aborting any previous node_add task");
+    }
+    match gate.try_admit(goal.timeout_secs, goal.force) {
+        super::gate::Admission::Admitted {
+            generation,
+            superseded,
+        } => {
+            // `node_add` keeps the hard-abort semantics: it overwrites the
+            // entity wholesale via `push_config`, so it does not need the old
+            // task's cooperative teardown the way `node_build` does (which
+            // awaits it to reuse the staged working dir). The gate already
+            // signaled the cancel token; abort drops the superseded future.
+            if let Some(old_task) = superseded {
+                old_task.abort();
+            }
+            Ok(generation)
+        }
+        super::gate::Admission::AlreadyRunning { remaining_secs } => Err(format!(
+            "action already in progress (times out in {remaining_secs}s), \
+             use `--force` to force adding the node"
+        )),
+    }
+}
+
 async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeAddActionContext,
@@ -948,33 +1097,10 @@ async fn handle_goal_request(
         }
     };
 
-    if goal.force {
-        debug!("Force flag set: aborting any previous node_add task");
-    }
-    let generation = match gate.try_admit(goal.timeout_secs, goal.force) {
-        super::gate::Admission::Admitted {
-            generation,
-            superseded,
-        } => {
-            // `node_add` keeps the hard-abort semantics: it overwrites the
-            // entity wholesale via `push_config`, so it does not need the old
-            // task's cooperative teardown the way `node_build` does (which
-            // awaits it to reuse the staged working dir). The gate already
-            // signaled the cancel token; abort drops the superseded future.
-            if let Some(old_task) = superseded {
-                old_task.abort();
-            }
-            generation
-        }
-        super::gate::Admission::AlreadyRunning { remaining_secs } => {
-            reject_goal(
-                pending,
-                encode_rejected_goal(format!(
-                    "action already in progress (times out in {remaining_secs}s), \
-                     use `--force` to force adding the node"
-                )),
-            )
-            .await;
+    let generation = match admit_node_add_goal(&gate, &goal) {
+        Ok(generation) => generation,
+        Err(rejection) => {
+            reject_goal(pending, encode_rejected_goal(rejection)).await;
             return;
         }
     };
@@ -1179,14 +1305,39 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
+    match process_node_add_inner(
+        goal,
+        node_config,
+        source_path,
+        verify_codegen_fingerprint,
+        cleanup_dir,
+        &ctx,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(msg) => {
+            write_error_to_log(&ctx.log_file, &msg);
+            NodeAddResult::failure(&ctx.log_path, msg)
+        }
+    }
+}
+
+/// Fallible body of [`process_node_add`]. Every failure funnels through the
+/// wrapper's single error sink (log write + `NodeAddResult::failure`), so
+/// failure sites here just return the message via `?`.
+async fn process_node_add_inner(
+    goal: NodeAddGoal,
+    node_config: NodeConfig,
+    source_path: PathBuf,
+    verify_codegen_fingerprint: bool,
+    cleanup_dir: Option<PathBuf>,
+    ctx: &ProcessNodeAddContext,
+) -> std::result::Result<NodeAddResult, String> {
     // Reject any forbidden env vars early so the user gets a fast failure;
     // the values themselves are not used by the add path (env vars are
     // consumed by `node_build`'s `build_cmd` execution).
-    if let Err(e) = super::validate_goal_env_vars(&goal.env_vars) {
-        let msg = e.to_string();
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    super::validate_goal_env_vars(&goal.env_vars).map_err(|e| e.to_string())?;
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
@@ -1196,25 +1347,14 @@ async fn process_node_add(
         // Even if the `.peppy` content will be regenerated in the copy, we want to make sure the code that
         // the user has written for their node matches the current interface version.
         let config_path = source_path.join(NODE_CONFIG_FILE);
-        if let Err(e) =
-            config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-        {
-            let msg = format!("Codegen fingerprint verification failed: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
+        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+            .map_err(|e| format!("Codegen fingerprint verification failed: {}", e))?;
     }
 
     // Copy the node folder to a temporary working directory.
     let (working_dir, excluded_dirs) =
-        match copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir()) {
-            Ok(result) => result,
-            Err(e) => {
-                let msg = format!("Failed to copy node folder: {}", e);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeAddResult::failure(&ctx.log_path, msg);
-            }
-        };
+        copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir())
+            .map_err(|e| format!("Failed to copy node folder: {}", e))?;
     // RAII guard: cleans up the temp working dir on any exit path.
     let mut working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
@@ -1244,14 +1384,12 @@ async fn process_node_add(
         },
     );
     if let Some(err) = dep_errors.into_iter().next() {
-        let msg = format!("Failed to add node config: {}", err);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
+        return Err(format!("Failed to add node config: {}", err));
     }
 
     // Generate the peppygen library in the working directory.
     // Container builds need Copy mode because Apptainer's `%files` copies symlinks
-    // as-is — absolute symlinks to the host cache would be broken inside the container.
+    // as-is; absolute symlinks to the host cache would be broken inside the container.
     let language = node_config.execution.language;
     let deploy_mode = if node_config.execution.container.is_some() {
         generator::CrateDeployMode::Copy
@@ -1265,34 +1403,22 @@ async fn process_node_add(
             line: line.to_string(),
         });
     };
-    let mut consumed_interfaces = match collect_consumed_interfaces(
+    let mut consumed_interfaces = collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
         &ctx.action.peppy_dirs,
         &interface_feedback,
-    ) {
-        Ok(v) => v,
-        Err(reason) => {
-            let msg = format!("Failed to resolve consumed interfaces: {}", reason);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
-    let conformed = match resolve_conforms_to(
+    )
+    .map_err(|reason| format!("Failed to resolve consumed interfaces: {}", reason))?;
+    let conformed = resolve_conforms_to(
         &node_config.interfaces,
         &ctx.action.peppy_dirs,
         &interface_feedback,
-    ) {
-        Ok(v) => v,
-        Err(reason) => {
-            let msg = format!("Failed to resolve `conforms_to` interfaces: {}", reason);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
+    )
+    .map_err(|reason| format!("Failed to resolve `conforms_to` interfaces: {}", reason))?;
     consumed_interfaces.extend(conformed);
-    if let Err(e) = generate_peppygen_for_node(
+    generate_peppygen_for_node(
         language,
         &working_dir,
         consumed_interfaces,
@@ -1300,21 +1426,16 @@ async fn process_node_add(
         &ctx.action.peppy_dirs,
         deploy_mode,
         None,
-    ) {
-        let msg = format!("Failed to generate peppygen library: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    )
+    .map_err(|e| format!("Failed to generate peppygen library: {}", e))?;
 
     // Stop any pre-existing instances of this node before pushing the new
     // config. `push_config` rejects replacements that still have live
     // instances (it would otherwise orphan them), so we shut them down
     // first to satisfy that precondition.
-    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        let msg = format!("Failed to shutdown existing node instances: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    shutdown_existing_instances(&node_name, &node_tag, ctx)
+        .await
+        .map_err(|e| format!("Failed to shutdown existing node instances: {}", e))?;
 
     // Push the node config into the stack as an `Added` entity. Use the
     // working_dir copy of peppy.json5 rather than source_path because
@@ -1322,27 +1443,21 @@ async fn process_node_add(
     // up after this function returns. The working_dir persists as long as
     // the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        ctx.action
-            .node_stack
-            .push_config(node_config.clone(), false, &config_path_for_stack)
-    {
-        let msg = format!("Failed to add node config: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    ctx.action
+        .node_stack
+        .push_config(node_config.clone(), false, &config_path_for_stack)
+        .map_err(|e| format!("Failed to add node config: {}", e))?;
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag) {
-        Some(handle) => handle,
-        None => {
-            let msg = format!(
+    let entity_handle = ctx
+        .action
+        .node_stack
+        .find(&node_name, &node_tag)
+        .ok_or_else(|| {
+            format!(
                 "internal error: just-pushed entity {}:{} disappeared from the stack",
                 node_name, node_tag
-            );
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
+            )
+        })?;
 
     // Hand over the temporary working dir to the entity so a follow-up
     // `node_build` can reuse it without re-cloning the source. The
@@ -1362,7 +1477,7 @@ async fn process_node_add(
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
-    NodeAddResult::success(&ctx.log_path, node_name, node_tag)
+    Ok(NodeAddResult::success(&ctx.log_path, node_name, node_tag))
 }
 
 #[cfg(test)]
@@ -1463,5 +1578,60 @@ mod tests {
         let result = download_http_bundle(&url, &dest, None, None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(dest.exists(), "bundle file should exist");
+    }
+
+    #[test]
+    fn test_is_transient_http_error_classification() {
+        assert!(is_transient_http_error(&HttpError::StatusCode(500)));
+        assert!(is_transient_http_error(&HttpError::StatusCode(503)));
+        assert!(is_transient_http_error(&HttpError::ConnectionFailed));
+        assert!(is_transient_http_error(&HttpError::Io(
+            std::io::Error::other("reset")
+        )));
+        assert!(!is_transient_http_error(&HttpError::StatusCode(404)));
+        assert!(!is_transient_http_error(&HttpError::StatusCode(403)));
+        assert!(!is_transient_http_error(&HttpError::TooManyRedirects));
+    }
+
+    #[test]
+    fn test_download_http_bundle_retries_5xx_then_succeeds() {
+        let bundle = create_test_tar_zst(b"hello world");
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .times(3)
+                .respond_with(httptest::responders::cycle![
+                    status_code(503),
+                    status_code(503),
+                    status_code(200).body(bundle),
+                ]),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let result = download_http_bundle(&url, &dest, None, None);
+        assert!(result.is_ok(), "expected Ok after retries, got: {result:?}");
+        assert!(dest.exists(), "bundle file should exist");
+    }
+
+    #[test]
+    fn test_download_http_bundle_does_not_retry_4xx() {
+        let server = Server::run();
+        // `times(1)` makes the server itself assert (on drop) that no
+        // retry request ever arrived.
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .times(1)
+                .respond_with(status_code(404)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let err = download_http_bundle(&url, &dest, None, None).unwrap_err();
+        assert!(err.contains("404"), "error should carry the status: {err}");
     }
 }

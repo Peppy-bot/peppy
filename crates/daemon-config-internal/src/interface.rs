@@ -3,7 +3,7 @@ mod types;
 
 // Defines the parsing of interface documents (`peppy_schema: "interface/v1"`).
 // Interface files are stand-alone JSON5 documents that declare a reusable
-// contract — the topics, services, and actions a node claims to expose.
+// contract: the topics, services, and actions a node claims to expose.
 // Filenames are not fixed; any `.json5` whose body carries the
 // `interface/v1` schema tag is an interface.
 pub use parse::PeppyInterfaceParser;

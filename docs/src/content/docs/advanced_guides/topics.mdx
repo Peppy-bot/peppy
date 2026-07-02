@@ -215,7 +215,7 @@ and returns a `Subscription`. Awaiting `subscription.next()` yields:
 - `Ok(None)` once the subscription has closed.
 - `Err(..)` if a received payload fails to deserialize.
 
-The subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped — loop on `next` and nothing is lost in the gap between iterations.
+The subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations.
 
 There are no call-site producer-targeting arguments at all. To control which producers reach a `from_any` slot, use launcher bindings (see [Bindings and routing](#bindings-and-routing) below): a binding identifies or routes specific producers to the slot rather than turning it into a single-producer slot, and the resolved binding carries each producer's full `(core_node, instance_id)` wire address, so the slot can never match a producer that merely shares the instance_id on another core node. When you need a truly pinned, single-producer dependency, declare the slot with `from_any: false` instead. Either way, the same full identity is what `next` returns with every message, so a consumer can pass it straight back into any producer-targeting slot.
 

@@ -24,7 +24,7 @@ use peppy::context::AppContext;
 
 /// Builds the cli-config + OIDC discovery + device-authorization + token mocks
 /// for a server whose issuer is its own base URL, with the device grant
-/// succeeding immediately. Returns nothing — the mocks live on the server.
+/// succeeding immediately. Returns nothing; the mocks live on the server.
 fn mock_login_endpoints(server: &MockServer, access_token: &str) {
     let base = server.base_url();
 
@@ -419,7 +419,7 @@ fn whoami_runs_against_a_seeded_session() {
 #[test]
 fn establish_messaging_federation_parses_the_contract() {
     let server = MockServer::start();
-    // The shared router is static: the daemon just POSTs to discover it (no body —
+    // The shared router is static: the daemon just POSTs to discover it (no body;
     // it no longer identifies itself with a core-node name).
     let cfg_mock = server.mock(|when, then| {
         when.method(POST).path("/me/messaging-federation");
@@ -544,7 +544,7 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     let server = MockServer::start();
     // A mock serving a bogus endpoint *if* it is ever hit. The proof that the
     // fresh cache was reused is `pull.calls() == 0` (asserted below) plus the
-    // returned host matching the cached value — not this mock's response; the
+    // returned host matching the cached value, not this mock's response; the
     // bogus body only makes an accidental pull obvious.
     let pull = server.mock(|when, then| {
         when.method(POST).path("/me/messaging-federation");
@@ -700,7 +700,7 @@ const SECS_30: Duration = Duration::from_secs(30);
 fn resolve_federation_target_honors_a_short_connect_timeout() {
     // The federation pull is bounded by `connect_timeout`: a backend slower than
     // the bound resolves to `None` (local router stays standalone) rather than
-    // hanging, while a generous bound against the same delay succeeds — proving
+    // hanging, while a generous bound against the same delay succeeds, proving
     // it's the timeout, not the mock, that fails the short case.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
@@ -811,7 +811,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
 fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
     // A PAT-authenticated pull must tag the cache with the PAT owner's stable
     // backend subject (`/me`), NOT the on-disk session subject. Otherwise, once the
-    // PAT is gone, a session resolve would reuse the PAT's org — a cross-identity
+    // PAT is gone, a session resolve would reuse the PAT's org, a cross-identity
     // (cross-tenant) leak.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {

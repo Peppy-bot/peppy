@@ -95,7 +95,7 @@ pub struct ValidatedBindings {
 /// 6. `--bind KEY` uniqueness within one invocation is enforced by the
 ///    CLI parser and the deserializer; this validator surfaces any
 ///    residual duplicates as
-///    [`ParsingError::BindingDuplicateKey`] (defensive — should not
+///    [`ParsingError::BindingDuplicateKey`] (defensive; should not
 ///    fire in practice).
 /// 7. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
@@ -243,7 +243,7 @@ pub fn validate_bindings(
 
             // Rule 1: every pinned slot must be bound. Suppress when
             // the slot's KEY was present in the binding map but
-            // errored elsewhere — surfacing both
+            // errored elsewhere; surfacing both
             // `BindingTargetMismatch` and `BindingMissingForPinnedDep`
             // for the same slot is double-reporting one root cause.
             for (slot_link_id, slot) in &declared_pinned {
@@ -373,7 +373,7 @@ fn collect_declared_slots(
 
 /// Does a producer satisfy a declared slot? Node slots match by
 /// `(name, tag)` identity; interface slots match against the producer's
-/// `conforms_to`. sha256 is not cross-checked here — each side
+/// `conforms_to`. sha256 is not cross-checked here; each side
 /// independently verifies its own declared sha256 against the on-disk
 /// interface document at cache resolution time.
 fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'_>) -> bool {
@@ -430,7 +430,7 @@ mod tests {
         }
     }
 
-    /// Like `item` but also threads a `conforms_to` slice — for tests
+    /// Like `item` but also threads a `conforms_to` slice, for tests
     /// that exercise interface-conformance matching.
     fn item_with_conforms_to<'a>(
         node_name: &'a str,
@@ -890,7 +890,7 @@ mod tests {
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
         // Producer's node name coincidentally matches the interface
         // name+tag, but the validator only honors explicit `conforms_to`
-        // claims — node-identity matching never satisfies an interface
+        // claims; node-identity matching never satisfies an interface
         // slot.
         let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
         let items = vec![
@@ -932,7 +932,7 @@ mod tests {
 
     /// An "inert" item (`depends_on: None`) must NOT trigger Rule 1
     /// against the slots it would have declared if `depends_on` were
-    /// populated — it represents a node whose bindings were already
+    /// populated; it represents a node whose bindings were already
     /// resolved at spawn time. At the same time, its instances and
     /// `conforms_to` must still feed the producer-lookup index so a
     /// live consumer in the same `validate_bindings` call can satisfy
@@ -1181,7 +1181,7 @@ mod tests {
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst_1" }]"#);
         // Producer's node identity coincidentally matches the interface
-        // name+tag, but it declares no `conforms_to` — must be rejected
+        // name+tag, but it declares no `conforms_to`, so it must be rejected
         // (the binding's `KEY` doesn't match any pinned link_id either,
         // so this falls through to `BindingDeadKey`).
         let items = vec![
@@ -1364,8 +1364,8 @@ mod tests {
         );
     }
 
-    /// Stamping: every producer reference the validator emits — pinned
-    /// and from_any-bound alike — carries exactly the
+    /// Stamping: every producer reference the validator emits (pinned
+    /// and from_any-bound alike) carries exactly the
     /// `producer_core_node` passed by the caller (the launching
     /// daemon). This is the single point where the instance-only
     /// `--bind` syntax becomes a wire-complete address.

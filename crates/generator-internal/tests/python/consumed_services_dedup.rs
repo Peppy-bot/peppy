@@ -51,7 +51,7 @@ const REAR_RESPONSE_FORMAT: &str = r#"{ status_code: "i32" }"#;
 /// `getattr` would either resolve to the wrong producer's struct
 /// (silent corruption) or raise `AttributeError`. By comparing the
 /// modules returned by the loaders we also pin the per-producer scoping
-/// at the module level — they must NOT be the same object.
+/// at the module level; they must NOT be the same object.
 const PYTHON_PROBE: &str = r#"
 import importlib
 import inspect
@@ -95,7 +95,7 @@ for fc in front_caps:
             )
 
 # Each consumer's referenced struct must actually exist in its own
-# producer's capnp module — the front module's struct lives in the front
+# producer's capnp module: the front module's struct lives in the front
 # capnp, the rear module's in the rear capnp.
 front_struct = referenced_struct(front, "_deserialize_response")
 rear_struct = referenced_struct(rear, "_deserialize_response")
@@ -195,7 +195,7 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
     );
     assert!(
         !front_request_text.contains("intensity @"),
-        "front request capnp must NOT carry the rear producer's `intensity` field — \
+        "front request capnp must NOT carry the rear producer's `intensity` field; \
          that would prove the schemas got deduplicated. Got:\n{front_request_text}"
     );
     assert!(

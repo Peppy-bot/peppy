@@ -820,7 +820,7 @@ fn cannot_modify_root_node() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let _root_instance_id = stack.root().read().instances()[0].instance_id().clone();
 
-    // Try to remove the root's config — must error with CannotModifyRootNode.
+    // Try to remove the root's config; it must error with CannotModifyRootNode.
     let result = stack.remove_config("core", "v1");
     assert!(
         result.is_err(),

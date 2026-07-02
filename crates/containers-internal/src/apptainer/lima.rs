@@ -167,7 +167,7 @@ pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
 
 /// Pure validator for `limactl --version` output. Split out of
 /// [`check_lima_version`] so tests can drive it without spawning a subprocess
-/// (which would otherwise race with parallel tests' fork/exec — see the ETXTBSY
+/// (which would otherwise race with parallel tests' fork/exec; see the ETXTBSY
 /// discussion in the test module).
 fn validate_lima_version_output(
     limactl: &Path,
@@ -296,10 +296,10 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
             if is_ssh_alive(limactl, lima_home, LIMA_INSTANCE) {
                 return Ok(());
             }
-            // VM reports Running but SSH is dead (zombie VM — VZ process crashed).
+            // VM reports Running but SSH is dead (zombie VM: VZ process crashed).
             // Force-stop and restart.
             tracing::warn!(
-                "Lima {} instance reports Running but SSH is unresponsive — restarting...",
+                "Lima {} instance reports Running but SSH is unresponsive; restarting...",
                 LIMA_INSTANCE
             );
             let _ = Command::new(limactl)
@@ -362,7 +362,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
     }
 }
 
-/// Quick SSH liveness probe — returns true if we can reach the guest.
+/// Quick SSH liveness probe: returns true if we can reach the guest.
 fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
     // Bounded ([`LIMA_PROBE_TIMEOUT`]): `limactl shell ... true` SSHes into the
     // guest, which can hang on a wedged VM. The stop gate runs this on a blocking
@@ -407,7 +407,7 @@ pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &s
 
     let needs_fix = match &check {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "1",
-        // File doesn't exist (non-AppArmor system) or other error — skip
+        // File doesn't exist (non-AppArmor system) or other error; skip
         _ => false,
     };
 
@@ -679,9 +679,9 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
 /// Resolve the LIMA_HOME directory for VM instance data.
 ///
 /// Resolution order:
-/// 1. `{exe_dir}/../lima-data/` — installed layout (`~/.peppy/lima-data/`).
-/// 2. Compile-time `LIMA_BUILD_HOME` — reuses the build-time VM during development.
-/// 3. `~/.peppy/lima-data/` — fallback for unusual layouts.
+/// 1. `{exe_dir}/../lima-data/`: installed layout (`~/.peppy/lima-data/`).
+/// 2. Compile-time `LIMA_BUILD_HOME`: reuses the build-time VM during development.
+/// 3. `~/.peppy/lima-data/`: fallback for unusual layouts.
 pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
     // 1) Relative to the current executable: {exe_dir}/../lima-data/
     //    In the installed layout this is ~/.peppy/lima-data/.
@@ -695,7 +695,7 @@ pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
         }
     }
 
-    // 2) Compile-time build home — during `cargo test` / `cargo run` in the
+    // 2) Compile-time build home: during `cargo test` / `cargo run` in the
     //    source tree the exe-relative path won't exist, so fall back to the
     //    LIMA_HOME used at build time (typically ~/.peppy/lima-build/).
     if let Some(dir) = option_env!("LIMA_BUILD_HOME") {
@@ -745,7 +745,7 @@ pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) ->
 
 /// Branch logic for [`stop_instance`], parameterized by the status query and
 /// the stop-command spawner. Split out so tests can drive the full decision
-/// matrix with canned closures — avoiding subprocess execution (and the
+/// matrix with canned closures, avoiding subprocess execution (and the
 /// Linux ETXTBSY race that bites when parallel test threads fork while
 /// another thread holds a writable FD to a fake `limactl` script).
 fn stop_instance_inner<Q, S>(instance: &str, query_status: Q, run_stop: S) -> Result<()>
@@ -988,7 +988,7 @@ mod tests {
     // would fork, inheriting Thread A's writable FD, and the kernel refused
     // Thread A's subsequent `execve` until Thread B's child finished its own
     // `execve`. The fix is to exercise the pure branch logic directly via the
-    // `validate_lima_version_output` and `stop_instance_inner` helpers — no
+    // `validate_lima_version_output` and `stop_instance_inner` helpers: no
     // subprocess, no race.
 
     #[cfg(unix)]
@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn test_check_lima_version_rejects_unparseable_stdout() {
         // `parse_lima_version` returns `None` for garbage, which `unwrap_or_default()`
-        // turns into (0, 0, 0) — that should fail the MIN_LIMA_VERSION check.
+        // turns into (0, 0, 0); that should fail the MIN_LIMA_VERSION check.
         let status = std::process::ExitStatus::default();
         let err = validate_lima_version_output(
             std::path::Path::new("/fake/limactl"),

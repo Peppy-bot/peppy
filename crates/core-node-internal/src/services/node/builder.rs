@@ -224,7 +224,7 @@ impl NodeBuildGoalHandler {
                 reject_goal(
                     pending,
                     encode_rejected_goal(format!(
-                        "node `{}:{}` is not in the node stack — run `peppy node add` first",
+                        "node `{}:{}` is not in the node stack: run `peppy node add` first",
                         goal.node_name, goal.node_tag
                     )),
                 )
@@ -489,7 +489,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
             tracing::error!("{}", msg);
             write_error_to_log(&log_file_for_panic, &msg);
             // If the working dir was already detached the entity is in
-            // `Building` state — roll it out so it doesn't stay stuck.
+            // `Building` state; roll it out so it doesn't stay stuck.
             if working_dir_detached_for_panic.load(std::sync::atomic::Ordering::Acquire) {
                 let _ = node_stack_for_panic.remove_config_if_matches(
                     &node_name_for_panic,

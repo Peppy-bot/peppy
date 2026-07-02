@@ -218,8 +218,8 @@ async fn handle_node_remove_request_inner(
         }
     }
 
-    // Safety gate: without `stop_instances`, any tracked instance — reachable,
-    // unreachable, or terminal — blocks the remove. Reachable/unreachable could
+    // Safety gate: without `stop_instances`, any tracked instance (reachable,
+    // unreachable, or terminal) blocks the remove. Reachable/unreachable could
     // still be backed by a live process; terminal instances have exited but are
     // still tracked, and `remove_config` rejects a node that still has any
     // instance, so they must be cleared first too.
@@ -241,8 +241,8 @@ async fn handle_node_remove_request_inner(
         .encode().map_err(Into::into);
     }
 
-    // With `stop_instances=true`, we proceed despite unreachable instances —
-    // typically they correspond to a peer that already exited — but log a
+    // With `stop_instances=true`, we proceed despite unreachable instances
+    // (typically they correspond to a peer that already exited), but log a
     // warning per skipped instance so the divergence is never silent.
     if request.stop_instances {
         for target in &unreachable_targets {
@@ -326,7 +326,7 @@ async fn handle_node_remove_request_inner(
         match node_stack.remove_config(&target.node_name, &target.node_tag) {
             Ok(true) => {}
             Ok(false) => {
-                // Concurrently removed — treat as success.
+                // Concurrently removed; treat as success.
                 debug!(
                     "Node '{}:{}' already absent from node stack during remove_config",
                     target.node_name, target.node_tag

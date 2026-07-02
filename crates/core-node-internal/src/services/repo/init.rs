@@ -22,7 +22,7 @@ pub enum InitOutcome {
 ///   so its comments and formatting are preserved.
 /// - If the file exists, default entries whose `id` is not already present
 ///   are appended verbatim. An existing entry with the same `id` claims that
-///   slot regardless of its `type`, `url`, or `ref` — so users who change a
+///   slot regardless of its `type`, `url`, or `ref`, so users who change a
 ///   default's branch (or repoint it entirely) never get the default re-added
 ///   alongside their edit.
 ///
@@ -233,7 +233,7 @@ mod tests {
     }
 
     /// If an existing entry occupies a default's id, that id is considered
-    /// taken and the default is NOT re-added — regardless of url/ref/type.
+    /// taken and the default is NOT re-added, regardless of url/ref/type.
     /// This is what stops the daemon from duplicating defaults when a user
     /// edits a default entry's ref (e.g. main → feature/x).
     #[test]
@@ -254,7 +254,7 @@ mod tests {
         ensure_default_repos(&peppy_dirs).unwrap();
 
         let repos = read_repos(&peppy_dirs);
-        // Exactly one entry per id 1000 and 1001 — the user's entries, not the defaults.
+        // Exactly one entry per id 1000 and 1001: the user's entries, not the defaults.
         let id_1000: Vec<_> = repos
             .iter()
             .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1000))
@@ -285,7 +285,7 @@ mod tests {
             "user's fs entry at id 1001 must be preserved"
         );
 
-        // launchers_hub default is not present — id 1001 is taken, so it is skipped.
+        // launchers_hub default is not present; id 1001 is taken, so it is skipped.
         assert!(
             !has_git_url(&repos, "https://github.com/Peppy-bot/launchers_hub.git"),
             "launchers_hub default must not be added when its id 1001 is taken"
@@ -293,7 +293,7 @@ mod tests {
     }
 
     /// `repo remove` deletes an entry by id. Subsequent init runs would
-    /// re-add it (this is a deliberate trade-off — the user can use
+    /// re-add it (this is a deliberate trade-off; the user can use
     /// `repo exclude` for permanent suppression). Cover the read-back to
     /// document the behaviour.
     #[test]

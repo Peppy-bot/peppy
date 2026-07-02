@@ -397,7 +397,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    // Camera node — written into a temp dir and registered as an `fs`
+    // Camera node: written into a temp dir and registered as an `fs`
     // entry in the daemon's packages cache.
     let camera_dir = tempfile::tempdir().expect("camera tempdir");
     std::fs::write(

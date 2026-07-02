@@ -43,12 +43,17 @@ impl Command for UninstallCommand {
     }
 }
 
+/// Maps a service-manager error into the CLI's `ExecutionFailed` error.
+fn execution_failed(e: impl std::fmt::Display) -> Error {
+    Error::ExecutionFailed(e.to_string())
+}
+
 pub fn stop_peppy_daemon() -> Result<()> {
     let (manager, kind) = create_service_manager()?;
     let label: ServiceLabel = service_label(kind).parse()?;
     manager
         .stop(ServiceStopCtx { label })
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))
+        .map_err(execution_failed)
 }
 
 pub fn uninstall_peppy_daemon() -> Result<()> {
@@ -56,7 +61,7 @@ pub fn uninstall_peppy_daemon() -> Result<()> {
     let label: ServiceLabel = service_label(kind).parse()?;
     manager
         .uninstall(ServiceUninstallCtx { label })
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))
+        .map_err(execution_failed)
 }
 
 pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<PathBuf> {
@@ -81,15 +86,13 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
     let (manager, kind) = create_service_manager()?;
     let manager_level = preferred_service_level(kind);
 
-    manager
-        .install(ctx)
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    manager.install(ctx).map_err(execution_failed)?;
 
     manager
         .start(ServiceStartCtx {
             label: label.clone(),
         })
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        .map_err(execution_failed)?;
 
     default_service_path(kind, manager_level, &label)
 }
@@ -156,7 +159,7 @@ fn service_environment(
     // that installed it. systemd/launchd start the service with a clean
     // environment, so without this the daemon falls back to the default
     // `~/.peppy` while a caller that set PEPPY_HOME (CI per-run isolation or a
-    // custom install prefix) reads daemon state from the override path — the two
+    // custom install prefix) reads daemon state from the override path; the two
     // never find each other and the install's readiness probe times out. Empty
     // is treated as unset, matching `daemon_config::consts::peppy_root_dir`.
     if let Some(home) = peppy_home.filter(|value| !value.is_empty()) {
@@ -250,9 +253,7 @@ fn create_service_manager() -> Result<(TypedServiceManager, ServiceManagerKind)>
 
     let mut manager = TypedServiceManager::target(kind);
     if manager.level() != manager_level {
-        manager
-            .set_level(manager_level)
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        manager.set_level(manager_level).map_err(execution_failed)?;
     }
 
     Ok((manager, kind))

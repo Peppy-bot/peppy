@@ -172,7 +172,7 @@ impl ServeAsyncCommand for MessagingRouter {
 /// teardown has finished, so the caller can keep the messaging session open
 /// until cooperative node shutdown (which rides over that session) completes.
 ///
-/// Returns `true` when there is nothing left to wait for — either the core node
+/// Returns `true` when there is nothing left to wait for: either the core node
 /// signaled completion, the daemon has no core node (`None`), or the sender was
 /// dropped without signaling (the runner is already gone). Returns `false` only
 /// when the wait exceeded the budget, so the caller logs and proceeds anyway.
@@ -267,7 +267,7 @@ fn warn_messaging_restarting(failures: u32) {
     error!(
         "\n\
          ====================================================================\n\
-         ⚠️  MESSAGING SYSTEM RESTART — the Zenoh router is unresponsive\n\
+         ⚠️  MESSAGING SYSTEM RESTART: the Zenoh router is unresponsive\n\
          ====================================================================\n\
          The Zenoh router (zenohd) failed {failures} consecutive liveness\n\
          probes (no response for ~{unresponsive_secs}s). The peppy daemon is\n\
@@ -285,7 +285,7 @@ fn warn_messaging_restarted() {
     warn!(
         "\n\
          ====================================================================\n\
-         ✅  MESSAGING ROUTER RESTARTED — accepting connections again\n\
+         ✅  MESSAGING ROUTER RESTARTED: accepting connections again\n\
          ====================================================================\n\
          The Zenoh router was respawned and is responsive again. The daemon and\n\
          node sessions reconnect automatically; relaunch your stack only if\n\

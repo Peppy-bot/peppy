@@ -19,7 +19,6 @@ bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_json5 = "0.2"
-askama = "0.16"
 gix-url = "0.36"
 url = "2"
 # https://docs.rs/quote/latest/quote/
@@ -30,10 +29,7 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 derive_more = { version = "2", features = ["from"] }
-rayon = "1.11.0"
 service-manager = "0.11"
-ipnet = "2.11"
-netdev = "0.45"
 # Safe wrappers over the libc syscalls peppy needs (getuid/geteuid and the
 # kill(pid, 0) liveness probe), so the crate carries no `unsafe` for them.
 rustix = { version = "1", features = ["process"] }
@@ -41,7 +37,6 @@ dirs = "6"
 names-generator2 = "0.2.1"
 rand = "0.10"
 crossterm = "0.29"
-walkdir = "2.5"
 # Terminal display width for aligning `stack list` table columns when a cell
 # (e.g. a Unicode filesystem path) contains wide or zero-width glyphs.
 unicode-width = "0.2"
@@ -75,11 +70,8 @@ test-support = ["dep:tempfile", "dep:parking_lot", "config/fingerprint_test_help
 [dev-dependencies]
 tempfile = "3.8"
 # In-process HTTP mock server for the auth integration tests (cli-config, OIDC
-# discovery, device/token endpoints, /me, /logout) — blocking API, fits ureq.
+# discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.8"
-# Only the daemon-lifecycle e2e test needs raw `kill(2)` to signal a spawned
-# child process; the library itself uses `rustix` and carries no `libc`.
-libc = "0.2"
 # Self-reference so `cargo test` builds this crate with the test-only helpers
 # enabled, without making `test-support` a default feature of the shipped CLI.
 peppy = { path = ".", features = ["test-support"] }

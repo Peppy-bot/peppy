@@ -7,7 +7,7 @@
 //! instead of reaching back into `peppyos/` to find the snippets.
 //!
 //! If this fails, the config types in `config` have drifted from the documented
-//! snippets — either the code or the snippets need updating.
+//! snippets; either the code or the snippets need updating.
 
 use config::consts::NODE_CONFIG_FILE;
 use config::node::NodeConfigParser;

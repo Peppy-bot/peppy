@@ -553,7 +553,7 @@ fn consumed_topic() {
         ],
     );
 
-    // Held-subscription API — `subscribe()` returns a `Subscription` whose
+    // Held-subscription API: `subscribe()` returns a `Subscription` whose
     // `next()` yields the producer identity as a structured
     // `peppylib.ProducerRef` (its full `(core_node, instance_id)` pair); it
     // never appears as a user-facing core_node (or instance_id) parameter. The

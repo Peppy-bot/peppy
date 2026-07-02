@@ -21,7 +21,7 @@ pub(crate) fn is_uri(s: &str) -> bool {
     s.contains("://")
 }
 
-/// The execution backend — how apptainer commands are actually invoked.
+/// The execution backend: how apptainer commands are actually invoked.
 #[derive(Debug)]
 pub(crate) enum Backend {
     /// Linux: run apptainer directly on the host.
@@ -77,8 +77,8 @@ fn which(cmd: &str) -> Option<PathBuf> {
 
 /// Check whether AppArmor profiles can actually be managed on this system.
 ///
-/// Returns `true` when the AppArmor security filesystem is fully mounted
-/// — meaning we can inspect loaded profiles and load new ones via
+/// Returns `true` when the AppArmor security filesystem is fully mounted,
+/// meaning we can inspect loaded profiles and load new ones via
 /// `apparmor_parser`.
 ///
 /// We check for `policy/` inside the AppArmor directory because:
@@ -203,7 +203,7 @@ pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
 /// along with a ready-to-run fix script when something needs attention.
 ///
-/// The caller is responsible for resolving the `apptainer_dir` — use
+/// The caller is responsible for resolving the `apptainer_dir`; use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
@@ -216,7 +216,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
 
     // The procfs flag may read "1" even inside containers (inherited from
     // the host kernel). Only treat it as restricted when AppArmor is also
-    // manageable — otherwise we'd try to load profiles into a kernel we
+    // manageable; otherwise we'd try to load profiles into a kernel we
     // have no access to.
     let apparmor_restricted = apparmor_manageable
         && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -457,9 +457,9 @@ impl Apptainer {
     /// Returns the hostname that resolves to the host machine from inside
     /// the execution environment.
     ///
-    /// - `Backend::Lima`: `Some("host.lima.internal")` — Lima's built-in
+    /// - `Backend::Lima`: `Some("host.lima.internal")`, Lima's built-in
     ///   hostname for guest-to-host connectivity.
-    /// - `Backend::Native`: `None` — Apptainer shares the host network
+    /// - `Backend::Native`: `None`; Apptainer shares the host network
     ///   namespace, so `127.0.0.1` already refers to the host.
     pub fn host_gateway(&self) -> Option<&'static str> {
         match &self.backend {
@@ -471,7 +471,7 @@ impl Apptainer {
     /// Ensure that the given host paths are accessible inside the execution
     /// environment.
     ///
-    /// On Linux (`Backend::Native`): no-op — all host paths are directly
+    /// On Linux (`Backend::Native`): no-op; all host paths are directly
     /// accessible.
     ///
     /// On macOS (`Backend::Lima`): Lima only auto-mounts `$HOME` into the
@@ -647,12 +647,12 @@ impl Apptainer {
     /// stop / daemon teardown. Owns the platform gate so callers need no
     /// `cfg!(target_os = "macos")` checks: a no-op on non-macOS hosts (the host
     /// process-group SIGKILL already reached the shared-namespace workload) and
-    /// when the Lima VM is not running (its guest processes died with it —
+    /// when the Lima VM is not running (its guest processes died with it;
     /// never boot a VM just to kill processes inside it, which a full
     /// [`Apptainer::new`] readiness preflight could do). Failures are logged at
     /// debug level, never returned: a guest-kill problem must not block a stop.
     ///
-    /// Synchronous — it shells out to `limactl` — so call it from a blocking
+    /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn kill_guest_process_groups_best_effort(keys: &[String]) {
         if !cfg!(target_os = "macos") || keys.is_empty() {
@@ -686,7 +686,7 @@ impl Apptainer {
     /// for the provided keys; callers can use `false` to fall back to host-side
     /// signaling on native Apptainer.
     ///
-    /// Synchronous — it shells out to `limactl` — so call it from a blocking
+    /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn terminate_guest_process_groups_best_effort(keys: &[String]) -> bool {
         if !cfg!(target_os = "macos") || keys.is_empty() {
@@ -1245,7 +1245,7 @@ impl<'a> ApptainerCommand<'a> {
     /// async output capture via `tokio::process::Command`) or add additional
     /// process-level configuration before spawning.
     ///
-    /// The returned command has **no stdio overrides** — stdout, stderr, and
+    /// The returned command has **no stdio overrides**: stdout, stderr, and
     /// stdin all default to `Inherit`.
     pub fn into_std_command(self) -> Result<Command> {
         self.assemble_command()

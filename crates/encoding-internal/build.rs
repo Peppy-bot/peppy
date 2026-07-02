@@ -9,7 +9,7 @@ mod capnp_build {
     /// The binary is the single source of truth shipped with `build-helpers`
     /// in public-peppy-libs (`peppyos-shared/peppy-config-model/tools`). peppyos
     /// pulls build-helpers as a cargo git dependency, so the tools dir is always
-    /// present in the checkout — no superproject sibling and no cmake required.
+    /// present in the checkout: no superproject sibling and no cmake required.
     pub fn run() {
         let binary_path = build_helpers::bundled_capnp_path().unwrap_or_else(|| {
             panic!(

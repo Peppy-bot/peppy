@@ -6,7 +6,6 @@ edition.workspace = true
 
 [dependencies]
 config = { workspace = true }
-serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"

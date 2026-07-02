@@ -113,7 +113,7 @@ impl Command for LoginCommand {
         // established (no daemon, unreachable/untrusted router, apply timeout, or
         // no upstream), this returns an actionable error and the command exits
         // non-zero. The credentials were already saved above, so the user stays
-        // authenticated — only the command fails.
+        // authenticated; only the command fails.
         super::poke_federation_and_report(
             &dirs,
             config.federation.connect_timeout_secs,

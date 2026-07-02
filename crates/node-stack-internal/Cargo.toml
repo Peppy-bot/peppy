@@ -10,7 +10,6 @@ daemon-config = { workspace = true }
 containers = { workspace = true }
 core-node-api = { workspace = true }
 petgraph = "0.8.3"
-serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 rand = "0.10"
 names-generator2 = "0.2.1"
@@ -34,4 +33,3 @@ process-wrap = { version = "9.1.0", features = ["tokio1", "process-group"] }
 
 [dev-dependencies]
 serde_json5 = "0.2.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }

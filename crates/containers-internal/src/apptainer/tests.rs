@@ -617,7 +617,7 @@ fn test_lima_instance_running_after_init() {
             );
         }
         Backend::Native { .. } => {
-            // On Linux, Lima is not used — this is expected.
+            // On Linux, Lima is not used; this is expected.
         }
     }
 }
@@ -859,14 +859,14 @@ fn compile_time_apptainer_dir_exists_with_sentinel() {
     let path = Path::new(install_dir);
     assert!(
         path.is_dir(),
-        "APPTAINER_INSTALL_DIR={} does not exist — was ~/.peppy deleted without rebuilding?",
+        "APPTAINER_INSTALL_DIR={} does not exist; was ~/.peppy deleted without rebuilding?",
         install_dir
     );
 
     let sentinel = path.join(format!(".peppy-version-{}", env!("APPTAINER_VERSION")));
     assert!(
         sentinel.exists(),
-        "Cache sentinel {:?} is missing — the apptainer cache may be corrupt",
+        "Cache sentinel {:?} is missing; the apptainer cache may be corrupt",
         sentinel
     );
 
@@ -898,11 +898,11 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     let gocryptfs_bin = path.join("libexec/apptainer/bin/gocryptfs");
     assert!(
         gocryptfs_bin.exists(),
-        "gocryptfs binary missing at {:?} — apptainer encryption support will be disabled",
+        "gocryptfs binary missing at {:?}; apptainer encryption support will be disabled",
         gocryptfs_bin
     );
 
-    // Bundle the xray helper too — same archive, useful for inspecting
+    // Bundle the xray helper too; same archive, useful for inspecting
     // encrypted volumes.
     let gocryptfs_xray = path.join("libexec/apptainer/bin/gocryptfs-xray");
     assert!(
@@ -918,7 +918,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     ));
     assert!(
         sentinel.exists(),
-        "gocryptfs sentinel {:?} is missing — bundled binary may be stale",
+        "gocryptfs sentinel {:?} is missing; bundled binary may be stale",
         sentinel
     );
 }

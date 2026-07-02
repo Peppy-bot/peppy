@@ -24,7 +24,7 @@
 //! ([`clear_running`](ConcurrencyGate::clear_running)), and task registration
 //! ([`set_task`](ConcurrencyGate::set_task)) all run on the action's single
 //! accept loop (`run_action_loop`), which handles one goal to completion before
-//! pulling the next, so they never race one another — the slot they touch can
+//! pulling the next, so they never race one another; the slot they touch can
 //! only be the goal currently being handled. The one gate access that *is*
 //! concurrent is the in-flight work task freeing its slot when it finishes.
 //!
@@ -65,7 +65,7 @@ pub(crate) const COOPERATIVE_TEARDOWN_BUDGET: Duration = Duration::from_secs(30)
 /// Outcome of [`ConcurrencyGate::try_admit`].
 pub(crate) enum Admission {
     /// The new goal was admitted; the gate clock has been started. The
-    /// `generation` identifies this admission — the work task hands it to its
+    /// `generation` identifies this admission; the work task hands it to its
     /// [`GoalSlotGuard`] so the slot is freed only while this admission is still
     /// the current one (a later `--force` goal bumps the generation).
     Admitted {
@@ -174,7 +174,7 @@ impl ConcurrencyGate {
     ///
     /// Unconditional by design: this runs on the sequential accept loop together
     /// with [`try_admit`](Self::try_admit), so no other admission can interleave
-    /// between this goal's admission and its `clear_running` — the slot is
+    /// between this goal's admission and its `clear_running`; the slot is
     /// necessarily this goal's own. Only the post-spawn release runs
     /// concurrently and needs the generation check; that is [`GoalSlotGuard`].
     pub(crate) fn clear_running(&self) {
@@ -217,19 +217,19 @@ impl ConcurrencyGate {
 }
 
 /// RAII release for a spawned work task: dropping it frees the gate's running
-/// slot so the next goal can be admitted — but only while the gate is still on
+/// slot so the next goal can be admitted, but only while the gate is still on
 /// the guard's generation.
 ///
 /// On the normal path the work task releases it explicitly just before
 /// completing the goal, via [`release_then_complete`](Self::release_then_complete):
 /// completion is what lets the client observe the goal as done, so the slot must
 /// already be free by then. As an RAII guard it also fires on every *other* exit
-/// path — an early return, a panic unwinding the task, or a `--force`
-/// `JoinHandle::abort` dropping the future — so the gate is never left stuck
+/// path (an early return, a panic unwinding the task, or a `--force`
+/// `JoinHandle::abort` dropping the future), so the gate is never left stuck
 /// "in progress" (the failure mode every future goal would then hit with
 /// "action already in progress" until the daemon restarts). When a later
 /// `--force` goal has already taken over, bumping the generation, the drop is a
-/// safe no-op and cannot clobber the new owner's slot — the single-goal
+/// safe no-op and cannot clobber the new owner's slot: the single-goal
 /// invariant the generation protects.
 ///
 /// The work task completes and drops its `GoalContext` separately; the SDK
@@ -241,13 +241,13 @@ pub(crate) struct GoalSlotGuard {
 }
 
 impl GoalSlotGuard {
-    /// Releases this slot, then completes the goal — in that order, which is the
+    /// Releases this slot, then completes the goal, in that order, which is the
     /// whole point of bundling them. [`GoalContext::complete`] closes the goal's
     /// feedback stream and publishes its fetchable result, so a client draining
     /// feedback learns the goal is done and can fire its next single-goal action
     /// the instant `complete` returns. Were the slot still held then, that next
     /// action would be rejected with `"action already in progress"` for the
-    /// window until this task unwound to the guard's end-of-scope drop — a race
+    /// window until this task unwound to the guard's end-of-scope drop, a race
     /// the client can win because `complete` notifies it (in-process) before the
     /// task winds down. Releasing first closes the window.
     ///
@@ -255,7 +255,7 @@ impl GoalSlotGuard {
     /// no-op when a later `--force` goal has already taken over.
     pub(crate) async fn release_then_complete(self, goal_ctx: &GoalContext, payload: Payload) {
         // Explicit drop: without it `self` would live until the end of this
-        // function — i.e. until after `complete` — which is exactly the ordering
+        // function (i.e. until after `complete`), which is exactly the ordering
         // this method exists to avoid.
         drop(self);
         let _ = goal_ctx.complete(payload).await;

@@ -16,9 +16,9 @@ use peppylib::{PeppyError, PeppyResult};
 ///
 /// Generic over the success type so handlers that thread extra state alongside
 /// the payload (e.g. repo remove/exclude returning `(Payload, needs_refresh)`)
-/// can reuse it. Handlers with bespoke error shaping — the clock service's
+/// can reuse it. Handlers with bespoke error shaping (the clock service's
 /// per-stamp timing errors and the goal-action encoders that attribute failures
-/// to the action name rather than the sender — intentionally do not use this.
+/// to the action name rather than the sender) intentionally do not use this.
 pub(crate) fn into_service_response<T>(
     context: &ServiceRequestContext,
     result: Result<T>,

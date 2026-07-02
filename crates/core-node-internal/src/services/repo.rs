@@ -72,7 +72,7 @@ pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
 ///   `./repo` and `/abs/path/to/repo` produce the same identity. Falls back to
 ///   the raw string when the path does not exist.
 /// - `Git`: `repo_url@repo_ref` when a non-empty ref is present, otherwise just
-///   the url — so the same repo pinned to different refs is not collapsed.
+///   the url, so the same repo pinned to different refs is not collapsed.
 /// - `Url`: the url as-is.
 ///
 /// Must stay in sync with [`json_entry_identity`], the JSON-entry equivalent.
@@ -140,7 +140,7 @@ pub(crate) fn normalize_repo_entries(
         }
     }
 
-    // Detect duplicate ids — a user may manually edit the file and introduce collisions.
+    // Detect duplicate ids; a user may manually edit the file and introduce collisions.
     let mut seen_ids = HashSet::new();
     for entry in repos.iter() {
         if let Some(id) = entry.get("id").and_then(|v| v.as_u64())

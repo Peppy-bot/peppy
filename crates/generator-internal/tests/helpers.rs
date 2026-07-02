@@ -58,7 +58,7 @@ pub fn apply_mode(
 }
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
-/// invalid names — tests use known-good values only.
+/// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
@@ -235,8 +235,8 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
 
 /// Wraps a spawned child whose stdout/stderr are piped, draining them
 /// from background threads into shared buffers. This lets a test
-/// inspect stdout while the child is still running — for example, to
-/// wait for a specific line to appear before sending shutdown — without
+/// inspect stdout while the child is still running (for example, to
+/// wait for a specific line to appear before sending shutdown) without
 /// blocking on the pipe. Existing helpers that take a plain
 /// `&mut std::process::Child` keep working against the exposed `child`
 /// field.
@@ -473,7 +473,7 @@ pub fn wait_for_child(
 /// reuse the same dir across runs.
 ///
 /// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
-/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// NOT `PeppyDirs::default()`: the latter resolves to `/tmp/.peppy` in dev, and a
 /// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
 /// mid-link.
 fn stable_test_target_dir() -> std::path::PathBuf {
@@ -489,7 +489,7 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     // before building. The generator names every node's library `peppygen`, so in
     // the shared target dir cargo treats them as one interchangeable
     // `peppygen v0.1.0` unit and may link a *different* test's cached rlib into
-    // this `user_node` — e.g. a pinned consumer silently getting another test's
+    // this `user_node`: e.g. a pinned consumer silently getting another test's
     // unpinned `fire_goal`, which then discovers instead of pinning. A unique
     // name forces cargo to compile (and link) the peppygen this test just
     // generated. Mirrors the unique `user_node` wrapper name; the heavy shared
@@ -634,7 +634,7 @@ pub struct WaitContext<'a> {
 /// endpoint that will never come up) fails loudly with a clear panic
 /// instead of stalling the whole test binary. Each helper accepts an
 /// explicit `timeout` so call sites can opt into something larger or
-/// smaller — pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
+/// smaller; pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
 pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn wait_for_service_reachable_or_exit(
@@ -948,3 +948,174 @@ pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std
 
     command.spawn().expect("failed to spawn uv run python")
 }
+
+// ---------------------------------------------------------------------------
+// Interface/config fixtures shared verbatim by the Rust and Python twin test
+// suites. Only constants whose values were byte-identical across the pair
+// live here; per-language fixtures stay inline in their test file.
+// ---------------------------------------------------------------------------
+
+pub const EXPOSED_ACTION_EXAMPLE: &str = r#"
+{
+  name: "move_arm",
+  goal_service: {
+    request_message_format: {
+      arm_id: "u16",
+      desired_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    },
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    }
+  },
+  result_service: {
+    response_message_format: {
+      success: "bool",
+      error_msg: {
+        $type: "string",
+        $optional: true
+      },
+      final_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    }
+  }
+}
+"#;
+
+pub const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
+{
+  new_position: {
+    $type: "array",
+    $items: "i32",
+    $length: 3
+  }
+}
+"#;
+
+pub const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
+{
+  success: "bool",
+  error_msg: {
+    $type: "string",
+    $optional: true
+  },
+  final_position: {
+    $type: "array",
+    $items: "i32",
+    $length: 3
+  }
+}
+"#;
+
+pub const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
+{
+  arm_id: "u16",
+  desired_position: {
+    $type: "array",
+    $items: "i32",
+    $length: 3
+  }
+}
+"#;
+
+pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
+  positions: { $type: "array", $items: "f64", $length: 3 },
+  velocities: { $type: "array", $items: "f64", $length: 3 },
+  timestamp: "time"
+}"#;
+
+pub const EXPOSED_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "enable_camera",
+  request_message_format: {
+    enable: "bool"
+  },
+  response_message_format: {
+    enabled: "bool",
+    error_msg: {
+      $type: "string",
+      $optional: true
+    },
+  }
+}
+"#;
+
+pub const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+{
+    enabled: "bool",
+    error_msg: {
+      $type: "string",
+      $optional: true
+    },
+}
+"#;
+
+pub const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+{
+  name: "get_system_status",
+  response_message_format: {
+    healthy: "bool"
+  }
+}
+"#;
+
+pub const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+{
+  link_id: "uvc_camera",
+  name: "get_system_status",
+}
+"#;
+
+pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
+{
+  name: "video_stream",
+  qos_profile: "sensor_data",
+  message_format: {
+    header: {
+    $type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+    width: "u32",
+    height: "u32",
+    frame: {
+      $type: "array",
+      $items: "u8"
+    }
+  }
+}
+"#;
+
+pub const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
+{
+  header: {
+    $type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+  width: "u32",
+  height: "u32",
+  frame: {
+    $type: "array",
+    $items: "u8"
+  }
+}
+"#;

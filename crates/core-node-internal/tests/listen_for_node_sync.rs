@@ -1412,7 +1412,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 }
 
 // -----------------------------------------------------------------------
-// `include_repositories=true` — repository fallback resolution.
+// `include_repositories=true`: repository fallback resolution.
 // -----------------------------------------------------------------------
 
 /// Camera config emitting a `video_stream` topic. Used as a stable dep
@@ -1447,7 +1447,7 @@ fn camera_config() -> &'static str {
     "#
 }
 
-/// Brain that consumes `video_stream` from `uvc_camera:v1` — used to
+/// Brain that consumes `video_stream` from `uvc_camera:v1`, used to
 /// drive the resolution path in tests where the camera lives in the
 /// repository cache rather than the node stack.
 fn brain_consumes_camera_config() -> &'static str {
@@ -1521,7 +1521,7 @@ async fn sync_with_flag(
 async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Camera lives only in the repository cache — flag=false means the
+    // Camera lives only in the repository cache; flag=false means the
     // resolver never looks there, so the dep is missing from the stack.
     let camera_dir = tempdir().expect("camera tempdir");
     write_node_config(camera_dir.path(), camera_config());
@@ -1699,7 +1699,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         assert_eq!(entry.source_kind, RepoSourceKind::Git);
     }
 
-    // Exactly one checkout directory — both deps share the same
+    // Exactly one checkout directory: both deps share the same
     // (repo_url, ref) so `ensure_checkout` reuses the clone.
     let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())
         .expect("git_checkouts_dir should exist")
@@ -1777,7 +1777,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         .fs_entry("uvc_camera", "v1", repo_camera_dir.path())
         .write(&started.peppy_dirs);
 
-    // Brain consumes `topic_x` — only the stack version exposes it.
+    // Brain consumes `topic_x`; only the stack version exposes it.
     let brain_dir = tempdir().expect("brain tempdir");
     write_node_config(
         brain_dir.path(),
@@ -1833,7 +1833,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     let started = start_core_node_with_mock_messenger().await;
 
     // C is a leaf, B depends on C, A depends on B. Brain depends on A.
-    // All three live only in the repo cache — the BFS in
+    // All three live only in the repo cache; the BFS in
     // materialize_repo_deps must walk through every level.
     let c_dir = tempdir().expect("c tempdir");
     write_node_config(
@@ -1941,7 +1941,7 @@ async fn include_repositories_true_walks_transitive_dep() {
 async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Empty nodes.json5 — nothing to materialize from.
+    // Empty nodes.json5; nothing to materialize from.
     TestPackagesCache::new().write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
@@ -2055,7 +2055,7 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
         response.error_message
     );
 
-    // The interface's checkout should exist on disk now — this proves
+    // The interface's checkout should exist on disk now; this proves
     // `ensure_checkout` ran rather than `std::fs::read` silently relying
     // on a path that happened to exist in the daemon's CWD.
     let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())

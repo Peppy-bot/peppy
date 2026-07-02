@@ -353,7 +353,7 @@ fn reject_parameters_with_invalid_field_names() {
     }
 }
 
-/// Bool literal as a parameter spec is rejected at parse time — the typed
+/// Bool literal as a parameter spec is rejected at parse time: the typed
 /// `ParameterSpec` enum cannot represent it. This guards the "parse, don't
 /// validate" boundary: invalid schemas never reach the generator.
 #[test]

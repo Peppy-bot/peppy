@@ -80,7 +80,7 @@ async fn list_default_repos_creates_repositories_file() {
     let content = std::fs::read_to_string(&repos_path).expect("read created file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse created file");
-    // Don't pin the count — the shipped defaults grow over time. Just
+    // Don't pin the count; the shipped defaults grow over time. Just
     // verify the canonical nodes_hub entry is there.
     let nodes_hub = repos
         .iter()
@@ -192,7 +192,7 @@ async fn list_reads_git_nodes_from_cache() {
 }
 
 /// When two FS repositories provide the same node, the list should contain both
-/// entries — the first as non-duplicate and the second marked as duplicate.
+/// entries: the first as non-duplicate and the second marked as duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_marks_cross_repo_duplicates_fs() {
     let started = start_core_node_with_mock_messenger().await;

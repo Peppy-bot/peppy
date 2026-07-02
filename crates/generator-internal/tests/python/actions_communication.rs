@@ -1,4 +1,8 @@
 use crate::helpers::{
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
+    EXPOSED_ACTION_EXAMPLE,
+};
+use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
     copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
     send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown,
@@ -60,89 +64,10 @@ const EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_ACTION_EXAMPLE: &str = r#"
-{
-  name: "move_arm",
-  goal_service: {
-    request_message_format: {
-      arm_id: "u16",
-      desired_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    },
-    response_message_format: {
-      accepted: "bool"
-    }
-  },
-  feedback_topic: {
-    qos_profile: "sensor_data",
-    message_format: {
-      new_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  },
-  result_service: {
-    response_message_format: {
-      success: "bool",
-      error_msg: {
-        $type: "string",
-        $optional: true
-      },
-      final_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  }
-}
-"#;
-
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
   link_id: "brain",
   name: "move_arm",
-}
-"#;
-
-const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
-{
-  new_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
-{
-  success: "bool",
-  error_msg: {
-    $type: "string",
-    $optional: true
-  },
-  final_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
-{
-  arm_id: "u16",
-  desired_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
 }
 "#;
 
@@ -1221,7 +1146,7 @@ async def run_consumer(node_runner):
     accepted = cancel_response.state == brain_move_arm.CancelState.SIGNALLED
     print(f"cancel accepted={accepted}", flush=True)
 
-    # Cancel was accepted — codegen publishes end-of-stream sentinel.
+    # Cancel was accepted: codegen publishes end-of-stream sentinel.
     try:
         msg = await goal.on_next_feedback_message()
         print(f"UNEXPECTED feedback after cancel-accept new_position={msg.new_position}", flush=True)
@@ -1299,7 +1224,7 @@ async def run_exposer(node_runner):
         # Honor the cancel: completing-cancelled closes the feedback stream.
         await ctx.cancel_signal()
         await ctx.complete_cancelled(False, "cancelled", [0, 0, 0])
-        print("server observed cancel — completing cancelled closes the feedback stream", flush=True)
+        print("server observed cancel: completing cancelled closes the feedback stream", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -1465,7 +1390,7 @@ if __name__ == "__main__":
 
 /// Verifies the cancel-ignored side of the action lifecycle contract: a
 /// worker is free to observe `ctx.cancel_signal()` and keep going. Ignoring
-/// the cancel does NOT close the feedback stream — the goal stays alive,
+/// the cancel does NOT close the feedback stream; the goal stays alive,
 /// feedback keeps flowing, and the stream is closed only when the worker
 /// finally calls `ctx.complete(...)` as part of normal goal completion.
 ///
@@ -1807,7 +1732,7 @@ if __name__ == "__main__":
     );
     assert!(
         consumer_stdout.contains("post_cancel feedback new_position=[2, 2, 2]"),
-        "consumer did not receive post-cancel feedback — a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
+        "consumer did not receive post-cancel feedback: a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(
@@ -2431,7 +2356,7 @@ if __name__ == "__main__":
     ));
 
     // The first feedback message proves the goal is established and the
-    // per-goal feedback stream is live — only then is killing the producer
+    // per-goal feedback stream is live; only then is killing the producer
     // meaningful (killing earlier would test goal-request failure instead).
     consumer.wait_for_stdout_contains(
         "FIRST_FEEDBACK new_position=",
@@ -2440,7 +2365,7 @@ if __name__ == "__main__":
     );
 
     // SIGKILL the exposer mid-goal: no sentinel, no graceful teardown. Its
-    // exit status is deliberately not asserted — being killed is the point.
+    // exit status is deliberately not asserted: being killed is the point.
     // `spawn_python_run` wraps the node in `uv run`, and SIGKILLing only the
     // wrapper orphans the python node (it keeps running and publishing), so
     // the node's own process must be killed first: take out every descendant
@@ -2489,7 +2414,7 @@ if __name__ == "__main__":
     );
     assert!(
         !consumer_stdout.contains("FEEDBACK_CLEAN_CLOSE"),
-        "consumer saw a clean end-of-stream close — a SIGKILLed producer must surface as ConnectionError, not the sentinel path.\nstdout:\n{}",
+        "consumer saw a clean end-of-stream close: a SIGKILLed producer must surface as ConnectionError, not the sentinel path.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(

@@ -46,7 +46,7 @@ pub struct AddNodeParams {
     pub confirm_reader: Option<Box<dyn BufRead>>,
     /// Whether to run `peppy node sync` on the source *before* adding. Only
     /// meaningful for local filesystem sources. Independent of `chain_build`
-    /// — not implied by `--build`/`--run`.
+    /// (not implied by `--build`/`--run`).
     pub sync: bool,
     /// Whether to chain a `node build` after the add succeeds. Set by the
     /// CLI when the user passes `--build` (or `--run`, which implies it).
@@ -125,7 +125,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     //
     // - `NodeSource::Fs`: read `(name, tag)` from the local `peppy.json5`.
     // - `NodeSource::RepoNode`: use the user-supplied `(name, tag)`
-    //   directly — no parsing needed. (Validated at parse time by
+    //   directly; no parsing needed. (Validated at parse time by
     //   `NodeSource::repo_node`.)
     //
     // `Git`/`Http` root sources still skip the preflight since we'd need to
@@ -244,7 +244,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 /// Parses the node's `peppy.json5` locally to extract `(name, tag)`, then asks
 /// the daemon whether that entity is currently in the stack. Returns
 /// `Some((name, tag, active_instance_ids))` only when the node exists in the
-/// stack AND has at least one active instance (`Starting` or `Running`) —
+/// stack AND has at least one active instance (`Starting` or `Running`);
 /// exactly the case that needs a user confirmation before overwrite. Both
 /// states count as active because the daemon tears down every tracked
 /// instance when it overwrites a node, regardless of lifecycle state.
@@ -253,7 +253,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 /// - The local config can't be parsed (the add action itself will surface a
 ///   clearer error once it tries to use the source).
 /// - The node isn't in the stack yet (the daemon answers with
-///   `NodeInfoResponse::NotInStack` — a successful negative lookup).
+///   `NodeInfoResponse::NotInStack`, a successful negative lookup).
 /// - The node is in the stack but has no active instances (the add action
 ///   can safely overwrite it without prompting).
 async fn fetch_active_instances_for_local_source(

@@ -14,6 +14,7 @@
 //! here we generate a peppygen lib, wire it into a user crate, and invoke
 //! `cargo build` against the result.
 
+use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
 use generator::{DependencyContext, DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
@@ -42,15 +43,10 @@ const NODE_CONFIG: &str = r#"{
 
 const LEFT_CONSUMER: &str = r#"{ link_id: "left_arm", name: "joint_states" }"#;
 const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#;
-const SHARED_FORMAT: &str = r#"{
-  positions: { $type: "array", $items: "f64", $length: 3 },
-  velocities: { $type: "array", $items: "f64", $length: 3 },
-  timestamp: "time"
-}"#;
 
 /// User crate `main.rs` that explicitly names both per-link consumer modules.
-/// The references aren't strictly necessary to catch the bug — the generated
-/// `peppygen` lib will fail to compile on its own — but they document what
+/// The references aren't strictly necessary to catch the bug (the generated
+/// `peppygen` lib will fail to compile on its own), but they document what
 /// the test is exercising and mirror the explicit-probe style of the Python
 /// counterpart.
 const USER_MAIN: &str = r#"

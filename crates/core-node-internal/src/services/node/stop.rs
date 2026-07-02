@@ -3,7 +3,7 @@ use crate::names;
 use crate::services::response::into_service_response;
 use config::runtime::Name;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
-use node_stack::NodeStack;
+use node_stack::{EntityHandle, NodeStack, TrackedNodeInstance};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
     SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
@@ -111,51 +111,11 @@ async fn handle_node_stop_request_inner(
         }
     };
 
-    // Find the instance and entity by instance_id. The lookup helpers
-    // intentionally only match `Running` instances. If the instance is
-    // mid-start (`Starting`), the lookup returns `None` even though the
-    // instance does exist — surface that as a distinct retryable error so
-    // callers can back off and retry once `commit_started`/`abort_started`
-    // has resolved the in-flight start.
-    let instance = match node_stack.find_by_instance_id(&instance_id) {
-        Some(instance) => instance,
-        None => {
-            if instance_is_in_starting(&node_stack, &instance_id) {
-                return NodeStopResponse::failure(format!(
-                    "Node instance '{}' is in Starting state; retry after the start completes",
-                    request.instance_id
-                ))
-                .encode()
-                .map_err(Into::into);
-            }
-            return NodeStopResponse::failure(format!(
-                "Node instance '{}' not found in node stack",
-                request.instance_id
-            ))
-            .encode()
-            .map_err(Into::into);
-        }
-    };
-
-    let entity_handle = match node_stack.find_entity_by_instance_id(&instance_id) {
-        Some(entity) => entity,
-        None => {
-            if instance_is_in_starting(&node_stack, &instance_id) {
-                return NodeStopResponse::failure(format!(
-                    "Node instance '{}' is in Starting state; retry after the start completes",
-                    request.instance_id
-                ))
-                .encode()
-                .map_err(Into::into);
-            }
-            return NodeStopResponse::failure(format!(
-                "Node instance '{}' not found in node stack",
-                request.instance_id
-            ))
-            .encode()
-            .map_err(Into::into);
-        }
-    };
+    let (instance, entity_handle) =
+        match find_running_instance_and_entity(&node_stack, &instance_id, &request.instance_id) {
+            Ok(found) => found,
+            Err(response) => return response.encode().map_err(Into::into),
+        };
 
     // Resolve everything we need from the entity up front, under a short-lived
     // read lock that is NOT held across any await. `is_container` drives the
@@ -240,6 +200,56 @@ async fn handle_node_stop_request_inner(
     response.encode().map_err(Into::into)
 }
 
+/// Finds the instance and its entity by instance_id, or the failure response
+/// the stop handler should return. The lookups intentionally only match
+/// `Running` instances. If the instance is mid-start (`Starting`), the lookup
+/// returns `None` even though the instance does exist, so
+/// [`stop_lookup_failure`] surfaces that as a distinct retryable error and
+/// callers can back off and retry once `commit_started`/`abort_started` has
+/// resolved the in-flight start.
+fn find_running_instance_and_entity(
+    node_stack: &Arc<NodeStack>,
+    instance_id: &Name,
+    raw_instance_id: &str,
+) -> std::result::Result<(TrackedNodeInstance, EntityHandle), NodeStopResponse> {
+    let Some(instance) = node_stack.find_by_instance_id(instance_id) else {
+        return Err(stop_lookup_failure(
+            node_stack,
+            instance_id,
+            raw_instance_id,
+        ));
+    };
+    let Some(entity_handle) = node_stack.find_entity_by_instance_id(instance_id) else {
+        return Err(stop_lookup_failure(
+            node_stack,
+            instance_id,
+            raw_instance_id,
+        ));
+    };
+    Ok((instance, entity_handle))
+}
+
+/// Builds the failure response for a stop request whose instance lookup came
+/// back empty: "mid-start, retry later" when the id exists in `Starting`
+/// state, "not found" otherwise.
+fn stop_lookup_failure(
+    node_stack: &Arc<NodeStack>,
+    instance_id: &Name,
+    raw_instance_id: &str,
+) -> NodeStopResponse {
+    if instance_is_in_starting(node_stack, instance_id) {
+        NodeStopResponse::failure(format!(
+            "Node instance '{}' is in Starting state; retry after the start completes",
+            raw_instance_id
+        ))
+    } else {
+        NodeStopResponse::failure(format!(
+            "Node instance '{}' not found in node stack",
+            raw_instance_id
+        ))
+    }
+}
+
 /// Returns `true` if any tracked entity contains an instance with the
 /// given id in `InstanceState::Starting`. Used to disambiguate "instance does
 /// not exist" from "instance exists but is mid-start" in the stop handler.
@@ -252,7 +262,7 @@ fn instance_is_in_starting(node_stack: &Arc<NodeStack>, instance_id: &Name) -> b
 }
 
 /// Sends a `SHUTDOWN_SERVICE` request and returns once the receiver
-/// acknowledges. Does NOT touch the entity's instances list — that is done
+/// acknowledges. Does NOT touch the entity's instances list; that is done
 /// only after [`force_stop_instances`] has confirmed the OS processes are
 /// gone, so retries can still find the live instance during an in-flight
 /// shutdown.
@@ -294,7 +304,7 @@ async fn send_shutdown_signal(
     Ok(())
 }
 
-/// How a single instance ended up stopped — surfaced to the user so a
+/// How a single instance ended up stopped, surfaced to the user so a
 /// force-kill (the node ignored the cooperative shutdown) is distinguishable
 /// from a clean graceful exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,7 +313,7 @@ enum StopOutcome {
     Graceful,
     /// The node did not exit in time and its process group was SIGKILLed.
     ForceKilled,
-    /// No tracked OS process — nothing to wait on or kill.
+    /// No tracked OS process; nothing to wait on or kill.
     NoProcess,
 }
 
@@ -312,7 +322,7 @@ enum StopOutcome {
 /// identically to the SIGINT teardown ("properly OR improperly stopped").
 ///
 /// Returns a [`StopOutcome`] so the caller can tell the user whether the node
-/// exited gracefully or had to be force-killed. Takes NO lock — the caller
+/// exited gracefully or had to be force-killed. Takes NO lock: the caller
 /// resolves the [`DoomedInstance`] fields and `graceful_budget` up front, so
 /// nothing is held across an await.
 async fn force_stop_instance(
@@ -334,11 +344,11 @@ async fn force_stop_instance(
     .expect("one outcome per doomed instance")
 }
 
-/// Cooperative-then-force termination of a batch of instances — the single
+/// Cooperative-then-force termination of a batch of instances: the single
 /// implementation behind `peppy node stop`, the `node add` overwrite path, and
 /// the SIGINT/ctrl+C teardown:
 ///
-/// 1. Best-effort `SHUTDOWN_SERVICE` sends, concurrently — a failed/timed-out
+/// 1. Best-effort `SHUTDOWN_SERVICE` sends, concurrently; a failed/timed-out
 ///    send is logged and ignored. A non-responsive node must still be
 ///    force-killed, never surfaced as an error (this is what makes a stuck node
 ///    a success, not a failure-with-the-process-left-alive).
@@ -349,7 +359,7 @@ async fn force_stop_instance(
 /// 3. Bounded graceful wait (`graceful_budget`, from
 ///    `peppy_config.lifecycle.shutdown_grace_secs`, shared across the whole
 ///    batch) for the OS processes to exit on their own.
-/// 4. `kill_process_group(pid)` for each instance (SIGKILL the whole group —
+/// 4. `kill_process_group(pid)` for each instance (SIGKILL the whole group;
 ///    nodes are spawned as group leaders) plus, on macOS for container nodes,
 ///    the in-VM guest group kill.
 /// 5. Bounded reap ([`TEARDOWN_REAP_BUDGET`]) so the SIGKILLed groups are gone
@@ -454,7 +464,7 @@ async fn force_stop_instances(
     // into the VM and SIGKILL each recorded guest process group (keyed by
     // instance id, matching the `cancel_pgid` set at spawn). The facade owns the
     // platform gate (no-op on Linux, where the host kill already reached the
-    // shared-namespace container) and never fails — a guest-kill problem must
+    // shared-namespace container) and never fails: a guest-kill problem must
     // not block a stop or teardown. Runs on a blocking thread because it shells
     // out to `limactl`.
     if !guest_kill_keys.is_empty() {
@@ -557,7 +567,7 @@ fn remove_instance_from_registry(
 ///
 /// Shares [`force_stop_instances`] with `handle_node_stop_request_inner` and
 /// the SIGINT teardown, so a stuck instance is force-killed (not left alive
-/// behind a timeout error) — and, like the teardown, the whole batch is stopped
+/// behind a timeout error); and, like the teardown, the whole batch is stopped
 /// together: every cooperative shutdown is sent concurrently and the instances
 /// share ONE grace budget, so an overwrite of an entity with several stuck
 /// instances costs one grace window, not one per instance. Returns only once
@@ -651,7 +661,7 @@ pub fn force_kill_deadline(shutdown_grace: Duration) -> Duration {
         )
 }
 
-/// A non-root node instance to terminate — the routing identity + process info
+/// A non-root node instance to terminate: the routing identity + process info
 /// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
 /// [`teardown_all_instances`] and [`stop_instances`] (the `node add` overwrite
 /// path), and one at a time by [`force_stop_instance`] (`peppy node stop`).
@@ -670,17 +680,17 @@ struct DoomedInstance {
 }
 
 /// Force every non-root node out of the stack on a catchable daemon shutdown
-/// (ctrl+C / SIGTERM), so no node — or any descendant it spawned — outlives the
+/// (ctrl+C / SIGTERM), so no node (or any descendant it spawned) outlives the
 /// daemon as an orphan.
 ///
 /// Graceful-then-force: first asks each node to shut down cooperatively (the
 /// same `SHUTDOWN_SERVICE` path as `peppy node stop`, so robot nodes can stop
 /// actuators cleanly), gives them a short shared budget to exit, then SIGKILLs
-/// the process group of anything still alive. The root (core) node is skipped —
+/// the process group of anything still alive. The root (core) node is skipped;
 /// its pid is the daemon itself. This does NOT wait the uncatchable-death grace
 /// period; that timer only governs a daemon that died without running cleanup.
 ///
-/// Delegates to [`force_stop_instances`] — the same phases as `peppy node
+/// Delegates to [`force_stop_instances`]: the same phases as `peppy node
 /// stop`, batched: one grace budget shared across all instances and every
 /// cooperative shutdown sent concurrently.
 pub async fn teardown_all_instances(
@@ -709,7 +719,7 @@ pub async fn teardown_all_instances(
     .await;
 }
 
-/// Snapshot every non-root instance (both `Running` and `Starting` — a
+/// Snapshot every non-root instance (both `Running` and `Starting`; a
 /// `Starting` instance already has a live child) with its routing identity and
 /// pid. Skips the root entity by pointer identity.
 ///
@@ -748,7 +758,7 @@ fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> 
 
 /// Polls until every instance with a known pid has exited (or become a
 /// zombie). Refreshes only the watched pids each tick rather than rescanning
-/// every process on the machine. Unbounded on its own — callers wrap it in
+/// every process on the machine. Unbounded on its own; callers wrap it in
 /// `tokio::time::timeout` so [`force_stop_instances`] can apply different
 /// graceful and reap budgets to the same primitive.
 async fn wait_until_all_gone(doomed: &[DoomedInstance]) {

@@ -165,7 +165,7 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
-    // LimaConfig — single source of truth for limactl path, LIMA_HOME, and
+    // LimaConfig: single source of truth for limactl path, LIMA_HOME, and
     // instance name. All Lima commands go through `lima_command()` to ensure
     // LIMA_HOME is always set.
     // -----------------------------------------------------------------------
@@ -617,7 +617,7 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
-    // gocryptfs — bundled prebuilt static linux binary
+    // gocryptfs: bundled prebuilt static linux binary
     //
     // Apptainer searches `${prefix}/libexec/apptainer/bin/` for tools like
     // gocryptfs before falling back to `$PATH`. Dropping the binary there
@@ -714,7 +714,7 @@ mod apptainer_build {
             return false;
         }
 
-        // Clean up the archive — only useful for the one-shot install.
+        // Clean up the archive; only useful for the one-shot install.
         std::fs::remove_file(&archive_path).ok();
 
         if !gocryptfs_bin.exists() {
@@ -783,7 +783,7 @@ mod apptainer_build {
     fn extract_gocryptfs_binaries(archive: &Path, dest_dir: &Path) -> bool {
         // The gocryptfs release tarball is flat (no leading directory), so a
         // simple `tar -xzf` into the target dir places the binaries directly.
-        // Restrict to the two binaries — we don't need the manpages.
+        // Restrict to the two binaries; we don't need the manpages.
         let status = Command::new("tar")
             .args(["-xzf"])
             .arg(archive)
@@ -885,7 +885,7 @@ mod apptainer_build {
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
         // Configure: ./mconfig --without-suid --prefix=<install_dir>
-        // Build without setuid support — apptainer uses unprivileged user
+        // Build without setuid support; apptainer uses unprivileged user
         // namespaces instead.  This avoids the "Relocation not allowed with
         // starter-suid" error that occurs when the compiled-in --prefix
         // doesn't match the final installation path.
@@ -1249,7 +1249,7 @@ echo "=== Apptainer build complete ==="
     }
 
     // -----------------------------------------------------------------------
-    // Main entry point — orchestration
+    // Main entry point: orchestration
     // -----------------------------------------------------------------------
 
     fn emit_rerun_directives() {
@@ -1473,7 +1473,7 @@ echo "=== Apptainer build complete ==="
             return cache_dir;
         }
 
-        // No cache available — build from source (Linux host only).
+        // No cache available; build from source (Linux host only).
         println!(
             "cargo:warning=Building apptainer {} from source...",
             APPTAINER_VERSION
@@ -1508,7 +1508,7 @@ echo "=== Apptainer build complete ==="
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
-        // We download and bundle Lima ourselves — no `brew install lima` required.
+        // We download and bundle Lima ourselves; no `brew install lima` required.
         let use_lima = if target_os == "macos" {
             true
         } else if target_os != "linux" {

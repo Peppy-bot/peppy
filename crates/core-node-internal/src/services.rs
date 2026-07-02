@@ -161,8 +161,8 @@ pub struct CoreNode {
 
 /// Pre-flight checks that must pass before the daemon starts spawning nodes.
 ///
-/// Returns an `Err` (rather than calling `std::process::exit`) so the caller —
-/// the binary — decides how to report a failure. Keeping the library free of
+/// Returns an `Err` (rather than calling `std::process::exit`) so the caller
+/// (the binary) decides how to report a failure. Keeping the library free of
 /// process-exit means a `CoreNode` can be constructed in tests and embedders
 /// without risking a host-process kill.
 pub fn check_runtime_prerequisites() -> Result<()> {
@@ -324,7 +324,7 @@ impl CoreNode {
     ///
     /// Side effects performed up front, before listeners are registered:
     /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
-    ///   clear stale state from a previous run — see [`clear_instances_dir`].
+    ///   clear stale state from a previous run; see [`clear_instances_dir`].
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
@@ -364,7 +364,7 @@ impl CoreNode {
         let datastore = Arc::new(datastore::Datastore::new());
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all of them. They're
-        // independent — no listener depends on another being registered first.
+        // independent: no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(
                 &self.messenger,
