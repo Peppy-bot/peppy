@@ -1,4 +1,8 @@
 use crate::helpers::{
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
+    EXPOSED_ACTION_EXAMPLE,
+};
+use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
     copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
     send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown,
@@ -60,89 +64,10 @@ const EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_ACTION_EXAMPLE: &str = r#"
-{
-  name: "move_arm",
-  goal_service: {
-    request_message_format: {
-      arm_id: "u16",
-      desired_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    },
-    response_message_format: {
-      accepted: "bool"
-    }
-  },
-  feedback_topic: {
-    qos_profile: "sensor_data",
-    message_format: {
-      new_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  },
-  result_service: {
-    response_message_format: {
-      success: "bool",
-      error_msg: {
-        $type: "string",
-        $optional: true
-      },
-      final_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  }
-}
-"#;
-
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
   link_id: "brain",
   name: "move_arm",
-}
-"#;
-
-const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
-{
-  new_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
-{
-  success: "bool",
-  error_msg: {
-    $type: "string",
-    $optional: true
-  },
-  final_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
-{
-  arm_id: "u16",
-  desired_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
 }
 "#;
 

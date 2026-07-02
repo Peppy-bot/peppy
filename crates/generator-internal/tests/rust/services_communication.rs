@@ -1,4 +1,8 @@
 use crate::helpers::{
+    CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
+    EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE,
+};
+use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
     init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
     try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
@@ -23,21 +27,6 @@ const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
 // --- Services exposes and its corresponding consumer
-const EXPOSED_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "enable_camera",
-  request_message_format: {
-    enable: "bool"
-  },
-  response_message_format: {
-    enabled: "bool",
-    error_msg: {
-      $type: "string",
-      $optional: true
-    },
-  }
-}
-"#;
 
 const CONSUMED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -52,34 +41,9 @@ const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
-{
-    enabled: "bool",
-    error_msg: {
-      $type: "string",
-      $optional: true
-    },
-}
-"#;
-
 const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 
 // --- Service without request body
-const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
-{
-  name: "get_system_status",
-  response_message_format: {
-    healthy: "bool"
-  }
-}
-"#;
-
-const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
-{
-  link_id: "uvc_camera",
-  name: "get_system_status",
-}
-"#;
 
 const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {

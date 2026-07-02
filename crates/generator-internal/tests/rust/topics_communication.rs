@@ -3,6 +3,7 @@ use crate::helpers::{
     init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
     wait_for_child, wait_for_health_service_reachable_or_exit,
 };
+use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
@@ -23,48 +24,11 @@ const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
 // --- Topics emitted and its corresponding receiver
-const EMITTED_TOPIC_EXAMPLE: &str = r#"
-{
-  name: "video_stream",
-  qos_profile: "sensor_data",
-  message_format: {
-    header: {
-    $type: "object",
-    stamp: "time",
-    frame_id: "u32"
-  },
-  encoding: "string",
-    width: "u32",
-    height: "u32",
-    frame: {
-      $type: "array",
-      $items: "u8"
-    }
-  }
-}
-"#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
   link_id: "uvc_camera",
   name: "video_stream",
-}
-"#;
-
-const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
-{
-  header: {
-    $type: "object",
-    stamp: "time",
-    frame_id: "u32"
-  },
-  encoding: "string",
-  width: "u32",
-  height: "u32",
-  frame: {
-    $type: "array",
-    $items: "u8"
-  }
 }
 "#;
 

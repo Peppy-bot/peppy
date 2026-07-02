@@ -1,4 +1,8 @@
 use crate::helpers::{
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
+    EXPOSED_ACTION_EXAMPLE,
+};
+use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project,
     copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
     test_peppy_dirs, wait_for_action_service_reachable_or_exit, wait_for_child,
@@ -23,89 +27,10 @@ const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
 
-const EXPOSED_ACTION_EXAMPLE: &str = r#"
-{
-  name: "move_arm",
-  goal_service: {
-    request_message_format: {
-      arm_id: "u16",
-      desired_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    },
-    response_message_format: {
-      accepted: "bool"
-    }
-  },
-  feedback_topic: {
-    qos_profile: "sensor_data",
-    message_format: {
-      new_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  },
-  result_service: {
-    response_message_format: {
-      success: "bool",
-      error_msg: {
-        $type: "string",
-        $optional: true
-      },
-      final_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  }
-}
-"#;
-
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
   link_id: "brain",
   name: "move_arm",
-}
-"#;
-
-const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
-{
-  new_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
-{
-  success: "bool",
-  error_msg: {
-    $type: "string",
-    $optional: true
-  },
-  final_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
-{
-  arm_id: "u16",
-  desired_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
 }
 "#;
 

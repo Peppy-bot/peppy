@@ -948,3 +948,174 @@ pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std
 
     command.spawn().expect("failed to spawn uv run python")
 }
+
+// ---------------------------------------------------------------------------
+// Interface/config fixtures shared verbatim by the Rust and Python twin test
+// suites. Only constants whose values were byte-identical across the pair
+// live here; per-language fixtures stay inline in their test file.
+// ---------------------------------------------------------------------------
+
+pub const EXPOSED_ACTION_EXAMPLE: &str = r#"
+{
+  name: "move_arm",
+  goal_service: {
+    request_message_format: {
+      arm_id: "u16",
+      desired_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    },
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    }
+  },
+  result_service: {
+    response_message_format: {
+      success: "bool",
+      error_msg: {
+        $type: "string",
+        $optional: true
+      },
+      final_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    }
+  }
+}
+"#;
+
+pub const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
+{
+  new_position: {
+    $type: "array",
+    $items: "i32",
+    $length: 3
+  }
+}
+"#;
+
+pub const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
+{
+  success: "bool",
+  error_msg: {
+    $type: "string",
+    $optional: true
+  },
+  final_position: {
+    $type: "array",
+    $items: "i32",
+    $length: 3
+  }
+}
+"#;
+
+pub const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
+{
+  arm_id: "u16",
+  desired_position: {
+    $type: "array",
+    $items: "i32",
+    $length: 3
+  }
+}
+"#;
+
+pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
+  positions: { $type: "array", $items: "f64", $length: 3 },
+  velocities: { $type: "array", $items: "f64", $length: 3 },
+  timestamp: "time"
+}"#;
+
+pub const EXPOSED_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "enable_camera",
+  request_message_format: {
+    enable: "bool"
+  },
+  response_message_format: {
+    enabled: "bool",
+    error_msg: {
+      $type: "string",
+      $optional: true
+    },
+  }
+}
+"#;
+
+pub const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+{
+    enabled: "bool",
+    error_msg: {
+      $type: "string",
+      $optional: true
+    },
+}
+"#;
+
+pub const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+{
+  name: "get_system_status",
+  response_message_format: {
+    healthy: "bool"
+  }
+}
+"#;
+
+pub const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+{
+  link_id: "uvc_camera",
+  name: "get_system_status",
+}
+"#;
+
+pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
+{
+  name: "video_stream",
+  qos_profile: "sensor_data",
+  message_format: {
+    header: {
+    $type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+    width: "u32",
+    height: "u32",
+    frame: {
+      $type: "array",
+      $items: "u8"
+    }
+  }
+}
+"#;
+
+pub const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
+{
+  header: {
+    $type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+  width: "u32",
+  height: "u32",
+  frame: {
+    $type: "array",
+    $items: "u8"
+  }
+}
+"#;
