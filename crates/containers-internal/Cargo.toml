@@ -14,6 +14,8 @@ tracing = "0.1"
 [dev-dependencies]
 # Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.
 config-test-support = { workspace = true }
+# `DEFAULT_ALPINE_BASE_IMAGE` in tests/facade.rs.
+daemon-config = { workspace = true }
 tempfile = "3"
 
 [build-dependencies]

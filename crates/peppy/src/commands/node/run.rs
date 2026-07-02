@@ -1,7 +1,7 @@
 use config::AnyType;
-use config::launcher::{BindingValidationItem, DeploymentInstance, Name, validate_bindings};
 use config::node::ConformsToItem;
-use config::runtime::{NodeInstanceConfig, RuntimeConfig, SlotBinding};
+use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
+use daemon_config::launcher::{BindingValidationItem, DeploymentInstance, validate_bindings};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
@@ -59,7 +59,7 @@ fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
         instance_id,
         arguments: BTreeMap::new(),
         env_vars: BTreeMap::new(),
-        framework: config::launcher::FrameworkOverrides::default(),
+        framework: daemon_config::launcher::FrameworkOverrides::default(),
         bindings: BTreeMap::new(),
     }
 }
@@ -485,7 +485,7 @@ async fn validate_binds_against_stack(
     // daemon's own materialization agree on every producer address.
     let mut validated = validate_bindings(&items, core_node_name);
     if !validated.errors.is_empty() {
-        let msg = config::format_bulleted(&validated.errors);
+        let msg = daemon_config::format_bulleted(&validated.errors);
         return Err(Error::ExecutionFailed(msg));
     }
     Ok(Some(

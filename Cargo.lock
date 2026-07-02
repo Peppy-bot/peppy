@@ -407,7 +407,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -608,7 +608,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "askama",
  "git2",
@@ -666,6 +666,7 @@ version = "0.0.1"
 dependencies = [
  "build-helpers",
  "config-test-support",
+ "daemon-config",
  "peppy-config-model",
  "serde",
  "serde_yaml",
@@ -710,6 +711,7 @@ dependencies = [
  "config-test-support",
  "containers",
  "core-node-api",
+ "daemon-config",
  "dirs 6.0.0",
  "futures",
  "generator",
@@ -750,7 +752,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -892,6 +894,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "daemon-config"
+version = "0.0.1"
+dependencies = [
+ "const_format",
+ "dirs 6.0.0",
+ "peppy-config-model",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "serde_path_to_error",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -1092,6 +1110,7 @@ dependencies = [
 name = "docs-integration-tests"
 version = "0.1.0"
 dependencies = [
+ "daemon-config",
  "peppy",
  "peppy-config-model",
  "serde",
@@ -1159,6 +1178,7 @@ dependencies = [
  "build-helpers",
  "capnp",
  "capnpc",
+ "daemon-config",
  "indexmap 2.14.0",
  "peppy-config-model",
  "proc-macro2",
@@ -1468,6 +1488,7 @@ dependencies = [
  "build-helpers",
  "bytes",
  "config-test-support",
+ "daemon-config",
  "encoding",
  "indexmap 2.14.0",
  "json5-pretty",
@@ -2301,7 +2322,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2684,6 +2705,7 @@ dependencies = [
  "chrono",
  "containers",
  "core-node-api",
+ "daemon-config",
  "names-generator2",
  "parking_lot",
  "peppy-config-model",
@@ -3109,6 +3131,7 @@ dependencies = [
  "core-node",
  "core-node-api",
  "crossterm",
+ "daemon-config",
  "derive_more",
  "dirs 6.0.0",
  "futures",
@@ -3150,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "capnp",
  "clap",
@@ -3176,7 +3199,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3352,7 +3375,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a17a3ca523498797d4432bc412b67d93b3e85810"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#fa10bc0461a712499c7571c0b1afd48c5d3e6bf6"
 dependencies = [
  "build-helpers",
  "bytes",

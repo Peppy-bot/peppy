@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat, PrimitiveSchema, SchemaType, TypeToken,

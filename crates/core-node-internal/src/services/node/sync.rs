@@ -4,7 +4,7 @@ use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
 use crate::services::response::into_service_response;
 use config::ParsingError;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::{NodeConfigParser, validate_dependency_specs};
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
@@ -66,14 +66,14 @@ pub async fn listen_for_node_sync(
 /// "No such file or directory" errors. Callers already run inside
 /// `tokio::task::spawn_blocking`, so the synchronous cost is acceptable.
 fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
-    let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_output_dir = node_root_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
 
     // Path-string sanity check; pure CPU, no syscall.
-    if peppy_output_dir.file_name() != Some(std::ffi::OsStr::new(config::consts::PEPPY_OUTPUT_DIR))
+    if peppy_output_dir.file_name() != Some(std::ffi::OsStr::new(daemon_config::consts::PEPPY_OUTPUT_DIR))
     {
         debug!(
             "Unexpected directory name, expected {}: {}",
-            config::consts::PEPPY_OUTPUT_DIR,
+            daemon_config::consts::PEPPY_OUTPUT_DIR,
             peppy_output_dir.display()
         );
         return;
@@ -143,7 +143,7 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 /// - `git.hash` (non-empty)
 /// - `libs/peppygen/peppy.json5.sha256` (non-empty)
 fn needs_sync(node_root_dir: &std::path::Path) -> bool {
-    let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_dir = node_root_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
     if !peppy_dir.exists() {
         return true;
     }
@@ -676,7 +676,7 @@ pub fn collect_consumed_interfaces(
     // `(name, tag)` but different sha256 pin or `from_any` flag cache and
     // resolve separately. `resolve_interface_doc` handles SHA-pin matching
     // and on-disk drift detection per load.
-    let mut iface_dep_contracts: HashMap<String, config::interface::PeppyInterface> =
+    let mut iface_dep_contracts: HashMap<String, daemon_config::interface::PeppyInterface> =
         HashMap::new();
 
     for (link_id, entry) in dep_lookup.iter() {
@@ -839,14 +839,14 @@ pub fn collect_consumed_interfaces(
 fn resolve_consumed_offering<T>(
     dep_lookup: &HashMap<String, DependencyLookupEntry>,
     node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
-    iface_dep_contracts: &HashMap<String, config::interface::PeppyInterface>,
+    iface_dep_contracts: &HashMap<String, daemon_config::interface::PeppyInterface>,
     link_id: &str,
     lookup_name: &str,
     extract_from_node: impl FnOnce(
         &DependencyOfferings,
         &str,
     ) -> Option<(T, Option<generator::InterfaceOrigin>)>,
-    extract_from_interface: impl FnOnce(&config::interface::PeppyInterface, &str) -> Option<T>,
+    extract_from_interface: impl FnOnce(&daemon_config::interface::PeppyInterface, &str) -> Option<T>,
 ) -> Option<(T, generator::DependencyContext)> {
     let entry = dep_lookup.get(link_id)?;
     match entry.kind {
@@ -1065,7 +1065,7 @@ pub(crate) fn resolve_interface_doc(
     tag: &str,
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<config::interface::PeppyInterface, String> {
+) -> std::result::Result<daemon_config::interface::PeppyInterface, String> {
     let cache = repo_cache::load_interface_cache(peppy_dirs)
         .map_err(|e| format!("failed to load interface cache: {e}"))?;
 
@@ -1110,7 +1110,7 @@ pub(crate) fn resolve_interface_doc(
 
     let content = std::str::from_utf8(&bytes)
         .map_err(|e| format!("cached interface `{name}:{tag}` is not UTF-8: {e}"))?;
-    config::interface::PeppyInterfaceParser::from_content(content)
+    daemon_config::interface::PeppyInterfaceParser::from_content(content)
         .map_err(|e| format!("failed to parse cached interface `{name}:{tag}`: {e}"))
 }
 
@@ -1247,7 +1247,7 @@ pub fn auto_sync_if_missing(
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
 ) -> crate::Result<()> {
-    let peppy_dir = params.node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_dir = params.node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
     if needs_sync(params.node_dir) {
         // Back up existing .peppy so we can restore it on failure.
         let backup_dir = params.node_dir.join(format!(

@@ -1,5 +1,6 @@
 use super::common::setup;
-use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
+use config::consts::NODE_CONFIG_FILE;
+use daemon_config::consts::PeppyDirs;
 use core_node::nodes_repo_cache_path;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};

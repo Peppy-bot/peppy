@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::launcher::PeppyLauncherParser;
+use daemon_config::launcher::PeppyLauncherParser;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
@@ -217,7 +217,7 @@ async fn launch_async(
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
     // skip the local check rather than duplicate the lookup here.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
-        PeppyLauncherParser::from_path(path).map_err(Error::PeppyConfig)?;
+        PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
     }
 
     let conn = ctx.connect_to_daemon().await?;

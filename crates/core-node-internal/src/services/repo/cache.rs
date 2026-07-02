@@ -17,7 +17,7 @@
 
 use crate::Result;
 use crate::services::repo::refresh::read_or_create_repos;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node_api::encoding::{NodeSource, RepoSourceKind};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -194,19 +194,19 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 }
 
 /// Write cached node information for git/url repositories. Atomic via
-/// [`config::atomic_write::publish_atomic`] so concurrent readers never
+/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
 /// observe a partial file.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
     let content = json5_pretty::to_string_pretty(nodes)
         .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
+    daemon_config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())
 }
 
 /// Write cached launcher information for git/url/fs repositories. Atomic
-/// via [`config::atomic_write::publish_atomic`] so concurrent readers
+/// via [`daemon_config::atomic_write::publish_atomic`] so concurrent readers
 /// never observe a partial file.
 pub(crate) fn write_launcher_cache(
     peppy_dirs: &PeppyDirs,
@@ -215,14 +215,14 @@ pub(crate) fn write_launcher_cache(
     let content = json5_pretty::to_string_pretty(launchers).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
     })?;
-    config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
+    daemon_config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())
 }
 
 /// Write cached interface information. Atomic via
-/// [`config::atomic_write::publish_atomic`] so concurrent readers never
+/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
 /// observe a partial file.
 pub(crate) fn write_interface_cache(
     peppy_dirs: &PeppyDirs,
@@ -231,7 +231,7 @@ pub(crate) fn write_interface_cache(
     let content = json5_pretty::to_string_pretty(interfaces).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize interface cache: {e}"))
     })?;
-    config::atomic_write::publish_atomic(&interfaces_repo_cache_path(peppy_dirs), |tmp| {
+    daemon_config::atomic_write::publish_atomic(&interfaces_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tracing::error;
 
-use config::consts::AppEnv;
+use daemon_config::consts::AppEnv;
 use peppy::{
     commands::{Command, auth, container, info, node, repo, service, stack},
     context::AppContext,
@@ -67,7 +67,7 @@ fn main() {
     } else {
         AppEnv::Prod
     };
-    config::consts::set_app_env(env);
+    daemon_config::consts::set_app_env(env);
 
     let cli = Cli::parse();
     let log_style = if cfg!(debug_assertions)

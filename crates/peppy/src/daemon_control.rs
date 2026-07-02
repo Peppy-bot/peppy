@@ -24,7 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 
 /// File name of the daemon's federation control socket under the runtime dir.

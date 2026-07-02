@@ -16,7 +16,7 @@ mod run;
 mod stop;
 mod sync;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::NodeConfig;
 use core_node_api::encoding::NodeSource;
 

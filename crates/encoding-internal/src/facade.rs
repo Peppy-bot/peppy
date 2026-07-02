@@ -177,7 +177,7 @@ impl CapnpFacade {
         let binary_path = temp_dir.join("peppy_capnp_binary");
 
         if !binary_path.exists() {
-            let result = config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
+            let result = daemon_config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
                 std::fs::write(tmp_path, binary_bytes)?;
                 #[cfg(unix)]
                 {

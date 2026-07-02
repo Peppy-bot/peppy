@@ -3,9 +3,10 @@ use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
 use crate::names;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::Name;
-use config::peppy_config::{Mode, PeerConfig, PeppyConfig};
+use config::peppy_config::PeerConfig;
+use daemon_config::peppy_config::{Mode, PeppyConfig};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::InstanceState;
@@ -1590,7 +1591,7 @@ mod tests {
     use super::*;
 
     fn runtime_config_for_test() -> RuntimeConfig {
-        let instance_id = config::launcher::Name::new("camera_front").unwrap();
+        let instance_id = config::runtime::Name::new("camera_front").unwrap();
         RuntimeConfig::new(
             "127.0.0.1",
             7448,

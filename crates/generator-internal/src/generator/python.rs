@@ -354,7 +354,7 @@ impl LanguageGenerator for PythonGenerator {
     fn build(
         self,
         to_path: impl AsRef<Path>,
-        peppy_dirs: &config::consts::PeppyDirs,
+        peppy_dirs: &daemon_config::consts::PeppyDirs,
         _deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
         let to_path = to_path.as_ref();

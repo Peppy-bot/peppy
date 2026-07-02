@@ -191,7 +191,7 @@ fn generate_parameters_struct() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -250,7 +250,7 @@ fn generate_empty_parameters_struct() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -284,7 +284,7 @@ fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();

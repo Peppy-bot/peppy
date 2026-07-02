@@ -13,7 +13,8 @@ use super::{
 use crate::Result;
 use crate::names;
 use chrono::Local;
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use daemon_config::consts::PeppyDirs;
 use config::node::validate_dependency_specs;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::{

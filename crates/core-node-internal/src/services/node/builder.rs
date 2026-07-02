@@ -5,7 +5,7 @@ use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::Result;
 use crate::names;
 use chrono::Local;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };

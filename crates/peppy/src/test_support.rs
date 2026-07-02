@@ -1,5 +1,6 @@
 use crate::daemon_state::DaemonState;
-use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
+use config::consts::PEPPYGEN_OUTPUT_PATH;
+use daemon_config::consts::PeppyDirs;
 use config::node::NodeConfigParser;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
@@ -205,7 +206,7 @@ impl ServeCommandEmulation {
             },
             root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
-            peppy_config: config::peppy_config::PeppyConfig::default(),
+            peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
             organization_namespace: "local".to_string(),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
         });

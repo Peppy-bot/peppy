@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::launcher::Name;
+use config::runtime::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use generator::LanguageGenerator;
 use peppylib::MessengerHandle;

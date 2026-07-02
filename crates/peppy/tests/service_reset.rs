@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
 use peppy::commands::Command;

@@ -3,7 +3,7 @@
 //! the stack-operations append log.
 
 use chrono::Local;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use parking_lot::Mutex as StdMutex;
 use std::fs::File;
 use std::io::Write;

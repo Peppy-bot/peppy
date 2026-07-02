@@ -4,7 +4,8 @@ use super::{
 use crate::Result;
 use crate::names;
 use crate::services::repo::cache as repo_cache;
-use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
+use config::consts::NODE_CONFIG_FILE;
+use daemon_config::consts::PeppyDirs;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::{

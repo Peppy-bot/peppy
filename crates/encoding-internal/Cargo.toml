@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 config = { workspace = true }
+daemon-config = { workspace = true }
 capnp = "0.26"
 capnpc = "0.26"
 proc-macro2 = "1.0"

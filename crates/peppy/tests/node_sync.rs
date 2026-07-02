@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::{EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
 use core_node::nodes_repo_cache_path;
 use peppy::commands::Command;

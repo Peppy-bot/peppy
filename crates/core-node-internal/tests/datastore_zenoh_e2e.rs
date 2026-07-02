@@ -8,7 +8,7 @@
 mod common;
 
 use common::{assert_datastore_binary_round_trip, start_core_node_with_real_messenger_mode};
-use config::peppy_config::Mode;
+use daemon_config::peppy_config::Mode;
 
 #[rstest::rstest]
 #[case::peer(Mode::Peer)]

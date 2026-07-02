@@ -29,8 +29,10 @@ pub enum Error {
     #[from]
     PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
-    // -- config
+    // -- config: shared document model (node configs, runtime configs)
     PeppyConfig(config::ConfigError),
+    // -- config: daemon-side documents (launcher files, peppy_config.json5)
+    DaemonConfig(daemon_config::DaemonConfigError),
 
     // -- auth: transport/HTTP failures (unreachable backend, unexpected status)
     Http(String),
@@ -62,6 +64,7 @@ impl Display for Error {
             Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
             Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
             Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
+            Error::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
             Error::Http(msg) => write!(fmt, "{msg}"),
             Error::Auth(msg) => write!(fmt, "{msg}"),
             Error::NotAuthenticated => write!(

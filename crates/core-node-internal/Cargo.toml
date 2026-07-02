@@ -7,6 +7,7 @@ edition.workspace = true
 [dependencies]
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 config = { workspace = true }
+daemon-config = { workspace = true }
 node-stack = { workspace = true }
 peppylib = { workspace = true }
 core-node-api = { workspace = true }

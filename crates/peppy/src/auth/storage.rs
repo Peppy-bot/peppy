@@ -184,15 +184,15 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
 /// Credentials path under a given peppy root: `<root>/conf/credentials.json5`.
 /// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
 /// both auth files from one [`PeppyDirs`].
-pub fn credentials_path(dirs: &config::consts::PeppyDirs) -> PathBuf {
-    dirs.conf_dir().join(config::consts::CREDENTIALS_FILE)
+pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
+    dirs.conf_dir().join(daemon_config::consts::CREDENTIALS_FILE)
 }
 
 /// Default credentials path: `<peppy root>/conf/credentials.json5`, honouring
 /// `PEPPY_HOME`. The root is the global peppy data dir, never the cwd.
 pub fn default_path() -> PathBuf {
-    credentials_path(&config::consts::PeppyDirs::new(
-        config::consts::peppy_root_dir(),
+    credentials_path(&daemon_config::consts::PeppyDirs::new(
+        daemon_config::consts::peppy_root_dir(),
     ))
 }
 
@@ -233,7 +233,7 @@ pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
         restrict_dir(parent)?;
     }
 
-    config::atomic_write::publish_atomic(path, |tmp| {
+    daemon_config::atomic_write::publish_atomic(path, |tmp| {
         std::fs::write(tmp, &content)?;
         restrict_file(tmp)
     })?;

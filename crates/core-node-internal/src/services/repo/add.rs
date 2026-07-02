@@ -4,7 +4,7 @@ use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{json_entry_identity, repo_source_to_json, source_identity};
 use crate::services::response::into_service_response;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;

@@ -12,7 +12,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use daemon_config::consts::PeppyDirs;
 use config::node::{NodeConfig, PeppygenLanguage};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;

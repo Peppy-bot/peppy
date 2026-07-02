@@ -6,9 +6,8 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    launcher::Name,
     node::{ConsumedTopic, EmittedTopic, MessageFormat},
-    runtime::RuntimeConfig,
+    runtime::{Name, RuntimeConfig},
 };
 use generator::LanguageGenerator;
 use std::path::Path;

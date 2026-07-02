@@ -1,7 +1,8 @@
 mod common;
 
 use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeout};
-use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use config::node::Name;
 use config::node::NodeConfigParser;
 use core_node::names;
