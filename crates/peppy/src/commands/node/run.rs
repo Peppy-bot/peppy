@@ -1,12 +1,16 @@
 use config::AnyType;
 use config::node::ConformsToItem;
+use config::runtime::PairingSlotBinding;
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, StackListRequest,
 };
-use daemon_config::launcher::{BindingValidationItem, DeploymentInstance, validate_bindings};
+use daemon_config::launcher::{
+    BindingValidationItem, DeploymentInstance, PairingValidationItem, validate_bindings,
+    validate_pairings,
+};
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;
@@ -61,6 +65,8 @@ fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
         env_vars: BTreeMap::new(),
         framework: daemon_config::launcher::FrameworkOverrides::default(),
         bindings: BTreeMap::new(),
+        pairings: BTreeMap::new(),
+        defer_pairings: Vec::new(),
     }
 }
 
@@ -318,6 +324,7 @@ fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMa
 /// Returns `Ok(None)` on transient transport failures so the call site
 /// can swallow them and continue; an unreachable daemon should fail
 /// the actual `node_run` invocation, not the pre-flight.
+#[allow(clippy::too_many_arguments)]
 async fn validate_binds_against_stack(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -325,6 +332,8 @@ async fn validate_binds_against_stack(
     target_tag: &str,
     target_instance_id: &str,
     binds: &BTreeMap<String, String>,
+    pairs: &BTreeMap<String, String>,
+    defer_pairs: &[String],
 ) -> Result<Option<BTreeMap<String, SlotBinding>>> {
     let stack_response = poll_stack_list(
         &StackListRequest::new(false),
@@ -348,6 +357,7 @@ async fn validate_binds_against_stack(
         tag: String,
         instances: Vec<DeploymentInstance>,
         conforms_to: Vec<ConformsToItem>,
+        pairing_deps: Vec<config::node::PairingDependency>,
     }
 
     let stack_nodes: Vec<_> = graph
@@ -385,12 +395,27 @@ async fn validate_binds_against_stack(
     let mut target_conforms_to: Vec<ConformsToItem> = Vec::new();
     let mut target_seen_in_stack = false;
 
+    // Pairing slots of running instances that are exclusively claimed right
+    // now, fed to `validate_pairings` so a `--pair` at a taken slot fails
+    // in the preflight with the existing peer named.
+    let mut already_paired = daemon_config::launcher::AlreadyPairedSlots::new();
+
     let mut snapshot: Vec<StackNode> = Vec::with_capacity(stack_nodes.len());
     for (node, info_response) in stack_nodes.iter().zip(infos) {
         let info = match info_response {
             NodeInfoResponse::Found(info) => info,
             NodeInfoResponse::NotInStack => continue,
         };
+        for inst in &info.instances {
+            for (link_id, slot) in &inst.pairing_slots {
+                if let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding {
+                    already_paired.insert(
+                        (inst.instance_id.clone(), link_id.clone()),
+                        format!("{}:{}", peer.instance_id, peer_link_id),
+                    );
+                }
+            }
+        }
         // Harvest the target's manifest/interfaces from its snapshot
         // entry so we don't need a second `node_info` call below.
         if node.name == target_name && node.tag == target_tag {
@@ -423,6 +448,12 @@ async fn validate_binds_against_stack(
             tag: node.tag.clone(),
             instances,
             conforms_to: info.config.interfaces.conforms_to.unwrap_or_default(),
+            pairing_deps: info
+                .config
+                .manifest
+                .depends_on
+                .map(|d| d.pairings)
+                .unwrap_or_default(),
         });
     }
 
@@ -457,6 +488,8 @@ async fn validate_binds_against_stack(
     // group.
     let synthetic_instances = vec![DeploymentInstance {
         bindings: binds.clone(),
+        pairings: pairs.clone(),
+        defer_pairings: defer_pairs.to_vec(),
         ..empty_deployment_instance(
             Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
         )
@@ -488,6 +521,46 @@ async fn validate_binds_against_stack(
         let msg = daemon_config::format_bulleted(&validated.errors);
         return Err(Error::ExecutionFailed(msg));
     }
+
+    // Pairing preflight over the same snapshot: coverage of every required
+    // slot (naming the exact `--pair`/`--defer-pair` flags), target
+    // resolution with the `/<peer_link>` ambiguity hint, and exclusivity
+    // against `already_paired`. Running instances are `preexisting` items:
+    // valid pair targets, exempt from coverage (they were covered at their
+    // own start).
+    let target_pairing_deps: Vec<config::node::PairingDependency> = target_depends_on
+        .as_ref()
+        .map(|d| d.pairings.clone())
+        .unwrap_or_default();
+    let mut pairing_items: Vec<PairingValidationItem<'_>> = snapshot
+        .iter()
+        .map(|s| PairingValidationItem {
+            node_name: &s.name,
+            node_tag: &s.tag,
+            instances: &s.instances,
+            pairing_deps: &s.pairing_deps,
+            preexisting: true,
+        })
+        .collect();
+    pairing_items.push(PairingValidationItem {
+        node_name: target_name,
+        node_tag: target_tag,
+        instances: &synthetic_instances,
+        pairing_deps: &target_pairing_deps,
+        preexisting: false,
+    });
+    let validated_pairings = validate_pairings(&pairing_items, &already_paired);
+    if !validated_pairings.errors.is_empty() {
+        let errors: Vec<String> = validated_pairings
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
+        return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
+            &errors,
+        )));
+    }
+
     Ok(Some(
         validated
             .slot_bindings
@@ -517,10 +590,13 @@ pub async fn validate_and_run_instance(
     args: &[(String, String)],
     instance_id: Option<String>,
     binds: &[(String, String)],
+    pairs: &[(String, String)],
+    defer_pairs: &[String],
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
     let binds_map = binds_to_map(binds, &prelaunch_instance_id)?;
+    let pairs_map: BTreeMap<String, String> = pairs.iter().cloned().collect();
     let slot_bindings = match validate_binds_against_stack(
         messenger,
         core_node_name,
@@ -528,6 +604,8 @@ pub async fn validate_and_run_instance(
         tag,
         &prelaunch_instance_id,
         &binds_map,
+        &pairs_map,
+        defer_pairs,
     )
     .await
     {
@@ -548,6 +626,8 @@ pub async fn validate_and_run_instance(
         args,
         Some(prelaunch_instance_id),
         slot_bindings,
+        pairs_map,
+        defer_pairs.to_vec(),
         timeouts,
     )
     .await
@@ -566,6 +646,8 @@ pub async fn run_instance_async(
     args: &[(String, String)],
     instance_id: Option<String>,
     slot_bindings: BTreeMap<String, SlotBinding>,
+    requested_pairs: BTreeMap<String, String>,
+    deferred_pairs: Vec<String>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -615,7 +697,9 @@ pub async fn run_instance_async(
         tag.to_string(),
         timeouts.max_secs,
     )
-    .with_env_vars(caller_env_overrides());
+    .with_env_vars(caller_env_overrides())
+    .with_requested_pairs(requested_pairs)
+    .with_deferred_pairs(deferred_pairs);
     let mut action_handle = send_node_run(
         &start_goal,
         messenger_handle,
@@ -650,6 +734,8 @@ pub fn run_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     binds: Vec<(String, String)>,
+    pairs: Vec<(String, String)>,
+    defer_pairs: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -660,6 +746,8 @@ pub fn run_node(
         args,
         instance_id,
         binds,
+        pairs,
+        defer_pairs,
         timeouts,
         build,
     ))
@@ -673,6 +761,8 @@ async fn run_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     binds: Vec<(String, String)>,
+    pairs: Vec<(String, String)>,
+    defer_pairs: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -752,6 +842,8 @@ async fn run_node_async(
         &args,
         instance_id,
         &binds,
+        &pairs,
+        &defer_pairs,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;

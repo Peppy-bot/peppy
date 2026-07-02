@@ -2,8 +2,8 @@ use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_actio
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
-    self, AutoSyncParams, collect_consumed_interfaces, generate_peppygen_for_node,
-    resolve_conforms_to, stack_resolver,
+    self, AutoSyncParams, collect_consumed_interfaces, collect_pairing_interfaces,
+    generate_peppygen_for_node, resolve_conforms_to, stack_resolver,
 };
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
@@ -49,6 +49,7 @@ pub async fn listen_for_node_add(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    pairing: Arc<super::pairing::PairingCoordinator>,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -67,6 +68,7 @@ pub async fn listen_for_node_add(
             bound_core_node: core_node_name.to_string(),
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
+            pairing,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -244,6 +246,9 @@ pub(crate) struct NodeAddActionContext {
     pub(crate) bound_core_node: String,
     pub(crate) core_instance_id: String,
     pub(crate) peppy_dirs: PeppyDirs,
+    /// The daemon's single pairing authority; the overwrite path stops the
+    /// entity's old instances, which must dissolve their pairs eagerly.
+    pub(crate) pairing: Arc<super::pairing::PairingCoordinator>,
 }
 
 struct ProcessNodeAddContext {
@@ -1288,6 +1293,10 @@ async fn shutdown_existing_instances(
     .await;
 
     for instance_id in &instances {
+        ctx.action
+            .pairing
+            .dissolve_for_instance(instance_id.as_str())
+            .await;
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
             line: format!("{} has been stopped", instance_id.as_str()),
@@ -1418,6 +1427,15 @@ async fn process_node_add_inner(
     )
     .map_err(|reason| format!("Failed to resolve `conforms_to` interfaces: {}", reason))?;
     consumed_interfaces.extend(conformed);
+    // Both directions of every declared pairing slot, resolved from the
+    // pairing docs (role-validated, sha-pinned, drift-checked).
+    let pairing_interfaces = collect_pairing_interfaces(
+        &node_config.manifest,
+        &ctx.action.peppy_dirs,
+        &interface_feedback,
+    )
+    .map_err(|reason| format!("Failed to resolve `depends_on.pairings`: {}", reason))?;
+    consumed_interfaces.extend(pairing_interfaces);
     generate_peppygen_for_node(
         language,
         &working_dir,

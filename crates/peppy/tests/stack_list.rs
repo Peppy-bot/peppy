@@ -58,6 +58,7 @@ fn make_consumer_depend_on_provider(
             from_any: false,
         }],
         interfaces: vec![],
+        pairings: vec![],
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
@@ -194,6 +195,8 @@ async fn node_list_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -213,6 +216,8 @@ async fn node_list_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -356,6 +361,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
             args: Vec::new(),
             instance_id: None,
             binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -374,6 +381,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
             args: Vec::new(),
             instance_id: None,
             binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,

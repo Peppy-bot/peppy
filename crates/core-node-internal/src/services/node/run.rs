@@ -1,5 +1,6 @@
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
+use super::pairing::{PairingCoordinator, plan_requested_pairs};
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
 use crate::names;
@@ -114,6 +115,9 @@ pub struct NodeRunServiceConfig {
     /// per-node health monitors stop probing before the stack is torn down,
     /// rather than flagging intentionally-stopping nodes as unhealthy.
     pub shutdown_token: CancellationToken,
+    /// The daemon's single pairing authority: reserve/deliver/dissolve for
+    /// the goal's `requested_pairs`/`deferred_pairs`.
+    pub pairing: Arc<PairingCoordinator>,
 }
 
 #[derive(Clone)]
@@ -129,6 +133,7 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) health_monitor_timeout: Duration,
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
+    pub(crate) pairing: Arc<PairingCoordinator>,
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
@@ -192,6 +197,7 @@ pub async fn listen_for_node_run(
             health_monitor_timeout: config.health_monitor_timeout,
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
+            pairing: config.pairing,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -623,6 +629,8 @@ async fn process_node_run(
         node_name,
         tag,
         env_vars,
+        requested_pairs,
+        deferred_pairs,
         ..
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
@@ -698,6 +706,41 @@ async fn process_node_run(
         }
         guard.config().clone()
     };
+
+    // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
+    // and the launcher validator): coverage of every required slot, and
+    // resolution of each requested target to one concrete peer slot. Loud
+    // failure here costs nothing — no process has been spawned yet. The
+    // actual registry reservation happens after `prepare_and_spawn`, once
+    // this instance exists in the stack (in `Starting`).
+    let pairing_deps = node_config
+        .manifest
+        .depends_on
+        .as_ref()
+        .map(|d| d.pairings.as_slice())
+        .unwrap_or_default();
+    let planned_pairs = match plan_requested_pairs(
+        &ctx.action.node_stack.unpaired_pairing_slots(),
+        instance_id_str,
+        pairing_deps,
+        &requested_pairs,
+        &deferred_pairs,
+    ) {
+        Ok(p) => p,
+        Err(msg) => {
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+    };
+    for link_id in &deferred_pairs {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: format!(
+                "pairing slot `{link_id}` deferred: instance starts unpaired; pair it later \
+                 by starting the peer with `--pair <its_link_id>@{instance_id_str}/{link_id}`"
+            ),
+        });
+    }
 
     let sccache_injected =
         super::inject_rust_build_env(&mut env_vars, node_config.execution.language);
@@ -866,6 +909,42 @@ async fn process_node_run(
             }
         };
 
+    // Reserve every planned pair now that this instance is registered (in
+    // `Starting`). The registry re-validates under its own lock, so a peer
+    // slot claimed by a concurrent `node_run` since the pre-spawn check
+    // fails here — loudly — instead of double-pairing. Pins are NOT
+    // delivered yet; that happens after the instance commits to Running.
+    let mut reserve_error = None;
+    for pair in &planned_pairs {
+        if let Err(msg) = ctx.action.pairing.reserve(&pair.own, &pair.peer).await {
+            reserve_error = Some(format!(
+                "failed to reserve pair for slot `{}`: {msg}",
+                pair.own.link_id
+            ));
+            break;
+        }
+    }
+    if let Some(reason) = reserve_error {
+        ctx.action
+            .pairing
+            .dissolve_for_instance(instance_id_str)
+            .await;
+        let msg = node_stack::NodeEntity::abort_started(
+            &entity_handle,
+            child,
+            started_ctx,
+            reason,
+            &instance_id,
+        )
+        .await;
+        write_error_to_log(&ctx.log_file, &msg);
+        feedback_sync
+            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+            .await;
+        publish_enabled.store(false, Ordering::Release);
+        return NodeRunResult::failure(msg);
+    }
+
     let signal_target = NodeSignalTarget {
         messenger: &ctx.action.messenger,
         core_node_name: &ctx.action.core_node_name,
@@ -902,6 +981,10 @@ async fn process_node_run(
             "Aborting node instance '{}' during ready wait: {}",
             instance_id_str, reason
         );
+        ctx.action
+            .pairing
+            .dissolve_for_instance(instance_id_str)
+            .await;
         let msg = node_stack::NodeEntity::abort_started(
             &entity_handle,
             child,
@@ -948,6 +1031,10 @@ async fn process_node_run(
                     "Aborting node instance '{}' after health check: {}",
                     instance_id_str, reason
                 );
+                ctx.action
+                    .pairing
+                    .dissolve_for_instance(instance_id_str)
+                    .await;
                 let msg = node_stack::NodeEntity::abort_started(
                     &entity_handle,
                     child,
@@ -985,6 +1072,7 @@ async fn process_node_run(
                         node_tag: tag.clone(),
                         target_instance_id: instance_id.clone(),
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
+                        pairing: Arc::clone(&ctx.action.pairing),
                         instance_done: instance_done.clone(),
                         shutdown_token: ctx.action.shutdown_token.clone(),
                     });
@@ -1005,6 +1093,47 @@ async fn process_node_run(
                         instance_done,
                     });
 
+                    // The instance is Running: deliver every reserved pin
+                    // live over `peer_update` (boot config is always
+                    // all-Unpaired, so this is the only way slots get
+                    // paired). The watchers above are already running, so
+                    // the process is reaped even if the run fails here.
+                    if !planned_pairs.is_empty() {
+                        if let Err(reason) = ctx
+                            .action
+                            .pairing
+                            .deliver_pairs_for_instance(instance_id_str)
+                            .await
+                        {
+                            ctx.action
+                                .pairing
+                                .dissolve_for_instance(instance_id_str)
+                                .await;
+                            let msg = format!(
+                                "node instance '{instance_id_str}' started but pairing \
+                                 delivery failed: {reason}. The instance was left running \
+                                 with its pairing slots unpaired; stop it with \
+                                 `peppy node stop {instance_id_str}`"
+                            );
+                            write_error_to_log(&ctx.log_file, &msg);
+                            feedback_sync
+                                .drain_or_warn(
+                                    instance_id_str,
+                                    drain_quiet_window(is_container),
+                                    false,
+                                )
+                                .await;
+                            publish_enabled.store(false, Ordering::Release);
+                            return NodeRunResult::failure(msg);
+                        }
+                        for pair in &planned_pairs {
+                            let _ = ctx.feedback_tx.send(FeedbackLine {
+                                stream: FeedbackStream::Stdout,
+                                line: format!("paired: {} ⇌ {}", pair.own, pair.peer),
+                            });
+                        }
+                    }
+
                     // Wait until the readers have drained the child's startup
                     // output onto the feedback stream before closing it. Keyed
                     // off a positive "reader caught up" signal, so heavy load
@@ -1024,6 +1153,10 @@ async fn process_node_run(
                 }
                 Err(e) => {
                     let msg = format!("Failed to register instance: {}", e);
+                    ctx.action
+                        .pairing
+                        .dissolve_for_instance(instance_id_str)
+                        .await;
                     write_error_to_log(&ctx.log_file, &msg);
                     feedback_sync
                         .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
@@ -1043,6 +1176,10 @@ async fn process_node_run(
                 "Aborting node instance '{}' during health check: {}",
                 instance_id_str, reason
             );
+            ctx.action
+                .pairing
+                .dissolve_for_instance(instance_id_str)
+                .await;
             let msg = node_stack::NodeEntity::abort_started(
                 &entity_handle,
                 child,
@@ -1472,6 +1609,9 @@ struct ExitWatcherParams {
     node_tag: String,
     target_instance_id: Name,
     peppy_dirs: PeppyDirs,
+    /// Death auto-clears pairs: on a self-exit the watcher eagerly dissolves
+    /// every pair involving this instance and notifies each live survivor.
+    pairing: Arc<PairingCoordinator>,
     /// Cancelled once the process exits, to stop this instance's health monitor.
     instance_done: CancellationToken,
     shutdown_token: CancellationToken,
@@ -1500,6 +1640,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         node_tag,
         target_instance_id,
         peppy_dirs,
+        pairing,
         instance_done,
         shutdown_token,
     } = p;
@@ -1543,6 +1684,14 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         else {
             return;
         };
+
+        // Death auto-clears pairs. The eager half of cleanup: dissolve this
+        // instance's pairs and live-notify each survivor that its slot is
+        // Unpaired (the registry's lazy prune-on-read is the backstop for
+        // paths that never reach here).
+        pairing
+            .dissolve_for_instance(instance_id_str.as_str())
+            .await;
 
         match new_state {
             InstanceState::Finished => {

@@ -180,6 +180,122 @@ pub struct BindingDeadKey {
     pub declared_link_ids: String,
 }
 
+/// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
+/// `--pair` link_id) that matches no declared `depends_on.pairings` slot of
+/// the instance's node.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "pairing key `{key}` on instance `{owner_instance_id}` matches no declared \
+     pairing slot; declared pairing link_ids: [{declared_link_ids}]"
+)]
+pub struct PairingDeadKey {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub declared_link_ids: String,
+}
+
+/// Payload for [`ParsingError::PairingTargetNotComplementary`]. The target
+/// instance declares no unclaimed pairing slot with the same `(name, tag)`
+/// and the opposite role.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "pairing `{key}` on instance `{owner_instance_id}`: target `{target_instance_id}` \
+     (deploys `{producer_name}:{producer_tag}`) has no available slot complementary to \
+     `{pairing_name}:{pairing_tag}` role `{role}`"
+)]
+pub struct PairingTargetNotComplementary {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub target_instance_id: String,
+    pub producer_name: String,
+    pub producer_tag: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub role: String,
+}
+
+/// Payload for [`ParsingError::PairingTargetAmbiguous`]. The target instance
+/// has more than one complementary unclaimed slot and the pair spec did not
+/// name one.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "pairing `{key}` on instance `{owner_instance_id}`: target `{target_instance_id}` \
+     has multiple complementary slots for `{pairing_name}:{pairing_tag}` \
+     ([{candidate_link_ids}]) — disambiguate with `{key}@{target_instance_id}/<peer_link_id>`"
+)]
+pub struct PairingTargetAmbiguous {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub target_instance_id: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub candidate_link_ids: String,
+}
+
+/// Payload for [`ParsingError::PairingSlotAlreadyPaired`]. A slot (instance ×
+/// link_id) was claimed by more than one pair in the same plan, or is already
+/// paired in the running stack.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "pairing slot `{link_id}` of instance `{instance_id}` is already paired \
+     (with `{existing_peer}`); a pairing slot is exclusive until cleared"
+)]
+pub struct PairingSlotAlreadyPaired {
+    pub instance_id: String,
+    pub link_id: String,
+    pub existing_peer: String,
+}
+
+/// Payload for [`ParsingError::PairingConflict`]. Both endpoints declared the
+/// pair but their declarations disagree.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "conflicting pairing declarations: `{instance_a}` pairs slot `{link_a}` with \
+     `{target_a}`, but `{instance_b}` pairs slot `{link_b}` with `{target_b}` — \
+     declaring a pair from both sides is allowed only when both agree"
+)]
+pub struct PairingConflict {
+    pub instance_a: String,
+    pub link_a: String,
+    pub target_a: String,
+    pub instance_b: String,
+    pub link_b: String,
+    pub target_b: String,
+}
+
+/// Payload for [`ParsingError::PairingSha256Mismatch`]. Both sides pin a
+/// sha256 for the same pairing document and the pins differ.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "pairing `{pairing_name}:{pairing_tag}`: `{instance_a}` pins sha256 `{sha_a}` but \
+     `{instance_b}` pins `{sha_b}` — both sides of a pair must reference the same document"
+)]
+pub struct PairingSha256Mismatch {
+    pub instance_a: String,
+    pub sha_a: String,
+    pub instance_b: String,
+    pub sha_b: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+}
+
+/// Payload for [`ParsingError::PairingSlotUncovered`]. A required pairing
+/// slot was neither paired nor explicitly deferred.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance `{instance_id}` declares required pairing slot `{link_id}` (pairing \
+     `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
+     `pairings: {{ {link_id}: \"<peer_instance>\" }}` / `--pair {link_id}@<peer_instance>`), \
+     or defer it deliberately (`defer_pairings: [\"{link_id}\"]` / `--defer-pair {link_id}`)"
+)]
+pub struct PairingSlotUncovered {
+    pub instance_id: String,
+    pub link_id: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub role: String,
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
@@ -255,6 +371,45 @@ pub enum ParsingError {
     /// variants.
     #[error(transparent)]
     DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
+
+    // -- launcher/CLI: pairings
+    /// A `--bind`/`bindings:` key that names a pairing slot. Pairing slots
+    /// are never binding slots; the establishment surface is `--pair` /
+    /// launcher `pairings:`.
+    #[error(
+        "binding key `{binding}` on instance `{owner_instance_id}` names a pairing slot; \
+         pair it with `--pair {binding}@<peer_instance>` (or launcher `pairings:`) instead of --bind"
+    )]
+    BindingKeyIsPairingSlot {
+        owner_instance_id: String,
+        binding: String,
+    },
+    #[error(transparent)]
+    PairingDeadKey(Box<PairingDeadKey>),
+    #[error(transparent)]
+    PairingTargetNotComplementary(Box<PairingTargetNotComplementary>),
+    #[error(transparent)]
+    PairingTargetAmbiguous(Box<PairingTargetAmbiguous>),
+    #[error(transparent)]
+    PairingSlotAlreadyPaired(Box<PairingSlotAlreadyPaired>),
+    #[error(transparent)]
+    PairingConflict(Box<PairingConflict>),
+    #[error(transparent)]
+    PairingSha256Mismatch(Box<PairingSha256Mismatch>),
+    #[error(transparent)]
+    PairingSlotUncovered(Box<PairingSlotUncovered>),
+    /// A `defer_pairings` entry that is invalid: it names an unknown slot,
+    /// an `optional: true` slot (deferring is redundant — optional slots
+    /// boot unpaired without ceremony), or a slot that is also paired in
+    /// the same plan.
+    #[error(
+        "defer_pairings entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}"
+    )]
+    PairingDeferInvalid {
+        owner_instance_id: String,
+        link_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

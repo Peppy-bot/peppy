@@ -3,7 +3,7 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::repo::cache::{InterfaceCacheEntry, LauncherCacheEntry};
+use crate::services::repo::cache::{InterfaceCacheEntry, LauncherCacheEntry, PairingCacheEntry};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::{normalize_repo_entries, source_identity};
 use config::consts::NODE_CONFIG_FILE;
@@ -17,6 +17,7 @@ use core_node_api::encoding::{
 use daemon_config::consts::PeppyDirs;
 use daemon_config::interface::PeppyInterfaceParser;
 use daemon_config::launcher::PeppyLauncherParser;
+use daemon_config::pairing::PeppyPairingParser;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
@@ -166,13 +167,21 @@ impl GoalHandler for RepoRefreshGoalHandler {
                                 .iter()
                                 .map(|i| (i.interface_name.as_str(), i.tag.as_str())),
                         );
+                        let unique_pairings = count_unique_by_name_tag(
+                            refreshed
+                                .pairings
+                                .iter()
+                                .map(|p| (p.pairing_name.as_str(), p.tag.as_str())),
+                        );
                         write_cache(&dirs, &refreshed.nodes)?;
                         write_launcher_cache(&dirs, &refreshed.launchers)?;
                         write_interface_cache(&dirs, &refreshed.interfaces)?;
+                        write_pairing_cache(&dirs, &refreshed.pairings)?;
                         Ok((
                             unique_nodes,
                             unique_launchers,
                             unique_interfaces,
+                            unique_pairings,
                             refreshed.excluded,
                         ))
                     }
@@ -182,9 +191,18 @@ impl GoalHandler for RepoRefreshGoalHandler {
             .await;
 
             let result = match scan {
-                Ok(Ok((unique_nodes, unique_launchers, unique_interfaces, _excluded))) => {
-                    RepoRefreshResult::success(unique_nodes, unique_launchers, unique_interfaces)
-                }
+                Ok(Ok((
+                    unique_nodes,
+                    unique_launchers,
+                    unique_interfaces,
+                    unique_pairings,
+                    _excluded,
+                ))) => RepoRefreshResult::success(
+                    unique_nodes,
+                    unique_launchers,
+                    unique_interfaces,
+                    unique_pairings,
+                ),
                 Ok(Err(e)) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())
@@ -221,6 +239,7 @@ pub(crate) struct RefreshedRepos {
     pub(crate) nodes: Vec<NodeCacheEntry>,
     pub(crate) launchers: Vec<LauncherCacheEntry>,
     pub(crate) interfaces: Vec<InterfaceCacheEntry>,
+    pub(crate) pairings: Vec<PairingCacheEntry>,
     pub(crate) excluded: Vec<ExcludedRepo>,
 }
 
@@ -316,9 +335,11 @@ pub(crate) fn process_refresh(
     let mut global_seen_nodes: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_launchers: HashSet<String> = HashSet::new();
     let mut global_seen_interfaces: HashSet<(String, String)> = HashSet::new();
+    let mut global_seen_pairings: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<NodeCacheEntry> = Vec::new();
     let mut all_launchers: Vec<LauncherCacheEntry> = Vec::new();
     let mut all_interfaces: Vec<InterfaceCacheEntry> = Vec::new();
+    let mut all_pairings: Vec<PairingCacheEntry> = Vec::new();
     let excluded_repos: Vec<ExcludedRepo> = exclusions
         .entries
         .iter()
@@ -427,12 +448,27 @@ pub(crate) fn process_refresh(
             }
             all_interfaces.push(interface);
         }
+        for pairing in walked.pairings {
+            let key = (pairing.pairing_name.clone(), pairing.tag.clone());
+            if global_seen_pairings.insert(key) {
+                on_feedback(RepoRefreshFeedback::Discovered {
+                    kind: RepoItemKind::Pairing,
+                    item_name: pairing.pairing_name.clone(),
+                    item_tag: pairing.tag.clone(),
+                    source_type: pairing.source_type,
+                    path: pairing.path.clone(),
+                    sha256: pairing.sha256.clone(),
+                });
+            }
+            all_pairings.push(pairing);
+        }
     }
 
     Ok(RefreshedRepos {
         nodes: all_nodes,
         launchers: all_launchers,
         interfaces: all_interfaces,
+        pairings: all_pairings,
         excluded: excluded_repos,
     })
 }
@@ -442,6 +478,7 @@ pub(crate) struct WalkResult {
     pub nodes: Vec<NodeCacheEntry>,
     pub launchers: Vec<LauncherCacheEntry>,
     pub interfaces: Vec<InterfaceCacheEntry>,
+    pub pairings: Vec<PairingCacheEntry>,
 }
 
 /// Count the number of distinct `(name, tag)` pairs in an iterator.
@@ -506,9 +543,11 @@ pub(crate) fn walk_directory(
     let mut nodes_seen: HashSet<(String, String)> = HashSet::new();
     let mut launchers_seen: HashSet<String> = HashSet::new();
     let mut interfaces_seen: HashSet<(String, String)> = HashSet::new();
+    let mut pairings_seen: HashSet<(String, String)> = HashSet::new();
     let mut nodes: Vec<NodeCacheEntry> = Vec::new();
     let mut launchers: Vec<LauncherCacheEntry> = Vec::new();
     let mut interfaces: Vec<InterfaceCacheEntry> = Vec::new();
+    let mut pairings: Vec<PairingCacheEntry> = Vec::new();
 
     for entry in walker.flatten() {
         let file_name = entry.file_name().to_string_lossy();
@@ -561,6 +600,9 @@ pub(crate) fn walk_directory(
             PeppySchema::InterfaceV1 => {
                 collect_interface_entry(&ctx, &mut interfaces_seen, &mut interfaces);
             }
+            PeppySchema::PairingV1 => {
+                collect_pairing_entry(&ctx, &mut pairings_seen, &mut pairings);
+            }
         }
     }
 
@@ -568,6 +610,7 @@ pub(crate) fn walk_directory(
         nodes,
         launchers,
         interfaces,
+        pairings,
     }
 }
 
@@ -759,6 +802,57 @@ fn collect_interface_entry(
     });
 }
 
+fn collect_pairing_entry(
+    ctx: &EntryContext<'_>,
+    seen: &mut HashSet<(String, String)>,
+    pairings: &mut Vec<PairingCacheEntry>,
+) {
+    let content = match std::str::from_utf8(ctx.bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(
+                "Skipping non-utf8 pairing .json5 at {}: {}",
+                ctx.config_path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let parsed = match PeppyPairingParser::from_content(content) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            debug!(
+                "Skipping malformed pairing .json5 at {}: {}",
+                ctx.config_path.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let name = parsed.manifest.name.as_str().to_string();
+    let tag = parsed.manifest.tag.clone();
+    let key = (name.clone(), tag.clone());
+
+    if !seen.insert(key) {
+        return;
+    }
+
+    let pairing_path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
+    let sha256 = fingerprint_for_bytes(ctx.bytes);
+
+    pairings.push(PairingCacheEntry {
+        pairing_name: name,
+        tag,
+        sha256,
+        source_type: ctx.source_type,
+        source_uri: ctx.source_uri.map(|s| s.to_string()),
+        resolved_ref: ctx.resolved_ref.map(|s| s.to_string()),
+        path: pairing_path,
+        repo_id: 0,
+    });
+}
+
 /// Returns the path of the manifest file itself (not its parent
 /// directory). For git repos the result is relative to the repo root;
 /// for fs repos it is the absolute path.
@@ -846,7 +940,7 @@ fn clone_and_walk_git_repo(
 }
 
 pub(crate) use crate::services::repo::cache::{
-    write_cache, write_interface_cache, write_launcher_cache,
+    write_cache, write_interface_cache, write_launcher_cache, write_pairing_cache,
 };
 
 #[cfg(test)]

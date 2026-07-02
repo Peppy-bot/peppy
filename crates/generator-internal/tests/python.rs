@@ -11,6 +11,8 @@ mod consumed_services_dedup;
 mod consumed_topics_dedup;
 #[path = "python/generate_lib.rs"]
 mod generate_lib;
+#[path = "python/pairing_lib.rs"]
+mod pairing_lib;
 #[path = "python/services_communication.rs"]
 mod services_communication;
 #[path = "python/services_conforms_to.rs"]

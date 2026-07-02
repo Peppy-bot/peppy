@@ -14,6 +14,7 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
+use crate::services::node::pairing::PairingCoordinator;
 use crate::services::node::{
     DaemonDefaults, create_action_log_file, resolve_mount_path_parameters,
 };
@@ -77,6 +78,7 @@ pub struct StackLaunchDefaults {
     pub shutdown_token: CancellationToken,
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
 pub async fn listen_for_stack_launch(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -85,6 +87,7 @@ pub async fn listen_for_stack_launch(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     defaults: StackLaunchDefaults,
+    pairing: Arc<PairingCoordinator>,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -113,6 +116,7 @@ pub async fn listen_for_stack_launch(
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
+            pairing,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -166,6 +170,10 @@ struct ProcessLaunchContext {
     daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor.
     shutdown_token: CancellationToken,
+    /// The daemon's single pairing authority, forwarded into each instance's
+    /// `node_run` flow (the launcher's `pairings:` map rides the per-instance
+    /// `NodeRunGoal`).
+    pairing: Arc<PairingCoordinator>,
 }
 
 #[derive(Clone)]
@@ -179,6 +187,7 @@ struct LaunchActionContext {
     daemon_use_sim_time: bool,
     daemon_defaults: DaemonDefaults,
     shutdown_token: CancellationToken,
+    pairing: Arc<PairingCoordinator>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -480,8 +489,63 @@ async fn start_node_instances(
         String,
         std::collections::BTreeMap<String, config::runtime::SlotBinding>,
     >,
+    planned_pairings: &[daemon_config::launcher::PlannedPairing],
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
+
+    // Each planned pair is established by the LATER-started endpoint's
+    // `node_run` (instances start strictly sequentially in `ordered`, so at
+    // that point the earlier endpoint is already Running and unpaired). The
+    // earlier endpoint's slot rides `deferred_pairs` so its own coverage
+    // re-check passes; the later endpoint carries the fully-disambiguated
+    // `link_id -> "peer_instance/peer_link"` request.
+    let mut start_index: HashMap<&str, usize> = HashMap::new();
+    for key in ordered {
+        if let Some(item) = planned_by_key.get(key) {
+            for instance in &item.deployment.instances {
+                let next = start_index.len();
+                start_index
+                    .entry(instance.instance_id.as_str())
+                    .or_insert(next);
+            }
+        }
+    }
+    let mut requested_by_instance: HashMap<&str, std::collections::BTreeMap<String, String>> =
+        HashMap::new();
+    let mut deferred_by_instance: HashMap<&str, Vec<String>> = HashMap::new();
+    for pairing in planned_pairings {
+        let idx_a = start_index.get(pairing.a.instance_id.as_str()).copied();
+        let idx_b = start_index.get(pairing.b.instance_id.as_str()).copied();
+        let (earlier, later) = if idx_a <= idx_b {
+            (&pairing.a, &pairing.b)
+        } else {
+            (&pairing.b, &pairing.a)
+        };
+        requested_by_instance
+            .entry(later.instance_id.as_str())
+            .or_default()
+            .insert(
+                later.link_id.clone(),
+                format!("{}/{}", earlier.instance_id, earlier.link_id),
+            );
+        deferred_by_instance
+            .entry(earlier.instance_id.as_str())
+            .or_default()
+            .push(earlier.link_id.clone());
+    }
+    // Explicit `defer_pairings:` entries start unpaired on purpose.
+    for key in ordered {
+        if let Some(item) = planned_by_key.get(key) {
+            for instance in &item.deployment.instances {
+                for link_id in &instance.defer_pairings {
+                    deferred_by_instance
+                        .entry(instance.instance_id.as_str())
+                        .or_default()
+                        .push(link_id.clone());
+                }
+            }
+        }
+    }
 
     // Compute runtime config host/port.
     let (messaging_host, messaging_port) = ctx
@@ -544,7 +608,19 @@ async fn start_node_instances(
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
             )
-            .with_env_vars(ctx.env_vars.clone());
+            .with_env_vars(ctx.env_vars.clone())
+            .with_requested_pairs(
+                requested_by_instance
+                    .get(instance_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .with_deferred_pairs(
+                deferred_by_instance
+                    .get(instance_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
 
             // Create log file for this node start
             let log_dir = ctx.peppy_dirs.logs_dir_run();
@@ -700,6 +776,7 @@ async fn handle_goal_request(
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
+            pairing,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -726,6 +803,7 @@ async fn handle_goal_request(
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
+            pairing,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
@@ -777,7 +855,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     // Step 3: Validate dependencies and compute topological order
     let root_config = ctx.node_stack.root().read().config().clone();
-    let (ordered, resolved_slot_bindings) =
+    let (ordered, resolved_slot_bindings, planned_pairings) =
         match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
             Ok(result) => result,
             Err(launch_result) => return launch_result,
@@ -827,6 +905,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
                 &planned_by_key,
                 &mut run_log_paths,
                 &resolved_slot_bindings,
+                &planned_pairings,
             )
             .await,
         )

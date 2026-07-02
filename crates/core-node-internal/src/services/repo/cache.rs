@@ -124,6 +124,33 @@ pub struct InterfaceCacheEntry {
     pub repo_id: u32,
 }
 
+/// One entry as it appears in `pairings.json5`. Pairings are stand-alone
+/// JSON5 documents (`peppy_schema: "pairing/v1"`) describing a two-role,
+/// topics-only conversation contract. The `sha256` of the manifest bytes
+/// is the primary way to disambiguate entries that share `(name, tag)`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PairingCacheEntry {
+    pub pairing_name: String,
+    pub tag: String,
+    /// SHA-256 of the manifest file bytes.
+    pub sha256: String,
+    pub source_type: RepoSourceKind,
+    /// Git repository URL. `None` for FS entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
+    /// Short ref name (branch/tag) actually checked out during the last
+    /// refresh. `None` for FS entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    /// Absolute path (fs) or repo-relative (git) path to the pairing
+    /// manifest file.
+    pub path: String,
+    /// The id of the repository entry this pairing was discovered under.
+    /// Derived at read time and never serialized back to disk.
+    #[serde(skip)]
+    pub repo_id: u32,
+}
+
 /// Reads the cache file plus the `nodes.json5` generation used for
 /// the read.
 pub fn load_with_generation(
@@ -237,6 +264,22 @@ pub(crate) fn write_interface_cache(
     Ok(())
 }
 
+/// Write cached pairing information. Atomic via
+/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
+/// observe a partial file.
+pub(crate) fn write_pairing_cache(
+    peppy_dirs: &PeppyDirs,
+    pairings: &[PairingCacheEntry],
+) -> Result<()> {
+    let content = json5_pretty::to_string_pretty(pairings).map_err(|e| {
+        core_node_api::Error::Encoding(format!("failed to serialize pairing cache: {e}"))
+    })?;
+    daemon_config::atomic_write::publish_atomic(&pairings_repo_cache_path(peppy_dirs), |tmp| {
+        std::fs::write(tmp, &content)
+    })?;
+    Ok(())
+}
+
 fn lookup_repo_id(
     repos: &[serde_json::Value],
     source_type: RepoSourceKind,
@@ -332,6 +375,32 @@ pub fn lookup_interface_by_sha256<'a>(
         .find(|e| e.interface_name == name && e.tag == tag && e.sha256 == sha256)
 }
 
+/// Returns the highest-priority (lowest `repo_id`) pairing entry
+/// matching `(name, tag)`. Returns `None` when no entry matches.
+pub fn lookup_pairing<'a>(
+    entries: &'a [PairingCacheEntry],
+    name: &str,
+    tag: &str,
+) -> Option<&'a PairingCacheEntry> {
+    entries
+        .iter()
+        .filter(|e| e.pairing_name == name && e.tag == tag)
+        .min_by_key(|e| e.repo_id)
+}
+
+/// Returns the pairing entry whose `(name, tag, sha256)` triple matches
+/// exactly. Returns `None` when no entry matches.
+pub fn lookup_pairing_by_sha256<'a>(
+    entries: &'a [PairingCacheEntry],
+    name: &str,
+    tag: &str,
+    sha256: &str,
+) -> Option<&'a PairingCacheEntry> {
+    entries
+        .iter()
+        .find(|e| e.pairing_name == name && e.tag == tag && e.sha256 == sha256)
+}
+
 /// Reads `launchers.json5` and tags each entry with the `repo_id` of its
 /// originating repository entry. Skips memoization (launches are rare
 /// events; the cost of re-parsing is negligible compared to a launch).
@@ -382,6 +451,10 @@ pub fn interfaces_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.cache_dir().join("interfaces.json5")
 }
 
+pub fn pairings_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    peppy_dirs.cache_dir().join("pairings.json5")
+}
+
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.conf_dir().join("repositories.json5")
 }
@@ -419,6 +492,47 @@ pub fn load_interface_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<InterfaceCache
                 warn!(
                     "Skipping malformed interfaces.json5 entry: {:?}:{:?}",
                     e.interface_name, e.tag
+                );
+            }
+            ok
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// Reads `pairings.json5` and tags each entry with the `repo_id` of its
+/// originating repository entry. Returns an empty vec when the file is
+/// missing.
+pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntry>> {
+    let path = pairings_repo_cache_path(peppy_dirs);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let raw: Vec<PairingCacheEntry> = serde_json5::from_str(&content).map_err(|e| {
+        core_node_api::Error::Decoding(format!(
+            "failed to parse pairings cache at {}: {e}",
+            path.display()
+        ))
+    })?;
+
+    let repos = read_or_create_repos(peppy_dirs)?;
+    let entries: Vec<PairingCacheEntry> = raw
+        .into_iter()
+        .map(|mut e| {
+            e.repo_id = lookup_repo_id(&repos, e.source_type, e.source_uri.as_deref(), &e.path);
+            e
+        })
+        .filter(|e| {
+            let ok = !e.pairing_name.is_empty()
+                && !e.tag.is_empty()
+                && !e.path.is_empty()
+                && !e.sha256.is_empty();
+            if !ok {
+                warn!(
+                    "Skipping malformed pairings.json5 entry: {:?}:{:?}",
+                    e.pairing_name, e.tag
                 );
             }
             ok

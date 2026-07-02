@@ -1,12 +1,15 @@
 pub mod add_steps;
 mod build_steps;
 mod entity;
+mod pairing;
 mod run_steps;
 
 pub use entity::{
     BuildContext, NodeEntity, NodeStage, OutputSinks, StartContext, StartedInstanceCtx,
     TrackedNodeInstance, WorkingDirGuard,
 };
+use pairing::PairingRegistry;
+pub use pairing::{PairEndpoint, Pairing, SlotAddr};
 
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
@@ -15,7 +18,9 @@ use config::node::{
     validate_dependency_specs,
 };
 use config::runtime::Name;
-use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
+use core_node_api::{
+    InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
+};
 use names_generator2::get_random;
 use parking_lot::RwLock;
 use petgraph::{
@@ -75,6 +80,10 @@ struct NodeStackInner {
     key_to_index: HashMap<NodeKey, NodeIndex>,
     pending_requirements: HashMap<NodeKey, Vec<NodeIndex>>,
     root_key: NodeKey,
+    /// Established pairs. Inside the same lock as the graph so pair
+    /// mutations validate atomically against stack state. Pairings are
+    /// DAG-invisible: nothing here contributes edges.
+    pairing_registry: PairingRegistry,
 }
 
 impl NodeStackInner {
@@ -85,6 +94,7 @@ impl NodeStackInner {
             key_to_index: HashMap::new(),
             pending_requirements: HashMap::new(),
             root_key,
+            pairing_registry: PairingRegistry::default(),
         };
         // Root node has no dependencies, so this should never fail.
         inner
@@ -552,9 +562,179 @@ impl NodeStackInner {
         self.graph.clear();
         self.key_to_index.clear();
         self.pending_requirements.clear();
+        self.pairing_registry.clear();
 
         let idx = self.graph.add_node(root_handle);
         self.key_to_index.insert(self.root_key.clone(), idx);
+    }
+
+    // ── Pairing ──────────────────────────────────────────────────────────
+
+    /// Instance liveness for pairing purposes: tracked with a non-terminal
+    /// state (`Starting` counts — the reserve-before-spawn path pairs a
+    /// slot while its instance is still starting).
+    fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
+        self.find_map_entity(false, |_, entity| {
+            entity
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id().as_str() == instance_id)
+                .map(|inst| !inst.state().is_terminal())
+        })
+        .unwrap_or(false)
+    }
+
+    /// Resolves a slot to its manifest declaration plus the instance's
+    /// current state. Errors when the instance is unknown/terminal or its
+    /// manifest declares no such pairing slot.
+    fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<config::node::PairingDependency> {
+        let found = self.find_map_entity(false, |_, entity| {
+            entity
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id().as_str() == slot.instance_id)
+                .map(|inst| (entity.config().clone(), inst.state()))
+        });
+        let Some((config, state)) = found else {
+            return Err(Error::PairingInstanceNotRunning {
+                instance_id: slot.instance_id.clone(),
+            });
+        };
+        if state.is_terminal() {
+            return Err(Error::PairingInstanceNotRunning {
+                instance_id: slot.instance_id.clone(),
+            });
+        }
+        config
+            .manifest
+            .depends_on
+            .as_ref()
+            .and_then(|d| d.pairings.iter().find(|p| p.link_id == slot.link_id))
+            .cloned()
+            .ok_or_else(|| Error::PairingSlotNotFound {
+                instance_id: slot.instance_id.clone(),
+                link_id: slot.link_id.clone(),
+            })
+    }
+
+    /// Establishes a pair between two complementary slots. Validates that
+    /// both instances are live (Running, or Starting for the
+    /// reserve-before-spawn path), that both manifests declare the slots,
+    /// that both reference the same pairing with complementary roles and
+    /// compatible sha256 pins, and that neither slot is already paired.
+    fn pair_slots_impl(&mut self, a: &SlotAddr, b: &SlotAddr) -> Result<Pairing> {
+        let dep_a = self.pairing_slot_meta(a)?;
+        let dep_b = self.pairing_slot_meta(b)?;
+
+        if dep_a.name != dep_b.name || dep_a.tag != dep_b.tag {
+            return Err(Error::PairingMismatch {
+                a: a.to_string(),
+                name_a: dep_a.name.as_str().to_string(),
+                tag_a: dep_a.tag.clone(),
+                b: b.to_string(),
+                name_b: dep_b.name.as_str().to_string(),
+                tag_b: dep_b.tag.clone(),
+            });
+        }
+        if dep_a.role == dep_b.role {
+            return Err(Error::PairingRolesNotComplementary {
+                a: a.to_string(),
+                b: b.to_string(),
+                role: dep_a.role.clone(),
+                name: dep_a.name.as_str().to_string(),
+                tag: dep_a.tag.clone(),
+            });
+        }
+        if let (Some(sha_a), Some(sha_b)) = (&dep_a.sha256, &dep_b.sha256)
+            && sha_a != sha_b
+        {
+            return Err(Error::PairingShaMismatch {
+                a: a.to_string(),
+                sha_a: sha_a.clone(),
+                b: b.to_string(),
+                sha_b: sha_b.clone(),
+                name: dep_a.name.as_str().to_string(),
+                tag: dep_a.tag.clone(),
+            });
+        }
+
+        // Lazy cleanup before the exclusivity check so a pair whose
+        // endpoint died without an eager dissolve cannot block re-pairing.
+        self.prune_dead_pairs();
+        for slot in [a, b] {
+            if let Some(existing) = self.pairing_registry.find_by_slot(slot) {
+                let peer = existing
+                    .peer_of(slot)
+                    .expect("find_by_slot returned a pair containing the slot");
+                return Err(Error::PairingSlotAlreadyPaired {
+                    slot: slot.to_string(),
+                    peer: peer.slot.to_string(),
+                });
+            }
+        }
+
+        let pairing = Pairing {
+            pairing_name: dep_a.name.as_str().to_string(),
+            pairing_tag: dep_a.tag.clone(),
+            a: pairing::PairEndpoint {
+                slot: a.clone(),
+                role: dep_a.role.clone(),
+            },
+            b: pairing::PairEndpoint {
+                slot: b.clone(),
+                role: dep_b.role.clone(),
+            },
+        };
+        self.pairing_registry.insert(pairing.clone());
+        Ok(pairing)
+    }
+
+    fn prune_dead_pairs(&mut self) {
+        // Collect liveness first: `prune_dead`'s closure cannot borrow
+        // `self` while the registry is borrowed mutably.
+        let liveness: std::collections::HashSet<String> = self
+            .pairing_registry
+            .pairs()
+            .iter()
+            .flat_map(|p| [&p.a.slot.instance_id, &p.b.slot.instance_id])
+            .filter(|id| self.instance_is_live_for_pairing(id))
+            .cloned()
+            .collect();
+        self.pairing_registry.prune_dead(|id| liveness.contains(id));
+    }
+
+    /// Live pairs only (dead endpoints pruned lazily on read).
+    fn pairs_impl(&mut self) -> Vec<Pairing> {
+        self.prune_dead_pairs();
+        self.pairing_registry.pairs().to_vec()
+    }
+
+    /// Every declared pairing slot of every live instance that is not
+    /// currently paired, with its manifest declaration.
+    fn unpaired_pairing_slots_impl(&mut self) -> Vec<(SlotAddr, config::node::PairingDependency)> {
+        self.prune_dead_pairs();
+        let mut out = Vec::new();
+        for handle in self.graph.node_weights() {
+            let entity = handle.read();
+            let Some(deps) = entity.config().manifest.depends_on.as_ref() else {
+                continue;
+            };
+            if deps.pairings.is_empty() {
+                continue;
+            }
+            for inst in entity.instances() {
+                if inst.state().is_terminal() {
+                    continue;
+                }
+                for dep in &deps.pairings {
+                    let slot = SlotAddr::new(inst.instance_id().as_str(), &dep.link_id);
+                    if self.pairing_registry.find_by_slot(&slot).is_none() {
+                        out.push((slot, dep.clone()));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Returns the graph in DOT format for visualization.
@@ -592,7 +772,7 @@ impl NodeStackInner {
         // One read-lock per entity yields both its serialized node and a clone
         // of its config; the configs feed the interface-conformance edges
         // below, so collecting them here avoids a second locking pass.
-        let (nodes, configs): (Vec<SerializedNode>, Vec<NodeConfig>) = self
+        let (mut nodes, configs): (Vec<SerializedNode>, Vec<NodeConfig>) = self
             .graph
             .node_weights()
             .map(|handle| {
@@ -600,6 +780,78 @@ impl NodeStackInner {
                 (serialize_entity(&guard), guard.config().clone())
             })
             .unzip();
+
+        // Pairing-slot overlay: every declared `depends_on.pairings` slot of
+        // every live instance, with its live binding from the registry.
+        // Manifest + registry are the two sources; nothing is duplicated on
+        // `TrackedNodeInstance`. Registry reads are liveness-filtered so a
+        // pair whose endpoint died without an eager dissolve never shows as
+        // Paired (`to_serialized_graph` holds a read lock, so filtering
+        // replaces the write-path pruning here).
+        let live_pair_peers: HashMap<(String, String), (String, String)> = self
+            .pairing_registry
+            .pairs()
+            .iter()
+            .filter(|p| {
+                self.instance_is_live_for_pairing(&p.a.slot.instance_id)
+                    && self.instance_is_live_for_pairing(&p.b.slot.instance_id)
+            })
+            .flat_map(|p| {
+                [
+                    (
+                        (p.a.slot.instance_id.clone(), p.a.slot.link_id.clone()),
+                        (p.b.slot.instance_id.clone(), p.b.slot.link_id.clone()),
+                    ),
+                    (
+                        (p.b.slot.instance_id.clone(), p.b.slot.link_id.clone()),
+                        (p.a.slot.instance_id.clone(), p.a.slot.link_id.clone()),
+                    ),
+                ]
+            })
+            .collect();
+        // Stack-scoped v1: every pair lives under this daemon, so the peer's
+        // core_node is the daemon's own (the root entity's manifest name —
+        // the core node binds to itself).
+        let core_node = self.root_key.name.clone();
+        for (node, config) in nodes.iter_mut().zip(&configs) {
+            let Some(deps) = config.manifest.depends_on.as_ref() else {
+                continue;
+            };
+            if deps.pairings.is_empty() {
+                continue;
+            }
+            for instance in &mut node.instances {
+                if instance.state.is_terminal() {
+                    continue;
+                }
+                for dep in &deps.pairings {
+                    let binding = match live_pair_peers
+                        .get(&(instance.instance_id.clone(), dep.link_id.clone()))
+                    {
+                        Some((peer_inst, peer_link)) => {
+                            config::runtime::PairingSlotBinding::Paired {
+                                peer: config::runtime::ProducerRef::new(
+                                    core_node.clone(),
+                                    peer_inst.clone(),
+                                ),
+                                peer_link_id: peer_link.clone(),
+                            }
+                        }
+                        None => config::runtime::PairingSlotBinding::Unpaired,
+                    };
+                    instance.pairing_slots.insert(
+                        dep.link_id.clone(),
+                        SerializedPairingSlot {
+                            pairing_name: dep.name.as_str().to_string(),
+                            pairing_tag: dep.tag.clone(),
+                            role: dep.role.clone(),
+                            optional: dep.optional,
+                            binding,
+                        },
+                    );
+                }
+            }
+        }
 
         // Direct `depends_on.nodes` edges, taken straight from the DAG.
         let mut edges: Vec<SerializedEdge> = self
@@ -952,5 +1204,55 @@ impl NodeStack {
     pub fn to_serialized_graph(&self) -> SerializedNodeGraph {
         let guard = self.shared.read();
         guard.to_serialized_graph()
+    }
+
+    // ── Pairing ──────────────────────────────────────────────────────────
+
+    /// Establishes a pair between two complementary slots (see
+    /// `NodeStackInner::pair_slots_impl` for the validation rules). Commits
+    /// to the registry only; delivering the pins to the endpoint nodes is
+    /// the `PairingCoordinator`'s job.
+    pub fn pair_slots(&self, a: &SlotAddr, b: &SlotAddr) -> Result<Pairing> {
+        let mut guard = self.shared.write();
+        guard.pair_slots_impl(a, b)
+    }
+
+    /// Clears the pair containing `slot`, returning it (so the caller can
+    /// live-notify the survivor). `None` when the slot is not paired.
+    pub fn clear_pair(&self, slot: &SlotAddr) -> Option<Pairing> {
+        let mut guard = self.shared.write();
+        guard.pairing_registry.remove_by_slot(slot)
+    }
+
+    /// All live pairs. Pairs whose endpoint instances have died are pruned
+    /// on read (the exit watcher has no stack back-reference, so eager
+    /// dissolution alone cannot be trusted).
+    pub fn pairs(&self) -> Vec<Pairing> {
+        let mut guard = self.shared.write();
+        guard.pairs_impl()
+    }
+
+    /// Every declared pairing slot of every live instance that is not
+    /// currently paired.
+    pub fn unpaired_pairing_slots(&self) -> Vec<(SlotAddr, config::node::PairingDependency)> {
+        let mut guard = self.shared.write();
+        guard.unpaired_pairing_slots_impl()
+    }
+
+    /// Dissolves every pair involving `instance_id`, returning them so the
+    /// caller can live-notify each survivor. Called from the daemon's stop
+    /// paths and the process-exit watcher (death auto-clears; re-pairing is
+    /// explicit).
+    pub fn dissolve_pairs_for_instance(&self, instance_id: &str) -> Vec<Pairing> {
+        let mut guard = self.shared.write();
+        guard.pairing_registry.remove_for_instance(instance_id)
+    }
+
+    /// Instance liveness for pairing purposes: tracked with a non-terminal
+    /// state (`Starting` counts). Used by the `PairingCoordinator` to skip
+    /// notifying endpoints that are already dead.
+    pub fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
+        let guard = self.shared.read();
+        guard.instance_is_live_for_pairing(instance_id)
     }
 }

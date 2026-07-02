@@ -11,6 +11,8 @@ A node *emits* a topic to publish messages, and other nodes *consume* that topic
 Use topics for continuous, unidirectional data streams such as sensor readings, camera frames, state updates, or any information that flows over time.
 Multiple consumers can listen to the same topic simultaneously.
 
+Topics also underpin two higher-level constructs: [interface conformance](/advanced_guides/interface_conformance), where a topic's contract lives in a standalone interface document that producers conform to, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract.
+
 ## Emitting a topic
 
 A node that publishes messages declares its topics under `interfaces.topics.emits` in its `peppy.json5`.
@@ -269,7 +271,7 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 
 ## Bindings and routing
 
-Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot.
+Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself — established with `--pair` at instance start — not by a binding.)
 
 A binding takes the form `KEY: VALUE`, where `KEY` is a label local to the consumer (typically a `link_id` from `depends_on`) and `VALUE` is the target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to one of the consumer's declared slots.
 

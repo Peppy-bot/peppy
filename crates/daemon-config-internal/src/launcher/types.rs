@@ -67,6 +67,24 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                         return Err(de::Error::custom(err.json5_message()));
                     }
                 }
+                for (key, target) in &instance.pairings {
+                    if key == DEFAULT_LINK_ID_SENTINEL {
+                        let err = StructuredError::BindingSentinelKey {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: key.clone(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
+                    let (target_instance, _peer_link) = split_pair_target(target);
+                    if !known_ids.contains(target_instance) {
+                        let err = StructuredError::UnknownInstanceId {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: key.clone(),
+                            instance_id: target_instance.to_string(),
+                        };
+                        return Err(de::Error::custom(err.json5_message()));
+                    }
+                }
             }
         }
 
@@ -111,6 +129,22 @@ pub struct DeploymentInstance {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub bindings: BTreeMap<String, String>,
+    /// Pairing declarations: own pairing-slot `link_id` → peer instance
+    /// (`"<instance_id>"` or `"<instance_id>/<peer_link_id>"` when the peer
+    /// has more than one complementary slot). Declaring the pair on ONE side
+    /// covers both endpoints' slots; declaring it from both sides is allowed
+    /// but must agree. Mirror of `bindings` for the pairing mechanism.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_pairings",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub pairings: BTreeMap<String, String>,
+    /// Required pairing slots deliberately left unpaired at launch. Every
+    /// required slot must be paired or listed here, or the launch fails
+    /// loudly (`PairingSlotUncovered`). Optional slots need no entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub defer_pairings: Vec<String>,
 }
 
 /// Each key is a `link_id` literal declared by the deployed node's
@@ -151,6 +185,39 @@ where
         }
     }
     Ok(entries.into_iter().collect())
+}
+
+/// Mirror of [`deserialize_bindings`] for the per-instance `pairings` map:
+/// keys are the instance's own pairing-slot link_ids, values name the peer
+/// instance (optionally suffixed `/<peer_link_id>`). Duplicate keys and
+/// empty keys/values are rejected here; sentinel keys and unknown target
+/// instances are checked at the [`PeppyLauncher`] level where the owning
+/// `instance_id` and the full instance set are in scope.
+fn deserialize_pairings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "pairing")
+        .map_err(de::Error::custom)?;
+    for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "pairing target for key `{key}` cannot be empty"
+            )));
+        }
+    }
+    Ok(entries.into_iter().collect())
+}
+
+/// Splits a launcher `pairings` value (or CLI `--pair` right-hand side) into
+/// `(peer_instance_id, Option<peer_link_id>)`. The `/` separator cannot
+/// appear inside wire segments, so the split is unambiguous.
+pub fn split_pair_target(value: &str) -> (&str, Option<&str>) {
+    match value.split_once('/') {
+        Some((instance, peer_link)) => (instance, Some(peer_link)),
+        None => (value, None),
+    }
 }
 
 struct BindingEntriesVisitor;
@@ -447,6 +514,141 @@ mod tests {
         };
         assert_eq!(owner_instance_id, "backbone");
         assert_eq!(binding, "_");
+    }
+
+    /// The `pairings` map parses, resolves against siblings, and supports
+    /// the `/<peer_link_id>` disambiguation suffix; `defer_pairings` rides
+    /// alongside.
+    #[test]
+    fn pairings_and_defer_pairings_parse() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [{ instance_id: "arm_1" }]
+                },
+                {
+                    source: { name: "arm_controller:v1" },
+                    instances: [{
+                        instance_id: "ctrl_1",
+                        pairings: { arm: "arm_1" },
+                        defer_pairings: ["spare"]
+                    }]
+                }
+            ]
+        }"#;
+        let launcher: PeppyLauncher = serde_json5::from_str(json5).expect("launcher should parse");
+        let ctrl = &launcher.deployments[1].instances[0];
+        assert_eq!(ctrl.pairings.get("arm").map(String::as_str), Some("arm_1"));
+        assert_eq!(ctrl.defer_pairings, vec!["spare".to_string()]);
+
+        // The peer-slot suffix parses and still resolves the instance part.
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [{ instance_id: "arm_1" }]
+                },
+                {
+                    source: { name: "arm_controller:v1" },
+                    instances: [{
+                        instance_id: "ctrl_1",
+                        pairings: { arm: "arm_1/controller" }
+                    }]
+                }
+            ]
+        }"#;
+        let launcher: PeppyLauncher =
+            serde_json5::from_str(json5).expect("suffixed pairing should parse");
+        let ctrl = &launcher.deployments[1].instances[0];
+        assert_eq!(
+            ctrl.pairings.get("arm").map(String::as_str),
+            Some("arm_1/controller")
+        );
+        assert_eq!(
+            split_pair_target("arm_1/controller"),
+            ("arm_1", Some("controller"))
+        );
+        assert_eq!(split_pair_target("arm_1"), ("arm_1", None));
+    }
+
+    /// A pairing value naming an unknown instance is a structured error,
+    /// even with the `/<peer_link_id>` suffix (only the instance part is
+    /// resolved).
+    #[test]
+    fn pairings_reject_unknown_instance_id() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "arm_controller:v1" },
+                    instances: [{
+                        instance_id: "ctrl_1",
+                        pairings: { arm: "ghost/controller" }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("unknown pairing target must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::UnknownInstanceId {
+            owner_instance_id,
+            binding,
+            instance_id,
+        } = parsing_err
+        else {
+            panic!("expected UnknownInstanceId, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "ctrl_1");
+        assert_eq!(binding, "arm");
+        assert_eq!(instance_id, "ghost");
+    }
+
+    /// The reserved `_` sentinel cannot be a pairing key, mirroring the
+    /// binding-key rule.
+    #[test]
+    fn pairings_reject_underscore_key() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "arm_controller:v1" },
+                    instances: [{
+                        instance_id: "ctrl_1",
+                        pairings: { "_": "ctrl_1" }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("`_` pairing key must be rejected");
+        let parsing_err = ParsingError::from(err);
+        assert!(
+            matches!(parsing_err, ParsingError::BindingSentinelKey { .. }),
+            "expected BindingSentinelKey, got {parsing_err:?}"
+        );
+    }
+
+    #[test]
+    fn pairings_reject_duplicate_and_empty_entries() {
+        let dup = r#"{
+            instance_id: "ctrl_1",
+            pairings: { "arm": "a1", "arm": "a2" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(dup)
+            .expect_err("duplicate pairing key must be rejected");
+        assert!(err.to_string().contains("duplicate"), "error: {err}");
+
+        let empty = r#"{
+            instance_id: "ctrl_1",
+            pairings: { "arm": "" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(empty)
+            .expect_err("empty pairing target must be rejected");
+        assert!(err.to_string().contains("empty"), "error: {err}");
     }
 
     /// Duplicate binding keys must be rejected. The raw map deserializer

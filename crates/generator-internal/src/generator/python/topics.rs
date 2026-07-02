@@ -147,6 +147,211 @@ pub fn build_emitted_topic(
     Ok(builder.build())
 }
 
+/// Emits the module-level slot constants plus `paired()`/`wait_paired()`
+/// shared by both directions of a peer topic module.
+fn emit_peer_module_header(
+    builder: &mut PythonCodeBuilder,
+    topic_name: &str,
+    qos: &str,
+    peer: &crate::generator::types::PeerContext,
+) {
+    builder.add_import("import peppylib");
+    builder.add_import("from typing import Optional");
+    builder.line(&format!("TOPIC_NAME = \"{topic_name}\""));
+    builder.line(&format!("PEER_LINK_ID = \"{}\"", peer.link_id));
+    builder.line(&format!("PAIRING_NAME = \"{}\"", peer.pairing_name));
+    builder.line(&format!("PAIRING_TAG = \"{}\"", peer.pairing_tag));
+    builder.line(&format!("QOS = {qos}"));
+    builder.blank_line();
+
+    builder.line("def paired(node_runner: peppylib.NodeRunner) -> Optional[peppylib.PeerInfo]:");
+    builder.indent();
+    builder.line("\"\"\"The peer currently paired on this slot, or None while unpaired.\"\"\"");
+    builder.line("return node_runner.peer(PEER_LINK_ID).paired()");
+    builder.dedent();
+    builder.blank_line();
+
+    builder.line("async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:");
+    builder.indent();
+    builder.line("\"\"\"Wait until a peer is paired on this slot and return its identity.\"\"\"");
+    builder.line("return await node_runner.peer(PEER_LINK_ID).wait_paired()");
+    builder.dedent();
+    builder.blank_line();
+}
+
+/// Generates Python code for a pairing topic this node's role emits:
+/// `build_message` plus a slot-scoped `declare_publisher` (pairing wire
+/// target, producer-side link_id = this node's own slot link_id).
+pub fn build_peer_emitted_topic(
+    topic: &EmittedTopic,
+    schema_info: Option<&PythonSchemaInfo>,
+    peer: &crate::generator::types::PeerContext,
+) -> Result<String> {
+    let mut builder = PythonCodeBuilder::new();
+    let mut nested_classes = Vec::new();
+
+    let fields = topic
+        .message_format
+        .as_ref()
+        .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
+        .transpose()?
+        .unwrap_or_default();
+
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+    if let Some(info) = schema_info {
+        emit_capnp_schema_loader(&mut builder, info);
+    }
+    emit_nested_classes(&mut builder, &nested_classes);
+
+    let qos = qos_profile_python(&topic.qos_profile);
+    emit_peer_module_header(&mut builder, &topic.name, qos, peer);
+
+    let field_params: Vec<String> = fields
+        .iter()
+        .map(|field| format!("{}: {}", field.name, field.type_str))
+        .collect();
+    let field_params_str = field_params.join(", ");
+
+    builder.line(&format!("def build_message({field_params_str}) -> bytes:"));
+    builder.indent();
+    if let (Some(info), Some(fmt)) = (schema_info, topic.message_format.as_ref()) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
+        builder.line("return capnp_msg.to_bytes()");
+    } else {
+        builder.line("return b\"\"");
+    }
+    builder.dedent();
+    builder.blank_line();
+
+    // Slot-scoped publisher: publishing while unpaired is a legal no-op (the
+    // mesh drops it); the paired peer's triple-pinned subscription receives
+    // every publish made while the pair is live.
+    builder.line(
+        "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+    );
+    builder.indent();
+    builder.line("return await peppylib.TopicMessenger.declare_publisher(");
+    builder.indent();
+    builder.line("node_runner.messenger(),");
+    builder.line("node_runner.bound_core_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    builder.line("peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),");
+    builder.line("TOPIC_NAME,");
+    builder.line("QOS,");
+    builder.line("link_id=PEER_LINK_ID,");
+    builder.dedent();
+    builder.line(")");
+    builder.dedent();
+
+    Ok(builder.build())
+}
+
+/// Generates Python code for a pairing topic the counterpart role emits
+/// (consumed here): a `subscribe_peer`-backed subscription that follows the
+/// slot's live pin — silent while unpaired, only the paired peer while
+/// paired.
+pub fn build_peer_consumed_topic(
+    topic: &EmittedTopic,
+    arguments: &MessageFormat,
+    schema_info: &PythonSchemaInfo,
+    peer: &crate::generator::types::PeerContext,
+) -> Result<String> {
+    let mut builder = PythonCodeBuilder::new();
+    let mut nested_classes = Vec::new();
+
+    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
+
+    builder.add_import("from typing import Optional, Tuple");
+    emit_capnp_schema_loader(&mut builder, schema_info);
+    emit_nested_classes(&mut builder, &nested_classes);
+
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.type_str.as_str()))
+        .collect();
+    builder.dataclass("Message", &field_refs);
+
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    deserialization::build_deserialize_fn(
+        &mut builder,
+        schema_info,
+        arguments,
+        "Message",
+        &format!("{loader_fn_name}()"),
+        "_deserialize_payload",
+    );
+
+    let qos = qos_profile_python(&topic.qos_profile);
+    emit_peer_module_header(&mut builder, &topic.name, qos, peer);
+
+    builder.line("class Subscription:");
+    builder.indent();
+    builder.line(
+        "\"\"\"A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.\"\"\"",
+    );
+    builder.blank_line();
+    builder.line("def __init__(self, inner) -> None:");
+    builder.indent();
+    builder.line("self._inner = inner");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
+    builder.indent();
+    builder.line("raw_message = await self._inner.on_next_message()");
+    builder.line("if raw_message is None:");
+    builder.indent();
+    builder.line("return None");
+    builder.dedent();
+    builder.line("producer = raw_message.producer");
+    builder.line("message = _deserialize_payload(raw_message.payload)");
+    builder.line("return producer, message");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("def __aiter__(self) -> \"Subscription\":");
+    builder.indent();
+    builder.line("return self");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:");
+    builder.indent();
+    builder.line("result = await self.next()");
+    builder.line("if result is None:");
+    builder.indent();
+    builder.line("raise StopAsyncIteration");
+    builder.dedent();
+    builder.line("return result");
+    builder.dedent();
+    builder.dedent();
+
+    builder.blank_line();
+    builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
+    builder.indent();
+    builder.line(
+        "\"\"\"Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.\"\"\"",
+    );
+    builder.line("inner = await node_runner.subscribe_peer(");
+    builder.indent();
+    builder.line("PEER_LINK_ID,");
+    builder.line("PAIRING_NAME,");
+    builder.line("PAIRING_TAG,");
+    builder.line("TOPIC_NAME,");
+    builder.line("QOS,");
+    builder.dedent();
+    builder.line(")");
+    builder.line("return Subscription(inner)");
+    builder.dedent();
+
+    Ok(builder.build())
+}
+
 /// Generates Python code for a consumed (receiving) topic.
 pub fn build_consumed_topic(
     topic: &ConsumedTopic,

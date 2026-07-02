@@ -34,6 +34,11 @@ pub struct RunAfterAddOptions {
     /// `instance_id`s. Validated by the same launcher rules that gate
     /// `peppy node run` via [`validate_and_run_instance`].
     pub binds: Vec<(String, String)>,
+    /// `--pair LINK_ID@PEER_INSTANCE[/PEER_LINK]` pairing requests,
+    /// validated and established by the same rules as `peppy node run`.
+    pub pairs: Vec<(String, String)>,
+    /// `--defer-pair LINK_ID` slots explicitly starting unpaired.
+    pub defer_pairs: Vec<String>,
 }
 
 /// Parameters for adding a node.
@@ -232,6 +237,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &run_options.args,
         run_options.instance_id,
         &run_options.binds,
+        &run_options.pairs,
+        &run_options.defer_pairs,
         &timeouts,
     )
     .await?;

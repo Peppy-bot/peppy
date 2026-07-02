@@ -39,5 +39,5 @@ pub use generator::python::PythonGenerator;
 pub use generator::rust::RustGenerator;
 pub use generator::types::{
     ConsumedActionMessage, DependencyContext, DeploymentInterface, InterfaceOrigin,
-    InterfaceVariant, LanguageGenerator, WireLinkId,
+    InterfaceVariant, LanguageGenerator, PeerContext, WireLinkId,
 };

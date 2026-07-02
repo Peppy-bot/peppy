@@ -19,7 +19,7 @@ use super::types::{
     InterfaceOrigin, LanguageGenerator, goal_action_response_format, non_empty_message_format,
     scoped_schema_key,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::generator::naming::{
     module_name_from_components, non_empty_str, raw_module_label, resolve_schema_file_stem,
     sanitize_component, sanitize_node_display_name, to_camel_case,
@@ -53,8 +53,9 @@ use services::{
     deserialize_fields_from_format,
 };
 use topics::{
-    ConsumedTopicSubscriptionSpec, build_consumed_topic_subscription, build_topic_publisher,
-    consumed_to_target_expression,
+    ConsumedTopicSubscriptionSpec, PeerTopicSubscriptionSpec, build_consumed_topic_subscription,
+    build_peer_module_header, build_peer_topic_publisher, build_peer_topic_subscription,
+    build_topic_publisher, consumed_to_target_expression,
 };
 use type_mapping::{render_tokens, unused_params_stmt};
 
@@ -84,6 +85,30 @@ impl RustGenerator {
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
+    }
+
+    /// Backstop for the pairing document's flat topic-name uniqueness rule:
+    /// two peer artifacts must never land on the same `peers/<link_id>/<topic>`
+    /// module path.
+    fn ensure_no_peer_collision(
+        &self,
+        module_path: &[String],
+        peer: &crate::generator::types::PeerContext,
+        topic: &EmittedTopic,
+    ) -> Result<()> {
+        let collides = self.sections.iter().any(|s| {
+            matches!(
+                s.kind,
+                InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
+            ) && s.module_path == module_path
+        });
+        if collides {
+            return Err(Error::PeerTopicNameCollision {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            });
+        }
+        Ok(())
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -1394,6 +1419,127 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::ConsumedService,
             rendered,
         ));
+        Ok(())
+    }
+
+    fn add_peer_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        let topic_component = sanitize_component(topic.name.as_str());
+        let schema_key =
+            crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
+        let schema_prefix = to_camel_case(&schema_key);
+        let struct_prefix = String::from("Message");
+
+        let mut context = GenerationContext::default();
+        let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?;
+        let params = collect_function_params(
+            format_artifacts.as_ref(),
+            None,
+            &struct_prefix,
+            &mut context,
+            None,
+        )?;
+        let encoding = self.prepare_message_encoding(
+            &schema_key,
+            &schema_prefix,
+            format_artifacts.as_ref(),
+            &params,
+        )?;
+        let struct_tokens = context.into_tokens();
+        let header_tokens = build_peer_module_header(topic.name.as_str(), peer);
+        let method_tokens =
+            build_peer_topic_publisher(&params, encoding.as_ref(), &topic.qos_profile, &schema_key);
+
+        let tokens: TokenStream = quote! {
+            #header_tokens
+            #( #struct_tokens )*
+            #method_tokens
+        };
+        let rendered = render_tokens(tokens);
+
+        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
+        self.ensure_no_peer_collision(&module_path, peer, topic)?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: InterfaceKind::PeerEmittedTopic,
+            code_output: rendered,
+        });
+        Ok(())
+    }
+
+    fn add_peer_consumed_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        let topic_component = sanitize_component(topic.name.as_str());
+        let schema_key =
+            crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
+        let struct_prefix = to_camel_case(&schema_key);
+
+        let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?
+            .ok_or_else(|| Error::PeerTopicMissingMessageFormat {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            })?;
+
+        let mut context = GenerationContext::default();
+        let message_struct_name = String::from("Message");
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+            None,
+        )?;
+        let encoding_params = params.clone();
+
+        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let args_fields: Vec<(Ident, TokenStream)> = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(args_struct_ident.clone(), args_fields);
+
+        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
+        let encoding = self
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &encoding_params,
+            )?
+            .expect("message encoding spec should exist when message format is provided");
+
+        let header_tokens = build_peer_module_header(topic.name.as_str(), peer);
+        let method_tokens = build_peer_topic_subscription(PeerTopicSubscriptionSpec {
+            helper_fn_ident: &helper_fn_ident,
+            args_struct_ident: &args_struct_ident,
+            params: &params,
+            artifacts: &format_artifacts,
+            encoding: &encoding,
+            qos_profile: &topic.qos_profile,
+            struct_prefix: &message_struct_name,
+        })?;
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
+
+        let tokens: TokenStream = quote! {
+            #header_tokens
+            #( #items )*
+        };
+        let rendered = render_tokens(tokens);
+
+        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
+        self.ensure_no_peer_collision(&module_path, peer, topic)?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: InterfaceKind::PeerConsumedTopic,
+            code_output: rendered,
+        });
         Ok(())
     }
 

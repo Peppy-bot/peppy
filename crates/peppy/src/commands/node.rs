@@ -103,6 +103,42 @@ fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
+/// Parses a `LINK_ID@PEER_INSTANCE[/PEER_LINK]` `--pair` argument: LINK_ID
+/// is a pairing slot from this node's `depends_on.pairings`; PEER_INSTANCE
+/// is the running instance to pair with; the optional `/PEER_LINK` pins the
+/// peer's slot when the peer declares more than one complementary slot of
+/// the same pairing. LINK_ID and PEER_LINK are validated as wire segments
+/// (pairing slot link_ids ride the wire keyexpr); PEER_INSTANCE is left
+/// free-form for the daemon-side validator to resolve against the stack.
+fn parse_pair_kv(raw: &str) -> Result<(String, String), String> {
+    let (key, value) = raw.split_once('@').ok_or_else(|| {
+        format!("invalid --pair value '{raw}': expected LINK_ID@PEER_INSTANCE[/PEER_LINK]")
+    })?;
+    let key = key.trim();
+    let value = value.trim();
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid --pair LINK_ID '{key}': {e}"))?;
+    let (peer_instance, peer_link) = daemon_config::launcher::split_pair_target(value);
+    if peer_instance.is_empty() {
+        return Err(format!(
+            "invalid --pair value '{raw}': PEER_INSTANCE cannot be empty"
+        ));
+    }
+    if let Some(peer_link) = peer_link {
+        pmi::Segment::try_from(peer_link)
+            .map_err(|e| format!("invalid --pair PEER_LINK '{peer_link}': {e}"))?;
+    }
+    Ok((key.to_string(), value.to_string()))
+}
+
+/// Parses a `--defer-pair` argument: a single pairing slot `link_id`,
+/// validated as a wire segment.
+fn parse_defer_pair(raw: &str) -> Result<String, String> {
+    let link_id = raw.trim();
+    pmi::Segment::try_from(link_id)
+        .map_err(|e| format!("invalid --defer-pair LINK_ID '{link_id}': {e}"))?;
+    Ok(link_id.to_string())
+}
+
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
@@ -186,6 +222,27 @@ pub enum NodeCommands {
             requires = "run",
         )]
         binds: Vec<(String, String)>,
+        /// Pair a pairing slot from this node's `depends_on.pairings` with a
+        /// running peer instance: `LINK_ID@PEER_INSTANCE[/PEER_LINK]`.
+        /// Repeatable. Only valid alongside `--run` (pairs are established
+        /// at instance start). Every required slot must be covered by
+        /// `--pair` or `--defer-pair`, or the run fails loudly.
+        #[arg(
+            long = "pair",
+            value_parser = parse_pair_kv,
+            action = clap::ArgAction::Append,
+            requires = "run",
+        )]
+        pairs: Vec<(String, String)>,
+        /// Explicitly start with a pairing slot unpaired: `LINK_ID`.
+        /// Repeatable. Only valid alongside `--run`.
+        #[arg(
+            long = "defer-pair",
+            value_parser = parse_defer_pair,
+            action = clap::ArgAction::Append,
+            requires = "run",
+        )]
+        defer_pairs: Vec<String>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -263,6 +320,30 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         binds: Vec<(String, String)>,
+        /// Pair a pairing slot from this node's `depends_on.pairings` with a
+        /// running peer instance: `LINK_ID@PEER_INSTANCE[/PEER_LINK]`.
+        /// Repeatable (`--pair arm@arm_1 --pair grip@grip_1`). LINK_ID is a
+        /// slot declared in this node's manifest; PEER_INSTANCE is a running
+        /// instance declaring the complementary role (see `peppy node list`);
+        /// `/PEER_LINK` disambiguates when the peer has several matching
+        /// slots. Every required (non-optional) slot must be covered by
+        /// `--pair` or `--defer-pair`, or the run fails loudly.
+        #[arg(
+            long = "pair",
+            value_parser = parse_pair_kv,
+            action = clap::ArgAction::Append,
+        )]
+        pairs: Vec<(String, String)>,
+        /// Explicitly start with a pairing slot unpaired: `LINK_ID`.
+        /// Repeatable. The instance boots with the slot silent (no wire
+        /// traffic) until a later peer start pairs with it via
+        /// `--pair <peer_slot>@<this_instance>/<LINK_ID>`.
+        #[arg(
+            long = "defer-pair",
+            value_parser = parse_defer_pair,
+            action = clap::ArgAction::Append,
+        )]
+        defer_pairs: Vec<String>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -348,19 +429,24 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 binds,
+                pairs,
+                defer_pairs,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
-                // `requires = "run"` on `args`, `instance_id`, and `binds`
-                // means we can only land here with `run == false` when all of
-                // them are empty; the run-only fields therefore have a single
-                // legal home: inside `Some(RunAfterAddOptions)`.
+                // `requires = "run"` on `args`, `instance_id`, `binds`,
+                // `pairs`, and `defer_pairs` means we can only land here with
+                // `run == false` when all of them are empty; the run-only
+                // fields therefore have a single legal home: inside
+                // `Some(RunAfterAddOptions)`.
                 let run_options = if run {
                     Some(add::RunAfterAddOptions {
                         args,
                         instance_id,
                         binds,
+                        pairs,
+                        defer_pairs,
                     })
                 } else {
                     None
@@ -422,6 +508,8 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 binds,
+                pairs,
+                defer_pairs,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -441,6 +529,8 @@ impl Command for NodeCommand {
                     args,
                     instance_id,
                     binds,
+                    pairs,
+                    defer_pairs,
                     timeouts,
                     build,
                 )
@@ -901,5 +991,86 @@ mod tests {
             .expect("missing `@` must be rejected on `add` too");
         let msg = err.to_string();
         assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
+    }
+
+    // ── --pair / --defer-pair ────────────────────────────────────────────
+
+    #[test]
+    fn pair_kv_parses_plain_and_pinned_targets() {
+        assert_eq!(
+            parse_pair_kv("arm@arm_1").unwrap(),
+            ("arm".to_string(), "arm_1".to_string())
+        );
+        // The `/PEER_LINK` pin travels inside the value; the daemon splits it.
+        assert_eq!(
+            parse_pair_kv("controller@cmd_1/left_arm").unwrap(),
+            ("controller".to_string(), "cmd_1/left_arm".to_string())
+        );
+    }
+
+    #[test]
+    fn pair_kv_rejects_bad_shapes() {
+        // Missing `@`.
+        assert!(parse_pair_kv("arm").unwrap_err().contains("LINK_ID@"));
+        // Empty peer instance.
+        assert!(parse_pair_kv("arm@").unwrap_err().contains("PEER_INSTANCE"));
+        // LINK_ID must be a wire segment: the reserved sentinel is rejected.
+        assert!(parse_pair_kv("_@arm_1").unwrap_err().contains("LINK_ID"));
+        // So must a wildcard PEER_LINK.
+        assert!(
+            parse_pair_kv("arm@arm_1/*")
+                .unwrap_err()
+                .contains("PEER_LINK")
+        );
+    }
+
+    #[test]
+    fn defer_pair_validates_the_link_id_as_a_wire_segment() {
+        assert_eq!(parse_defer_pair(" arm ").unwrap(), "arm");
+        assert!(parse_defer_pair("_").is_err());
+        assert!(parse_defer_pair("a/b").is_err());
+    }
+
+    #[test]
+    fn run_accepts_repeated_pair_and_defer_pair_flags() {
+        let cli = try_parse_run(&[
+            "commander:v1",
+            "--pair",
+            "left@arm_1",
+            "--pair",
+            "right@arm_2/controller",
+            "--defer-pair",
+            "gripper",
+        ])
+        .expect("pair flags should parse");
+        match cli.command {
+            NodeCommands::Run {
+                pairs, defer_pairs, ..
+            } => {
+                assert_eq!(
+                    pairs,
+                    vec![
+                        ("left".to_string(), "arm_1".to_string()),
+                        ("right".to_string(), "arm_2/controller".to_string()),
+                    ]
+                );
+                assert_eq!(defer_pairs, vec!["gripper".to_string()]);
+            }
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    /// Pairs are established at instance start, so `--pair` without `--run`
+    /// on `node add` is a parse error, same as `--bind`.
+    #[test]
+    fn add_pair_requires_run() {
+        let err = try_parse_add(&[".", "--pair", "arm@arm_1"])
+            .err()
+            .expect("--pair without --run must be rejected");
+        assert!(err.to_string().contains("--run"), "msg: {err}");
+        let err = try_parse_add(&[".", "--defer-pair", "arm"])
+            .err()
+            .expect("--defer-pair without --run must be rejected");
+        assert!(err.to_string().contains("--run"), "msg: {err}");
     }
 }

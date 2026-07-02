@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::runtime::{ProducerRef, SlotBinding};
+use config::runtime::{PairingSlotBinding, ProducerRef, SlotBinding};
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
 
@@ -116,6 +116,19 @@ pub fn format_stack_list(
         render_bindings_table(&mut out, &binding_nodes, colorize);
     }
 
+    // Per-instance pairing slots. Only rendered when some tracked instance
+    // declares `depends_on.pairings`; the `⇌` arrow marks the relationship as
+    // bidirectional, unlike the one-way binding `→` above.
+    let pairing_nodes: Vec<&SerializedNode> = nodes
+        .iter()
+        .filter(|n| n.instances.iter().any(|i| !i.pairing_slots.is_empty()))
+        .collect();
+    if !pairing_nodes.is_empty() {
+        let _ = writeln!(out, "Pairings");
+        let _ = writeln!(out);
+        render_pairings_table(&mut out, &pairing_nodes, colorize);
+    }
+
     // Dependencies reuse node labels but a distinct `➔` arrow (bindings above
     // use a lighter `→`) so the two relationships never read as the same edge.
     let _ = writeln!(out, "Dependencies");
@@ -219,6 +232,69 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         .collect();
 
     render_table(out, &BINDING_HEADERS, &blocks);
+}
+
+/// Headers for the per-instance pairings table; grouped like the bindings
+/// table (node label on the first row of its group, instance id on the first
+/// of its slot rows).
+const PAIRING_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "PAIRINGS"];
+
+/// Renders the per-instance pairing-slot table. `nodes` must already be
+/// filtered to entries with at least one instance carrying pairing slots.
+fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
+    let blocks: Vec<Vec<Vec<String>>> = nodes
+        .iter()
+        .map(|node| {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut node_cell = paint(colorize, NODE_COLOR, &node.label());
+            for instance in &node.instances {
+                if instance.pairing_slots.is_empty() {
+                    continue;
+                }
+                let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
+                for line in format_instance_pairings(instance, colorize) {
+                    rows.push(vec![
+                        std::mem::take(&mut node_cell),
+                        std::mem::take(&mut instance_cell),
+                        line,
+                    ]);
+                }
+            }
+            rows
+        })
+        .collect();
+
+    render_table(out, &PAIRING_HEADERS, &blocks);
+}
+
+/// One display string per pairing slot on the instance, ordered by link id:
+/// `link_id ⇌ peer_instance:peer_link (pairing:tag)` while paired,
+/// `link_id ⇌ (unpaired) [role r of pairing:tag]` while not — the role makes
+/// an unpaired row self-describing when composing a `--pair` for it.
+fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
+    instance
+        .pairing_slots
+        .iter()
+        .map(|(link_id, slot)| {
+            let link = paint(colorize, BINDING_COLOR, link_id);
+            match &slot.binding {
+                PairingSlotBinding::Paired { peer, peer_link_id } => format!(
+                    "{link} ⇌ {} ({}:{})",
+                    paint(
+                        colorize,
+                        INSTANCE_COLOR,
+                        &format!("{}:{}", peer.instance_id, peer_link_id),
+                    ),
+                    slot.pairing_name,
+                    slot.pairing_tag,
+                ),
+                PairingSlotBinding::Unpaired => format!(
+                    "{link} ⇌ (unpaired) [role {} of {}:{}]",
+                    slot.role, slot.pairing_name, slot.pairing_tag,
+                ),
+            }
+        })
+        .collect()
 }
 
 /// The instance's lifecycle state for the STATUS column. Tinted as a
@@ -410,6 +486,7 @@ mod tests {
                     state,
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
+                    pairing_slots: std::collections::BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -437,6 +514,7 @@ mod tests {
                         .into_iter()
                         .map(|(slot, binding)| (slot.to_string(), binding))
                         .collect(),
+                    pairing_slots: std::collections::BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -719,12 +797,14 @@ mod tests {
                     state: InstanceState::Running,
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
+                    pairing_slots: std::collections::BTreeMap::new(),
                 },
                 SerializedInstance {
                     instance_id: "down-1".to_string(),
                     state: InstanceState::Running,
                     healthy: false,
                     slot_bindings: std::collections::BTreeMap::new(),
+                    pairing_slots: std::collections::BTreeMap::new(),
                 },
             ],
         }];
@@ -852,6 +932,71 @@ mod tests {
         assert!(
             extra_at < sensors_at,
             "bindings should be sorted by link id:\n{out}"
+        );
+    }
+
+    #[test]
+    fn pairings_table_renders_paired_and_unpaired_rows() {
+        let mut arm = node(
+            "robot_arm",
+            "v1",
+            NodeStage::Ready,
+            vec![("arm_1", InstanceState::Running)],
+        );
+        arm.instances[0].pairing_slots.insert(
+            "controller".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "arm".to_string(),
+                optional: false,
+                binding: config::runtime::PairingSlotBinding::Paired {
+                    peer: ProducerRef::new("core_a", "ctrl_1"),
+                    peer_link_id: "arm".to_string(),
+                },
+            },
+        );
+        let mut ctrl = node(
+            "arm_controller",
+            "v1",
+            NodeStage::Ready,
+            vec![("ctrl_2", InstanceState::Running)],
+        );
+        ctrl.instances[0].pairing_slots.insert(
+            "arm".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "controller".to_string(),
+                optional: false,
+                binding: config::runtime::PairingSlotBinding::Unpaired,
+            },
+        );
+
+        let out = format_stack_list(&[arm, ctrl], &[], false);
+        assert!(out.contains("Pairings"), "missing Pairings section:\n{out}");
+        assert!(
+            out.contains("controller ⇌ ctrl_1:arm (arm_link:v1)"),
+            "paired row should name the peer slot and contract:\n{out}"
+        );
+        assert!(
+            out.contains("arm ⇌ (unpaired) [role controller of arm_link:v1]"),
+            "unpaired row should carry the role and contract:\n{out}"
+        );
+    }
+
+    #[test]
+    fn pairings_section_is_omitted_when_no_instance_declares_slots() {
+        let nodes = vec![node(
+            "sensor",
+            "v1",
+            NodeStage::Ready,
+            vec![("s-1", InstanceState::Running)],
+        )];
+        let out = format_stack_list(&nodes, &[], false);
+        assert!(
+            !out.contains("Pairings"),
+            "Pairings section must be omitted for pairing-free stacks:\n{out}"
         );
     }
 
