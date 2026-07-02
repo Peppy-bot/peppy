@@ -1260,14 +1260,39 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
+    match process_node_add_inner(
+        goal,
+        node_config,
+        source_path,
+        verify_codegen_fingerprint,
+        cleanup_dir,
+        &ctx,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(msg) => {
+            write_error_to_log(&ctx.log_file, &msg);
+            NodeAddResult::failure(&ctx.log_path, msg)
+        }
+    }
+}
+
+/// Fallible body of [`process_node_add`]. Every failure funnels through the
+/// wrapper's single error sink (log write + `NodeAddResult::failure`), so
+/// failure sites here just return the message via `?`.
+async fn process_node_add_inner(
+    goal: NodeAddGoal,
+    node_config: NodeConfig,
+    source_path: PathBuf,
+    verify_codegen_fingerprint: bool,
+    cleanup_dir: Option<PathBuf>,
+    ctx: &ProcessNodeAddContext,
+) -> std::result::Result<NodeAddResult, String> {
     // Reject any forbidden env vars early so the user gets a fast failure;
     // the values themselves are not used by the add path (env vars are
     // consumed by `node_build`'s `build_cmd` execution).
-    if let Err(e) = super::validate_goal_env_vars(&goal.env_vars) {
-        let msg = e.to_string();
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    super::validate_goal_env_vars(&goal.env_vars).map_err(|e| e.to_string())?;
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
@@ -1277,25 +1302,14 @@ async fn process_node_add(
         // Even if the `.peppy` content will be regenerated in the copy, we want to make sure the code that
         // the user has written for their node matches the current interface version.
         let config_path = source_path.join(NODE_CONFIG_FILE);
-        if let Err(e) =
-            config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-        {
-            let msg = format!("Codegen fingerprint verification failed: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
+        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+            .map_err(|e| format!("Codegen fingerprint verification failed: {}", e))?;
     }
 
     // Copy the node folder to a temporary working directory.
     let (working_dir, excluded_dirs) =
-        match copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir()) {
-            Ok(result) => result,
-            Err(e) => {
-                let msg = format!("Failed to copy node folder: {}", e);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeAddResult::failure(&ctx.log_path, msg);
-            }
-        };
+        copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir())
+            .map_err(|e| format!("Failed to copy node folder: {}", e))?;
     // RAII guard: cleans up the temp working dir on any exit path.
     let mut working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
@@ -1325,9 +1339,7 @@ async fn process_node_add(
         },
     );
     if let Some(err) = dep_errors.into_iter().next() {
-        let msg = format!("Failed to add node config: {}", err);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
+        return Err(format!("Failed to add node config: {}", err));
     }
 
     // Generate the peppygen library in the working directory.
@@ -1346,34 +1358,22 @@ async fn process_node_add(
             line: line.to_string(),
         });
     };
-    let mut consumed_interfaces = match collect_consumed_interfaces(
+    let mut consumed_interfaces = collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
         &ctx.action.peppy_dirs,
         &interface_feedback,
-    ) {
-        Ok(v) => v,
-        Err(reason) => {
-            let msg = format!("Failed to resolve consumed interfaces: {}", reason);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
-    let conformed = match resolve_conforms_to(
+    )
+    .map_err(|reason| format!("Failed to resolve consumed interfaces: {}", reason))?;
+    let conformed = resolve_conforms_to(
         &node_config.interfaces,
         &ctx.action.peppy_dirs,
         &interface_feedback,
-    ) {
-        Ok(v) => v,
-        Err(reason) => {
-            let msg = format!("Failed to resolve `conforms_to` interfaces: {}", reason);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
+    )
+    .map_err(|reason| format!("Failed to resolve `conforms_to` interfaces: {}", reason))?;
     consumed_interfaces.extend(conformed);
-    if let Err(e) = generate_peppygen_for_node(
+    generate_peppygen_for_node(
         language,
         &working_dir,
         consumed_interfaces,
@@ -1381,21 +1381,16 @@ async fn process_node_add(
         &ctx.action.peppy_dirs,
         deploy_mode,
         None,
-    ) {
-        let msg = format!("Failed to generate peppygen library: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    )
+    .map_err(|e| format!("Failed to generate peppygen library: {}", e))?;
 
     // Stop any pre-existing instances of this node before pushing the new
     // config. `push_config` rejects replacements that still have live
     // instances (it would otherwise orphan them), so we shut them down
     // first to satisfy that precondition.
-    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        let msg = format!("Failed to shutdown existing node instances: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    shutdown_existing_instances(&node_name, &node_tag, ctx)
+        .await
+        .map_err(|e| format!("Failed to shutdown existing node instances: {}", e))?;
 
     // Push the node config into the stack as an `Added` entity. Use the
     // working_dir copy of peppy.json5 rather than source_path because
@@ -1403,27 +1398,17 @@ async fn process_node_add(
     // up after this function returns. The working_dir persists as long as
     // the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        ctx.action
-            .node_stack
-            .push_config(node_config.clone(), false, &config_path_for_stack)
-    {
-        let msg = format!("Failed to add node config: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    ctx.action
+        .node_stack
+        .push_config(node_config.clone(), false, &config_path_for_stack)
+        .map_err(|e| format!("Failed to add node config: {}", e))?;
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag) {
-        Some(handle) => handle,
-        None => {
-            let msg = format!(
-                "internal error: just-pushed entity {}:{} disappeared from the stack",
-                node_name, node_tag
-            );
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
+    let entity_handle = ctx.action.node_stack.find(&node_name, &node_tag).ok_or_else(|| {
+        format!(
+            "internal error: just-pushed entity {}:{} disappeared from the stack",
+            node_name, node_tag
+        )
+    })?;
 
     // Hand over the temporary working dir to the entity so a follow-up
     // `node_build` can reuse it without re-cloning the source. The
@@ -1443,7 +1428,7 @@ async fn process_node_add(
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
-    NodeAddResult::success(&ctx.log_path, node_name, node_tag)
+    Ok(NodeAddResult::success(&ctx.log_path, node_name, node_tag))
 }
 
 #[cfg(test)]
