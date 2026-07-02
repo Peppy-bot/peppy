@@ -630,6 +630,31 @@ pub fn validate_generated_type_name_collisions(
     validate_sibling_type_name_collisions(&format.0, struct_prefix)
 }
 
+/// Returns the generated type name and nested fields for a field that
+/// produces a nested struct: an object field (`{prefix}FieldName`) or an
+/// array-of-objects field (the array item type name). Fields of any other
+/// shape generate no type and return `None`.
+fn generated_object_child<'a>(
+    struct_prefix: &str,
+    field_name: &str,
+    schema: &'a SchemaType,
+) -> Option<(String, &'a IndexMap<String, SchemaType>)> {
+    match schema {
+        SchemaType::Object(object) => Some((
+            format!("{struct_prefix}{}", to_camel_case(field_name)),
+            &object.fields,
+        )),
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => Some((
+                array_item_type_name(struct_prefix, field_name),
+                &object.fields,
+            )),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn validate_sibling_type_name_collisions(
     fields: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
@@ -637,40 +662,24 @@ fn validate_sibling_type_name_collisions(
     let mut seen: HashMap<String, String> = HashMap::new();
 
     for (field_name, schema) in fields {
-        let generated_name = match schema {
-            SchemaType::Object(_) => Some(format!("{struct_prefix}{}", to_camel_case(field_name))),
-            SchemaType::Array(array) if matches!(array.items.as_ref(), SchemaType::Object(_)) => {
-                Some(array_item_type_name(struct_prefix, field_name))
-            }
-            _ => None,
+        let Some((generated_name, child_fields)) =
+            generated_object_child(struct_prefix, field_name, schema)
+        else {
+            continue;
         };
 
-        if let Some(name) = generated_name {
-            if let Some(previous_field) = seen.get(&name) {
-                return Err(Error::GeneratedTypeNameCollision {
-                    context: struct_prefix.to_string(),
-                    type_name: name,
-                    first_field: previous_field.clone(),
-                    second_field: field_name.clone(),
-                });
-            }
-            seen.insert(name, field_name.clone());
+        if let Some(previous_field) = seen.get(&generated_name) {
+            return Err(Error::GeneratedTypeNameCollision {
+                context: struct_prefix.to_string(),
+                type_name: generated_name,
+                first_field: previous_field.clone(),
+                second_field: field_name.clone(),
+            });
         }
+        seen.insert(generated_name.clone(), field_name.clone());
 
-        // Recurse into nested objects and array items.
-        match schema {
-            SchemaType::Object(object) => {
-                let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
-                validate_sibling_type_name_collisions(&object.fields, &nested_prefix)?;
-            }
-            SchemaType::Array(array) => {
-                if let SchemaType::Object(object) = array.items.as_ref() {
-                    let nested_prefix = array_item_type_name(struct_prefix, field_name);
-                    validate_sibling_type_name_collisions(&object.fields, &nested_prefix)?;
-                }
-            }
-            _ => {}
-        }
+        // The generated name doubles as the nested struct prefix.
+        validate_sibling_type_name_collisions(child_fields, &generated_name)?;
     }
 
     Ok(())
