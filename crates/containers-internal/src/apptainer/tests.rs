@@ -1,6 +1,6 @@
 use super::facade::{Apptainer, Backend, is_uri};
 #[cfg(target_os = "linux")]
-use super::facade::{apparmor_profile_ref, check_setup_status};
+use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
 use crate::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,8 +90,10 @@ fn lima_facade() -> Apptainer {
     }
 }
 
-/// Whether this host restricts unprivileged user namespaces via AppArmor, the
-/// gate the setup-status tests branch on.
+/// Whether this host's kernel restricts unprivileged user namespaces via
+/// AppArmor (raw procfs flag, without the manageability gate production
+/// applies on top). Used to skip the not-restricted setup-status test; the
+/// restricted-state tests gate on `SetupStatus::apparmor_restricted` instead.
 #[cfg(target_os = "linux")]
 fn apparmor_restricts_userns() -> bool {
     std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -710,22 +712,17 @@ fn check_setup_status_no_apparmor_restriction() {
 fn check_setup_status_requires_apparmor_profile_loaded() {
     // On systems where AppArmor restricts unprivileged user namespaces,
     // check_setup_status must verify the profile is loaded into the kernel,
-    // not just that the file exists on disk.
-    let apparmor_restricted = apparmor_restricts_userns();
+    // not just that the file exists on disk. Gate on the status's own
+    // apparmor_restricted (procfs flag AND manageability) rather than the raw
+    // procfs flag: inside containers the flag can read "1" while AppArmor is
+    // not manageable, and production treats that as not restricted.
+    let apptainer_dir = ready_apptainer_dir();
+    let status = check_setup_status(&apptainer_dir);
 
-    if !apparmor_restricted {
+    if !status.apparmor_restricted {
         eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
         return;
     }
-
-    let apptainer_dir = ready_apptainer_dir();
-
-    let status = check_setup_status(&apptainer_dir);
-
-    assert!(
-        status.apparmor_restricted,
-        "apparmor_restricted should be true on this system"
-    );
 
     // If the profile file exists but isn't loaded, is_ok() must be false.
     if status.apparmor_ok && !status.apparmor_loaded {
@@ -755,16 +752,16 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
     // When the AppArmor profile references a different starter path than
     // the current installation (e.g. a previous build artifact), apparmor_ok
     // must be false so the profile gets regenerated with the correct path.
-    let apparmor_restricted = apparmor_restricts_userns();
+    // Gate on the status's own apparmor_restricted (procfs flag AND
+    // manageability), matching production: inside containers the raw flag can
+    // read "1" while no profile can exist, which would fail the asserts below.
+    let apptainer_dir = ready_apptainer_dir();
+    let status = check_setup_status(&apptainer_dir);
 
-    if !apparmor_restricted {
+    if !status.apparmor_restricted {
         eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
         return;
     }
-
-    let apptainer_dir = ready_apptainer_dir();
-
-    let status = check_setup_status(&apptainer_dir);
 
     // Read this install's profile and check if it references the current path.
     let profile = apparmor_profile_ref(&apptainer_dir);
@@ -784,8 +781,8 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
             "fix script should regenerate this install's profile, got: {script}"
         );
         assert!(
-            script.contains(&profile.starter_path),
-            "fix script should use the current starter path, got: {script}"
+            script.contains(&shell_escape_single_quoted(&profile.starter_path)),
+            "fix script should use the current starter path (shell-escaped), got: {script}"
         );
     }
 }
@@ -827,6 +824,18 @@ fn apparmor_profile_is_namespaced_per_install_path() {
     // The name is persisted in /etc, so the derivation must be deterministic.
     let a_again = apparmor_profile_ref(Path::new("/opt/peppy-a/apptainer"));
     assert_eq!(a.name, a_again.name, "profile naming must be deterministic");
+}
+
+/// The starter path is interpolated inside the single-quoted `echo '...'`
+/// body of the fix script; an embedded quote must not break out of it.
+#[cfg(target_os = "linux")]
+#[test]
+fn shell_escape_single_quoted_survives_embedded_quotes() {
+    assert_eq!(
+        shell_escape_single_quoted("/home/o'brien/.peppy/starter"),
+        r"/home/o'\''brien/.peppy/starter"
+    );
+    assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
 // ---------------------------------------------------------------------------

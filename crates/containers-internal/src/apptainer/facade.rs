@@ -188,6 +188,16 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     })
 }
 
+/// Escape a value for interpolation inside a single-quoted shell string: each
+/// embedded quote terminates the string, inserts an escaped quote, and reopens
+/// it, so the surrounding quoting survives arbitrary path characters. The fix
+/// script embeds the starter path inside `echo '...'`; a home directory
+/// containing a quote must not break out of it.
+#[cfg(target_os = "linux")]
+pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
+    value.replace('\'', r"'\''")
+}
+
 /// Inspect the Apptainer user namespace prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
@@ -269,7 +279,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
                  }}' | sudo tee {profile_file} > /dev/null \\\n  \
                  && sudo apparmor_parser -r {profile_file}",
                 profile_name = profile.name,
-                starter_path = profile.starter_path,
+                starter_path = shell_escape_single_quoted(&profile.starter_path),
                 profile_file = profile.file.display(),
             ));
         } else if apparmor_restricted && !apparmor_loaded {
