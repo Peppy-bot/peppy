@@ -154,7 +154,9 @@ impl DaemonState {
     }
 
     fn env_state_file_path() -> Option<PathBuf> {
-        std::env::var_os(daemon_config::consts::DAEMON_STATE_FILE_ENV).map(PathBuf::from)
+        daemon_config::consts::non_empty_env_path(std::env::var_os(
+            daemon_config::consts::DAEMON_STATE_FILE_ENV,
+        ))
     }
 
     fn default_state_file_path() -> PathBuf {

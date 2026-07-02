@@ -180,18 +180,25 @@ impl PeppyDirs {
 ///    - Production: `~/.peppy`
 ///    - Development: `/tmp/.peppy`
 ///
-/// `var_os` plus the empty-string guard means `PEPPY_HOME=` is treated as unset
-/// rather than rooting at the empty path, matching `env_state_file_path()` in
-/// `daemon_state.rs`.
+/// `var_os` plus [`non_empty_env_path`] means `PEPPY_HOME=` is treated as
+/// unset rather than rooting at the empty path.
 pub fn peppy_root_dir() -> PathBuf {
     resolve_root(std::env::var_os(config::consts::PEPPY_HOME_ENV))
+}
+
+/// Interprets an env var value as a path override. An empty value is
+/// treated as unset rather than as the empty path, so `FOO=` behaves
+/// like `unset FOO`. Takes the value (not the var name) so callers stay
+/// testable without mutating process env.
+pub fn non_empty_env_path(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 /// Implementation of [`peppy_root_dir`] with the `PEPPY_HOME` value made
 /// explicit, so the precedence can be tested without mutating process env.
 fn resolve_root(home_override: Option<std::ffi::OsString>) -> PathBuf {
-    if let Some(home) = home_override.filter(|v| !v.is_empty()) {
-        return PathBuf::from(home);
+    if let Some(home) = non_empty_env_path(home_override) {
+        return home;
     }
     match app_env() {
         AppEnv::Prod => dirs::home_dir()
@@ -230,5 +237,23 @@ mod tests {
             "fallback root: {}",
             unset.display()
         );
+    }
+
+    #[test]
+    fn non_empty_env_path_set_value_is_some() {
+        assert_eq!(
+            non_empty_env_path(Some("/some/path".into())),
+            Some(PathBuf::from("/some/path"))
+        );
+    }
+
+    #[test]
+    fn non_empty_env_path_empty_value_is_none() {
+        assert_eq!(non_empty_env_path(Some(std::ffi::OsString::new())), None);
+    }
+
+    #[test]
+    fn non_empty_env_path_unset_is_none() {
+        assert_eq!(non_empty_env_path(None), None);
     }
 }
