@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::launcher::Name;
+use config::runtime::Name;
 use config::node::NodeConfigParser;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use core_node_api::encoding::StackListRequest;

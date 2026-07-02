@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node::{InitOutcome, ensure_default_repos, repositories_list_path};
 use tracing::info;
 

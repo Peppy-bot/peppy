@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 
 use crate::auth::device::DeviceFlowOptions;
 use crate::auth::{
@@ -37,7 +37,7 @@ impl Command for LoginCommand {
         // Loads (and seeds/completes) peppy_config.json5 with the same strict,
         // fail-loud semantics the daemon uses; resource_servers supplies the
         // per-profile URL fallback.
-        let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
+        let config = daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();

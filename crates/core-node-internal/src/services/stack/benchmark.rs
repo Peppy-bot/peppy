@@ -22,7 +22,7 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_interface_doc;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_conforms_to,
@@ -399,7 +399,7 @@ fn resolve_conformed_topic_qos(
     peppy_dirs: &PeppyDirs,
     tx: &UnboundedSender<StackBenchmarkFeedback>,
 ) {
-    let mut cache: HashMap<(String, String), Option<config::interface::PeppyInterface>> =
+    let mut cache: HashMap<(String, String), Option<daemon_config::interface::PeppyInterface>> =
         HashMap::new();
     for edge in edges.iter_mut() {
         if edge.kind != InterfaceKind::Topic {
@@ -451,7 +451,7 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
         .iter()
         .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
         .collect();
-    let mut iface_cache: HashMap<(String, String), Option<config::interface::PeppyInterface>> =
+    let mut iface_cache: HashMap<(String, String), Option<daemon_config::interface::PeppyInterface>> =
         HashMap::new();
 
     for edge in edges.iter_mut() {
@@ -543,7 +543,7 @@ fn formats_from_node(
 /// Request/response size estimates for an interface declared in an interface
 /// contract. Same response-side convention for topics as [`formats_from_node`].
 fn formats_from_interface(
-    doc: Option<&config::interface::PeppyInterface>,
+    doc: Option<&daemon_config::interface::PeppyInterface>,
     kind: InterfaceKind,
     name: &str,
 ) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
@@ -1267,7 +1267,7 @@ mod tests {
 
     #[test]
     fn formats_from_interface_sizes_topic_message_on_response_side() {
-        let doc = config::interface::PeppyInterfaceParser::from_content(
+        let doc = daemon_config::interface::PeppyInterfaceParser::from_content(
             r#"{
                 peppy_schema: "interface/v1",
                 manifest: { name: "uvc_camera", tag: "v1" },

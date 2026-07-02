@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::io;
@@ -154,7 +154,7 @@ impl DaemonState {
     }
 
     fn env_state_file_path() -> Option<PathBuf> {
-        std::env::var_os(config::consts::DAEMON_STATE_FILE_ENV).map(PathBuf::from)
+        std::env::var_os(daemon_config::consts::DAEMON_STATE_FILE_ENV).map(PathBuf::from)
     }
 
     fn default_state_file_path() -> PathBuf {
@@ -222,7 +222,7 @@ impl DaemonState {
             _ => {
                 return Err(io::Error::other(format!(
                     "Multiple running peppy daemons detected. Set {} to select one.",
-                    config::consts::DAEMON_STATE_FILE_ENV
+                    daemon_config::consts::DAEMON_STATE_FILE_ENV
                 )));
             }
         }

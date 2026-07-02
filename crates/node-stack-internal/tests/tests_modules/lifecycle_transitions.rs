@@ -390,7 +390,7 @@ async fn concurrent_builds_are_rejected_immediately() {
 
     // Isolated peppy_dirs root for this test.
     let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
-    let peppy_dirs = config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
 
     // The winning build blocks in Phase 2 on a build_cmd that waits for this
     // proceed file, holding the entity in `Building` until the test explicitly
@@ -533,7 +533,7 @@ fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConf
 struct BuildHarness {
     working_dir: tempfile::TempDir,
     peppy_root: tempfile::TempDir,
-    peppy_dirs: config::consts::PeppyDirs,
+    peppy_dirs: daemon_config::consts::PeppyDirs,
     log_file: Arc<StdMutex<std::fs::File>>,
     feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     _feedback_rx: tokio::sync::mpsc::UnboundedReceiver<node_stack::build_io::FeedbackLine>,
@@ -542,7 +542,7 @@ struct BuildHarness {
 fn build_harness() -> BuildHarness {
     let working_dir = tempfile::tempdir().expect("tempdir working_dir");
     let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
-    let peppy_dirs = config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
     let log_path = peppy_root.path().join("build.log");
     let log_file = Arc::new(StdMutex::new(
         std::fs::File::create(&log_path).expect("create log"),

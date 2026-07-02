@@ -546,7 +546,7 @@ fn clippy_single_exposed_service_without_request_body() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -621,7 +621,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -704,7 +704,7 @@ fn clippy_consumed_service_empty_request_format() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -743,7 +743,7 @@ fn clippy_consumed_service_empty_response_format() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();

@@ -103,7 +103,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
     let cargo_toml = RustCargoToml {
         node_name,
         pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
-        pepylib_path: config::consts::PEPPYLIB_OUTPUT_PATH,
+        pepylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
     };
     std::fs::write(node_dir.join("Cargo.toml"), cargo_toml.render()?)?;
 
@@ -121,7 +121,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
         let apptainer_def = ApptainerRustDef {
             node_name,
             tag: "v1",
-            base_image: config::consts::DEFAULT_RUST_BASE_IMAGE,
+            base_image: daemon_config::consts::DEFAULT_RUST_BASE_IMAGE,
         };
         std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
     }
@@ -139,7 +139,7 @@ pub fn apply_python_templates(
     let pyproject_toml = PythonPyprojectToml {
         node_name,
         pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
-        pepylib_path: config::consts::PEPPYLIB_OUTPUT_PATH,
+        pepylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
         python_min_version: config::consts::PYTHON_MIN_VERSION,
         python_max_version: config::consts::PYTHON_MAX_VERSION,
     };
@@ -182,7 +182,7 @@ if __name__ == "__main__":
         let apptainer_def = ApptainerPythonDef {
             node_name,
             tag: "v1",
-            base_image: config::consts::DEFAULT_PYTHON_BASE_IMAGE,
+            base_image: daemon_config::consts::DEFAULT_PYTHON_BASE_IMAGE,
         };
         std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
     }

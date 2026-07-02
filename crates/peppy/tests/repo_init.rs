@@ -1,4 +1,4 @@
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node::repositories_list_path;
 use peppy::commands::repo::repo_init_with_dirs;
 use serde_json::Value;

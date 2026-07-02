@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::{Name, NodeConfig};
 use core_node_api::NodeStage as SerializedNodeStage;
 use node_stack::{

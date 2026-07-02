@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 peppy = { path = "../../../crates/peppy", features = ["test-support"] }
 config = { workspace = true }
+daemon-config = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tempfile = "3"

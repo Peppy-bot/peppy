@@ -17,10 +17,10 @@ pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances
 use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
-    consts::PeppyDirs,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
     schema::PeppySchema,
 };
+use daemon_config::consts::PeppyDirs;
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
@@ -117,7 +117,7 @@ pub struct CoreNodeConfig {
     pub peppy_dirs: PeppyDirs,
     /// Daemon-global messaging mode + peer buffer sizes, injected into every
     /// spawned node's runtime config (see `node::run`).
-    pub peppy_config: config::peppy_config::PeppyConfig,
+    pub peppy_config: daemon_config::peppy_config::PeppyConfig,
     /// The daemon's organization namespace for this generation (`"local"` when
     /// logged out, else the org id). Stamped onto every spawned node's
     /// `discovery.organization_id` so the node opens its session under the same
@@ -146,7 +146,7 @@ pub struct CoreNode {
     daemon_use_sim_time: bool,
     /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
-    peppy_config: config::peppy_config::PeppyConfig,
+    peppy_config: daemon_config::peppy_config::PeppyConfig,
     /// The daemon's organization namespace for this generation, stamped onto
     /// every spawned node so it opens its session under the daemon's namespace.
     organization_namespace: String,

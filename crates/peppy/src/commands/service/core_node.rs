@@ -1,6 +1,6 @@
 use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use pmi::Messenger;
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ pub(crate) const HEALTH_MONITOR_TIMEOUT: Duration = Duration::from_secs(3);
 /// defined next to the grace-period floor in `config::peppy_config`, where a
 /// compile-time assert enforces that margin.
 pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
-    Duration::from_secs(config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
+    Duration::from_secs(daemon_config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
 
 pub struct CoreNodeRunner {
     core_node: CoreNode,
@@ -58,7 +58,7 @@ impl CoreNodeRunner {
         root_dir: PathBuf,
         messaging_ready: Option<watch::Receiver<bool>>,
         clock_source: super::ClockSource,
-        peppy_config: config::peppy_config::PeppyConfig,
+        peppy_config: daemon_config::peppy_config::PeppyConfig,
         organization_namespace: String,
         serve_teardown_token: CancellationToken,
         core_node_done: watch::Sender<bool>,

@@ -3,7 +3,7 @@
 //! `git` caches fully-cloned checkouts keyed by `(repo_url, ref)`;
 //! `bundle` caches extracted HTTP archives keyed by `(url, sha256)`.
 //! Both use `key` (slug + short hash) to produce deterministic directory
-//! names under [`config::consts::PeppyDirs`].
+//! names under [`daemon_config::consts::PeppyDirs`].
 
 pub(super) mod bundle;
 pub(crate) mod git;

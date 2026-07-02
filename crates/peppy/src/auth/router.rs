@@ -84,7 +84,7 @@ pub struct RouterEndpoint {
 pub fn resolve_router_ca() -> Option<PathBuf> {
     resolve_router_ca_from(
         EMBEDDED_DEV_CA,
-        &config::consts::PeppyDirs::default().cache_dir(),
+        &daemon_config::consts::PeppyDirs::default().cache_dir(),
     )
 }
 
@@ -108,7 +108,7 @@ pub fn resolve_router_client_identity() -> Option<(PathBuf, PathBuf)> {
     resolve_router_client_identity_from(
         EMBEDDED_DEV_CLIENT_CERT,
         EMBEDDED_DEV_CLIENT_KEY,
-        &config::consts::PeppyDirs::default().cache_dir(),
+        &daemon_config::consts::PeppyDirs::default().cache_dir(),
     )
 }
 

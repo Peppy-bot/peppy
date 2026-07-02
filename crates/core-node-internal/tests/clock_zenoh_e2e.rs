@@ -13,7 +13,7 @@ use common::{
     CALLER_INSTANCE_ID, assert_clock_round_trip, assert_clock_topic_emits_monotonic_ticks,
     start_core_node_with_real_messenger_mode,
 };
-use config::peppy_config::Mode;
+use daemon_config::peppy_config::Mode;
 use std::time::Duration;
 
 #[rstest::rstest]

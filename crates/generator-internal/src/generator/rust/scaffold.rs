@@ -34,7 +34,7 @@ use toml_edit::{DocumentMut, value};
 
 pub fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
-    peppy_dirs: &config::consts::PeppyDirs,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
 ) -> Result<()> {
     let to_path = to_path.as_ref();
@@ -348,7 +348,7 @@ fn vendored_crates_cache_key() -> String {
 /// staging directory for concurrent-safe deployment.
 fn deploy_rust_crates_to_shared_cache(
     node_libs_dir: &Path,
-    peppy_dirs: &config::consts::PeppyDirs,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
 ) -> Result<()> {
     let cache_key = vendored_crates_cache_key();

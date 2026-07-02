@@ -140,7 +140,7 @@ fn make_install_context(
 ///
 /// Kept pure (inputs passed in rather than read from the process env) so the
 /// `PEPPY_HOME` precedence can be unit-tested without mutating global state,
-/// mirroring `config::consts::resolve_root`.
+/// mirroring `daemon_config::consts::resolve_root`.
 fn service_environment(
     path: Option<String>,
     peppy_home: Option<OsString>,
@@ -158,7 +158,7 @@ fn service_environment(
     // `~/.peppy` while a caller that set PEPPY_HOME (CI per-run isolation or a
     // custom install prefix) reads daemon state from the override path — the two
     // never find each other and the install's readiness probe times out. Empty
-    // is treated as unset, matching `config::consts::peppy_root_dir`.
+    // is treated as unset, matching `daemon_config::consts::peppy_root_dir`.
     if let Some(home) = peppy_home.filter(|value| !value.is_empty()) {
         environment.push((
             config::consts::PEPPY_HOME_ENV.to_string(),

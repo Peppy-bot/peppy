@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION,
-    PYTHON_MIN_VERSION, PeppyDirs,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
 };
+use daemon_config::consts::{PEPPYLIB_OUTPUT_PATH, PeppyDirs};
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::SenderTarget;
@@ -43,7 +43,7 @@ pub const TEST_NODE_TAG: &str = "v1";
 
 /// Re-exported so the communication test files can name the messaging mode for
 /// their `#[case]` parameterization without reaching into the internal path.
-pub use config::peppy_config::Mode;
+pub use daemon_config::peppy_config::Mode;
 
 /// Applies a messaging mode to a node's runtime config before it is written and
 /// handed to a spawned node. This is the single seam the dual-mode communication
@@ -605,7 +605,7 @@ pub fn run_generate_peppygen_lib_test(
 
     // Check that the git.hash was created
     let git_hash_path = node_dir
-        .join(config::consts::PEPPY_OUTPUT_DIR)
+        .join(daemon_config::consts::PEPPY_OUTPUT_DIR)
         .join("git.hash");
     let git_hash_content =
         fs::read_to_string(&git_hash_path).expect("git.hash file should exist in .peppy directory");

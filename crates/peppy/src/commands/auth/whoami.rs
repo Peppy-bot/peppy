@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 
 use crate::auth::client::Principal;
 use crate::auth::{client, http::HttpClient, profile, resolver, storage};
@@ -25,7 +25,7 @@ pub struct WhoamiCommand {
 impl Command for WhoamiCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
-        let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
+        let config = daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();

@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
-use config::consts::{
-    DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs,
-};
+use config::consts::{DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use daemon_config::consts::{PEPPY_OUTPUT_DIR, PeppyDirs};
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::names;
 use core_node::nodes_repo_cache_path;
@@ -416,7 +415,7 @@ pub fn build_runtime_config_json5(
         config::runtime::NodeInstanceConfig {
             arguments,
             ..config::runtime::NodeInstanceConfig::new(
-                config::launcher::Name::new(instance_id).expect("valid instance id"),
+                config::runtime::Name::new(instance_id).expect("valid instance id"),
             )
         },
         node_name,
@@ -1195,7 +1194,7 @@ impl TestPackagesCache {
         self
     }
 
-    pub fn write(self, peppy_dirs: &config::consts::PeppyDirs) {
+    pub fn write(self, peppy_dirs: &daemon_config::consts::PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
         let content =
@@ -1621,7 +1620,7 @@ pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
         default_node_arguments(),
         data_dir,
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
+        daemon_config::peppy_config::PeppyConfig::default(),
     )
     .await
 }
@@ -1640,7 +1639,7 @@ pub async fn start_core_node_with_sim_clock() -> StartedCoreNode {
         args,
         data_dir,
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
+        daemon_config::peppy_config::PeppyConfig::default(),
     )
     .await
 }
@@ -1656,7 +1655,7 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
 /// Convenience wrapper over [`start_core_node_with_real_messenger_in_mode`] with
 /// the default timeouts, for the dual-mode e2e tests parameterized over the mode.
 pub async fn start_core_node_with_real_messenger_mode(
-    mode: config::peppy_config::Mode,
+    mode: daemon_config::peppy_config::Mode,
 ) -> StartedCoreNode {
     start_core_node_with_real_messenger_in_mode(
         Duration::from_secs(10),
@@ -1673,7 +1672,7 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     start_core_node_with_real_messenger_in_mode(
         node_startup_timeout,
         node_start_health_timeout,
-        config::peppy_config::Mode::Peer,
+        daemon_config::peppy_config::Mode::Peer,
     )
     .await
 }
@@ -1685,7 +1684,7 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
 pub async fn start_core_node_with_real_messenger_in_mode(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
-    mode: config::peppy_config::Mode,
+    mode: daemon_config::peppy_config::Mode,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(
@@ -1711,7 +1710,7 @@ pub async fn start_core_node_with_real_messenger_in_mode(
     let mut args = default_node_arguments();
     args.node_startup_timeout = node_startup_timeout;
     args.node_start_health_timeout = node_start_health_timeout;
-    let peppy_config = config::peppy_config::PeppyConfig {
+    let peppy_config = daemon_config::peppy_config::PeppyConfig {
         mode,
         ..Default::default()
     };
@@ -1726,8 +1725,8 @@ pub async fn start_core_node_with_real_messenger_in_mode(
 pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
-    let peppy_config = config::peppy_config::PeppyConfig {
-        lifecycle: config::peppy_config::LifecycleConfig {
+    let peppy_config = daemon_config::peppy_config::PeppyConfig {
+        lifecycle: daemon_config::peppy_config::LifecycleConfig {
             shutdown_grace_secs,
             ..Default::default()
         },
@@ -1755,7 +1754,7 @@ pub async fn start_core_node_with_health_timeout(
         args,
         data_dir,
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
+        daemon_config::peppy_config::PeppyConfig::default(),
     )
     .await
 }
@@ -1774,7 +1773,7 @@ pub async fn start_core_node_with_health_monitor(
         args,
         data_dir,
         peppy_dirs,
-        config::peppy_config::PeppyConfig::default(),
+        daemon_config::peppy_config::PeppyConfig::default(),
     )
     .await
 }
@@ -1784,7 +1783,7 @@ async fn start_core_node_with_messenger(
     node_arguments: CoreNodeArguments,
     data_dir: TempDir,
     peppy_dirs: PeppyDirs,
-    peppy_config: config::peppy_config::PeppyConfig,
+    peppy_config: daemon_config::peppy_config::PeppyConfig,
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");

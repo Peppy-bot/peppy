@@ -1006,7 +1006,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -1093,7 +1093,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -1199,7 +1199,7 @@ fn clippy_consumed_action_empty_goal_request() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();

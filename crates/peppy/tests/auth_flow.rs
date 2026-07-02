@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use httpmock::prelude::*;
 use secrecy::ExposeSecret;
 use serde_json::json;

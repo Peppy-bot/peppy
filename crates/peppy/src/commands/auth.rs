@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Subcommand;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{NodeStage, SerializedNodeGraph};
 use peppylib::core_node::transport::poll_stack_list;

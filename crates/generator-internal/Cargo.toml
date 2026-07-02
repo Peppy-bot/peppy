@@ -7,6 +7,7 @@ edition.workspace = true
 [dependencies]
 pmi = { workspace = true }
 config = { workspace = true }
+daemon-config = { workspace = true }
 encoding = { workspace = true }
 quote = "1.0"
 proc-macro2 = "1.0"

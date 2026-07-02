@@ -6,7 +6,7 @@
 //! default) and can be overridden at runtime via `--api-url` / `PEPPY_API_URL`.
 
 use crate::error::{Error, Result};
-use config::peppy_config::ResourceServers;
+use daemon_config::peppy_config::ResourceServers;
 
 /// Resolves the backend base URL in precedence order: the `--api-url` flag,
 /// then `PEPPY_API_URL`, then the build's URL from the `resource_servers`
@@ -83,7 +83,7 @@ fn is_local(host: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::peppy_config::DEFAULT_API_URL;
+    use daemon_config::peppy_config::DEFAULT_API_URL;
 
     /// The default `resource_servers` block, the built-in fallback every test
     /// resolves against unless it overrides the URL explicitly.

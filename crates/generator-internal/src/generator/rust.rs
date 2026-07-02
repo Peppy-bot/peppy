@@ -1527,7 +1527,7 @@ impl LanguageGenerator for RustGenerator {
     fn build(
         self,
         to_path: impl AsRef<Path>,
-        peppy_dirs: &config::consts::PeppyDirs,
+        peppy_dirs: &daemon_config::consts::PeppyDirs,
         deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
         scaffold::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode)?;

@@ -10,7 +10,7 @@
 //! snippets — either the code or the snippets need updating.
 
 use config::consts::NODE_CONFIG_FILE;
-use config::interface::PeppyInterfaceParser;
+use daemon_config::interface::PeppyInterfaceParser;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use docs_integration_tests::workspace_root;

@@ -13,7 +13,7 @@ use super::add::{NodeAddActionContext, run_node_add};
 use super::cache as node_cache;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use chrono::Local;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use futures::future::BoxFuture;

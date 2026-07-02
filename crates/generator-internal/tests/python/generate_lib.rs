@@ -1,8 +1,9 @@
 use crate::helpers;
 use config::{
-    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH},
+    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
     node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
+use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::generate_peppygen_lib;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::fs;

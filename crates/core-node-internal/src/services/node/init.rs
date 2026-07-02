@@ -4,7 +4,7 @@ use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
 use crate::names;
 use crate::services::response::into_service_response;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use config::node::Toolchain;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use peppylib::messaging::SenderTarget;

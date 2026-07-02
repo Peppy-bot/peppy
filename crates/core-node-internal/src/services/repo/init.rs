@@ -1,5 +1,5 @@
 use crate::Result;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use serde_json::Value;
 use std::collections::HashSet;
 use tracing::info;

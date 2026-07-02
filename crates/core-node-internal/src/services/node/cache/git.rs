@@ -14,7 +14,7 @@
 use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_with_progress, fetch_with_progress};
 use super::key;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -13,7 +13,7 @@
 use super::super::add::download_and_extract_http_source;
 use super::super::locate_node_root_dir;
 use super::key;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

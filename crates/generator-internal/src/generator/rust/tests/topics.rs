@@ -635,7 +635,7 @@ fn clippy_single_emitted_topic_empty_format() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -691,7 +691,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();

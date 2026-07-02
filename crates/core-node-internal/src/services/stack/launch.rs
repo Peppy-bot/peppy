@@ -11,8 +11,9 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
-use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
+use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
+use daemon_config::consts::PeppyDirs;
+use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
@@ -285,7 +286,7 @@ pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 /// value > daemon default > wall" precedence so the spawned node receives
 /// one concrete value and never has to re-implement the fallback.
 fn resolve_framework(
-    overrides: &config::launcher::FrameworkOverrides,
+    overrides: &daemon_config::launcher::FrameworkOverrides,
     daemon_default_use_sim_time: bool,
 ) -> config::runtime::ResolvedFramework {
     config::runtime::ResolvedFramework {
@@ -960,7 +961,7 @@ async fn resolve_deployments(
     }
 
     if !planning_errors.is_empty() {
-        let msg = config::format_bulleted(&planning_errors);
+        let msg = daemon_config::format_bulleted(&planning_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1026,7 +1027,7 @@ async fn validate_and_order_dependencies(
         .collect();
 
     if !dependency_errors.is_empty() {
-        let msg = config::format_bulleted(&dependency_errors);
+        let msg = daemon_config::format_bulleted(&dependency_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1046,9 +1047,9 @@ async fn validate_and_order_dependencies(
         .instances()
         .first()
         .map(|inst| inst.instance_id().as_str().to_owned());
-    let root_instances: Vec<config::launcher::DeploymentInstance> = root_instance_id_str
-        .and_then(|id_str| config::launcher::Name::new(id_str).ok())
-        .map(|instance_id| config::launcher::DeploymentInstance {
+    let root_instances: Vec<daemon_config::launcher::DeploymentInstance> = root_instance_id_str
+        .and_then(|id_str| config::runtime::Name::new(id_str).ok())
+        .map(|instance_id| daemon_config::launcher::DeploymentInstance {
             instance_id,
             arguments: Default::default(),
             env_vars: Default::default(),
@@ -1058,9 +1059,9 @@ async fn validate_and_order_dependencies(
         .into_iter()
         .collect();
 
-    let mut binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
+    let mut binding_items: Vec<daemon_config::launcher::BindingValidationItem<'_>> = planned
         .iter()
-        .map(|p| config::launcher::BindingValidationItem {
+        .map(|p| daemon_config::launcher::BindingValidationItem {
             node_name: &p.node_name,
             node_tag: &p.node_tag,
             instances: &p.deployment.instances,
@@ -1069,7 +1070,7 @@ async fn validate_and_order_dependencies(
         })
         .collect();
     if !root_instances.is_empty() {
-        binding_items.push(config::launcher::BindingValidationItem {
+        binding_items.push(daemon_config::launcher::BindingValidationItem {
             node_name: root_config.manifest.name.as_str(),
             node_tag: root_config.manifest.tag.as_str(),
             instances: &root_instances,
@@ -1081,9 +1082,9 @@ async fn validate_and_order_dependencies(
     // stacks are daemon-scoped, so the launching daemon is where every
     // producer instance in the snapshot lives.
     let validated =
-        config::launcher::validate_bindings(&binding_items, ctx.bound_core_node.as_str());
+        daemon_config::launcher::validate_bindings(&binding_items, ctx.bound_core_node.as_str());
     if !validated.errors.is_empty() {
-        let msg = config::format_bulleted(&validated.errors);
+        let msg = daemon_config::format_bulleted(&validated.errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
@@ -1991,12 +1992,12 @@ mod tests {
     /// `Some(false)` forces wall even when the daemon default is sim.
     #[test]
     fn resolve_framework_per_instance_wins() {
-        let force_sim = config::launcher::FrameworkOverrides {
+        let force_sim = daemon_config::launcher::FrameworkOverrides {
             use_sim_time: Some(true),
         };
         assert!(resolve_framework(&force_sim, false).use_sim_time);
 
-        let force_wall = config::launcher::FrameworkOverrides {
+        let force_wall = daemon_config::launcher::FrameworkOverrides {
             use_sim_time: Some(false),
         };
         assert!(!resolve_framework(&force_wall, true).use_sim_time);
@@ -2005,7 +2006,7 @@ mod tests {
     /// When the instance omits the override, the daemon default decides.
     #[test]
     fn resolve_framework_falls_through_to_daemon_default() {
-        let none = config::launcher::FrameworkOverrides::default();
+        let none = daemon_config::launcher::FrameworkOverrides::default();
         assert!(!resolve_framework(&none, false).use_sim_time);
         assert!(resolve_framework(&none, true).use_sim_time);
     }

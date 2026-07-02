@@ -134,7 +134,7 @@ impl RuffFacade {
         let binary_path = temp_dir.join(format!("peppy_ruff_binary_{}", env!("RUFF_VERSION")));
 
         if !binary_path.exists() {
-            let result = config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
+            let result = daemon_config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
                 std::fs::write(tmp_path, binary_bytes)?;
                 #[cfg(unix)]
                 {

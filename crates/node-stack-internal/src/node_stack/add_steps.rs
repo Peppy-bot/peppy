@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use config::consts::PEPPY_OUTPUT_DIR;
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use tracing::debug;
 
 /// Directories excluded from node snapshot copies.
