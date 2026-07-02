@@ -1,0 +1,45 @@
+<entry>
+  <title>v0.14.0</title>
+  <id>https://docs.peppy.bot/releases/v0-14-0/</id>
+  <updated>2026-07-02T00:00:00Z</updated>
+
+  <summary>Logging in now connects your daemon to a per-user TLS-verified cloud router, and topics move to a new Subscription API.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.14.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Logging in now connects your daemon to a per-user TLS-verified cloud router, and topics move to a new Subscription API.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 2, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Topic subscriptions no longer use the per-call &lt;code&gt;on_next_message_received&lt;/code&gt; method; subscribing now returns a &lt;code&gt;Subscription&lt;/code&gt; that you hold and read messages from, so update your node code to use it.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Authentication and cloud routers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Logging in now fetches and caches your per-user cloud (zenoh) router configuration and federates your daemon to it live.&lt;/li&gt;
+&lt;li&gt;peppy verifies the router's TLS certificate when you log in.&lt;/li&gt;
+&lt;li&gt;Logging in or out now takes effect immediately, regenerating and restarting the daemon and propagating your organization namespace through it.&lt;/li&gt;
+&lt;li&gt;Fixed a cross-identity organization cache leak, added a daemon restart when the namespace drifts at startup, and hardened login and logout edge cases.&lt;/li&gt;
+&lt;li&gt;The restart warning is now skipped when your daemon stack has no user nodes.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Releasing&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Added a &lt;code&gt;--skip-prod-cert-check&lt;/code&gt; flag to bypass the production-router certificate gate when running a release.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Topics&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Tightened how subscriptions behave once they are closed, across generated node code and the docs.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Reliability&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;peppy now retries transient &lt;code&gt;ETXTBSY&lt;/code&gt; and &lt;code&gt;ENOENT&lt;/code&gt; exec errors when extracting the ruff binary during parallel binary extraction.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Documentation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Clarified that &lt;code&gt;reconnect_after_secs&lt;/code&gt; and &lt;code&gt;repull_after&lt;/code&gt; are cache-freshness hints rather than keepalive deadlines.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
