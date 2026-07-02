@@ -228,7 +228,10 @@ pub(super) async fn start_node_directly(
 /// it down at the clear step, so on failure there is nothing to roll back to;
 /// the honest end state is an empty stack rather than orphaned half-started
 /// instances.
-pub(super) async fn fail_and_clear_stack(ctx: &ProcessLaunchContext, reason: String) -> LaunchResult {
+pub(super) async fn fail_and_clear_stack(
+    ctx: &ProcessLaunchContext,
+    reason: String,
+) -> LaunchResult {
     publish_stderr(
         ctx,
         format!("Launch failed: {reason}"),

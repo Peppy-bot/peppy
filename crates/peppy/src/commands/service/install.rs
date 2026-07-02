@@ -86,9 +86,7 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
     let (manager, kind) = create_service_manager()?;
     let manager_level = preferred_service_level(kind);
 
-    manager
-        .install(ctx)
-        .map_err(execution_failed)?;
+    manager.install(ctx).map_err(execution_failed)?;
 
     manager
         .start(ServiceStartCtx {
@@ -255,9 +253,7 @@ fn create_service_manager() -> Result<(TypedServiceManager, ServiceManagerKind)>
 
     let mut manager = TypedServiceManager::target(kind);
     if manager.level() != manager_level {
-        manager
-            .set_level(manager_level)
-            .map_err(execution_failed)?;
+        manager.set_level(manager_level).map_err(execution_failed)?;
     }
 
     Ok((manager, kind))

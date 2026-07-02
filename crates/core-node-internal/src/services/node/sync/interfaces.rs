@@ -441,9 +441,9 @@ mod conforms_to_tests {
 
     use super::*;
     use config::node::{ConformsToItem, Interfaces};
-    use generator::InterfaceVariant;
     use config::runtime::Name;
     use core_node_api::encoding::RepoSourceKind;
+    use generator::InterfaceVariant;
     use std::fs;
     use tempfile::TempDir;
 

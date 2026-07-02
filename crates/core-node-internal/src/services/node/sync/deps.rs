@@ -232,7 +232,8 @@ pub(super) struct DependencyOfferings {
             Option<generator::InterfaceOrigin>,
         ),
     >,
-    pub(super) actions: HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)>,
+    pub(super) actions:
+        HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)>,
 }
 
 pub(super) fn build_dependency_offerings(

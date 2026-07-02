@@ -14,14 +14,16 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::{DaemonDefaults, create_action_log_file, resolve_mount_path_parameters};
+use crate::services::node::{
+    DaemonDefaults, create_action_log_file, resolve_mount_path_parameters,
+};
 use chrono::Local;
 use config::apply_parameter_defaults;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource,
+    LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
+    NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource,
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::Deployment;
@@ -866,12 +868,12 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 /// deterministic (no wall-clock dependency, no risk of CI flake).
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::phases::{PhaseOutcome, run_phase_cancel_on_timeout};
+    use super::*;
     use config::AnyType;
-    use tokio::sync::Notify;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
 
     /// Builds a phase future that signals `cleanup_ran` if it observes the
     /// cancel token, simulating `run_node_run`'s `abort_started` branch.

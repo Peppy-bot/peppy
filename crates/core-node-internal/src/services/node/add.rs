@@ -1448,12 +1448,16 @@ async fn process_node_add_inner(
         .push_config(node_config.clone(), false, &config_path_for_stack)
         .map_err(|e| format!("Failed to add node config: {}", e))?;
 
-    let entity_handle = ctx.action.node_stack.find(&node_name, &node_tag).ok_or_else(|| {
-        format!(
-            "internal error: just-pushed entity {}:{} disappeared from the stack",
-            node_name, node_tag
-        )
-    })?;
+    let entity_handle = ctx
+        .action
+        .node_stack
+        .find(&node_name, &node_tag)
+        .ok_or_else(|| {
+            format!(
+                "internal error: just-pushed entity {}:{} disappeared from the stack",
+                node_name, node_tag
+            )
+        })?;
 
     // Hand over the temporary working dir to the entity so a follow-up
     // `node_build` can reuse it without re-cloning the source. The

@@ -213,10 +213,18 @@ fn find_running_instance_and_entity(
     raw_instance_id: &str,
 ) -> std::result::Result<(TrackedNodeInstance, EntityHandle), NodeStopResponse> {
     let Some(instance) = node_stack.find_by_instance_id(instance_id) else {
-        return Err(stop_lookup_failure(node_stack, instance_id, raw_instance_id));
+        return Err(stop_lookup_failure(
+            node_stack,
+            instance_id,
+            raw_instance_id,
+        ));
     };
     let Some(entity_handle) = node_stack.find_entity_by_instance_id(instance_id) else {
-        return Err(stop_lookup_failure(node_stack, instance_id, raw_instance_id));
+        return Err(stop_lookup_failure(
+            node_stack,
+            instance_id,
+            raw_instance_id,
+        ));
     };
     Ok((instance, entity_handle))
 }
