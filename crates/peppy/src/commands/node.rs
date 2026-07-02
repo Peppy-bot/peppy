@@ -44,14 +44,14 @@ pub struct TimeoutConfig {
 
 /// Parses a node_name:tag argument string into a tuple
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
-    let pos = s.find(':').ok_or_else(|| {
+    let (node_name, tag) = s.split_once(':').ok_or_else(|| {
         format!(
             "invalid node reference '{}': expected node_name:tag format",
             s
         )
     })?;
-    let node_name = s[..pos].trim().to_string();
-    let tag = s[pos + 1..].trim().to_string();
+    let node_name = node_name.trim().to_string();
+    let tag = tag.trim().to_string();
     if node_name.is_empty() {
         return Err(format!(
             "invalid node reference '{}': node_name cannot be empty",
@@ -69,11 +69,11 @@ fn parse_node_ref(s: &str) -> Result<(String, String), String> {
 
 /// Parses a key=value argument string into a tuple
 fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
-    let pos = s
-        .find('=')
+    let (key, value) = s
+        .split_once('=')
         .ok_or_else(|| format!("invalid argument format '{}': expected key=value", s))?;
-    let key = s[..pos].trim().to_string();
-    let value = s[pos + 1..].trim().to_string();
+    let key = key.trim().to_string();
+    let value = value.trim().to_string();
     if key.is_empty() {
         return Err(format!("invalid argument '{}': key cannot be empty", s));
     }
