@@ -266,17 +266,31 @@ async fn resolve_git_source(
         .map_err(|_| "repo_url must be valid UTF-8".to_string())?
         .to_owned();
 
-    // --- Phase 1: Shallow probe — validate peppy.json5 without a full clone ---
+    shallow_probe_config(&repo_url_str, &repo_relative_path, repo_ref, &feedback_tx).await?;
+    let checkout_dir = clone_repo_to_temp(&repo_url_str, repo_ref, &feedback_tx).await?;
+    parse_config_from_checkout(checkout_dir, &repo_relative_path, &feedback_tx)
+}
+
+/// Phase 1 of [`resolve_git_source`]: shallow probe to validate peppy.json5
+/// without a full clone. An invalid config fails fast; a probe that cannot
+/// run (shallow fetch unsupported, network error, ref not found) reports the
+/// fallback via feedback and lets the full clone proceed.
+async fn shallow_probe_config(
+    repo_url: &str,
+    repo_relative_path: &Path,
+    repo_ref: Option<&str>,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<(), String> {
     let _ = feedback_tx.send(FeedbackLine {
         stream: FeedbackStream::Stdout,
         line: "Checking node config...".to_string(),
     });
 
-    let probe_url = repo_url_str.clone();
-    let probe_path = repo_relative_path.clone();
+    let probe_url = repo_url.to_owned();
+    let probe_path = repo_relative_path.to_owned();
     let probe_ref = repo_ref.map(str::to_owned);
 
-    let phase1_result = tokio::task::spawn_blocking(move || {
+    let probe_result = tokio::task::spawn_blocking(move || {
         shallow_validate_config(&probe_url, &probe_path, probe_ref.as_deref())
     })
     .await
@@ -286,9 +300,9 @@ async fn resolve_git_source(
     // fail fast; otherwise proceed to the full clone and reparse the config
     // from the actual checkout. Never use the probe's parsed value as the
     // final NodeConfig — the clone is the source of truth.
-    match phase1_result {
-        Ok(_) => {}
-        Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
+    match probe_result {
+        Ok(_) => Ok(()),
+        Err(ShallowCheckError::InvalidConfig(msg)) => Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
             let _ = feedback_tx.send(FeedbackLine {
                 stream: FeedbackStream::Stdout,
@@ -297,16 +311,25 @@ async fn resolve_git_source(
                     reason
                 ),
             });
+            Ok(())
         }
     }
+}
 
-    // --- Phase 2: Full clone (only reached if config is valid or probe fell back) ---
+/// Phase 2 of [`resolve_git_source`]: full clone into a fresh temp directory.
+/// Owns the temp dir, removing it if the clone fails; on success the caller
+/// takes ownership of the returned path.
+async fn clone_repo_to_temp(
+    repo_url: &str,
+    repo_ref: Option<&str>,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<PathBuf, String> {
     let checkout_dir = tempfile::tempdir()
         .map_err(|e| format!("Failed to create temporary directory: {}", e))?
         .keep();
 
     let clone_checkout_dir = checkout_dir.clone();
-    let clone_repo_url = repo_url_str.clone();
+    let clone_repo_url = repo_url.to_owned();
     let clone_repo_ref = repo_ref.map(str::to_owned);
     let clone_feedback_tx = feedback_tx.clone();
     if let Err(err) = tokio::task::spawn_blocking(move || {
@@ -331,7 +354,19 @@ async fn resolve_git_source(
         return Err(err);
     }
 
-    let candidate_path = checkout_dir.join(&repo_relative_path);
+    Ok(checkout_dir)
+}
+
+/// Phase 3 of [`resolve_git_source`]: locate and parse the node config inside
+/// the cloned checkout (a `.json5` repo_path points at the file itself,
+/// anything else is a directory containing the default config file). On parse
+/// failure the error is surfaced via feedback and the checkout is removed.
+fn parse_config_from_checkout(
+    checkout_dir: PathBuf,
+    repo_relative_path: &Path,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let candidate_path = checkout_dir.join(repo_relative_path);
 
     let config_path = if candidate_path
         .extension()
@@ -349,9 +384,9 @@ async fn resolve_git_source(
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
     // Always parse the config from the cloned checkout. The shallow probe
-    // earlier in this function is only a preflight hint — its result is not
-    // trusted as the final config, since the probe and the clone could in
-    // principle disagree (e.g. a force-push between the two fetches).
+    // in phase 1 is only a preflight hint — its result is not trusted as
+    // the final config, since the probe and the clone could in principle
+    // disagree (e.g. a force-push between the two fetches).
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -1010,6 +1045,39 @@ pub(crate) async fn run_node_add(
     }
 }
 
+/// Admits a `node_add` goal through the concurrency gate, aborting any
+/// superseded task. Returns the admitted generation, or the rejection
+/// message when another action is already running (and `--force` was not
+/// set).
+fn admit_node_add_goal(
+    gate: &ConcurrencyGate,
+    goal: &NodeAddGoal,
+) -> std::result::Result<u64, String> {
+    if goal.force {
+        debug!("Force flag set: aborting any previous node_add task");
+    }
+    match gate.try_admit(goal.timeout_secs, goal.force) {
+        super::gate::Admission::Admitted {
+            generation,
+            superseded,
+        } => {
+            // `node_add` keeps the hard-abort semantics: it overwrites the
+            // entity wholesale via `push_config`, so it does not need the old
+            // task's cooperative teardown the way `node_build` does (which
+            // awaits it to reuse the staged working dir). The gate already
+            // signaled the cancel token; abort drops the superseded future.
+            if let Some(old_task) = superseded {
+                old_task.abort();
+            }
+            Ok(generation)
+        }
+        super::gate::Admission::AlreadyRunning { remaining_secs } => Err(format!(
+            "action already in progress (times out in {remaining_secs}s), \
+             use `--force` to force adding the node"
+        )),
+    }
+}
+
 async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeAddActionContext,
@@ -1029,33 +1097,10 @@ async fn handle_goal_request(
         }
     };
 
-    if goal.force {
-        debug!("Force flag set: aborting any previous node_add task");
-    }
-    let generation = match gate.try_admit(goal.timeout_secs, goal.force) {
-        super::gate::Admission::Admitted {
-            generation,
-            superseded,
-        } => {
-            // `node_add` keeps the hard-abort semantics: it overwrites the
-            // entity wholesale via `push_config`, so it does not need the old
-            // task's cooperative teardown the way `node_build` does (which
-            // awaits it to reuse the staged working dir). The gate already
-            // signaled the cancel token; abort drops the superseded future.
-            if let Some(old_task) = superseded {
-                old_task.abort();
-            }
-            generation
-        }
-        super::gate::Admission::AlreadyRunning { remaining_secs } => {
-            reject_goal(
-                pending,
-                encode_rejected_goal(format!(
-                    "action already in progress (times out in {remaining_secs}s), \
-                     use `--force` to force adding the node"
-                )),
-            )
-            .await;
+    let generation = match admit_node_add_goal(&gate, &goal) {
+        Ok(generation) => generation,
+        Err(rejection) => {
+            reject_goal(pending, encode_rejected_goal(rejection)).await;
             return;
         }
     };
