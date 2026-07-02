@@ -1,12 +1,12 @@
 use config::AnyType;
-use config::launcher::{BindingValidationItem, DeploymentInstance, Name, validate_bindings};
 use config::node::ConformsToItem;
-use config::runtime::{NodeInstanceConfig, RuntimeConfig, SlotBinding};
+use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, StackListRequest,
 };
+use daemon_config::launcher::{BindingValidationItem, DeploymentInstance, validate_bindings};
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;
@@ -25,7 +25,7 @@ use super::env::caller_env_overrides;
 
 use peppylib::core_node::transport::{poll_node_info, poll_stack_list, send_node_run};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
-/// Matches `node info`'s request timeout — this is a metadata lookup,
+/// Matches `node info`'s request timeout; this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
 /// rather than waiting out `timeouts.max_secs` (which can be 1 hour).
 const NODE_INFO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,11 +39,11 @@ const BUILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// What `run -b` should do with a node based on its current lifecycle stage.
 #[derive(Debug, PartialEq, Eq)]
 enum BuildDecision {
-    /// Stage is `Ready` — artifact exists, skip the build and run directly.
+    /// Stage is `Ready`: artifact exists, skip the build and run directly.
     Skip,
-    /// Stage is `Added` — trigger `build_node_async`.
+    /// Stage is `Added`: trigger `build_node_async`.
     Build,
-    /// Stage is `Building` — another build is in flight, poll until it
+    /// Stage is `Building`: another build is in flight, poll until it
     /// finishes instead of trying to start a second build (the daemon
     /// rejects concurrent builds).
     Wait,
@@ -59,7 +59,7 @@ fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
         instance_id,
         arguments: BTreeMap::new(),
         env_vars: BTreeMap::new(),
-        framework: config::launcher::FrameworkOverrides::default(),
+        framework: daemon_config::launcher::FrameworkOverrides::default(),
         bindings: BTreeMap::new(),
     }
 }
@@ -158,7 +158,7 @@ async fn wait_for_build_to_finish(
             }
             NodeInfoResponse::Found(info) => match info.stage {
                 NodeStage::Ready => return Ok(()),
-                NodeStage::Building => { /* still in flight — keep polling */ }
+                NodeStage::Building => { /* still in flight; keep polling */ }
                 other => {
                     return Err(Error::ExecutionFailed(format!(
                         "Node '{}:{}' transitioned to unexpected stage '{}' while waiting for build to finish",
@@ -279,7 +279,7 @@ fn parse_value(value: &str) -> AnyType {
 
 /// Collapse the clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`,
 /// rejecting duplicate `KEY`s. Each `KEY` must be unique per invocation
-/// (rule 6) — pinned `KEY`s match a declared link_id, free-form `KEY`s
+/// (rule 6): pinned `KEY`s match a declared link_id, free-form `KEY`s
 /// label a `from_any` binding, and either way two bindings on the same
 /// key would clobber.
 fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
@@ -302,21 +302,21 @@ fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMa
 ///
 /// The snapshot is split into two flavors of [`BindingValidationItem`]:
 ///
-/// - **Inert items** — one per already-running `(name, tag)` group. They
+/// - **Inert items**: one per already-running `(name, tag)` group. They
 ///   carry real `instances` (so stack-wide `instance_id` uniqueness can
 ///   fire) and real `conforms_to` (so the new instance can still match
 ///   them as a producer / interface-conformant target), but their
 ///   `depends_on` is `None`. Their declared slots were already validated
 ///   when each instance was first spawned, so re-running per-instance
-///   rules against them — with the empty `bindings` we synthesize here
-///   — would emit spurious `BindingMissingForPinnedDep` errors for
+///   rules against them (with the empty `bindings` we synthesize here)
+///   would emit spurious `BindingMissingForPinnedDep` errors for
 ///   pins the running invocation actually satisfied.
-/// - **One live item** — for the synthesized new instance, carrying the
+/// - **One live item**: for the synthesized new instance, carrying the
 ///   target's real `depends_on` + `conforms_to`. This is the only item
 ///   whose pinned slots are checked by Rule 1.
 ///
 /// Returns `Ok(None)` on transient transport failures so the call site
-/// can swallow them and continue — an unreachable daemon should fail
+/// can swallow them and continue; an unreachable daemon should fail
 /// the actual `node_run` invocation, not the pre-flight.
 async fn validate_binds_against_stack(
     messenger: &MessengerHandle,
@@ -341,7 +341,7 @@ async fn validate_binds_against_stack(
 
     /// Inert snapshot entry for an already-running `(name, tag)` group.
     /// Note the missing `depends_on` field: by construction these items
-    /// are deliberately decoupled from per-instance binding rules — see
+    /// are deliberately decoupled from per-instance binding rules; see
     /// the function-level doc above.
     struct StackNode {
         name: String,
@@ -480,12 +480,12 @@ async fn validate_binds_against_stack(
         conforms_to: &target_conforms_to,
     });
 
-    // Stamp resolved producer references with the daemon's core_node — the
+    // Stamp resolved producer references with the daemon's core_node; the
     // same daemon that will spawn the instance, so the CLI preflight and the
     // daemon's own materialization agree on every producer address.
     let mut validated = validate_bindings(&items, core_node_name);
     if !validated.errors.is_empty() {
-        let msg = config::format_bulleted(&validated.errors);
+        let msg = daemon_config::format_bulleted(&validated.errors);
         return Err(Error::ExecutionFailed(msg));
     }
     Ok(Some(
@@ -554,7 +554,7 @@ pub async fn validate_and_run_instance(
 }
 
 /// Spawn a node instance with already-resolved `slot_bindings`. Callers must
-/// have validated `binds` via [`validate_and_run_instance`] first — invoking
+/// have validated `binds` via [`validate_and_run_instance`] first; invoking
 /// this directly bypasses every binding rule and exists only as the lower
 /// half of the validate-then-spawn split.
 #[allow(clippy::too_many_arguments)]
@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn remaining_max_secs_errors_when_budget_exhausted() {
-        // Equal to budget — already exhausted (we refuse zero-deadline calls).
+        // Equal to budget: already exhausted (we refuse zero-deadline calls).
         let err_exact =
             remaining_max_secs(30, 30, "run").expect_err("exhausted budget should error");
         let msg = format!("{err_exact}");
@@ -938,7 +938,7 @@ mod tests {
             "error should hint at the CLI flag: {msg}"
         );
 
-        // Past budget — same error path.
+        // Past budget: same error path.
         assert!(remaining_max_secs(30, 45, "run").is_err());
     }
 }

@@ -4,7 +4,7 @@ use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
     spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use config::node::Name;
+use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::core_node::transport::poll_node_remove;
 use peppylib::messaging::MessengerHandle;
@@ -234,7 +234,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 /// A one-shot (or crashed) node whose instance exited on its own sits in a
 /// terminal state but stays tracked. `node remove` must still clear it: the gate
 /// counts it (so a plain remove is rejected), and with `stop_instances` it is
-/// removed and the node config goes with it. Regression guard — before the fix
+/// removed and the node config goes with it. Regression guard: before the fix
 /// the remove collector ignored non-`Running` instances, so a terminal instance
 /// was never cleared and `remove_config` rejected the node as "still has
 /// instances", making a finished node impossible to remove.

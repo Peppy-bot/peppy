@@ -4,20 +4,20 @@
 //! each command strips these codes before measuring, so a colored cell occupies
 //! the same display columns as its plain text and stays aligned.
 
-pub(super) const NODE_COLOR: &str = "\x1b[36m"; // cyan — node labels
-pub(super) const COUNT_COLOR: &str = "\x1b[32m"; // green — per-node instance counts
-pub(super) const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta — instance ids
-pub(super) const BINDING_COLOR: &str = "\x1b[33m"; // yellow — slot bindings / link ids
-pub(super) const MEASURE_SERVICE_COLOR: &str = "\x1b[34m"; // blue — svc-probe measurement
-pub(super) const MEASURE_ACTION_COLOR: &str = "\x1b[35m"; // magenta — act-probe measurement
-pub(super) const MEASURE_NODE_COLOR: &str = "\x1b[36m"; // cyan — node-probe measurement (topic edges)
-pub(super) const MEASURE_DELIVERY_COLOR: &str = "\x1b[32m"; // green — topic delivery measurement
-pub(super) const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green — a running instance
-pub(super) const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow — a starting instance
-pub(super) const STATUS_FINISHED_COLOR: &str = "\x1b[34m"; // blue — a cleanly-finished instance
-pub(super) const STATUS_FAILED_COLOR: &str = "\x1b[31m"; // red — a crashed instance
-pub(super) const HEALTH_HEALTHY_COLOR: &str = "\x1b[32m"; // green — a healthy instance
-pub(super) const HEALTH_UNHEALTHY_COLOR: &str = "\x1b[31m"; // red — an unhealthy instance
+pub(super) const NODE_COLOR: &str = "\x1b[36m"; // cyan: node labels
+pub(super) const COUNT_COLOR: &str = "\x1b[32m"; // green: per-node instance counts
+pub(super) const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta: instance ids
+pub(super) const BINDING_COLOR: &str = "\x1b[33m"; // yellow: slot bindings / link ids
+pub(super) const MEASURE_SERVICE_COLOR: &str = "\x1b[34m"; // blue: svc-probe measurement
+pub(super) const MEASURE_ACTION_COLOR: &str = "\x1b[35m"; // magenta: act-probe measurement
+pub(super) const MEASURE_NODE_COLOR: &str = "\x1b[36m"; // cyan: node-probe measurement (topic edges)
+pub(super) const MEASURE_DELIVERY_COLOR: &str = "\x1b[32m"; // green: topic delivery measurement
+pub(super) const STATUS_RUNNING_COLOR: &str = "\x1b[32m"; // green: a running instance
+pub(super) const STATUS_STARTING_COLOR: &str = "\x1b[33m"; // yellow: a starting instance
+pub(super) const STATUS_FINISHED_COLOR: &str = "\x1b[34m"; // blue: a cleanly-finished instance
+pub(super) const STATUS_FAILED_COLOR: &str = "\x1b[31m"; // red: a crashed instance
+pub(super) const HEALTH_HEALTHY_COLOR: &str = "\x1b[32m"; // green: a healthy instance
+pub(super) const HEALTH_UNHEALTHY_COLOR: &str = "\x1b[31m"; // red: an unhealthy instance
 pub(super) const RESET: &str = "\x1b[0m";
 
 /// Wraps `s` in `code`/reset when `colorize` is set, otherwise returns it

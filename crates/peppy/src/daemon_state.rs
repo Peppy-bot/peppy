@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::io;
@@ -154,7 +154,9 @@ impl DaemonState {
     }
 
     fn env_state_file_path() -> Option<PathBuf> {
-        std::env::var_os(config::consts::DAEMON_STATE_FILE_ENV).map(PathBuf::from)
+        daemon_config::consts::non_empty_env_path(std::env::var_os(
+            daemon_config::consts::DAEMON_STATE_FILE_ENV,
+        ))
     }
 
     fn default_state_file_path() -> PathBuf {
@@ -191,7 +193,7 @@ impl DaemonState {
     /// Whether the daemon that wrote this state still appears to be running, by
     /// probing its recorded pid. A state file outlives a crashed daemon (it is
     /// left on disk), so a successful [`read`](Self::read) is not by itself proof
-    /// of liveness — a caller that needs "is a daemon actually up" must check this.
+    /// of liveness; a caller that needs "is a daemon actually up" must check this.
     pub(crate) fn is_running(&self) -> bool {
         self.daemon_pid.is_some_and(Self::pid_looks_alive)
     }
@@ -222,7 +224,7 @@ impl DaemonState {
             _ => {
                 return Err(io::Error::other(format!(
                     "Multiple running peppy daemons detected. Set {} to select one.",
-                    config::consts::DAEMON_STATE_FILE_ENV
+                    daemon_config::consts::DAEMON_STATE_FILE_ENV
                 )));
             }
         }

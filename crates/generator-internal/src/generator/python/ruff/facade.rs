@@ -55,7 +55,7 @@ impl RuffFacade {
     ///
     /// The bundled binary is extracted to one machine-global temp path
     /// (`$TMPDIR/peppy_ruff_binary_<version>`) shared by every peppy process. When
-    /// several processes — e.g. the test binaries `cargo test` runs in parallel —
+    /// several processes (e.g. the test binaries `cargo test` runs in parallel)
     /// extract it on a cold cache, one can `execve` the file while another extractor
     /// still holds it open for writing, and the kernel returns `ETXTBSY` ("Text file
     /// busy"). That handle closes within milliseconds, so a bounded backoff-retry
@@ -64,7 +64,7 @@ impl RuffFacade {
     /// which is why the guard for that race lives here at the exec.
     fn run(&self, args: &[&str], path: &Path) -> std::io::Result<std::process::Output> {
         // ~50 attempts with a 10ms→100ms capped backoff (worst case a few seconds,
-        // never reached in practice — the race clears in one or two retries).
+        // never reached in practice; the race clears in one or two retries).
         const MAX_RETRIES: u32 = 50;
 
         let mut attempt = 0u32;
@@ -99,7 +99,7 @@ impl RuffFacade {
 
         // Extract the embedded binary to disk exactly once per process. Multiple
         // test threads share a PID, so without this guard they'd race on the shared
-        // temp path. This only dedups *within* a process, though — separate peppy
+        // temp path. This only dedups *within* a process, though; separate peppy
         // processes (e.g. parallel `cargo test` binaries) still extract the same
         // machine-global path concurrently, so the exec is retried on the resulting
         // transient ENOENT / ETXTBSY in `RuffFacade::run`.
@@ -134,7 +134,7 @@ impl RuffFacade {
         let binary_path = temp_dir.join(format!("peppy_ruff_binary_{}", env!("RUFF_VERSION")));
 
         if !binary_path.exists() {
-            let result = config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
+            let result = daemon_config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
                 std::fs::write(tmp_path, binary_bytes)?;
                 #[cfg(unix)]
                 {
@@ -145,7 +145,7 @@ impl RuffFacade {
                 }
                 Ok(())
             });
-            // Tolerate a lost rename race against another process — if the
+            // Tolerate a lost rename race against another process: if the
             // file is now in place, that's the outcome we wanted.
             if let Err(e) = result
                 && !binary_path.exists()
@@ -216,7 +216,7 @@ mod tests {
         assert!(is_transient_exec_error(&std::io::Error::from_raw_os_error(
             2
         )));
-        // EACCES (13) is a genuine failure — never retried.
+        // EACCES (13) is a genuine failure, never retried.
         assert!(!is_transient_exec_error(
             &std::io::Error::from_raw_os_error(13)
         ));

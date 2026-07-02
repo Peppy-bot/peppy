@@ -1,7 +1,8 @@
 use config::{
-    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH},
+    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
     node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
+use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::generate_peppygen_lib;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::fs;
@@ -91,7 +92,7 @@ fn generate_peppygen_lib_minimal_config() {
 
 /// `CrateDeployMode::Copy` (used for container builds, where symlinks to host
 /// paths break) must deploy the vendored crates as **real directories**, not
-/// symlinks into the shared cache — the property container builds rely on.
+/// symlinks into the shared cache, the property container builds rely on.
 /// Complements `generate_peppygen_lib_cargo`, which asserts the default
 /// `Symlink` mode produces symlinks.
 #[test]

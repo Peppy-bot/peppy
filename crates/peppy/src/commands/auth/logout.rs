@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use secrecy::ExposeSecret;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 
 use crate::auth::{client, http::HttpClient, profile, storage};
 use crate::commands::Command;
@@ -26,7 +26,8 @@ pub struct LogoutCommand {
 impl Command for LogoutCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
-        let config = config::peppy_config::load_or_create(&dirs).map_err(Error::PeppyConfig)?;
+        let config =
+            daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
@@ -34,7 +35,7 @@ impl Command for LogoutCommand {
         // Load-resilient: a malformed / pre-`organization_id` file fails to parse
         // with `Error::Auth`; treat it as "already effectively logged out" rather
         // than wedging logout. A default has no session, so the early return below
-        // would otherwise leave the bad file on disk — overwrite it with a clean
+        // would otherwise leave the bad file on disk; overwrite it with a clean
         // default here so logout actually heals it.
         let mut creds = match storage::load(&creds_path) {
             Ok(creds) => creds,

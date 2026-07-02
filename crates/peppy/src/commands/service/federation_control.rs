@@ -7,11 +7,11 @@
 //! request to the [`RouterFederation`](super::router_federation) loop as a
 //! [`RefederateRequest`]. It waits for that poll to apply and writes the
 //! resulting [`ControlResponse`] back, so the CLI learns federation is in place
-//! *after* the local zenohd bounce — which is exactly why the channel is a UDS,
+//! *after* the local zenohd bounce, which is exactly why the channel is a UDS,
 //! independent of the router being restarted.
 //!
 //! Binding is best-effort: a bind failure is logged and the task idles until
-//! shutdown rather than taking the daemon down — the periodic federation poll
+//! shutdown rather than taking the daemon down; the periodic federation poll
 //! still (de)federates, only the *immediate* poke is unavailable.
 
 use std::path::{Path, PathBuf};
@@ -304,7 +304,7 @@ mod tests {
 
     /// A poke from the (sync) CLI client crosses the real control socket, reaches
     /// the trigger channel, and the federation loop's ack comes back to the
-    /// client — the end-to-end glue between [`crate::daemon_control`] and the
+    /// client: the end-to-end glue between [`crate::daemon_control`] and the
     /// federation loop.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn poke_crosses_the_socket_and_acks() {

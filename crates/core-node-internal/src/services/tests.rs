@@ -1,5 +1,5 @@
 use super::*;
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -39,7 +39,7 @@ fn test_core_node_config(
         arguments: test_node_arguments(),
         root_dir: std::env::temp_dir(),
         peppy_dirs,
-        peppy_config: config::peppy_config::PeppyConfig::default(),
+        peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
         organization_namespace: "local".to_string(),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
     }
@@ -129,7 +129,7 @@ async fn start_with_ready_rejects_a_second_start() {
     )));
 
     // Drive the first start on a task: it registers listeners then serves until
-    // the session closes. The ready signal is a deterministic barrier — once it
+    // the session closes. The ready signal is a deterministic barrier: once it
     // fires, the `started` flag is set.
     let first = Arc::clone(&core_node);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

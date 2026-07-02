@@ -5,8 +5,8 @@
 //! of the add path called only `collect_consumed_interfaces` (which
 //! handles `depends_on`) and skipped `resolve_conforms_to`, so the
 //! generator never saw the conformed interface's topics/services. The
-//! resulting peppygen had a flat layout — `emitted_topics.rs` was empty
-//! — and any node code importing nested paths like
+//! resulting peppygen had a flat layout (`emitted_topics.rs` was empty)
+//! and any node code importing nested paths like
 //! `peppygen::emitted_topics::<iface>::<tag>::<topic>` failed to compile
 //! inside the container. `sync` did this correctly, which is why a sync
 //! followed by build was enough to mask the bug on a developer's
@@ -89,7 +89,7 @@ async fn node_add_generates_conformed_interface_modules_in_working_dir() {
 
     // The add path stashes its temp working dir on the entity so a
     // later `node_build` can reuse the prepared sources. Inspect that
-    // staged copy — that's the directory apptainer will copy into the
+    // staged copy; that's the directory apptainer will copy into the
     // container, so it's the one that must contain the nested
     // peppygen modules.
     let entity = node_stack

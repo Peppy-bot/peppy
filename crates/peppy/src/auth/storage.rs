@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 pub const CREDENTIALS_VERSION: u32 = 1;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
-/// session, and the cached shared-router connection — or empty (just the
+/// session, and the cached shared-router connection, or empty (just the
 /// current version) when not logged in.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
@@ -57,7 +57,7 @@ impl Default for Credentials {
 
 /// Cached per-user zenoh-router connection. Pulled from the backend after login
 /// and reused until [`is_stale`](Self::is_stale). `Clone` is derivable (no
-/// secrets — the capability lives in the endpoint and the link is end-to-end
+/// secrets; the capability lives in the endpoint and the link is end-to-end
 /// TLS), unlike [`ProfileCreds`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterSession {
@@ -184,15 +184,16 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
 /// Credentials path under a given peppy root: `<root>/conf/credentials.json5`.
 /// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
 /// both auth files from one [`PeppyDirs`].
-pub fn credentials_path(dirs: &config::consts::PeppyDirs) -> PathBuf {
-    dirs.conf_dir().join(config::consts::CREDENTIALS_FILE)
+pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
+    dirs.conf_dir()
+        .join(daemon_config::consts::CREDENTIALS_FILE)
 }
 
 /// Default credentials path: `<peppy root>/conf/credentials.json5`, honouring
 /// `PEPPY_HOME`. The root is the global peppy data dir, never the cwd.
 pub fn default_path() -> PathBuf {
-    credentials_path(&config::consts::PeppyDirs::new(
-        config::consts::peppy_root_dir(),
+    credentials_path(&daemon_config::consts::PeppyDirs::new(
+        daemon_config::consts::peppy_root_dir(),
     ))
 }
 
@@ -233,7 +234,7 @@ pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
         restrict_dir(parent)?;
     }
 
-    config::atomic_write::publish_atomic(path, |tmp| {
+    daemon_config::atomic_write::publish_atomic(path, |tmp| {
         std::fs::write(tmp, &content)?;
         restrict_file(tmp)
     })?;

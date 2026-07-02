@@ -19,7 +19,7 @@ use config::node::{ConsumedAction, ExposedAction};
 ///
 /// Mirrors the Rust codegen: `ActionHandle` wraps `peppylib.ConcurrentAction`,
 /// `handle_goal_next_request` receives a goal, runs the user decider, and
-/// accepts/rejects it — returning a per-goal `GoalContext` on accept. All
+/// accepts/rejects it, returning a per-goal `GoalContext` on accept. All
 /// routing/cancel/result/feedback behavior lives in the shared Rust engine.
 pub fn build_exposed_action(
     action: &ExposedAction,

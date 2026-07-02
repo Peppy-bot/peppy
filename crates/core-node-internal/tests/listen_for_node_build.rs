@@ -5,8 +5,8 @@ use common::{
     send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
     write_peppy_json5,
 };
-use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use core_node_api::encoding::NodeBuildFeedback;
+use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

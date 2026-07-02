@@ -1,8 +1,9 @@
 use crate::helpers;
 use config::{
-    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH},
+    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
     node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
+use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::generate_peppygen_lib;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::fs;
@@ -212,7 +213,7 @@ fn generate_peppygen_lib_python_repeat_generation_is_idempotent() {
 }
 
 /// End-to-end: `uv sync` in a Python node project must install peppylib from
-/// the deployed path source — `import peppylib` works directly (the raw
+/// the deployed path source: `import peppylib` works directly (the raw
 /// messaging API, without going through peppygen) and the installed
 /// distribution is the locally deployed one, never a PyPI release.
 #[test]

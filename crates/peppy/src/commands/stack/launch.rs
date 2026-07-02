@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::launcher::PeppyLauncherParser;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
+use daemon_config::launcher::PeppyLauncherParser;
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
@@ -21,7 +21,7 @@ use peppylib::core_node::transport::send_launch;
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
 // safety net never fires before the daemon's own per-phase timeout, so users see a precise
 // daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI
-// ceiling is installed — the contract is idle-only (daemon-side `max_timeout_secs = None`).
+// ceiling is installed; the contract is idle-only (daemon-side `max_timeout_secs = None`).
 const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
 // Headroom granted to the daemon to surface its own timeout error before the CLI's fallback
 // ceiling fires. Keeps the error the user sees specific ("build idle timeout exceeded...") rather
@@ -217,7 +217,7 @@ async fn launch_async(
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
     // skip the local check rather than duplicate the lookup here.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
-        PeppyLauncherParser::from_path(path).map_err(Error::PeppyConfig)?;
+        PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
     }
 
     let conn = ctx.connect_to_daemon().await?;
@@ -245,7 +245,7 @@ async fn launch_async(
 
     // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
     // window to surface its own error first, but never less than the absolute floor in case the
-    // daemon hangs entirely. `None` honors the daemon's idle-only contract — no CLI ceiling.
+    // daemon hangs entirely. `None` honors the daemon's idle-only contract; no CLI ceiling.
     let cli_max_timeout: Option<Duration> = compute_cli_max_timeout(max_timeout_secs);
 
     // CLI-side liveness watchdog: trips if no feedback arrives from any phase. Must cover the

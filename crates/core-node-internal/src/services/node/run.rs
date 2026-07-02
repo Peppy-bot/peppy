@@ -3,13 +3,14 @@ use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
 use crate::names;
-use config::consts::PeppyDirs;
-use config::node::Name;
-use config::peppy_config::{Mode, PeerConfig, PeppyConfig};
+use config::peppy_config::PeerConfig;
+use config::runtime::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
+use daemon_config::consts::PeppyDirs;
+use daemon_config::peppy_config::{Mode, PeppyConfig};
 use futures::FutureExt;
 use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
 use parking_lot::Mutex as StdMutex;
@@ -59,7 +60,7 @@ fn drain_quiet_window(is_container: bool) -> Duration {
 /// Defaults the peppy daemon resolves from its `peppy_config` and ships to
 /// every spawned node's launch config: the messaging topology (mode + peer
 /// buffer sizes) and the daemon-liveness grace period for the node's watchdog.
-/// Threaded as one unit — rather than parallel scalars — from the service
+/// Threaded as one unit (rather than parallel scalars) from the service
 /// constructors through the run/launch context chains down to
 /// [`apply_daemon_defaults`], so the next daemon-global knob touches this
 /// struct and that function, not every context in between.
@@ -87,8 +88,8 @@ pub struct DaemonDefaults {
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
-    /// — the single place that knows which of its fields are shipped to
-    /// spawned nodes — plus the daemon's resolved `organization_namespace`
+    /// (the single place that knows which of its fields are shipped to
+    /// spawned nodes) plus the daemon's resolved `organization_namespace`
     /// (which comes from the credentials, not `peppy_config`).
     pub fn from_peppy_config(config: &PeppyConfig, organization_namespace: String) -> Self {
         Self {
@@ -747,13 +748,13 @@ async fn process_node_run(
     // A container's transport depends on whether it shares the host network
     // namespace, which `host_gateway()` reports:
     //
-    //  - Lima (macOS): `Some(gateway)` — the container runs in a VM, a separate
+    //  - Lima (macOS): `Some(gateway)`: the container runs in a VM, a separate
     //    namespace. It reaches the host router only through the Lima gateway,
     //    and a loopback peer locator advertised inside the guest is unreachable
     //    from the host (and vice versa), so it cannot form direct peer links.
     //    Route it through the router as a client (gossip forced off) and rewrite
     //    `messaging_host` to the gateway, regardless of the daemon's mode.
-    //  - Native (Linux): `None` — Apptainer shares the host network namespace,
+    //  - Native (Linux): `None`: Apptainer shares the host network namespace,
     //    so `127.0.0.1` already reaches the host router and the node follows the
     //    daemon's messaging mode exactly like a process node.
     let container_gateway = if is_container {
@@ -839,7 +840,7 @@ async fn process_node_run(
             hooks: Arc::new(feedback_sync.clone()),
         },
     };
-    // Reject early if an outer orchestrator already cancelled us — avoids
+    // Reject early if an outer orchestrator already cancelled us; avoids
     // spawning a child process we're only going to tear down on the next line.
     if cancel_token.is_cancelled() {
         let msg = "cancelled before node process spawn".to_string();
@@ -883,7 +884,7 @@ async fn process_node_run(
 
     // Race the ready-signal wait against external cancellation. If the outer
     // idle/max-timeout watchdog cancels while the node is quietly starting,
-    // we must SIGKILL the child and unregister the `Starting` instance —
+    // we must SIGKILL the child and unregister the `Starting` instance;
     // otherwise the OS process outlives the launch failure.
     let ready_outcome = tokio::select! {
         biased;
@@ -938,7 +939,7 @@ async fn process_node_run(
                 "Health check passed for node instance '{}'",
                 instance_id_str
             );
-            // Last chance to bail out cleanly — once `commit_started` succeeds
+            // Last chance to bail out cleanly: once `commit_started` succeeds
             // the child is owned by the stack and a late cancel would have to
             // go through the normal stop path instead of abort_started.
             if cancel_token.is_cancelled() {
@@ -1078,7 +1079,7 @@ fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
 /// Replaces `${parameters:...}` tokens in mount paths with actual argument values.
 ///
 /// Each `${parameters:<dot.path>}` is resolved against the runtime `arguments`.
-/// Only `AnyType::String` values are accepted — other types produce an error.
+/// Only `AnyType::String` values are accepted; other types produce an error.
 ///
 /// After resolution, the source (host) portion of each mount path is validated
 /// against the blocked system directories list.
@@ -1123,7 +1124,7 @@ pub(crate) fn resolve_mount_path_parameters(
         let src = result.split(':').next().unwrap_or(&result);
         if config::node::is_blocked_mount_source(src) {
             return Err(format!(
-                "Resolved mount path `{result}` uses a blocked system directory `{src}` as source — use a subdirectory instead"
+                "Resolved mount path `{result}` uses a blocked system directory `{src}` as source; use a subdirectory instead"
             ));
         }
 
@@ -1464,7 +1465,7 @@ struct ExitWatcherParams {
     /// Handle to the entity that owns this instance. Holding it keeps the entity
     /// alive for the watcher's lifetime. The transition itself is guarded inside
     /// `mark_instance_exited`, which under the entity write lock only acts on an
-    /// instance that is still `Running` and not being stopped — so a removal or
+    /// instance that is still `Running` and not being stopped, so a removal or
     /// an explicit stop that raced the exit is a clean no-op, not a clobber.
     entity_handle: EntityHandle,
     to_node_name: String,
@@ -1478,7 +1479,7 @@ struct ExitWatcherParams {
 
 /// Spawns a background task that owns a committed node's [`Child`] and waits for
 /// its process to exit on its own. Closes the gap where a node that finishes its
-/// work and shuts itself down (a one-shot node) — or that crashes — would
+/// work and shuts itself down (a one-shot node), or that crashes, would
 /// otherwise stay `Running` forever, with only the health monitor flipping it to
 /// a misleading `unhealthy`. On a self-exit the instance is moved to a terminal
 /// state: [`InstanceState::Finished`] for a clean exit (status code 0), or
@@ -1590,7 +1591,7 @@ mod tests {
     use super::*;
 
     fn runtime_config_for_test() -> RuntimeConfig {
-        let instance_id = config::launcher::Name::new("camera_front").unwrap();
+        let instance_id = config::runtime::Name::new("camera_front").unwrap();
         RuntimeConfig::new(
             "127.0.0.1",
             7448,

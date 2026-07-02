@@ -7,6 +7,7 @@ edition.workspace = true
 [dependencies]
 pmi = { workspace = true }
 config = { workspace = true }
+daemon-config = { workspace = true }
 encoding = { workspace = true }
 quote = "1.0"
 proc-macro2 = "1.0"
@@ -30,7 +31,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 bytes = "1"
 config = { workspace = true, features = ["fingerprint_test_helpers"] }
 # Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
-# no `git_fixtures` feature — keeps libgit2 out of the generator test build.
+# no `git_fixtures` feature: keeps libgit2 out of the generator test build.
 config-test-support = { workspace = true }
 json5-pretty = { workspace = true }
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }

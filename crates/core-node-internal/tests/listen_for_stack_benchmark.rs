@@ -78,7 +78,7 @@ async fn run_benchmark_goal(
 }
 
 /// An empty stack (only the core node, which consumes nothing) yields a
-/// successful, empty result — and crucially does not hang.
+/// successful, empty result, and crucially does not hang.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_empty_stack_completes() {
     let started = start_core_node_with_mock_messenger().await;
@@ -100,7 +100,7 @@ async fn stack_benchmark_empty_stack_completes() {
 }
 
 /// A second concurrent benchmark goal while one is in flight is rejected, not
-/// queued — the single-goal gate. We approximate this by firing two goals back
+/// queued; that is the single-goal gate. We approximate this by firing two goals back
 /// to back; at least one must be accepted, and the action must remain healthy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_runs_repeatedly() {
@@ -139,7 +139,7 @@ fn consumer_config() -> &'static str {
 
 /// A consumer wired to a provider's service produces a measured row. With no
 /// running producer instance the probe is unreachable, so the row reports zero
-/// samples and an `unreachable` note — but the edge is enumerated and probed
+/// samples and an `unreachable` note, but the edge is enumerated and probed
 /// (exercising the no-trigger probe path), and the run completes cleanly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_enumerates_wired_service_edge() {
@@ -186,7 +186,7 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
 }
 
 /// A consumer that wires the *same* interface from the *same* producer via two
-/// distinct `depends_on` links produces two separate rows — identical in
+/// distinct `depends_on` links produces two separate rows, identical in
 /// producer/interface but differing only by `link_id`. Regression guard for the
 /// duplicate, indistinguishable rows that prompted carrying `link_id` end-to-end.
 fn two_link_consumer_config() -> &'static str {

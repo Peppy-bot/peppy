@@ -5,10 +5,10 @@ sidebar:
   order: 9
 ---
 
-The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, and the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
+The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It controls the messaging topology of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
 
 :::note
-The daemon reads its settings (`mode`, `peer`, `lifecycle`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
+The daemon reads its settings (`mode`, `peer`, `lifecycle`, `federation`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
 :::
 
 ## How the file is managed
@@ -63,6 +63,18 @@ A setting you delete from the file therefore comes back with its default on the 
   resource_servers: {
     api: "https://api.peppy.bot",
   },
+
+  // Per-user zenoh-router federation: how the daemon links its local router to
+  // your private cloud router. Only tuned to bound a slow/unreachable backend
+  // during the federation step.
+  federation: {
+    // Seconds the daemon spends resolving your per-user cloud router before
+    // giving up for this attempt (it retries in the background). Bounds the
+    // federation done at startup and on each `peppy auth login`/`logout`;
+    // minimum 1. If the backend is unreachable within this window the daemon
+    // stays standalone rather than blocking.
+    connect_timeout_secs: 30,
+  },
 }
 ```
 
@@ -103,6 +115,12 @@ This block holds the platform-backend base URL the CLI auth commands talk to. Th
 
 The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then `api` here. An empty block falls back to the build's default backend. Plain `http` is accepted only for local backends (loopback / `*.localhost`); any other host must be `https`, validated when the command runs.
 
+## `federation`: cloud-router timeout
+
+When you are logged in, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Authentication](/advanced_guides/authentication/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
+
+- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
+
 ## Reference
 
 | Setting | Default | Constraint | Effect |
@@ -113,5 +131,6 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
+| `federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
 
 A value outside its constraint, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.

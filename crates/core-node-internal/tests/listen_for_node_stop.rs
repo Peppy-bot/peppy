@@ -8,7 +8,7 @@ use common::{
     spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
-use config::node::Name;
+use config::runtime::Name;
 use core_node::force_kill_deadline;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
@@ -78,7 +78,7 @@ async fn listen_for_node_stop_success() {
     )
     .await;
     let pid = running.pid;
-    // Drop the guard's stop-on-drop behavior by forgetting it — node_stop
+    // Drop the guard's stop-on-drop behavior by forgetting it; node_stop
     // itself is responsible for reaping the child in this test.
     std::mem::forget(running);
 
@@ -327,7 +327,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
 
 /// `node_stop` must behave like the daemon's SIGINT teardown: a node that
 /// ignores the cooperative `SHUTDOWN_SERVICE` is force-killed by process group,
-/// and the call returns success only once the whole group is gone — no orphan.
+/// and the call returns success only once the whole group is gone, with no orphan.
 ///
 /// The node forks two grandchildren and waits; all three share the node's
 /// process group (nodes are spawned as group leaders). The instance is spawned
@@ -411,7 +411,7 @@ async fn node_stop_force_kills_whole_process_group() {
     );
 
     // No orphans: the node and every grandchild must be gone. Poll rather than
-    // assert synchronously — the reap is best-effort under a bounded timeout, so
+    // assert synchronously; the reap is best-effort under a bounded timeout, so
     // success may be reported a beat before the kernel finishes the teardown.
     poll_until(
         Duration::from_secs(5),
@@ -435,7 +435,7 @@ async fn node_stop_force_kills_whole_process_group() {
         "instance should be removed from the node stack after a successful stop"
     );
 
-    // The core (root) node — i.e. this test process — must be untouched.
+    // The core (root) node, i.e. this test process, must be untouched.
     assert!(
         is_process_running(std::process::id()),
         "node_stop must never kill the root/core node (the daemon itself)"
@@ -577,7 +577,7 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
 /// the SAME node name + tag can coexist on DIFFERENT core nodes (the
 /// per-instance-listener case `node_stop` is hand-written for). The service
 /// root encodes only name + tag, so an unscoped discovery could be won by the
-/// foreign core node's listener — which would answer "unknown instance" while
+/// foreign core node's listener, which would answer "unknown instance" while
 /// the right reply is dropped. `poll_node_stop` scopes its discovery to the
 /// caller's bound core node, so the foreign listener must never answer.
 ///
@@ -592,7 +592,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
     const FOREIGN_LISTENER_INSTANCE_ID: &str = "foreign_listener_instance";
     const TARGET_INSTANCE_ID: &str = "doomed_instance";
 
-    // One mock messaging network shared by both core nodes and the caller —
+    // One mock messaging network shared by both core nodes and the caller:
     // the multi-daemon topology where both listeners' queryables would match
     // an unscoped `node_stop` selector.
     let shared_messenger = common::create_mock_messenger().await;

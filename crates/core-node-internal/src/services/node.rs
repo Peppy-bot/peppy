@@ -16,9 +16,9 @@ mod run;
 mod stop;
 mod sync;
 
-use config::consts::PeppyDirs;
 use config::node::NodeConfig;
 use core_node_api::encoding::NodeSource;
+use daemon_config::consts::PeppyDirs;
 
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).
@@ -42,7 +42,7 @@ pub(crate) use logging::{create_action_log_file, write_error_to_log};
 pub(crate) use run::{NodeRunActionContext, resolve_mount_path_parameters, run_node_run};
 pub(crate) use sync::resolve_interface_doc;
 
-// Intra-`services::node::` re-imports — bring helper names back into the
+// Intra-`services::node::` re-imports: bring helper names back into the
 // module root so sibling command files can reach them via `super::X`.
 // Private on purpose: nothing outside this module needs these paths.
 use archive::{

@@ -188,7 +188,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     .expect("node_add should complete");
 
     assert!(!res.success, "add should fail on missing transitive dep");
-    // Stack must be unchanged — no partial add.
+    // Stack must be unchanged; no partial add.
     assert_eq!(node_stack.len(), pre_len, "stack should be unchanged");
     assert!(!node_stack.contains("a", "v1"));
     assert!(!node_stack.contains("b", "v1"));
@@ -238,7 +238,9 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     let peppy_json5 = minimal_node_config("git_hash_mismatch_node", "v1", &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let peppy_dir = source_dir.path().join(config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_dir = source_dir
+        .path()
+        .join(daemon_config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), "wrong-hash\n")
         .expect("failed to write wrong git hash file");

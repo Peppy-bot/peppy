@@ -14,9 +14,12 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 
 | Command | What it does |
 |---------|--------------|
-| `peppy auth login [--api-url <url>] [--no-browser]` | Logs in via the OAuth 2.0 Device Authorization Grant and caches the tokens. |
+| `peppy auth login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates this machine to your organization's cloud router. |
 | `peppy auth whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
-| `peppy auth logout` | Revokes the access token on the backend (across replicas) and deletes the local credentials. |
+| `peppy auth logout [--yes]` | Revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates this machine. |
+
+`--yes` (`-y`) skips the daemon-restart confirmation prompt described under
+[Organization federation](#organization-federation).
 
 ## Logging in
 
@@ -47,6 +50,39 @@ peppy auth login --no-browser
 3. It starts the device flow, opens the browser, and polls until you approve.
 4. It caches the tokens (and the `issuer`/`client_id`, so refresh works offline)
    under `~/.peppy/conf/credentials.json5`.
+
+## Organization federation
+
+Logging in does more than cache a token: it stamps this machine with your
+**organization namespace** (your account's stable organization id) and federates
+the peppy daemon's local messaging router to your organization's private cloud
+router. Robots signed in to the same organization then interoperate across that
+federation, while different organizations stay routing-isolated. Logged out, the
+machine falls back to the `local` namespace, which never reaches the cloud router;
+two logged-out machines on the same LAN still discover each other, but nothing
+leaves the local network.
+
+A session's namespace is fixed once the daemon opens it, so changing it (logging
+in or out) **restarts the messaging daemon and wipes the running node stack**.
+When a daemon is running with user nodes, `login` and `logout` confirm first:
+
+```
+Logging in changes this machine's organization namespace, which restarts the messaging daemon and wipes the running node stack.
+Continue? [y/N]
+```
+
+Pass `--yes` (`-y`) to skip the prompt. It is also skipped automatically when
+stdin is not a terminal (so scripts and CI are never blocked), when no daemon is
+running, or when the stack holds no user nodes; in each case the restart wipes
+nothing.
+
+`login` is **strict** about federation: after your credentials are saved it waits
+for the daemon to establish the federation link and exits non-zero if it cannot
+(no daemon running, the cloud router is unreachable or untrusted, or it times
+out). You stay authenticated in that case (only the command fails), so re-run it
+once the daemon is reachable. `logout` is best-effort and never fails on the
+de-federation step. How long the daemon waits to resolve the cloud router is
+bounded by [`federation.connect_timeout_secs`](/advanced_guides/daemon_config/#federation-cloud-router-timeout).
 
 ## Backend
 
@@ -86,6 +122,11 @@ This calls `POST {api_url}/logout`, which denylists the presented access token
 across all backend replicas (sub-second), then deletes the local credentials.
 The effect is near-immediate for the logged-out token. It revokes only the
 token you presented; a session on another device keeps working.
+
+Logout also returns this machine to the `local` namespace and de-federates its
+router, so, like login, it restarts the daemon and wipes the running node
+stack, with the same confirmation prompt and `--yes` bypass (see
+[Organization federation](#organization-federation)).
 
 ## Environment variables
 

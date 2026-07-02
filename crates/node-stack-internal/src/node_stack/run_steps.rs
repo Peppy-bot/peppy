@@ -12,8 +12,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{NodeConfig, PeppygenLanguage};
+use daemon_config::consts::PeppyDirs;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -337,13 +338,13 @@ pub(super) async fn build_container_command(
     let binds = collect_container_binds(&runtime_config_path, mount_paths);
 
     // Ensure user-specified bind mount sources exist on the host.
-    // Skip binds[0] (runtime config file) — its parent dir is already created above.
+    // Skip binds[0] (runtime config file); its parent dir is already created above.
     //
     // Behaviour:
     //   - If the path already exists, leave it alone (it may be a file,
     //     device, socket, or directory; we must not touch it).
     //   - If the path is under a device/virtual filesystem (`/dev`, `/proc`,
-    //     `/sys`), accept it — those nodes are created by the kernel and
+    //     `/sys`), accept it; those nodes are created by the kernel and
     //     may not exist on the host running the daemon.
     //   - Otherwise, `mkdir -p` the source so node-owned scratch / output
     //     directories Just Work. This used to be silent, which masked file
@@ -353,7 +354,7 @@ pub(super) async fn build_container_command(
     ensure_bind_sources(&binds[1..], log_file, feedback_tx)?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM.
-    // Skip binds[0] (runtime config) — it's always under $HOME.
+    // Skip binds[0] (runtime config); it's always under $HOME.
     if binds.len() > 1 {
         let src_paths: Vec<&str> = binds[1..].iter().map(|b| b.src.as_str()).collect();
         apptainer
@@ -457,7 +458,7 @@ pub(super) async fn build_container_command(
 ///
 /// For each entry:
 ///   - existing paths are left untouched (they may be files, sockets, devices,
-///     or directories — we must not modify them);
+///     or directories; we must not modify them);
 ///   - paths under kernel-managed virtual filesystems (`/dev`, `/proc`,
 ///     `/sys`) are accepted as-is, since the kernel materializes them and the
 ///     daemon's host may legitimately not have the device node;
@@ -539,7 +540,7 @@ impl Drop for TempFileGuard {
 /// flushes), and returns a formatted error string with a stderr tail.
 ///
 /// Used by [`super::entity::NodeEntity::abort_started`]. Joining the reader
-/// handles is critical for stable error reporting — without it, the stderr
+/// handles is critical for stable error reporting; without it, the stderr
 /// buffer can be empty due to async scheduling timing even though the lines
 /// were already written to the log file.
 pub(super) async fn kill_and_collect_error(
@@ -571,7 +572,7 @@ pub(super) async fn kill_and_collect_error(
         if !buffer_lines.is_empty() {
             buffer_lines.join("\n")
         } else {
-            // Fall back to the log file for stderr lines — the log write is unconditional
+            // Fall back to the log file for stderr lines; the log write is unconditional
             // and may have captured output that the stderr_buffer missed due to timing
             // (e.g. the async reader hadn't processed the line before we read the buffer).
             extract_stderr_from_log(&log_file)

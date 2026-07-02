@@ -88,7 +88,7 @@ const NODE_CONFIG: &str = r#"{
 ///   3. Each leaf calls `peppylib::TopicMessenger::declare_publisher` with the
 ///      matching sender target: `SenderTarget::interface("name", "tag")?` for
 ///      conformed leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
-///   4. The per-interface marker fields land in their own files — proof the
+///   4. The per-interface marker fields land in their own files, proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
 fn nests_conformed_topics_under_iface_name_and_tag() {
@@ -197,7 +197,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
         "uvc_v1 leaf should pass `uvc_camera`,`v1`:\n{uvc_v1_src}",
     );
 
-    // Distinguishing fields preserve per-leaf message format identity — a
+    // Distinguishing fields preserve per-leaf message format identity, a
     // belt-and-suspenders check that we didn't accidentally cross-wire the
     // four artifacts.
     assert!(

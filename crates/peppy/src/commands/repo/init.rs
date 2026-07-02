@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use config::consts::PeppyDirs;
 use core_node::{InitOutcome, ensure_default_repos, repositories_list_path};
+use daemon_config::consts::PeppyDirs;
 use tracing::info;
 
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-/// `peppy repo init` — sync the user's `repositories.json5` with the bundled
+/// `peppy repo init`: sync the user's `repositories.json5` with the bundled
 /// default template by appending any missing default entries. Operates
 /// directly on the local config file (no daemon connection required) so it
 /// can be run after upgrading peppy without restarting the daemon.

@@ -79,7 +79,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStat
     panic!("daemon did not exit within {timeout:?} after the shutdown signal");
 }
 
-fn run_shutdown_signal_case(signal: libc::c_int) {
+fn run_shutdown_signal_case(signal: rustix::process::Signal) {
     let home = tempfile::tempdir().expect("temp home");
     let (mut guard, logs) = spawn_daemon(home.path());
 
@@ -90,15 +90,14 @@ fn run_shutdown_signal_case(signal: libc::c_int) {
         Duration::from_secs(60),
     );
 
-    // SAFETY: kill(2) with a real signal to our own child; no memory effects.
-    let pid = guard.0.id() as libc::pid_t;
-    let rc = unsafe { libc::kill(pid, signal) };
-    assert_eq!(rc, 0, "kill({pid}, {signal}) failed");
+    let pid = rustix::process::Pid::from_child(&guard.0);
+    rustix::process::kill_process(pid, signal)
+        .unwrap_or_else(|e| panic!("kill({pid:?}, {signal:?}) failed: {e}"));
 
     let status = wait_for_exit(&mut guard.0, Duration::from_secs(30));
     assert!(
         status.success(),
-        "daemon should exit cleanly after signal {signal}; got {status:?}. Logs:\n{}",
+        "daemon should exit cleanly after signal {signal:?}; got {status:?}. Logs:\n{}",
         logs.lock().unwrap()
     );
 }
@@ -106,11 +105,11 @@ fn run_shutdown_signal_case(signal: libc::c_int) {
 #[test]
 #[ignore = "spawns a real peppy daemon; run with --ignored"]
 fn serve_shuts_down_on_sigint() {
-    run_shutdown_signal_case(libc::SIGINT);
+    run_shutdown_signal_case(rustix::process::Signal::INT);
 }
 
 #[test]
 #[ignore = "spawns a real peppy daemon; run with --ignored"]
 fn serve_shuts_down_on_sigterm() {
-    run_shutdown_signal_case(libc::SIGTERM);
+    run_shutdown_signal_case(rustix::process::Signal::TERM);
 }

@@ -4,7 +4,7 @@
 //! Rust path, the per-link Rust module would reference a struct name that had
 //! been overwritten in the deduplicated capnp source. Python's
 //! `register_schema` already derives the struct identity from the file_stem,
-//! so this test passes both before and after the fix — but it acts as a
+//! so this test passes both before and after the fix, but it acts as a
 //! forward-looking guardrail so the Python generator can't regress into the
 //! same divergence.
 //!
@@ -16,6 +16,7 @@
 //! force-resolves the cap'n proto struct each module's `_deserialize_payload`
 //! references.
 
+use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use crate::helpers::{init_python_project_venv, init_python_user_node, test_peppy_dirs};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
@@ -45,11 +46,6 @@ const NODE_CONFIG: &str = r#"{
 
 const LEFT_CONSUMER: &str = r#"{ link_id: "left_arm", name: "joint_states" }"#;
 const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#;
-const SHARED_FORMAT: &str = r#"{
-  positions: { $type: "array", $items: "f64", $length: 3 },
-  velocities: { $type: "array", $items: "f64", $length: 3 },
-  timestamp: "time"
-}"#;
 
 /// Probes the generated Python modules by importing both per-link consumers
 /// and accessing the cap'n proto struct each one's `_deserialize_payload`
@@ -87,7 +83,7 @@ right_struct_name = referenced_struct(right)
 
 # Force-resolve each referenced struct. AttributeError here means the per-link
 # Python module references a struct that doesn't exist in the deduplicated
-# cap'n proto file — the same class of bug that bit the Rust generator.
+# cap'n proto file, the same class of bug that bit the Rust generator.
 getattr(left_schema, left_struct_name)
 getattr(right_schema, right_struct_name)
 

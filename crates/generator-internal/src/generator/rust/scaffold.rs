@@ -34,7 +34,7 @@ use toml_edit::{DocumentMut, value};
 
 pub fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
-    peppy_dirs: &config::consts::PeppyDirs,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
 ) -> Result<()> {
     let to_path = to_path.as_ref();
@@ -307,7 +307,7 @@ fn hash_embedded_crate<E: Embed>(hasher: &mut Sha256, label: &str) {
 ///
 /// In debug builds `rust-embed` (no `debug-embed` feature) reads each crate's
 /// source live from disk at call time, so this hash reflects the current
-/// working tree — never a stale snapshot baked into the generator binary at its
+/// working tree, never a stale snapshot baked into the generator binary at its
 /// last compile. That makes the shared cache self-invalidating: any source
 /// change yields a new key and therefore a fresh deploy, even when cargo did not
 /// rebuild the generator (e.g. a submodule checkout whose mtimes did not advance,
@@ -348,7 +348,7 @@ fn vendored_crates_cache_key() -> String {
 /// staging directory for concurrent-safe deployment.
 fn deploy_rust_crates_to_shared_cache(
     node_libs_dir: &Path,
-    peppy_dirs: &config::consts::PeppyDirs,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
 ) -> Result<()> {
     let cache_key = vendored_crates_cache_key();

@@ -8,10 +8,10 @@ mod container_e2e_tests {
         send_node_build_and_wait_forced, send_node_run_and_wait,
         start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
     };
-    use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-    use config::node::Name as NodeName;
     use config::node::Toolchain;
+    use config::runtime::Name as NodeName;
     use core_node_api::encoding::NodeInitRequest;
+    use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
     use node_stack::{NodeStack, NodeStage};
     use peppylib::core_node::transport::poll_node_init;
     use std::time::Duration;

@@ -1,5 +1,5 @@
-use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use containers::Apptainer;
+use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -23,7 +23,7 @@ fn build_alpine_container() -> Option<(Apptainer, TempDir, PathBuf)> {
 /// own indentation and trailing newline).
 ///
 /// Returns `None` (and prints a diagnostic) when the Apptainer runtime is not
-/// available or not fully operational on this host — for example, when system
+/// available or not fully operational on this host; for example, when system
 /// dependencies like `newuidmap` (from the `uidmap` package) are missing.
 ///
 /// First run downloads the Alpine base image (~30-60s); subsequent runs use the
@@ -278,7 +278,7 @@ impl Drop for ChildGuard {
 /// This is the in-VM half of the daemon's deliberate-stop teardown: on macOS a
 /// host process-group kill only reaches the `limactl` client, so a non-responsive
 /// container node's workload lives on inside the Lima VM until this guest-side
-/// kill reaps it — without waiting for the in-container daemon watchdog's grace
+/// kill reaps it, without waiting for the in-container daemon watchdog's grace
 /// period. The runscript `exec sleep`s on a long, distinctive duration so the
 /// only guest process matching that marker is the container workload itself (not
 /// the wrapper, apptainer, or kill argv).
@@ -336,7 +336,7 @@ fn cancel_pgid_run_is_killable_in_guest() {
         .kill_guest_process_group(INSTANCE_KEY)
         .expect("guest kill should not error");
 
-    // It must be gone promptly — proving the deliberate-stop path does not wait
+    // It must be gone promptly, proving the deliberate-stop path does not wait
     // for the in-container watchdog grace period.
     assert!(
         poll_until(Duration::from_secs(10), || !guest_has_process(

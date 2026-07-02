@@ -358,7 +358,7 @@ pub fn consumed_from_target_expression(
 /// fixtures that don't model a manifest dep. The validator pre-resolves
 /// the consumer's launcher / CLI binding map into per-slot
 /// [`config::runtime::SlotBinding`] entries, and the runtime processor
-/// expands those into [`peppylib::messaging::ConsumerFilter`]s — see the
+/// expands those into [`peppylib::messaging::ConsumerFilter`]s; see the
 /// resolver in `peppylib::messaging::filter`.
 pub fn consumed_consumer_filter_expression(
     dependency: &crate::generator::types::DependencyContext,
@@ -374,8 +374,8 @@ pub fn consumed_consumer_filter_expression(
 
 /// Returns the `Option<&ProducerRef>` expression spliced into a generated
 /// [`peppylib::ActionMessenger::send_goal`] call at the single `target`
-/// slot. When `dependency.wire_link_id()` is `Some(link_id)` — i.e., any
-/// real manifest dep, whether pinned or `from_any` — the emitted
+/// slot. When `dependency.wire_link_id()` is `Some(link_id)` (i.e., any
+/// real manifest dep, whether pinned or `from_any`), the emitted
 /// expression calls `consumer_filter(link_id).pinned_target()`: a pinned
 /// slot (or a `from_any` slot bound to a single producer) resolves at
 /// runtime to that producer's full `(core_node, instance_id)` and the

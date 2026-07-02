@@ -1,0 +1,26 @@
+# Daemon-side Peppy configuration documents, extracted from the shared
+# `peppy-config-model` crate (which stays the home of the wire-facing node
+# config model this crate builds on).
+
+[package]
+name = "daemon-config"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+config = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_json5 = "0.2"
+serde_path_to_error = "0.1"
+thiserror = "2.0"
+tracing = "0.1"
+# Production dependency: `atomic_write::publish_atomic` stages through
+# `NamedTempFile` siblings.
+tempfile = "3"
+# Home-directory resolution for the production `PeppyDirs` root.
+dirs = "6"
+# Compile-time string concatenation so the bundled peppy_config template
+# splices in its numeric defaults instead of duplicating the literals.
+const_format = "0.2"

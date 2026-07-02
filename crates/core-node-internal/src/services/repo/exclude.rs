@@ -7,8 +7,8 @@ use crate::services::repo::{
     json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
 };
 use crate::services::response::into_service_response;
-use config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
+use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;

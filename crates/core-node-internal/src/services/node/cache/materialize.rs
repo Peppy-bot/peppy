@@ -3,7 +3,7 @@
 //!
 //! Filesystem entries are resolved directly. Git and HTTP entries route
 //! through the persistent `git` / `bundle` caches under
-//! [`config::consts::PeppyDirs`], so the same repo or archive is fetched
+//! [`daemon_config::consts::PeppyDirs`], so the same repo or archive is fetched
 //! at most once per nodes-cache generation.
 //!
 //! Shared by `add_batch` (`run_repo_node_add`) and `sync`
@@ -13,9 +13,10 @@
 use super::super::sanitize_repo_path;
 use super::{ensure_bundle, ensure_checkout};
 use crate::services::repo::cache::NodeCacheEntry;
-use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
+use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::RepoSourceKind;
+use daemon_config::consts::PeppyDirs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;

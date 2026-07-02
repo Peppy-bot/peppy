@@ -156,7 +156,6 @@ async fn node_run_command_succeeds() {
             instance_id: Some(instance_id.to_string()),
             binds: Vec::new(),
 
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -386,7 +385,6 @@ async fn node_run_command_with_args_succeeds() {
             instance_id: Some(instance_id.to_string()),
             binds: Vec::new(),
 
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -579,7 +577,6 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             instance_id: Some(custom_instance_id.to_string()),
             binds: Vec::new(),
 
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -759,7 +756,6 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             instance_id: Some(instance_id.to_string()),
             binds: Vec::new(),
 
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
@@ -930,7 +926,6 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             instance_id: Some(instance_id.to_string()),
             binds: Vec::new(),
 
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: true,
@@ -1172,7 +1167,6 @@ async fn node_run_bind_rejects_pinned_unbound() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             binds: Vec::new(),
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1251,7 +1245,6 @@ async fn node_run_bind_rejects_dead_key() {
             args: Vec::new(),
             instance_id: Some(producer_instance_id.to_string()),
             binds: Vec::new(),
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1268,7 +1261,6 @@ async fn node_run_bind_rejects_dead_key() {
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
             binds: vec![("ghost".to_string(), producer_instance_id.to_string())],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1344,7 +1336,6 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 binds: Vec::new(),
-                _link_id_removed: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1384,7 +1375,6 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1452,7 +1442,6 @@ async fn node_run_bind_rejects_target_mismatch() {
             args: Vec::new(),
             instance_id: Some(wrong_instance_id.to_string()),
             binds: Vec::new(),
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1469,7 +1458,6 @@ async fn node_run_bind_rejects_target_mismatch() {
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
             binds: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1501,7 +1489,7 @@ async fn node_run_bind_rejects_target_mismatch() {
 /// Setup: producer `cam` is built, plus a built consumer `cons_a` with
 /// two pinned `link_id`s on `cam`. Spawn two `cam` instances and
 /// `cons_a` with valid `--bind`s satisfying both pins. Then spawn a
-/// THIRD `cam` instance — `cons_a` is running clean, the new
+/// THIRD `cam` instance: `cons_a` is running clean, the new
 /// invocation has no binds at all, and Rule 1 must NOT fire against
 /// `cons_a`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1559,7 +1547,6 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 binds: Vec::new(),
-                _link_id_removed: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1587,7 +1574,6 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1599,7 +1585,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     // Third producer instance: `cons_a` is already running with all
     // its pinned slots satisfied, and this invocation has nothing to
     // do with `cons_a`. The pre-flight must validate only the new
-    // synthesized instance — `cons_a`'s pinned slots are out of scope.
+    // synthesized instance; `cons_a`'s pinned slots are out of scope.
     let _extra_svcs = install_node_services(
         &node_messenger,
         &core_node_name,
@@ -1615,7 +1601,6 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
             args: Vec::new(),
             instance_id: Some(producer_extra_id.to_string()),
             binds: Vec::new(),
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1647,7 +1632,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
 /// with both pins bound) and consumer `cons_b` (a second consumer
 /// with one pinned `link_id`). Launching `cons_b` with no `--bind`
 /// must be rejected with an error naming `cons_b`'s missing link_id
-/// only — never `cons_a`'s.
+/// only, never `cons_a`'s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_clean() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1712,7 +1697,6 @@ async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_c
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 binds: Vec::new(),
-                _link_id_removed: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1740,7 +1724,6 @@ async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_c
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1760,7 +1743,6 @@ async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_c
             args: Vec::new(),
             instance_id: Some(consumer_b_instance_id.to_string()),
             binds: Vec::new(),
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1850,7 +1832,6 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 binds: Vec::new(),
-                _link_id_removed: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1879,7 +1860,6 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1910,7 +1890,6 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1920,7 +1899,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .expect("second consumer instance must succeed when its own binds are valid");
 
     // Third consumer instance with deliberately missing binds. The
-    // error must name only cons_inst_3 — never cons_inst_1 or
+    // error must name only cons_inst_3, never cons_inst_1 or
     // cons_inst_2 (whose binds were already validated at their own
     // spawn time).
     let result = NodeCommand {
@@ -1931,7 +1910,6 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
             args: Vec::new(),
             instance_id: Some(consumer_inst_3_bad.to_string()),
             binds: Vec::new(),
-            _link_id_removed: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,

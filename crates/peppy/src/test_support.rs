@@ -1,7 +1,8 @@
 use crate::daemon_state::DaemonState;
-use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
+use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
+use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -52,7 +53,7 @@ pub fn override_build_cmd(peppy_json5: &Path, cmd: Vec<String>) {
 /// Used by the run-idle timeout test: the process never produces output and never registers
 /// itself with the messaging layer, so it never becomes "ready". Direct-binary form is used
 /// so the cancellation SIGKILL (sent via `abort_started → kill_child` when the run-phase
-/// idle timeout trips the cancel token) targets `sleep` directly — `sh -c "sleep N"` would
+/// idle timeout trips the cancel token) targets `sleep` directly; `sh -c "sleep N"` would
 /// orphan the grandchild `sleep` and keep the daemon's stdio pipes open for the full sleep
 /// duration.
 pub fn override_run_cmd_silent(peppy_json5: &Path) {
@@ -205,7 +206,7 @@ impl ServeCommandEmulation {
             },
             root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
-            peppy_config: config::peppy_config::PeppyConfig::default(),
+            peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
             organization_namespace: "local".to_string(),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
         });
@@ -219,8 +220,8 @@ impl ServeCommandEmulation {
         // `ensure_default_repos` runs during `start_with_ready` and appends the
         // bundled defaults (real GitHub URLs) to the empty file we wrote above.
         // Reset the file once the daemon is ready so tests that trigger a
-        // refresh — e.g. `repo remove`, which fires a synchronous refresh
-        // before responding — don't try to clone real remotes and time out on
+        // refresh (e.g. `repo remove`, which fires a synchronous refresh
+        // before responding) don't try to clone real remotes and time out on
         // slow networks. Tests that need specific contents can overwrite this.
         std::fs::write(&repos_path, "[]")
             .expect("failed to reset repositories.json5 after daemon startup");

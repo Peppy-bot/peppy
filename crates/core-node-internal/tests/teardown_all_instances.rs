@@ -1,10 +1,10 @@
-//! Component test for `teardown_all_instances` — the daemon-side force-kill the
+//! Component test for `teardown_all_instances`: the daemon-side force-kill the
 //! serve runner invokes on a catchable shutdown (ctrl+C / SIGTERM).
 //!
 //! Spawns a real node whose `run_cmd` forks grandchildren, all in the node's
 //! process group (nodes are spawned as group leaders). The node does NOT answer
 //! the cooperative `SHUTDOWN_SERVICE` (a "stuck" instance), so the graceful
-//! phase times out and the force phase must SIGKILL the whole group — proving no
+//! phase times out and the force phase must SIGKILL the whole group, proving no
 //! node, and none of its descendants, is left orphaned. The core (root) node is
 //! never killed: that's the daemon (this test process) itself, so the test
 //! simply continuing to run is the proof.
@@ -15,7 +15,7 @@ use common::{
     add_and_build_forking_node, children_of, is_process_running, poll_until,
     spawn_real_starting_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
 };
-use config::node::Name;
+use config::runtime::Name;
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,7 +65,7 @@ async fn teardown_force_kills_whole_process_group() {
     core_node::teardown_all_instances(&messenger, &started.core_node_name, "core", &node_stack)
         .await;
 
-    // The node and every grandchild must be gone — no orphans.
+    // The node and every grandchild must be gone; no orphans.
     assert!(
         !is_process_running(node_pid),
         "node process {node_pid} should be gone after teardown"
@@ -79,7 +79,7 @@ async fn teardown_force_kills_whole_process_group() {
         .await;
     }
 
-    // The core (root) node — i.e. this test process — must be untouched.
+    // The core (root) node, i.e. this test process, must be untouched.
     assert!(
         is_process_running(std::process::id()),
         "teardown must never kill the root/core node (the daemon itself)"
@@ -103,7 +103,7 @@ async fn teardown_force_kills_instance_still_in_starting() {
 
     let instance_id = Name::new(INSTANCE_ID).expect("valid instance id");
     // Drive prepare_and_spawn WITHOUT commit_started: the instance stays in
-    // `Starting` with a live child — the mid-launch state that, before the fix,
+    // `Starting` with a live child: the mid-launch state that, before the fix,
     // carried no pid in the registry and so was skipped by the force phase.
     let starting = spawn_real_starting_instance(&started, NODE_NAME, NODE_TAG, &instance_id).await;
     let node_pid = starting.pid;

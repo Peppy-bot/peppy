@@ -1,4 +1,4 @@
-//! `peppy stack benchmark` — thin client that drives the `stack_benchmark`
+//! `peppy stack benchmark`: thin client that drives the `stack_benchmark`
 //! action on the daemon and renders the per-interface latency report as two
 //! tables, so synthetic plumbing numbers are never read side by side with real
 //! payload numbers:
@@ -257,7 +257,7 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
     }
 
     if result.rows.is_empty() {
-        println!("\nNo interface edges found in the running stack — nothing to benchmark.");
+        println!("\nNo interface edges found in the running stack; nothing to benchmark.");
         return;
     }
 
@@ -339,7 +339,7 @@ const REAL_HEADERS: [&str; 9] = [
     "edge", "binding", "clock", "p50", "p90", "mean", "n", "Δp50", "note",
 ];
 
-/// Footnote legend beneath the tables — one category per block, its variants
+/// Footnote legend beneath the tables: one category per block, its variants
 /// aligned on their own lines so a reader can scan each meaning instead of
 /// parsing a run-on sentence. The `measure` labels are painted in the same
 /// colors as the `measure` column so the legend doubles as a color key. The
@@ -394,11 +394,11 @@ fn display_rows(
         .map(|row| {
             let delta = match previous.get(&row_key(row)).map(|s| s.p50_ns) {
                 Some(prev) if prev > 0 => fmt_delta(row.p50_ns, prev),
-                _ => "—".to_string(),
+                _ => "-".to_string(),
             };
             let dur = |ns: u64| {
                 if row.count == 0 {
-                    "—".to_string()
+                    "-".to_string()
                 } else {
                     fmt_duration(Duration::from_nanos(ns))
                 }

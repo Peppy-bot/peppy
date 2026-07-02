@@ -17,8 +17,8 @@
 
 use crate::Result;
 use crate::services::repo::refresh::read_or_create_repos;
-use config::consts::PeppyDirs;
 use core_node_api::encoding::{NodeSource, RepoSourceKind};
+use daemon_config::consts::PeppyDirs;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -68,7 +68,7 @@ pub struct NodeCacheEntry {
 
 /// One entry as it appears in `launchers.json5`. Launchers live in the
 /// same kind of repositories as nodes (FS or Git), but they don't carry
-/// a tag — they're just the location of a launcher `.json5` file (any
+/// a tag; they're just the location of a launcher `.json5` file (any
 /// filename; identified by `peppy_schema: "launcher/v1"` and keyed by
 /// file stem).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -86,7 +86,7 @@ pub struct LauncherCacheEntry {
     /// SHA-256 of the launcher manifest file bytes.
     #[serde(default)]
     pub sha256: String,
-    /// Absolute path for FS entries; path-within-repo for Git entries —
+    /// Absolute path for FS entries; path-within-repo for Git entries,
     /// in both cases pointing at the `.json5` file itself.
     pub path: String,
     /// The id of the repository entry this launcher was discovered
@@ -194,19 +194,19 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 }
 
 /// Write cached node information for git/url repositories. Atomic via
-/// [`config::atomic_write::publish_atomic`] so concurrent readers never
+/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
 /// observe a partial file.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
     let content = json5_pretty::to_string_pretty(nodes)
         .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
+    daemon_config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())
 }
 
 /// Write cached launcher information for git/url/fs repositories. Atomic
-/// via [`config::atomic_write::publish_atomic`] so concurrent readers
+/// via [`daemon_config::atomic_write::publish_atomic`] so concurrent readers
 /// never observe a partial file.
 pub(crate) fn write_launcher_cache(
     peppy_dirs: &PeppyDirs,
@@ -215,14 +215,14 @@ pub(crate) fn write_launcher_cache(
     let content = json5_pretty::to_string_pretty(launchers).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
     })?;
-    config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
+    daemon_config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())
 }
 
 /// Write cached interface information. Atomic via
-/// [`config::atomic_write::publish_atomic`] so concurrent readers never
+/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
 /// observe a partial file.
 pub(crate) fn write_interface_cache(
     peppy_dirs: &PeppyDirs,
@@ -231,7 +231,7 @@ pub(crate) fn write_interface_cache(
     let content = json5_pretty::to_string_pretty(interfaces).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize interface cache: {e}"))
     })?;
-    config::atomic_write::publish_atomic(&interfaces_repo_cache_path(peppy_dirs), |tmp| {
+    daemon_config::atomic_write::publish_atomic(&interfaces_repo_cache_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())
@@ -504,7 +504,7 @@ pub(crate) fn resolve_repo_node_source(
 /// on-disk path that the launch flow can open and parse.
 ///
 /// For Git entries this materializes the repo's checkout via
-/// [`crate::services::node::cache::git::ensure_checkout`] (blocking — wrap
+/// [`crate::services::node::cache::git::ensure_checkout`] (blocking; wrap
 /// callers in `spawn_blocking` when running inside Tokio). `on_feedback`
 /// receives clone/refresh progress lines.
 pub(crate) fn resolve_repo_launcher_path(
@@ -538,7 +538,7 @@ pub(crate) fn resolve_repo_launcher_path(
 /// resolution so the Fs/Git/Url branching lives in one place.
 ///
 /// For Git entries this materializes the repo's checkout via
-/// [`crate::services::node::cache::git::ensure_checkout`] (blocking — wrap
+/// [`crate::services::node::cache::git::ensure_checkout`] (blocking; wrap
 /// callers in `spawn_blocking` when running inside Tokio) and joins the
 /// repo-relative `path` onto the checkout dir. `on_feedback` receives
 /// clone/refresh progress lines.
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(hit.repo_id, 2);
     }
 
-    /// Lookup falls back to repo priority alone — the highest-priority entry
+    /// Lookup falls back to repo priority alone: the highest-priority entry
     /// (lowest id) wins among entries that share `(name, tag)`.
     #[test]
     fn lookup_returns_highest_priority_when_multiple_match() {
@@ -1123,7 +1123,7 @@ mod tests {
             .to_owned()
     }
 
-    /// `Fs` entries are already absolute on disk — the helper returns the
+    /// `Fs` entries are already absolute on disk; the helper returns the
     /// recorded path verbatim without touching the git checkout cache.
     #[test]
     fn resolve_cached_artifact_path_fs_returns_path_verbatim() {
@@ -1203,7 +1203,7 @@ mod tests {
 
     /// Regression for the launcher side of the bug class: a git-sourced
     /// `LauncherCacheEntry` records a repo-relative `path`, so resolution
-    /// must materialize the checkout and join the relative path on top —
+    /// must materialize the checkout and join the relative path on top,
     /// not just read `entry.path` from the CWD. This test covered nothing
     /// before; the missing coverage is what let the symmetric interface
     /// bug land.

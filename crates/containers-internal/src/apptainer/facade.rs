@@ -21,7 +21,7 @@ pub(crate) fn is_uri(s: &str) -> bool {
     s.contains("://")
 }
 
-/// The execution backend — how apptainer commands are actually invoked.
+/// The execution backend: how apptainer commands are actually invoked.
 #[derive(Debug)]
 pub(crate) enum Backend {
     /// Linux: run apptainer directly on the host.
@@ -77,8 +77,8 @@ fn which(cmd: &str) -> Option<PathBuf> {
 
 /// Check whether AppArmor profiles can actually be managed on this system.
 ///
-/// Returns `true` when the AppArmor security filesystem is fully mounted
-/// — meaning we can inspect loaded profiles and load new ones via
+/// Returns `true` when the AppArmor security filesystem is fully mounted,
+/// meaning we can inspect loaded profiles and load new ones via
 /// `apparmor_parser`.
 ///
 /// We check for `policy/` inside the AppArmor directory because:
@@ -134,16 +134,79 @@ impl SetupStatus {
     }
 }
 
+/// AppArmor profile identity for one apptainer installation.
+///
+/// The profile name embeds a stable hash of the canonical starter path, so
+/// every installation on a machine (the version-keyed build caches under
+/// `~/.peppy/tmp/`, installed release layouts, `PEPPY_APPTAINER_DIR`
+/// overrides) gets its own profile file under `/etc/apparmor.d/`. A single
+/// shared profile can only reference one starter path, so regenerating it for
+/// one installation used to silently invalidate every other one: after an
+/// apptainer version bump renamed the build cache, CI runs on commits from
+/// either side of the bump needed different profiles and kept breaking each
+/// other depending on which one ran `peppy container setup` last.
+#[cfg(target_os = "linux")]
+pub(crate) struct ApparmorProfileRef {
+    /// Canonical starter path, exactly as embedded in the profile body.
+    pub(crate) starter_path: String,
+    /// AppArmor profile name (`peppy-apptainer-<hash>`).
+    pub(crate) name: String,
+    /// Profile file under `/etc/apparmor.d/`.
+    pub(crate) file: PathBuf,
+}
+
+/// Resolve the AppArmor profile identity for the installation at `apptainer_dir`.
+///
+/// Uses the canonicalized starter path when the binary exists (the kernel
+/// resolves symlinks at exec time, so the profile must reference the resolved
+/// path) and falls back to the literal path otherwise.
+#[cfg(target_os = "linux")]
+pub(crate) fn apparmor_profile_ref(apptainer_dir: &Path) -> ApparmorProfileRef {
+    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
+    let starter_canonical = starter.canonicalize().unwrap_or(starter);
+    let starter_path = starter_canonical.display().to_string();
+    let name = format!("peppy-apptainer-{:016x}", fnv1a_64(starter_path.as_bytes()));
+    let file = Path::new("/etc/apparmor.d").join(&name);
+    ApparmorProfileRef {
+        starter_path,
+        name,
+        file,
+    }
+}
+
+/// 64-bit FNV-1a hash. Profile names derived from it are persisted in
+/// `/etc/apparmor.d/`, so the hash must stay stable across peppy releases:
+/// `DefaultHasher` gives no such guarantee, and a cryptographic hash would add
+/// a dependency for no benefit (the hash only namespaces profile files, it is
+/// not a security boundary).
+#[cfg(target_os = "linux")]
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    bytes.iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    })
+}
+
+/// Escape a value for interpolation inside a single-quoted shell string: each
+/// embedded quote terminates the string, inserts an escaped quote, and reopens
+/// it, so the surrounding quoting survives arbitrary path characters. The fix
+/// script embeds the starter path inside `echo '...'`; a home directory
+/// containing a quote must not break out of it.
+#[cfg(target_os = "linux")]
+pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
+    value.replace('\'', r"'\''")
+}
+
 /// Inspect the Apptainer user namespace prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
 /// along with a ready-to-run fix script when something needs attention.
 ///
-/// The caller is responsible for resolving the `apptainer_dir` — use
+/// The caller is responsible for resolving the `apptainer_dir`; use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
-    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
     let apparmor_manageable = is_apparmor_manageable();
 
     // newuidmap is required for fakeroot mode (unprivileged user namespaces).
@@ -153,21 +216,23 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
 
     // The procfs flag may read "1" even inside containers (inherited from
     // the host kernel). Only treat it as restricted when AppArmor is also
-    // manageable — otherwise we'd try to load profiles into a kernel we
+    // manageable; otherwise we'd try to load profiles into a kernel we
     // have no access to.
     let apparmor_restricted = apparmor_manageable
         && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
-    let starter_canonical = starter.canonicalize().unwrap_or_else(|_| starter.clone());
+    let profile = apparmor_profile_ref(apptainer_dir);
 
     let apparmor_ok = if apparmor_restricted {
-        // The profile must exist AND reference the current starter path.
-        // A stale profile pointing to a different binary (e.g. a previous build
-        // artifact) won't grant the current binary namespace privileges.
-        std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-            .map(|content| content.contains(&starter_canonical.display().to_string()))
+        // The per-install profile file must exist AND reference the current
+        // starter path. The hashed file name already namespaces installations;
+        // the content check additionally catches a manually edited or
+        // corrupted profile that would not grant the binary namespace
+        // privileges.
+        std::fs::read_to_string(&profile.file)
+            .map(|content| content.contains(&profile.starter_path))
             .unwrap_or(false)
     } else {
         true
@@ -176,12 +241,13 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let apparmor_loaded = if apparmor_restricted {
         // /sys/kernel/security/apparmor/profiles requires CAP_MAC_ADMIN, so
         // use the policy directory listing which is world-readable.
+        let kernel_entry_prefix = format!("{}.", profile.name);
         std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
             .map(|entries| {
                 entries.filter_map(|e| e.ok()).any(|e| {
                     e.file_name()
                         .to_str()
-                        .is_some_and(|name| name.starts_with("peppy-apptainer."))
+                        .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
                 })
             })
             .unwrap_or(false)
@@ -192,7 +258,6 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let fix_script = if newuidmap_ok && apparmor_ok && apparmor_loaded {
         None
     } else {
-        let starter_path = starter_canonical.display();
         let mut parts: Vec<String> = Vec::new();
 
         if !newuidmap_ok {
@@ -209,13 +274,19 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
                 "echo 'abi <abi/4.0>,\n\
                  include <tunables/global>\n\
                  \n\
-                 profile peppy-apptainer {starter_path} flags=(unconfined) {{\n\
+                 profile {profile_name} {starter_path} flags=(unconfined) {{\n\
                  \x20 userns,\n\
-                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
-                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+                 }}' | sudo tee {profile_file} > /dev/null \\\n  \
+                 && sudo apparmor_parser -r {profile_file}",
+                profile_name = profile.name,
+                starter_path = shell_escape_single_quoted(&profile.starter_path),
+                profile_file = profile.file.display(),
             ));
         } else if apparmor_restricted && !apparmor_loaded {
-            parts.push("sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer".to_string());
+            parts.push(format!(
+                "sudo apparmor_parser -r {}",
+                profile.file.display()
+            ));
         }
 
         if parts.is_empty() {
@@ -386,9 +457,9 @@ impl Apptainer {
     /// Returns the hostname that resolves to the host machine from inside
     /// the execution environment.
     ///
-    /// - `Backend::Lima`: `Some("host.lima.internal")` — Lima's built-in
+    /// - `Backend::Lima`: `Some("host.lima.internal")`, Lima's built-in
     ///   hostname for guest-to-host connectivity.
-    /// - `Backend::Native`: `None` — Apptainer shares the host network
+    /// - `Backend::Native`: `None`; Apptainer shares the host network
     ///   namespace, so `127.0.0.1` already refers to the host.
     pub fn host_gateway(&self) -> Option<&'static str> {
         match &self.backend {
@@ -400,7 +471,7 @@ impl Apptainer {
     /// Ensure that the given host paths are accessible inside the execution
     /// environment.
     ///
-    /// On Linux (`Backend::Native`): no-op — all host paths are directly
+    /// On Linux (`Backend::Native`): no-op; all host paths are directly
     /// accessible.
     ///
     /// On macOS (`Backend::Lima`): Lima only auto-mounts `$HOME` into the
@@ -576,12 +647,12 @@ impl Apptainer {
     /// stop / daemon teardown. Owns the platform gate so callers need no
     /// `cfg!(target_os = "macos")` checks: a no-op on non-macOS hosts (the host
     /// process-group SIGKILL already reached the shared-namespace workload) and
-    /// when the Lima VM is not running (its guest processes died with it —
+    /// when the Lima VM is not running (its guest processes died with it;
     /// never boot a VM just to kill processes inside it, which a full
     /// [`Apptainer::new`] readiness preflight could do). Failures are logged at
     /// debug level, never returned: a guest-kill problem must not block a stop.
     ///
-    /// Synchronous — it shells out to `limactl` — so call it from a blocking
+    /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn kill_guest_process_groups_best_effort(keys: &[String]) {
         if !cfg!(target_os = "macos") || keys.is_empty() {
@@ -615,7 +686,7 @@ impl Apptainer {
     /// for the provided keys; callers can use `false` to fall back to host-side
     /// signaling on native Apptainer.
     ///
-    /// Synchronous — it shells out to `limactl` — so call it from a blocking
+    /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn terminate_guest_process_groups_best_effort(keys: &[String]) -> bool {
         if !cfg!(target_os = "macos") || keys.is_empty() {
@@ -1174,7 +1245,7 @@ impl<'a> ApptainerCommand<'a> {
     /// async output capture via `tokio::process::Command`) or add additional
     /// process-level configuration before spawning.
     ///
-    /// The returned command has **no stdio overrides** — stdout, stderr, and
+    /// The returned command has **no stdio overrides**: stdout, stderr, and
     /// stdin all default to `Inherit`.
     pub fn into_std_command(self) -> Result<Command> {
         self.assemble_command()

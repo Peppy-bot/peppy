@@ -10,7 +10,7 @@
 //!   own `start_router`), the first poll resolves the upstream and federates the
 //!   local router to it. This task signals a readiness gate to `serve` once that
 //!   first poll completes, so `serve` only reports ready *after* federation is in
-//!   place — bounded by `connect_timeout` so a slow/unreachable backend can't
+//!   place, bounded by `connect_timeout` so a slow/unreachable backend can't
 //!   stall startup past it (the daemon then proceeds standalone and keeps
 //!   retrying in the background).
 //! * **Immediate (re)federation on login/logout.** `peppy auth login`/`logout`
@@ -28,8 +28,8 @@
 //!   service over the federated link and tears the cloud router down when the
 //!   daemon stops answering. The config pull on startup/login tells the backend
 //!   this daemon's `core_node` name so it knows which `/health` service to probe.
-//! * **Live (re)federation.** When the resolved upstream changes — the user logs
-//!   in, logs out, or the endpoint moves — the local router's zenohd config is
+//! * **Live (re)federation.** When the resolved upstream changes (the user logs
+//!   in, logs out, or the endpoint moves) the local router's zenohd config is
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
@@ -48,7 +48,7 @@ use tracing::{info, warn};
 /// handshake to validate. Deliberately small and decoupled from `connect_timeout`
 /// (the resolve bound): a healthy handshake is sub-second, so a tight bound keeps
 /// the whole verifying poll (resolve + zenohd bounce + probe) inside the daemon's
-/// ack budget — `connect_timeout` + [`super::federation_control`]'s
+/// ack budget: `connect_timeout` + [`super::federation_control`]'s
 /// `APPLY_ACK_SLACK`, which is sized to cover this probe. An unreachable /
 /// firewalled router fails the probe within this bound and surfaces promptly as
 /// [`FederationOutcome::Unreachable`] rather than as a daemon-side ack timeout.
@@ -84,8 +84,8 @@ fn real_prober() -> Prober {
 type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 
 /// Applies a desired upstream to the local router (re-render + bounce). A boxed
-/// async closure so tests can inject a deterministic federation result —
-/// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned) — in place of the
+/// async closure so tests can inject a deterministic federation result:
+/// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned), in place of the
 /// real [`refederate_and_restart`], whose mock backend can only ever report
 /// `Ok(false)` and so cannot exercise the applied/verify path.
 type Federator = Arc<dyn Fn(Option<(String, pmi::TlsConfig)>) -> FederateFuture + Send + Sync>;
@@ -113,7 +113,7 @@ pub(crate) enum FederationOutcome {
     /// The resolve or apply failed; the periodic loop will keep retrying.
     Failed(String),
     /// The config was applied (the local router was federated), but the TLS link
-    /// to the per-user cloud router could not be established/validated — so
+    /// to the per-user cloud router could not be established/validated, so
     /// federation with platform-backend is NOT actually in effect (e.g. an
     /// UnknownCA handshake loop). Only a verifying poke produces this.
     Unreachable(String),
@@ -305,7 +305,7 @@ async fn manage_federation(
 ) {
     let mut ready_tx = Some(ready_tx);
 
-    // Phase 1 — wait for the router, bounded by `connect_timeout`. Don't touch the
+    // Phase 1: wait for the router, bounded by `connect_timeout`. Don't touch the
     // router until it is up, or the initial federation could race MessagingRouter's
     // `start_router`/`start_session`. `wait_for` checks the current value first,
     // then awaits changes. Drop the borrowed `Ref` it returns immediately (map to
@@ -333,7 +333,7 @@ async fn manage_federation(
         }
     }
 
-    // Phase 2 — initial federation. The router was started standalone, so nothing
+    // Phase 2: initial federation. The router was started standalone, so nothing
     // is federated yet. The resolve inside is itself bounded by `connect_timeout`,
     // so this completes (and unblocks startup) within the bound plus a fast local
     // bounce, even if the user is logged in but the backend is unreachable. The
@@ -358,7 +358,7 @@ async fn manage_federation(
     // this generation started under (e.g. the daemon started logged-in but with a
     // cleared/stale router cache, so `startup_namespace` was `local` before the
     // pull discovered the real org), the live session can't be re-namespaced.
-    // Request a generation restart now — otherwise the daemon would run
+    // Request a generation restart now; otherwise the daemon would run
     // un-federated under the wrong namespace until the next login/logout poke. The
     // steady-state poke path leaves the actual restart to the control handler
     // (which flushes its ack first); the startup poll has no ack to flush, so it
@@ -373,7 +373,7 @@ async fn manage_federation(
         return;
     }
 
-    // Phase 3 — steady state: react to immediate login/logout pokes from `auth
+    // Phase 3, steady state: react to immediate login/logout pokes from `auth
     // login`/`logout`. There is no periodic keepalive: the local router keeps its
     // upstream link alive on its own (`reconnect: true`), and the backend now
     // probes this daemon's `/health` service for liveness, so re-resolving on a
@@ -472,7 +472,7 @@ async fn poll_and_apply(
     let outcome = if desired == applied.endpoint {
         // Steady state (including the cache-gated re-pull): the upstream is
         // unchanged, so there is nothing to re-render or restart. Replay the last
-        // outcome — crucially preserving `Pinned`, so an identical repeat of an
+        // outcome, crucially preserving `Pinned`, so an identical repeat of an
         // operator-pinned target is not misreported as a positive `Applied`.
         if applied.pinned {
             FederationOutcome::Pinned
@@ -548,7 +548,7 @@ async fn poll_and_apply(
                         upstream = %ep, reason = %reason,
                         "router federation: the local router was (re)federated, but the TLS \
                          link to the per-user cloud router on platform-backend could not be \
-                         established — federation with platform-backend is NOT in effect \
+                         established; federation with platform-backend is NOT in effect \
                          (check the router certificate / dev CA); will keep retrying"
                     );
                     return FederationOutcome::Unreachable(reason);
@@ -617,7 +617,7 @@ mod tests {
 
     /// A federator simulating a real (non-pinned) rewrite: it reports the config
     /// was rewritten (`Ok(true)`), so the poll treats the upstream as actually
-    /// applied — the path the verify/probe logic exercises. (The mock messenger's
+    /// applied, the path the verify/probe logic exercises. (The mock messenger's
     /// real `refederate` can only ever report `Ok(false)`, i.e. pinned, so the
     /// applied path is reachable in tests only via an injected federator.)
     fn applying_federator() -> Federator {
@@ -693,7 +693,7 @@ mod tests {
 
     /// A namespace resolver that returns `first` on its first call and `rest`
     /// after, so the *startup* poll sees the unchanged namespace (no startup
-    /// restart) and a later *poke* sees the change — exercising the steady-state
+    /// restart) and a later *poke* sees the change, exercising the steady-state
     /// `Restart` ack distinctly from the startup restart path.
     fn switching_ns_resolver(first: &str, rest: &str) -> NamespaceResolver {
         let calls = AtomicUsize::new(0);
@@ -709,7 +709,7 @@ mod tests {
     }
 
     /// A login/logout poke runs a federation poll *immediately*, verifies the
-    /// link, and acks the applied outcome — the whole point of the control
+    /// link, and acks the applied outcome, the whole point of the control
     /// channel. The initial (non-poke) poll does NOT probe; only the verifying
     /// poke does.
     #[tokio::test]
@@ -833,7 +833,7 @@ mod tests {
     }
 
     /// A login poke whose TLS link does not validate (e.g. UnknownCA loop) is
-    /// reported as `Unreachable(reason)`, not a false `Applied` — even though the
+    /// reported as `Unreachable(reason)`, not a false `Applied`, even though the
     /// config was applied.
     #[tokio::test]
     async fn poke_with_failing_probe_reports_unreachable() {
@@ -889,7 +889,7 @@ mod tests {
 
     /// An operator-pinned config (`refederate` reports no rewrite) must keep
     /// reporting `Pinned` on an *identical* repeat, not flip to `Applied`. The
-    /// cached state has to remember the pinned bit alongside the endpoint —
+    /// cached state has to remember the pinned bit alongside the endpoint;
     /// otherwise the fast path matches on endpoint alone and misreports `Applied`
     /// (and would then needlessly probe). Regression guard for that cache.
     #[tokio::test]
@@ -949,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn startup_gate_fires_within_timeout_when_resolve_is_slow() {
         // Resolver sleeps past the (short) connect timeout, so the bounded resolve
-        // elapses and the first poll completes as a failure — the gate must still
+        // elapses and the first poll completes as a failure; the gate must still
         // fire.
         let resolver: Resolver = Arc::new(|| {
             std::thread::sleep(Duration::from_millis(400));
@@ -1023,7 +1023,7 @@ mod tests {
 
     /// A poke after the credentials change the daemon's namespace acks `Restart`
     /// (the control handler then triggers a generation restart). The loop must NOT
-    /// federate or probe on a namespace change — a restart is fail-closed. The
+    /// federate or probe on a namespace change; a restart is fail-closed. The
     /// change appears only at the poke (the startup poll still sees `local`), so the
     /// startup-restart path stays dormant and the steady-state ack is exercised.
     #[tokio::test]
@@ -1089,7 +1089,7 @@ mod tests {
     /// The *startup* federation poll, on resolving a namespace that differs from
     /// the one this generation started under (e.g. logged in but the router cache
     /// was empty at build time so the startup namespace was `local`), must raise
-    /// the in-process restart signal itself — there is no poke to ack — rather than
+    /// the in-process restart signal itself (there is no poke to ack) rather than
     /// run on un-federated under the wrong namespace. It also must not federate or
     /// probe on that drift (a restart is fail-closed).
     #[tokio::test]

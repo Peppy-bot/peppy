@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use config::consts::PeppyDirs;
-use config::node::{Name, NodeConfig};
+use config::node::NodeConfig;
+use config::runtime::Name;
 use core_node_api::NodeStage as SerializedNodeStage;
+use daemon_config::consts::PeppyDirs;
 use node_stack::{
     BuildContext, EntityHandle, NodeEntity, NodeStack, OutputSinks, StartContext,
     build_io::{FeedbackLine, OutputReaderHooks},
@@ -175,7 +176,7 @@ impl Drop for RunningInstanceGuard {
 /// to flip it to `Running`. Returns a guard that cleans up the child on drop.
 ///
 /// The entity must be in `Ready` (typically produced by [`build_ready`]) and
-/// its `run_cmd` must be spawnable — [`build_ready`] sets this up for you.
+/// its `run_cmd` must be spawnable; [`build_ready`] sets this up for you.
 pub async fn spawn_running_instance(
     handle: EntityHandle,
     harness: &LifecycleHarness,

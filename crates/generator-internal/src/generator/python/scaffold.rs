@@ -60,7 +60,7 @@ fn target_platform_suffix(is_container: bool) -> String {
 
 pub fn add_peppylib_dependencies(
     to_path: &Path,
-    peppy_dirs: &config::consts::PeppyDirs,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
     is_container: bool,
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)

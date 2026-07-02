@@ -1,4 +1,8 @@
 use crate::helpers::{
+    CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
+    EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE,
+};
+use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
     init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
     try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
@@ -7,9 +11,8 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    launcher::Name,
     node::{ConsumedService, ExposedService, MessageFormat},
-    runtime::RuntimeConfig,
+    runtime::{Name, RuntimeConfig},
 };
 use generator::LanguageGenerator;
 use std::path::Path;
@@ -24,21 +27,6 @@ const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
 // --- Services exposes and its corresponding consumer
-const EXPOSED_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "enable_camera",
-  request_message_format: {
-    enable: "bool"
-  },
-  response_message_format: {
-    enabled: "bool",
-    error_msg: {
-      $type: "string",
-      $optional: true
-    },
-  }
-}
-"#;
 
 const CONSUMED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -53,34 +41,9 @@ const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
-{
-    enabled: "bool",
-    error_msg: {
-      $type: "string",
-      $optional: true
-    },
-}
-"#;
-
 const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 
 // --- Service without request body
-const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
-{
-  name: "get_system_status",
-  response_message_format: {
-    healthy: "bool"
-  }
-}
-"#;
-
-const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
-{
-  link_id: "uvc_camera",
-  name: "get_system_status",
-}
-"#;
 
 const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
@@ -1043,7 +1006,7 @@ fn main() -> Result<()> {
 
     // Under discover-then-pin, the consumer probes both exposers and pins
     // to whichever responds first; the real request goes only to the
-    // winner. The loser must NOT run its handler — that's the load-bearing
+    // winner. The loser must NOT run its handler; that's the load-bearing
     // safety guarantee of the wildcard flow. Either exposer can win the
     // probe race; identify the winner by the response marker the consumer
     // printed (exposer1 emits `error=handled`, exposer2 emits
@@ -1093,7 +1056,7 @@ fn main() -> Result<()> {
     );
     assert!(
         !loser_stdout.contains(&expected_request_log),
-        "{} must NOT process the enable_camera request — discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
+        "{} must NOT process the enable_camera request: discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
         loser_label,
         loser_stdout,
         loser_stderr

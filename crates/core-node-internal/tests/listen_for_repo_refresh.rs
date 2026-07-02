@@ -445,7 +445,7 @@ async fn refresh_cache_includes_duplicates() {
         "unique node count should be 2 (shared_node + unique_node)"
     );
 
-    // Feedback is emitted once per unique (name, tag) — the second
+    // Feedback is emitted once per unique (name, tag); the second
     // repo's shared_node is silently cached but not re-announced.
     let feedback_names: Vec<&str> = result
         .feedbacks

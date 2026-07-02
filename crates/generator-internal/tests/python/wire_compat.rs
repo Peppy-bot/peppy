@@ -34,10 +34,10 @@ use crate::helpers::{
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
-use config::launcher::Name;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, NodeConfigParser, PeppygenLanguage,
 };
+use config::runtime::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use generator::{
     ConsumedActionMessage, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,

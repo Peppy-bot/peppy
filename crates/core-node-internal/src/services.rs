@@ -17,10 +17,11 @@ pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances
 use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
-    consts::PeppyDirs,
-    node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
+    node::{Execution, Manifest, NodeConfig, PeppygenLanguage, TypeToken},
+    runtime::Name,
     schema::PeppySchema,
 };
+use daemon_config::consts::PeppyDirs;
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
@@ -117,7 +118,7 @@ pub struct CoreNodeConfig {
     pub peppy_dirs: PeppyDirs,
     /// Daemon-global messaging mode + peer buffer sizes, injected into every
     /// spawned node's runtime config (see `node::run`).
-    pub peppy_config: config::peppy_config::PeppyConfig,
+    pub peppy_config: daemon_config::peppy_config::PeppyConfig,
     /// The daemon's organization namespace for this generation (`"local"` when
     /// logged out, else the org id). Stamped onto every spawned node's
     /// `discovery.organization_id` so the node opens its session under the same
@@ -146,7 +147,7 @@ pub struct CoreNode {
     daemon_use_sim_time: bool,
     /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
-    peppy_config: config::peppy_config::PeppyConfig,
+    peppy_config: daemon_config::peppy_config::PeppyConfig,
     /// The daemon's organization namespace for this generation, stamped onto
     /// every spawned node so it opens its session under the daemon's namespace.
     organization_namespace: String,
@@ -160,8 +161,8 @@ pub struct CoreNode {
 
 /// Pre-flight checks that must pass before the daemon starts spawning nodes.
 ///
-/// Returns an `Err` (rather than calling `std::process::exit`) so the caller —
-/// the binary — decides how to report a failure. Keeping the library free of
+/// Returns an `Err` (rather than calling `std::process::exit`) so the caller
+/// (the binary) decides how to report a failure. Keeping the library free of
 /// process-exit means a `CoreNode` can be constructed in tests and embedders
 /// without risking a host-process kill.
 pub fn check_runtime_prerequisites() -> Result<()> {
@@ -323,7 +324,7 @@ impl CoreNode {
     ///
     /// Side effects performed up front, before listeners are registered:
     /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
-    ///   clear stale state from a previous run — see [`clear_instances_dir`].
+    ///   clear stale state from a previous run; see [`clear_instances_dir`].
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
@@ -363,7 +364,7 @@ impl CoreNode {
         let datastore = Arc::new(datastore::Datastore::new());
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all of them. They're
-        // independent — no listener depends on another being registered first.
+        // independent: no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
             ping::listen_for_ping(
                 &self.messenger,

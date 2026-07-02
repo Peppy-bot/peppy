@@ -45,6 +45,7 @@ build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 # features are still added at the use site with `{ workspace = true, features = [...] }`.
 containers = { path = "crates/containers-internal" }
 core-node = { path = "crates/core-node-internal" }
+daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
 generator = { path = "crates/generator-internal" }
 latency-report = { path = "crates/latency-report" }
@@ -52,7 +53,7 @@ node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
 # NOTE: there is intentionally no [patch] here. These git deps are the source of truth
-# for everyone — standalone clones and CI build the pinned revision with no edits, and
+# for everyone: standalone clones and CI build the pinned revision with no edits, and
 # Cargo.lock stays git-resolved. For LOCAL co-development of public-peppy-libs, the
 # superproject can opt in to redirecting them to the in-tree checkout via
 # `<superproject-root>/scripts/local-libs.sh on` (a gitignored [patch] in the

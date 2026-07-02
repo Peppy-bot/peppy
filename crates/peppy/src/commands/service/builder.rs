@@ -5,7 +5,7 @@ use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
-use config::peppy_config::PeppyConfig;
+use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -81,7 +81,7 @@ impl ServeCommandBuilder {
             peppy_config: PeppyConfig::default(),
             federation_api_url: None,
             federation_connect_timeout: Duration::from_secs(
-                config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
+                daemon_config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
             ),
             // Default for the mock/other engines that never resolve a namespace;
             // the zenoh path overwrites this in `with_messaging_router`.
@@ -120,7 +120,7 @@ impl ServeCommandBuilder {
                 // The local router always starts STANDALONE here. Federating it to
                 // the caller's per-user cloud router (so messages cross both routers
                 // as one network; only the inter-router hop is TLS, local nodes stay
-                // plaintext loopback) needs a backend round-trip — done *off* this
+                // plaintext loopback) needs a backend round-trip, done *off* this
                 // synchronous startup path by the `RouterFederation` task (registered
                 // in `build`), which applies the initial federation as soon as the
                 // router is up and re-applies it live on login/logout. Resolving it
@@ -264,11 +264,11 @@ impl ServeCommandBuilder {
             }
         }
 
-        // Per-user-router federation manager (zenoh engine only — other engines
+        // Per-user-router federation manager (zenoh engine only; other engines
         // never set `federation_api_url`). Applies the initial federation once the
         // router is up (gating `serve` reporting ready, bounded by the timeout),
         // keeps the cloud router alive, and (de)federates the local router live on
-        // login/logout — immediately when poked over the control socket, else on
+        // login/logout: immediately when poked over the control socket, else on
         // the next poll. It waits on `messaging_ready` before touching the router,
         // so it can't race MessagingRouter's initial `start_router`.
         // In-process restart channel. `None` for the mock engine (no federation
@@ -309,7 +309,7 @@ impl ServeCommandBuilder {
             // Control socket the CLI pokes. Derived from the same `PeppyDirs` the
             // CLI resolves, so the two agree without a discovery handshake.
             let socket_path = crate::daemon_control::federation_control_socket_path(
-                &config::consts::PeppyDirs::default(),
+                &daemon_config::consts::PeppyDirs::default(),
             );
             self.composite_command =
                 self.composite_command
@@ -336,7 +336,7 @@ impl ServeCommandBuilder {
 
 /// Extracts the messaging port from the environment variable, falling back to the default port.
 pub(super) fn extract_messaging_port() -> u16 {
-    std::env::var(config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
+    std::env::var(daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(config::consts::DEFAULT_MESSAGING_PORT)

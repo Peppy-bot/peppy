@@ -422,12 +422,12 @@ mod peppylib_build {
         });
 
         // Strip debug info from the embedded native extension. This `.so` is a
-        // pure runtime artifact — it is baked into the generator binary and
+        // pure runtime artifact; it is baked into the generator binary and
         // vendored into every generated node's `.peppy/libs/peppylib`, where uv
         // then caches one wheel per node build. Under the `dev` profile the
         // unstripped debug `.so` is ~457 MB (vs ~104 MB after `-S`), which
         // dominated both the generator binary and the uv cache. `-S` drops the
-        // DWARF debuginfo (the bulk) while keeping the symbol table — so native
+        // DWARF debuginfo (the bulk) while keeping the symbol table, so native
         // backtraces still resolve and the exported `PyInit__peppylib` symbol is
         // untouched. Best-effort: a missing `strip` just leaves the larger `.so`.
         // Release builds are already stripped via `[profile.release] strip` in
@@ -440,7 +440,7 @@ mod peppylib_build {
 
     /// Cross-compiles a Linux `.so` via maturin + zig for the given target.
     ///
-    /// Always uses release mode — the cross-compiled `.so` is a container deployment
+    /// Always uses release mode: the cross-compiled `.so` is a container deployment
     /// artifact that never needs debug symbols, and debug builds are ~4x larger.
     #[cfg(target_os = "macos")]
     fn cross_compile_linux_so(
@@ -966,7 +966,7 @@ fn embed_ruff_binary() {
         r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#.to_string()
     };
 
-    // Use write_if_changed to avoid bumping mtime — this file is
+    // Use write_if_changed to avoid bumping mtime: this file is
     // referenced via include!() so any mtime change triggers recompilation.
     build_helpers::write_if_changed(&generated, content.as_bytes());
 }

@@ -11,9 +11,10 @@ pub mod types;
 use crate::error::{Error, Result};
 use config::node::{EmittedTopic, ExposedAction, ExposedService};
 use config::{
-    consts::{NODE_CONFIG_FILE, PeppyDirs},
+    consts::NODE_CONFIG_FILE,
     node::{NodeConfigParser, PeppygenLanguage},
 };
+use daemon_config::consts::PeppyDirs;
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, io::ErrorKind, path::Path};
@@ -44,13 +45,13 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
 ///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
 /// - deploys five vendored crates (`peppylib`, `peppy-messaging-interface`, `config`, `core-node-api`,
-///   `build-helpers`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
+///   `build-helpers`) into `node_dir/.peppy/libs/` (a sibling of `peppygen`), either as
 ///   symlinks into a host-wide shared cache or as physical copies, per `deploy_mode`;
 /// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
 ///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not
 ///   pruned;
 /// - writes `node_dir/.peppy/git.hash` and the config fingerprint
-///   `…/peppygen/peppy.json5.sha256` — but **only after** generation succeeds, so a failed run
+///   `…/peppygen/peppy.json5.sha256`, but **only after** generation succeeds, so a failed run
 ///   leaves neither behind.
 ///
 /// # Errors
@@ -73,7 +74,7 @@ pub fn generate_peppygen_lib(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| node_dir.join(NODE_CONFIG_FILE));
 
-    let peppy_dir = node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_dir = node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir)?;
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_config_path.display().to_string()));
@@ -281,7 +282,7 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         set_path_dependency(
             dependencies,
             "peppylib",
-            config::consts::PEPPYLIB_OUTPUT_PATH,
+            daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
         );
     }
 
@@ -354,7 +355,7 @@ mod tests {
             .and_then(|p| p.get("path"))
             .and_then(|p| p.as_str())
             .expect("should have peppylib dependency with path");
-        assert_eq!(peppylib_path, config::consts::PEPPYLIB_OUTPUT_PATH);
+        assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
     }
 
     #[test]
@@ -407,7 +408,7 @@ mod tests {
             .and_then(|p| p.get("path"))
             .and_then(|p| p.as_str())
             .expect("should have peppylib dependency with path");
-        assert_eq!(peppylib_path, config::consts::PEPPYLIB_OUTPUT_PATH);
+        assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
     }
 
     #[test]
@@ -479,7 +480,7 @@ mod tests {
             .expect("should have peppylib dependency with path");
         assert_eq!(
             peppylib_path,
-            config::consts::PEPPYLIB_OUTPUT_PATH,
+            daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
             "stale peppylib path should be overwritten"
         );
     }
@@ -507,7 +508,7 @@ mod tests {
         let custom_path = temp_dir.path().join("custom_peppy.json5");
         fs::write(&custom_path, custom_config).unwrap();
 
-        let peppy_dirs = config::consts::PeppyDirs::default();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
         generate_peppygen_lib(
             config::node::PeppygenLanguage::Rust,
             &node_dir,
@@ -541,7 +542,7 @@ mod tests {
         );
 
         let git_hash_path = node_dir
-            .join(config::consts::PEPPY_OUTPUT_DIR)
+            .join(daemon_config::consts::PEPPY_OUTPUT_DIR)
             .join("git.hash");
         let written_hash = fs::read_to_string(&git_hash_path)
             .expect("git.hash file should exist after successful generation");
@@ -557,8 +558,8 @@ mod tests {
         let node_dir = temp_dir.path().join("node");
         fs::create_dir_all(&node_dir).unwrap();
 
-        // Do NOT write any peppy.json5 — generation should fail with NodeNotFound
-        let peppy_dirs = config::consts::PeppyDirs::default();
+        // Do NOT write any peppy.json5; generation should fail with NodeNotFound
+        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
         let result = generate_peppygen_lib(
             config::node::PeppygenLanguage::Rust,
             &node_dir,
@@ -583,7 +584,7 @@ mod tests {
         );
 
         let git_hash_path = node_dir
-            .join(config::consts::PEPPY_OUTPUT_DIR)
+            .join(daemon_config::consts::PEPPY_OUTPUT_DIR)
             .join("git.hash");
         assert!(
             !git_hash_path.exists(),

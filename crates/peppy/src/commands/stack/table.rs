@@ -1,7 +1,7 @@
 //! Box-drawing table primitives shared by the `stack` subcommands so
 //! `stack list` and `stack benchmark` render with the same borders, alignment,
 //! and ANSI handling. Cells may carry embedded newlines: a cell that spans
-//! several lines makes the whole row that tall, padding the shorter cells —
+//! several lines makes the whole row that tall, padding the shorter cells;
 //! used by `stack benchmark` to wrap its wide `edge` cell instead of letting
 //! the table overflow a narrow terminal.
 
@@ -11,14 +11,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Terminal display width of a cell. Column widths, box-drawing borders, and
 /// cell padding must all measure the same way or the table skews on non-ASCII
-/// content — a wide CJK glyph or a Unicode path counts as more bytes than
+/// content: a wide CJK glyph or a Unicode path counts as more bytes than
 /// display columns, and a combining mark as fewer. Routing every measurement
 /// through this keeps the three in agreement.
 ///
 /// ANSI SGR escapes (the color codes `paint` injects) occupy zero display
 /// columns, so they are skipped here; otherwise a colored cell would measure
 /// wider than its plain text and skew the box against the borders. A cell
-/// argument must be a single line — callers split on `\n` first.
+/// argument must be a single line; callers split on `\n` first.
 pub(super) fn col_width(s: &str) -> usize {
     if !s.as_bytes().contains(&0x1b) {
         return UnicodeWidthStr::width(s);
@@ -56,7 +56,7 @@ pub(super) fn skip_csi(chars: &mut std::str::Chars<'_>) {
 /// Splits on spaces and measures with [`col_width`], so a colored token (whose
 /// ANSI escapes are zero-width and contain no space) wraps as one unit and is
 /// never split mid-escape. A single token wider than `width` overflows its line
-/// rather than being broken — fine for the short tokens this wraps.
+/// rather than being broken; fine for the short tokens this wraps.
 pub(super) fn wrap_ansi(s: &str, width: usize) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();

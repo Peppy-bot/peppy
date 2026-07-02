@@ -95,7 +95,7 @@ fn handle_clock_request(
     source: &dyn ClockSource,
     context: ServiceRequestContext,
 ) -> PeppyResult<Payload> {
-    // Stamp t1 first — every line after this point inflates server processing
+    // Stamp t1 first: every line after this point inflates server processing
     // time and corrupts the offset estimate the client computes.
     let server_recv_time = source
         .now_ns()
@@ -125,7 +125,7 @@ fn handle_clock_request_inner(
         request.client_send_time,
     );
 
-    // Stamp t2 last — the response encode + send happens after this point and
+    // Stamp t2 last: the response encode + send happens after this point and
     // is part of the round-trip delay the client measures, not server time.
     let server_send_time = source
         .now_ns()
@@ -141,7 +141,7 @@ fn handle_clock_request_inner(
 
 /// Spawns a task that emits a `ClockTick` on the `clock` topic at every
 /// `interval`. `SensorData` QoS so a slow subscriber gets newer ticks dropped
-/// rather than back-pressuring the publisher — stale clock values are useless.
+/// rather than back-pressuring the publisher; stale clock values are useless.
 ///
 /// Pre-binds a [`TopicPublisher`] outside the loop: the wire key is formatted
 /// once at startup, and per-tick `publish` skips the central messenger mutex.
@@ -205,7 +205,7 @@ async fn run_clock_publisher(
 ) -> Result<()> {
     let mut ticker = tokio::time::interval(interval);
     // Skip catch-up bursts after a backlog (e.g. test pause / GC stall).
-    // A clock-tick ten ticks late is uninteresting — we want fresh time.
+    // A clock-tick ten ticks late is uninteresting; we want fresh time.
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -239,12 +239,12 @@ async fn run_clock_publisher(
 
 /// Spawns a task that emits a liveness beat on the `daemon_heartbeat` topic at
 /// every `interval`, in BOTH wall and sim mode (liveness must not depend on the
-/// clock topology — in sim mode the daemon does not publish the clock at all).
+/// clock topology; in sim mode the daemon does not publish the clock at all).
 ///
 /// Each spawned node runs a watchdog subscribed to this topic; if the beats go
 /// silent past the configured grace period the node shuts itself down, so an
 /// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans. The
-/// payload is a constant `ClockTick(0)` reused purely as a cheap carrier — the
+/// payload is a constant `ClockTick(0)` reused purely as a cheap carrier; the
 /// node only cares that a message arrived, not its value.
 ///
 /// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
@@ -275,8 +275,8 @@ async fn run_heartbeat_publisher(
     interval: Duration,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // The value is never read by the node — only the message's arrival matters
-    // — so encode the constant payload once, outside the loop.
+    // The value is never read by the node (only the message's arrival matters)
+    // so encode the constant payload once, outside the loop.
     let payload = ClockTick::new(0).encode()?;
     let mut ticker = tokio::time::interval(interval);
     // A late beat is uninteresting; skip catch-up bursts after a stall.
@@ -303,7 +303,7 @@ async fn run_heartbeat_publisher(
 /// [`SimClockSource`].
 ///
 /// `cache` is shared with the `SimClockSource` instance handed to
-/// [`listen_for_clock`]. The two halves are decoupled — this task can fall
+/// [`listen_for_clock`]. The two halves are decoupled: this task can fall
 /// behind without blocking the service handler, which simply observes a
 /// stale (or missing) value.
 pub async fn subscribe_external_clock(
@@ -341,7 +341,7 @@ pub async fn subscribe_external_clock(
             };
             match ClockTick::decode(message.payload().as_ref()) {
                 Ok(tick) => {
-                    // `0` is reserved as "not ready" — a simulator publishing
+                    // `0` is reserved as "not ready"; a simulator publishing
                     // a literal zero would be a bug, and clamping it to 1 is a
                     // safer surprise than silently masking the not-ready state.
                     let stored = if tick.time == 0 { 1 } else { tick.time };

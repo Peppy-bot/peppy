@@ -318,7 +318,7 @@ fn consumed_service_via_interface_origin_targets_interface() {
     let response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
-    // `::interface` — no producer node; the interface (name, tag) carries identity.
+    // `::interface`: no producer node; the interface (name, tag) carries identity.
     let mut generator = RustGenerator::new();
     generator
         .add_consumed_service(
@@ -342,7 +342,7 @@ fn consumed_service_via_interface_origin_targets_interface() {
         "an interface-origin dep must address the producer as an interface, not a node",
     );
 
-    // `::conformed` — a real producer node exposing the service via `conforms_to`:
+    // `::conformed`, a real producer node exposing the service via `conforms_to`:
     // the wire target is still the interface, while NODE_NAME stays the producer.
     let mut generator = RustGenerator::new();
     generator
@@ -546,7 +546,7 @@ fn clippy_single_exposed_service_without_request_body() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -621,7 +621,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -704,7 +704,7 @@ fn clippy_consumed_service_empty_request_format() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -743,7 +743,7 @@ fn clippy_consumed_service_empty_response_format() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();

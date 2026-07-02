@@ -6,9 +6,9 @@ use common::{
     start_core_node_with_health_monitor, start_core_node_with_health_timeout,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger, write_peppy_json5,
 };
-use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use config::node::Name as NodeName;
+use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
+use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -1505,7 +1505,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 /// start log. The auto-create restores the dev-branch ergonomics for nodes
 /// that declare scratch / output directories (e.g. `/tmp/<node>`); the
 /// warning is the contract that prevents a typo'd file bind from silently
-/// becoming an empty directory. Both halves of the contract are asserted —
+/// becoming an empty directory. Both halves of the contract are asserted;
 /// if a future refactor drops the warning, this test must fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns() {
@@ -1737,7 +1737,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         add_response.error_message
     );
 
-    // Do NOT set up ready/health services — the process will exit immediately
+    // Do NOT set up ready/health services; the process will exit immediately
     // which means the ready signal will fail (process died).
 
     let runtime_config_json5 = common::default_runtime_config_json5(
@@ -1884,7 +1884,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
         error_msg
     );
 
-    // The log file should exist and contain the error — not be empty
+    // The log file should exist and contain the error, not be empty
     let log_path = &start_response.goal_response.log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
@@ -2029,7 +2029,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 
     // Leave the node process alive but stop answering health probes: dropping
     // the mock health listener makes the monitor's polls time out. This is the
-    // "alive but unresponsive" case (a hung or deadlocked node) — the node is
+    // "alive but unresponsive" case (a hung or deadlocked node): the node is
     // still running, so it must be flagged unhealthy while staying `Running`,
     // not removed or marked terminal. A process that actually exits is the
     // different, terminal case covered by
@@ -2102,7 +2102,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 }
 
 /// A committed node whose process exits on its own is moved to a terminal state
-/// by the exit watcher — `Failed` for an unclean (signal / non-zero) exit —
+/// by the exit watcher (`Failed` for an unclean (signal / non-zero) exit)
 /// instead of being left `Running` and merely flagged unhealthy. The instance
 /// stays tracked so it remains visible in `stack list`, but as a terminal state,
 /// and the `Running`-only lookup no longer returns it. Regression guard for the
@@ -2241,7 +2241,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     }
 
     // A terminal instance is not `Running`, so the Running-only lookup stops
-    // returning it — but it stays tracked, visible as `Failed`, rather than
+    // returning it, but it stays tracked, visible as `Failed`, rather than
     // lingering as "running / unhealthy" or vanishing entirely.
     assert!(
         started

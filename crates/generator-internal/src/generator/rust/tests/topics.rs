@@ -427,7 +427,7 @@ fn consumed_topic() {
         ],
     );
 
-    // Held-subscription API — `subscribe()` returns a `Subscription` and the
+    // Held-subscription API: `subscribe()` returns a `Subscription` and the
     // per-message `next()` yields the producer identity as the full
     // `peppylib::messaging::ProducerRef`; it never appears as a user-facing
     // core_node (or instance_id) parameter. A closed subscription is `Ok(None)`.
@@ -473,7 +473,7 @@ fn consumed_topic() {
         ],
     );
 
-    // Error variant — subscribing maps the failure to `TopicSubscribe`; a
+    // Error variant: subscribing maps the failure to `TopicSubscribe`; a
     // closed subscription is no longer an error (it surfaces as `Ok(None)`).
     assert_contains_all(&rendered, &["crate::Error::TopicSubscribe"]);
     assert!(
@@ -635,7 +635,7 @@ fn clippy_single_emitted_topic_empty_format() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();
@@ -691,7 +691,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     generator
         .build(
             &output_dir,
-            &config::consts::PeppyDirs::default(),
+            &daemon_config::consts::PeppyDirs::default(),
             Default::default(),
         )
         .unwrap();

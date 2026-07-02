@@ -16,7 +16,7 @@
 //! The socket path is *derived* from [`PeppyDirs`] (not stored anywhere): both
 //! the daemon ([`super::commands::service::federation_control`]) and this client
 //! resolve it the same way, so no discovery handshake is needed. A connect that
-//! is refused or finds no socket simply means "no daemon running" — the command
+//! is refused or finds no socket simply means "no daemon running"; the command
 //! succeeds and federation is applied the next time `serve` starts.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -24,7 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use config::consts::PeppyDirs;
+use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 
 /// File name of the daemon's federation control socket under the runtime dir.
@@ -63,7 +63,7 @@ pub(crate) enum ControlResponse {
     /// An operator-pinned `ZENOH_CONFIG` owns the router config; not auto-managed.
     Pinned,
     /// The config was applied (the local router was federated), but the TLS link
-    /// to the per-user cloud router could not be established/validated — so
+    /// to the per-user cloud router could not be established/validated, so
     /// federation with platform-backend is not actually in effect.
     Unreachable { message: String },
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
@@ -95,7 +95,7 @@ pub(crate) enum PokeOutcome {
     /// The daemon acked an error (e.g. the backend was unreachable in time).
     DaemonError(String),
     /// The daemon federated the local router but the TLS link to the per-user
-    /// cloud router does not validate (e.g. UnknownCA) — federation with
+    /// cloud router does not validate (e.g. UnknownCA); federation with
     /// platform-backend is not in effect.
     Unreachable(String),
     /// No running daemon to poke (no socket, or the connection was refused).

@@ -22,7 +22,6 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_interface_doc;
-use config::consts::PeppyDirs;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_conforms_to,
@@ -32,6 +31,7 @@ use core_node_api::encoding::{
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
     StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
+use daemon_config::consts::PeppyDirs;
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
@@ -61,11 +61,11 @@ const SAME_HOST_OFFSET_NS: u64 = 100_000;
 /// Number of NTP exchanges to take when measuring a producer's clock offset. The
 /// estimate is biased by half the round-trip *asymmetry*, so a single sample on a
 /// busy producer (or loaded host) is noisy; keeping the sample with the smallest
-/// round trip — the one least perturbed by scheduling/queue delay — is the
+/// round trip (the one least perturbed by scheduling/queue delay) is the
 /// standard NTP defense. See [`poll_producer_offset`].
 const OFFSET_SAMPLES: u32 = 5;
 /// A corrected one-way delta larger than this (or negative) is implausible and
-/// is suppressed — it means the clocks are not adequately synchronized.
+/// is suppressed: it means the clocks are not adequately synchronized.
 const IMPLAUSIBLE_DELIVERY_NS: i128 = 5_000_000_000;
 
 pub async fn listen_for_stack_benchmark(
@@ -214,7 +214,7 @@ struct Edge {
     /// edges can share producer + interface but differ only by this link.
     link_id: String,
     /// `Some((iface_name, iface_tag))` when this edge is resolved through
-    /// interface conformance — the producer emits/serves the artifact under the
+    /// interface conformance: the producer emits/serves the artifact under the
     /// interface-keyed wire path, so measurement must target the interface, not
     /// the node. `None` for a direct `depends_on.nodes` edge.
     origin: Option<(String, String)>,
@@ -399,7 +399,7 @@ fn resolve_conformed_topic_qos(
     peppy_dirs: &PeppyDirs,
     tx: &UnboundedSender<StackBenchmarkFeedback>,
 ) {
-    let mut cache: HashMap<(String, String), Option<config::interface::PeppyInterface>> =
+    let mut cache: HashMap<(String, String), Option<daemon_config::interface::PeppyInterface>> =
         HashMap::new();
     for edge in edges.iter_mut() {
         if edge.kind != InterfaceKind::Topic {
@@ -451,8 +451,10 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
         .iter()
         .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
         .collect();
-    let mut iface_cache: HashMap<(String, String), Option<config::interface::PeppyInterface>> =
-        HashMap::new();
+    let mut iface_cache: HashMap<
+        (String, String),
+        Option<daemon_config::interface::PeppyInterface>,
+    > = HashMap::new();
 
     for edge in edges.iter_mut() {
         let (req, resp) = match &edge.origin {
@@ -543,7 +545,7 @@ fn formats_from_node(
 /// Request/response size estimates for an interface declared in an interface
 /// contract. Same response-side convention for topics as [`formats_from_node`].
 fn formats_from_interface(
-    doc: Option<&config::interface::PeppyInterface>,
+    doc: Option<&daemon_config::interface::PeppyInterface>,
     kind: InterfaceKind,
     name: &str,
 ) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
@@ -603,7 +605,7 @@ fn human_bytes(n: usize) -> String {
 /// The probe row note describing the real request→response payload sizes it
 /// measured. A `≥` prefix marks a schema-derived lower bound (the format has a
 /// variable-length field). `honored_full` is whether the producer **ever**
-/// replied with the full requested response size — honoring sized replies is a
+/// replied with the full requested response size; honoring sized replies is a
 /// binary property of the producer's framework version, so a single full reply
 /// proves it. Only a producer that never honored (predates sized probes, always
 /// replies empty) is flagged; this is deliberately robust to a transient short
@@ -822,7 +824,7 @@ async fn measure_probe(
 
     // Carry a real-payload-sized request and ask the producer to reply with the
     // real response size, so the round-trip reflects real serialization +
-    // transport — still without running the handler.
+    // transport, still without running the handler.
     let request_size = edge.probe_request_size;
     let response_size = edge.probe_response_size.min(u32::MAX as usize) as u32;
 
@@ -832,7 +834,7 @@ async fn measure_probe(
     let mut consecutive_errors: u32 = 0;
     // Whether the producer EVER returned the full requested response size.
     // Honoring sized replies is a binary property of the producer's framework
-    // version, so one full reply proves it — keep it robust to a transient short
+    // version, so one full reply proves it; keep it robust to a transient short
     // reply (e.g. an empty first/discovery reply) rather than trusting any single
     // sample, which would make the note flicker depending on ordering.
     let mut honored_full = false;
@@ -952,7 +954,7 @@ fn classify_clock(
             ClockConfidence::CrossHostFlagged,
             Some(
                 "some deltas were negative or implausibly large (cross-host clock skew); \
-                 deploy PTP or NTP and rely on the probe numbers — see the guide"
+                 deploy PTP or NTP and rely on the probe numbers; see the guide"
                     .to_string(),
             ),
         );
@@ -964,7 +966,7 @@ fn classify_clock(
         ),
         Some((o, rtt)) => {
             // The offset estimate is only accurate to ±(asymmetry)/2, and the
-            // asymmetry is bounded by the round trip — so an offset within half
+            // asymmetry is bounded by the round trip, so an offset within half
             // the RTT is indistinguishable from zero and means same-host. The
             // absolute floor covers a near-instant round trip whose half is
             // itself below the noise we expect from co-located clocks. Without
@@ -1043,7 +1045,7 @@ async fn measure_topic_delivery(
                 // Every session enables timestamping for its own role (see
                 // `pmi::zenoh_config`), so a delivered sample is always stamped.
                 // A missing timestamp means a session disabled it out-of-band
-                // (e.g. a custom `ZENOH_SESSION_CONFIG`) — an invariant break,
+                // (e.g. a custom `ZENOH_SESSION_CONFIG`): an invariant break,
                 // surfaced loudly rather than silently dropped.
                 let src = msg.source_timestamp_nanos().expect(
                     "delivery sample missing its producer timestamp; sessions enable timestamping",
@@ -1061,7 +1063,7 @@ async fn measure_topic_delivery(
                     had_implausible = true;
                 }
             }
-            // Channel closed or no traffic within the window — stop observing.
+            // Channel closed or no traffic within the window; stop observing.
             Ok(None) | Err(_) => break,
         }
     }
@@ -1206,7 +1208,7 @@ mod tests {
 
     #[test]
     fn classify_clock_flags_offset_beyond_half_rtt_as_cross_host() {
-        // A 2ms offset on a 1ms round trip cannot come from asymmetry alone —
+        // A 2ms offset on a 1ms round trip cannot come from asymmetry alone;
         // it's a genuine clock difference, so correct it.
         let (confidence, _) = classify_clock(Some((2_000_000, 1_000_000)), false);
         assert_eq!(confidence, ClockConfidence::CrossHostCorrected);
@@ -1267,7 +1269,7 @@ mod tests {
 
     #[test]
     fn formats_from_interface_sizes_topic_message_on_response_side() {
-        let doc = config::interface::PeppyInterfaceParser::from_content(
+        let doc = daemon_config::interface::PeppyInterfaceParser::from_content(
             r#"{
                 peppy_schema: "interface/v1",
                 manifest: { name: "uvc_camera", tag: "v1" },
@@ -1341,13 +1343,13 @@ mod tests {
         // sized replies (returned the full size at least once), so no marker.
         assert_eq!(payload_note(&edge, true), "payload 64B → ≥4.0KB");
         // A producer that never honored the requested size predates sized
-        // probes — flag it.
+        // probes; flag it.
         assert!(payload_note(&edge, false).contains("rebuild producer"));
     }
 
     #[test]
     fn payload_note_no_marker_when_no_response_expected() {
-        // An empty response schema (size 0) can't be "unhonored" — never flag it,
+        // An empty response schema (size 0) can't be "unhonored"; never flag it,
         // even if the producer replied empty.
         let edge = probe_edge(64, 0, false, false);
         assert!(!payload_note(&edge, false).contains("rebuild producer"));

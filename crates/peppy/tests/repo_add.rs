@@ -152,7 +152,7 @@ fn repo_add_fs_path_with_ref_fails() {
 fn repo_add_top_assigns_id_below_current_min() {
     let (_rt, serve, ctx, _work_dir) = setup();
 
-    // First add — empty file, lands at the default floor (1000).
+    // First add: empty file, lands at the default floor (1000).
     RepoCommand {
         command: RepoCommands::Add {
             source: "https://example.com/first".to_string(),

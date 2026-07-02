@@ -1,6 +1,6 @@
 //! Persistent HTTP bundle cache shared across `node add` batches.
 //!
-//! Mirrors [`super::git`] but keyed by `(url, sha256)` — a given
+//! Mirrors [`super::git`] but keyed by `(url, sha256)`: a given
 //! URL + checksum can only ever refer to one archive, so once we've
 //! downloaded and extracted it we reuse the extraction indefinitely.
 //!
@@ -13,34 +13,18 @@
 use super::super::add::download_and_extract_http_source;
 use super::super::locate_node_root_dir;
 use super::key;
-use config::consts::PeppyDirs;
-use parking_lot::Mutex;
-use std::collections::HashMap;
+use super::keyed_lock::KeyedLocks;
+use daemon_config::consts::PeppyDirs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 use url::Url;
+
+static LOCKS: KeyedLocks = KeyedLocks::new();
 
 /// Returns the deterministic cache directory for `(url, sha256)`.
 pub fn extract_dir_for(peppy_dirs: &PeppyDirs, url: &Url, sha256: Option<&str>) -> PathBuf {
     let slug = key::slug(url.as_str(), "bundle");
     let hash = key::short_hash(url.as_str(), sha256);
     peppy_dirs.http_bundles_dir().join(format!("{slug}-{hash}"))
-}
-
-fn locks_map() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
-    static MAP: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn lock_for(key: &str) -> Arc<Mutex<()>> {
-    let mut map = locks_map().lock();
-    // GC entries not currently held by any caller. `strong_count == 1`
-    // means only the map still references the Arc, so no one can race on
-    // rebuilding the slot (the map lock serializes all access).
-    map.retain(|_, v| Arc::strong_count(v) > 1);
-    map.entry(key.to_owned())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
 }
 
 fn marker_path(dir: &Path) -> PathBuf {
@@ -63,7 +47,7 @@ fn recorded_sha(dir: &Path) -> Option<String> {
 /// the expected one are wiped.
 ///
 /// When no `sha256` is supplied we cannot verify integrity, so there is
-/// nothing safe to reuse — every call downloads fresh into a unique
+/// nothing safe to reuse; every call downloads fresh into a unique
 /// per-call directory (courtesy of `download_and_extract_http_source`,
 /// which stages into `http_downloads_dir()/node_add_<ts>_<rand>/`) and
 /// returns that directory directly. This isolates concurrent callers
@@ -83,7 +67,7 @@ pub async fn ensure_bundle(
     let lock_key = target.to_string_lossy().into_owned();
 
     let blocking_check = {
-        let lock = lock_for(&lock_key);
+        let lock = LOCKS.lock_for(&lock_key);
         let target_clone = target.clone();
         let sha256_clone = sha256.clone();
         tokio::task::spawn_blocking(move || {
@@ -111,7 +95,7 @@ pub async fn ensure_bundle(
     let extracted =
         download_and_extract_http_source(url, peppy_dirs.clone(), Some(sha256.clone())).await?;
 
-    let lock = lock_for(&lock_key);
+    let lock = LOCKS.lock_for(&lock_key);
     let target_final = target.clone();
     let sha_final = sha256.clone();
     tokio::task::spawn_blocking(move || {

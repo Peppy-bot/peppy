@@ -1,24 +1,32 @@
+mod feedback;
+mod orchestrate;
+mod phases;
+mod resolve;
+
+use self::feedback::{publish_stderr, publish_stdout};
+use self::orchestrate::{
+    add_node_directly, build_node_directly, fail_and_clear_stack, start_node_directly,
+    teardown_and_reset_stack, validate_and_order_dependencies,
+};
+use self::resolve::{parse_launcher_config, resolve_deployments, resolve_framework};
 use crate::Result;
 use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
-use crate::services::node::gate::{Admission, COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
+use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{
-    DaemonDefaults, FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
-    NodeRunActionContext, create_action_log_file, log_label_from_source,
-    resolve_mount_path_parameters, resolve_node_config, run_node_add, run_node_build_for_entity,
-    run_node_run, teardown_all_instances, write_error_to_log,
+    DaemonDefaults, create_action_log_file, resolve_mount_path_parameters,
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
-use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
+use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddGoal, NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal,
-    NodeRunLogEntry, NodeRunResult, NodeSource,
+    LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
+    NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource,
 };
+use daemon_config::consts::PeppyDirs;
+use daemon_config::launcher::Deployment;
 use futures::FutureExt;
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
@@ -26,36 +34,16 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-
-/// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
-/// Each call to `notify_one()` on `notify` resets the clock.
-async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
-    loop {
-        match tokio::time::timeout(idle_timeout, notify.notified()).await {
-            Ok(()) => continue,
-            Err(_) => return,
-        }
-    }
-}
-
-/// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
-enum PhaseOutcome<T> {
-    Completed(T),
-    IdleTimeout,
-    MaxTimeout,
-}
 
 /// Per-phase idle timeouts, sourced from the `LaunchGoal` payload. Each phase's clock resets
 /// only on genuine subprocess/git/http activity (see `spawn_feedback_forwarder`).
@@ -166,7 +154,7 @@ struct ProcessLaunchContext {
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
     timeouts: StackLaunchTimeouts,
-    /// Whole-launch deadline. `None` means the user did not opt into a max — only idle timeouts
+    /// Whole-launch deadline. `None` means the user did not opt into a max; only idle timeouts
     /// are enforced.
     launch_deadline: Option<Instant>,
     idle_timeouts: IdleTimeouts,
@@ -221,1009 +209,11 @@ struct PlannedDeployment {
     config: config::node::NodeConfig,
 }
 
-fn deployment_label(deployment: &Deployment) -> String {
-    match &deployment.source {
-        DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
-        DeploymentSource::Git(spec) => format!("git:{}@{}:{}", spec.repo, spec.ref_, spec.path),
-        DeploymentSource::Url(spec) => format!("url:{}", spec.url),
-        DeploymentSource::Repo(spec) => format!("repo:{}:{}", spec.name, spec.tag),
-    }
-}
-
-fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
-    gix_url::Url::try_from(repo)
-        .or_else(|_| gix_url::Url::try_from(std::path::Path::new(repo)))
-        .map_err(|e| format!("invalid git repo URL `{repo}`: {e}"))
-}
-
-fn node_source_from_deployment_source(
-    deployment: &Deployment,
-    nodes_directory: &std::path::Path,
-    peppy_dirs: &PeppyDirs,
-) -> std::result::Result<NodeSource, String> {
-    let source = match &deployment.source {
-        DeploymentSource::Local(spec) => {
-            let resolved = if spec.local.is_absolute() {
-                spec.local.clone()
-            } else {
-                nodes_directory.join(&spec.local)
-            };
-            NodeSource::Fs(resolved)
-        }
-        DeploymentSource::Git(spec) => {
-            let repo_url = git_url_from_repo(&spec.repo)?;
-            NodeSource::Git {
-                repo_url,
-                repo_path: spec.path.clone(),
-                repo_ref: Some(spec.ref_.clone()),
-            }
-        }
-        DeploymentSource::Url(spec) => {
-            let url = url::Url::parse(&spec.url)
-                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
-            NodeSource::Http {
-                url,
-                sha256: Some(spec.sha256.clone()),
-            }
-        }
-        DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
-            &spec.name, &spec.tag, peppy_dirs,
-        )?,
-    };
-
-    Ok(source)
-}
-
 /// Marker git_hash used for stack-launch operations.
 /// When this marker is used, the node_add service skips git hash verification
 /// and generates fresh peppygen files. This allows stack_launch to work with
 /// local filesystem sources without requiring `peppy node sync` beforehand.
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
-
-/// Collapse a per-instance launcher override and the daemon-wide default
-/// into a single resolved framework block. Centralizes the "per-instance
-/// value > daemon default > wall" precedence so the spawned node receives
-/// one concrete value and never has to re-implement the fallback.
-fn resolve_framework(
-    overrides: &config::launcher::FrameworkOverrides,
-    daemon_default_use_sim_time: bool,
-) -> config::runtime::ResolvedFramework {
-    config::runtime::ResolvedFramework {
-        use_sim_time: overrides
-            .use_sim_time
-            .unwrap_or(daemon_default_use_sim_time),
-    }
-}
-
-async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
-    {
-        let mut file = ctx.log_file.lock();
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(
-            file,
-            "[{}] [{}] {}",
-            timestamp, feedback.stream, feedback.line
-        );
-    }
-
-    if let Ok(payload) = feedback.encode() {
-        let _ = ctx.feedback_publisher.publish(payload).await;
-    }
-}
-
-async fn publish_stdout(
-    ctx: &ProcessLaunchContext,
-    line: impl Into<String>,
-    step: LaunchFeedbackStep,
-) {
-    publish_feedback(ctx, LaunchFeedback::stdout(line, step)).await;
-}
-
-async fn publish_stderr(
-    ctx: &ProcessLaunchContext,
-    line: impl Into<String>,
-    step: LaunchFeedbackStep,
-) {
-    publish_feedback(ctx, LaunchFeedback::stderr(line, step)).await;
-}
-
-/// Spawns a feedback forwarding task that reads `FeedbackLine` values from the
-/// channel and publishes them as `LaunchFeedback` to the launch feedback topic.
-///
-/// Each line received also pings `activity_notify` (if provided), which the per-phase idle
-/// watcher uses to reset its idle clock. The notify is the single seam where real subprocess /
-/// git2 / http-downloader output (which all flow through this mpsc) gets observed; launcher
-/// orchestration messages (`publish_stdout` / `publish_stderr`) bypass this channel and so do
-/// NOT reset the idle clock — which is the right behavior, since they're operator narration,
-/// not subprocess liveness.
-///
-/// Returns the sender end (to pass into the process context) and a join handle
-/// for the consumer task. Drop the sender to signal completion, then await the
-/// handle to drain remaining messages.
-fn spawn_feedback_forwarder(
-    feedback_publisher: &ActionFeedbackPublisher,
-    step: LaunchFeedbackStep,
-    log_file: &Arc<StdMutex<File>>,
-    activity_notify: Option<Arc<Notify>>,
-) -> (mpsc::UnboundedSender<FeedbackLine>, JoinHandle<()>) {
-    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let publisher = feedback_publisher.clone();
-    let log_file = Arc::clone(log_file);
-    let handle = tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
-            if let Some(notify) = &activity_notify {
-                notify.notify_one();
-            }
-
-            node_stack::build_io::write_feedback_log_line(&log_file, line.stream, &line.line);
-
-            let launch_feedback = match line.stream {
-                FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step),
-                FeedbackStream::Stderr => LaunchFeedback::stderr(&line.line, step),
-                // Warnings bypass the per-node scrolling step and surface as
-                // persistent LauncherStep stderr lines so the operator sees
-                // them even after the step buffer scrolls past.
-                FeedbackStream::Warning => {
-                    LaunchFeedback::stderr(&line.line, LaunchFeedbackStep::LauncherStep)
-                }
-            };
-            if let Ok(payload) = launch_feedback.encode() {
-                let _ = publisher.publish(payload).await;
-            }
-        }
-    });
-    (feedback_tx, handle)
-}
-
-/// Wraps a phase future with idle-timeout enforcement and an optional whole-launch deadline.
-///
-/// The idle watcher always runs (idle protection is always on); the deadline only wraps when
-/// `launch_deadline` is `Some`. Returns:
-/// - `Completed(T)` if the phase finished within both bounds
-/// - `IdleTimeout` if `idle_timeout` elapsed without subprocess activity
-/// - `MaxTimeout` if the launch deadline fired
-///
-/// Cancellation semantics differ per phase:
-/// - **add** relies on git2's progress callback returning the cancellation status when the
-///   future is dropped, and on the http downloader's drop-safe streaming reader.
-/// - **build** relies on `stream_child_output`'s `KillGuard` (in
-///   `node-stack-internal/src/build_io.rs`), which SIGKILLs the child process group on drop.
-/// - **run** cannot rely on drop alone: `prepare_and_spawn` returns a raw
-///   `tokio::process::Child` held on the phase future's stack with no `kill_on_drop`, so
-///   dropping it leaves the OS process and its `Starting` stack entry behind. Callers that
-///   need run-phase cancellation pass `cancel_and_drain = Some(token)`; on timeout the
-///   runner signals the token and awaits the phase future's cooperative cleanup (bounded by
-///   `COOPERATIVE_TEARDOWN_BUDGET`) instead of dropping it.
-async fn run_phase_with_timeouts<F, T>(
-    phase: F,
-    activity_notify: Arc<Notify>,
-    idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
-    cancel_and_drain: Option<CancellationToken>,
-) -> PhaseOutcome<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    match cancel_and_drain {
-        None => {
-            run_phase_drop_on_timeout(phase, activity_notify, idle_timeout, launch_deadline).await
-        }
-        Some(token) => {
-            run_phase_cancel_on_timeout(
-                phase,
-                activity_notify,
-                idle_timeout,
-                launch_deadline,
-                token,
-            )
-            .await
-        }
-    }
-}
-
-/// Timeout behavior for phases whose futures are cancellation-safe via `Drop`
-/// (currently: add, build).
-async fn run_phase_drop_on_timeout<F, T>(
-    phase: F,
-    activity_notify: Arc<Notify>,
-    idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
-) -> PhaseOutcome<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    let inner = async {
-        tokio::select! {
-            biased;
-            _ = watch_idle(activity_notify, idle_timeout) => None,
-            result = phase => Some(result),
-        }
-    };
-
-    match launch_deadline {
-        Some(deadline) => match tokio::time::timeout_at(deadline, inner).await {
-            Ok(Some(value)) => PhaseOutcome::Completed(value),
-            Ok(None) => PhaseOutcome::IdleTimeout,
-            Err(_) => PhaseOutcome::MaxTimeout,
-        },
-        None => match inner.await {
-            Some(value) => PhaseOutcome::Completed(value),
-            None => PhaseOutcome::IdleTimeout,
-        },
-    }
-}
-
-/// Timeout behavior for phases that own resources (e.g. a spawned child
-/// process) not reaped by `Drop`. On timeout, signals `cancel_token` and
-/// awaits the phase future for up to `COOPERATIVE_TEARDOWN_BUDGET` so it
-/// can run its own teardown (SIGKILL the child, unregister the `Starting`
-/// instance, remove temp files) before we return the timeout outcome.
-async fn run_phase_cancel_on_timeout<F, T>(
-    phase: F,
-    activity_notify: Arc<Notify>,
-    idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
-    cancel_token: CancellationToken,
-) -> PhaseOutcome<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::pin!(phase);
-
-    // `sleep_until(past-instant)` resolves immediately, so we model "no
-    // deadline" as a far-future sleep and let idle/phase race win.
-    let deadline_sleep = async {
-        match launch_deadline {
-            Some(deadline) => tokio::time::sleep_until(deadline).await,
-            None => std::future::pending::<()>().await,
-        }
-    };
-    tokio::pin!(deadline_sleep);
-
-    let timeout_kind = tokio::select! {
-        biased;
-        result = &mut phase => return PhaseOutcome::Completed(result),
-        _ = watch_idle(activity_notify, idle_timeout) => PhaseOutcome::IdleTimeout,
-        _ = &mut deadline_sleep => PhaseOutcome::MaxTimeout,
-    };
-
-    // Timeout fired. Ask the phase to tear itself down, then drive it to
-    // completion so its cleanup (kill child, remove `Starting` entry, delete
-    // instance dir) actually runs. If cleanup stalls past the budget we drop
-    // the future as a last resort — still strictly better than today, since
-    // the run phase would have been dropped immediately in that branch.
-    cancel_token.cancel();
-    let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
-
-    timeout_kind
-}
-
-/// Runs a phase future under idle + (optional) deadline bounds and, on timeout, writes the
-/// reason to `log_file` and builds a caller-specified failure result. `build_failure`
-/// receives the same string that was logged so phase-specific failure types (differing in
-/// whether they carry a `log_path`) can embed it verbatim.
-///
-/// `cancel_and_drain` controls what happens to the phase future on timeout — see
-/// [`run_phase_with_timeouts`] for the per-phase rationale.
-#[allow(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
-async fn run_phase<F, T>(
-    phase: F,
-    activity_notify: Arc<Notify>,
-    idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
-    log_file: &Arc<StdMutex<File>>,
-    step: LaunchFeedbackStep,
-    build_failure: impl FnOnce(String) -> T,
-    cancel_and_drain: Option<CancellationToken>,
-) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    match run_phase_with_timeouts(
-        phase,
-        activity_notify,
-        idle_timeout,
-        launch_deadline,
-        cancel_and_drain,
-    )
-    .await
-    {
-        PhaseOutcome::Completed(result) => result,
-        PhaseOutcome::IdleTimeout => {
-            let reason = format!(
-                "timeout: {} idle timeout exceeded ({}s without output)",
-                step.phase_label(),
-                idle_timeout.as_secs()
-            );
-            write_error_to_log(log_file, &reason);
-            build_failure(reason)
-        }
-        PhaseOutcome::MaxTimeout => {
-            let reason = "timeout: max launch timeout exceeded".to_string();
-            write_error_to_log(log_file, &reason);
-            build_failure(reason)
-        }
-    }
-}
-
-async fn add_node_directly(
-    ctx: &ProcessLaunchContext,
-    node_add_goal: NodeAddGoal,
-) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
-    // Create log file before source resolution so clone/download output is captured.
-    let log_label = log_label_from_source(&node_add_goal.source);
-    let log_dir = ctx.peppy_dirs.logs_dir_add();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}.log", log_label, timestamp);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(r) => r,
-        Err(e) => return (Err(e), None),
-    };
-
-    let activity_notify = Arc::new(Notify::new());
-    let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
-        &ctx.feedback_publisher,
-        LaunchFeedbackStep::AddingNode,
-        &ctx.log_file,
-        Some(Arc::clone(&activity_notify)),
-    );
-
-    let action_context = NodeAddActionContext {
-        node_stack: Arc::clone(&ctx.node_stack),
-        messenger: ctx.messenger.clone(),
-        bound_core_node: ctx.bound_core_node.clone(),
-        core_instance_id: ctx.core_instance_id.clone(),
-        peppy_dirs: ctx.peppy_dirs.clone(),
-    };
-
-    let log_file_for_timeout = log_file.clone();
-    let log_path_for_timeout = log_path.clone();
-
-    let result = run_phase(
-        run_node_add(
-            node_add_goal,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path,
-            timestamp,
-        ),
-        activity_notify,
-        ctx.idle_timeouts.add,
-        ctx.launch_deadline,
-        &log_file_for_timeout,
-        LaunchFeedbackStep::AddingNode,
-        |reason| NodeAddResult::failure(&log_path_for_timeout, reason),
-        None,
-    )
-    .await;
-
-    // Wait for feedback forwarder to drain.
-    let _ = forwarder_handle.await;
-
-    let final_log_path = Some(result.log_path.clone());
-    if result.success {
-        (Ok(result), final_log_path)
-    } else {
-        let err = result
-            .error_message
-            .clone()
-            .unwrap_or_else(|| "node_add failed".to_string());
-        (Err(err), final_log_path)
-    }
-}
-
-async fn build_node_directly(
-    ctx: &ProcessLaunchContext,
-    node_name: String,
-    node_tag: String,
-    env_vars: Vec<(String, String)>,
-) -> (std::result::Result<(), String>, Option<PathBuf>) {
-    let log_dir = ctx.peppy_dirs.logs_dir_build();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(pair) => pair,
-        Err(e) => return (Err(e.to_string()), None),
-    };
-
-    let final_log_path = log_path.clone();
-
-    let activity_notify = Arc::new(Notify::new());
-    let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
-        &ctx.feedback_publisher,
-        LaunchFeedbackStep::BuildingNode,
-        &ctx.log_file,
-        Some(Arc::clone(&activity_notify)),
-    );
-
-    let action_context = NodeBuildActionContext {
-        node_stack: Arc::clone(&ctx.node_stack),
-        peppy_dirs: ctx.peppy_dirs.clone(),
-    };
-
-    let log_file_for_timeout = log_file.clone();
-    let log_path_for_timeout = log_path.clone();
-
-    let result = run_phase(
-        run_node_build_for_entity(
-            node_name.clone(),
-            node_tag.clone(),
-            env_vars,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path,
-        ),
-        activity_notify,
-        ctx.idle_timeouts.build,
-        ctx.launch_deadline,
-        &log_file_for_timeout,
-        LaunchFeedbackStep::BuildingNode,
-        |reason| core_node_api::encoding::NodeBuildResult::failure(&log_path_for_timeout, reason),
-        None,
-    )
-    .await;
-
-    let _ = forwarder_handle.await;
-
-    if result.success {
-        (Ok(()), Some(final_log_path))
-    } else {
-        (
-            Err(result
-                .error_message
-                .unwrap_or_else(|| "node_build failed".to_string())),
-            Some(final_log_path),
-        )
-    }
-}
-
-async fn start_node_directly(
-    ctx: &ProcessLaunchContext,
-    node_run_goal: NodeRunGoal,
-    runtime_config: RuntimeConfig,
-    log_path: PathBuf,
-    log_file: Arc<StdMutex<File>>,
-) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
-    let activity_notify = Arc::new(Notify::new());
-    let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
-        &ctx.feedback_publisher,
-        LaunchFeedbackStep::RunningNode,
-        &ctx.log_file,
-        Some(Arc::clone(&activity_notify)),
-    );
-
-    let action_context = NodeRunActionContext {
-        node_stack: Arc::clone(&ctx.node_stack),
-        messenger: ctx.messenger.clone(),
-        core_node_name: ctx.bound_core_node.clone(),
-        caller_instance_id: ctx.core_instance_id.clone(),
-        node_startup_timeout: ctx.timeouts.node_startup,
-        node_start_health_timeout: ctx.timeouts.node_start_health,
-        peppy_dirs: ctx.peppy_dirs.clone(),
-        health_monitor_interval: ctx.timeouts.health_monitor_interval,
-        health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
-        daemon_defaults: ctx.daemon_defaults.clone(),
-        shutdown_token: ctx.shutdown_token.clone(),
-    };
-
-    let log_file_for_timeout = log_file.clone();
-
-    // Token triggered by `run_phase_with_timeouts` on idle/max timeout; observed
-    // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
-    // child + unregister its `Starting` entry) before we return the failure.
-    let run_cancel_token = CancellationToken::new();
-
-    let result = run_phase(
-        run_node_run(
-            node_run_goal,
-            runtime_config,
-            action_context,
-            feedback_tx,
-            log_file,
-            ctx.core_instance_id.clone(),
-            run_cancel_token.clone(),
-        ),
-        activity_notify,
-        ctx.idle_timeouts.run,
-        ctx.launch_deadline,
-        &log_file_for_timeout,
-        LaunchFeedbackStep::RunningNode,
-        NodeRunResult::failure,
-        Some(run_cancel_token),
-    )
-    .await;
-
-    // Don't await _forwarder_handle — the node process is still running and
-    // output readers keep the internal channel alive.
-
-    let node_log_path = Some(log_path);
-    if result.success {
-        (Ok(result), node_log_path)
-    } else {
-        let err = result
-            .error_message
-            .clone()
-            .unwrap_or_else(|| "node_run failed".to_string());
-        (Err(err), node_log_path)
-    }
-}
-
-/// Launch failure path: tear down whatever partial stack got started and clear
-/// it, then return the failure. A launch replaces the previous stack by tearing
-/// it down at the clear step, so on failure there is nothing to roll back to;
-/// the honest end state is an empty stack rather than orphaned half-started
-/// instances.
-async fn fail_and_clear_stack(ctx: &ProcessLaunchContext, reason: String) -> LaunchResult {
-    publish_stderr(
-        ctx,
-        format!("Launch failed: {reason}"),
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-
-    teardown_and_reset_stack(ctx).await;
-
-    LaunchResult::failure(&ctx.log_path, reason)
-}
-
-/// Step 1: Parse launcher configuration from file path.
-async fn parse_launcher_config(
-    ctx: &ProcessLaunchContext,
-    goal: &LaunchGoal,
-) -> std::result::Result<(Vec<Deployment>, PathBuf), LaunchResult> {
-    publish_stdout(
-        ctx,
-        "Parsing launcher configuration",
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-
-    let launch_file = match resolve_launcher_origin(ctx, &goal.launcher_origin).await {
-        Ok(path) => path,
-        Err(msg) => {
-            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
-        }
-    };
-
-    if !launch_file.exists() {
-        let msg = format!("launch file does not exist: {}", launch_file.display());
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    if !launch_file.is_file() {
-        let msg = format!("launch file path must be a file: {}", launch_file.display());
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    let peppy_launcher = match PeppyLauncherParser::from_path(&launch_file) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            publish_stderr(
-                ctx,
-                format!("Invalid launcher config: {e}"),
-                LaunchFeedbackStep::LauncherStep,
-            )
-            .await;
-            return Err(LaunchResult::failure(
-                &ctx.log_path,
-                format!("Invalid launcher config: {e}"),
-            ));
-        }
-    };
-
-    // Use the parent directory of the launch file as the nodes_directory.
-    let nodes_directory = launch_file
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let deployments = peppy_launcher.deployments.clone();
-    Ok((deployments, nodes_directory))
-}
-
-/// Translate a `LauncherOrigin` into a concrete on-disk path.
-///
-/// `Fs` is a no-op; `Repository` looks up the launcher in the cache and, for git-sourced
-/// entries, materializes the checkout via `ensure_checkout`. Progress lines emitted by the
-/// (blocking) checkout are buffered into a `Vec` and flushed to the launch feedback topic
-/// after the resolver returns — quiet for cached/Fs entries, a few lines for fresh clones.
-async fn resolve_launcher_origin(
-    ctx: &ProcessLaunchContext,
-    origin: &LauncherOrigin,
-) -> std::result::Result<PathBuf, String> {
-    match origin {
-        LauncherOrigin::Fs(path) => Ok(path.clone()),
-        LauncherOrigin::Repository { name } => {
-            let peppy_dirs = ctx.peppy_dirs.clone();
-            let name_for_blocking = name.clone();
-            let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
-            let collected_for_cb = Arc::clone(&collected);
-
-            let result = tokio::task::spawn_blocking(move || {
-                crate::services::repo::cache::resolve_repo_launcher_path(
-                    &name_for_blocking,
-                    &peppy_dirs,
-                    &|line| {
-                        collected_for_cb.lock().push(line.to_owned());
-                    },
-                )
-            })
-            .await
-            .map_err(|e| format!("launcher resolver join error: {e}"))?;
-
-            let captured: Vec<String> = std::mem::take(&mut *collected.lock());
-            for line in captured {
-                publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
-            }
-            result
-        }
-    }
-}
-
-/// Step 2: Resolve deployments - retrieve node configs for each deployment.
-async fn resolve_deployments(
-    ctx: &ProcessLaunchContext,
-    deployments: Vec<Deployment>,
-    nodes_directory: &Path,
-) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
-    publish_stdout(
-        ctx,
-        format!("Resolving {} deployment(s)", deployments.len()),
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-
-    let mut planned: Vec<PlannedDeployment> = Vec::new();
-    let mut planning_errors: Vec<String> = Vec::new();
-    let mut planned_keys: HashSet<NodeKey> = HashSet::new();
-
-    for deployment in deployments.into_iter() {
-        if deployment.instances.is_empty() {
-            planning_errors.push(format!(
-                "deployment {} must have at least one instance",
-                deployment_label(&deployment)
-            ));
-            continue;
-        }
-
-        let source =
-            match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
-            {
-                Ok(result) => result,
-                Err(err) => {
-                    planning_errors.push(format!(
-                        "failed to resolve source for deployment {}: {err}",
-                        deployment_label(&deployment)
-                    ));
-                    continue;
-                }
-            };
-
-        publish_stdout(
-            ctx,
-            format!(
-                "Retrieving node config for {}",
-                deployment_label(&deployment)
-            ),
-            LaunchFeedbackStep::LauncherStep,
-        )
-        .await;
-
-        let config = match resolve_node_config(source.clone(), &ctx.peppy_dirs).await {
-            Ok(config) => config,
-            Err(err) => {
-                planning_errors.push(format!(
-                    "failed to retrieve node config for deployment {}: {err}",
-                    deployment_label(&deployment)
-                ));
-                continue;
-            }
-        };
-
-        let node_name = config.manifest.name.as_str().to_owned();
-        let node_tag = config.manifest.tag.clone();
-
-        let key = NodeKey::new(&node_name, &node_tag);
-        if !planned_keys.insert(key.clone()) {
-            planning_errors.push(format!(
-                "duplicate deployment for node {} (resolved from {})",
-                key.label(),
-                deployment_label(&deployment)
-            ));
-            continue;
-        }
-
-        publish_stdout(
-            ctx,
-            format!(
-                "Deployment {} resolved to {}:{}",
-                deployment_label(&deployment),
-                node_name,
-                node_tag
-            ),
-            LaunchFeedbackStep::LauncherStep,
-        )
-        .await;
-
-        planned.push(PlannedDeployment {
-            deployment,
-            source,
-            node_name,
-            node_tag,
-            config,
-        });
-    }
-
-    if !planning_errors.is_empty() {
-        let msg = config::format_bulleted(&planning_errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    Ok(planned)
-}
-
-/// Output of [`validate_and_order_dependencies`]: a topological order
-/// of deployments to spawn, plus the resolved per-instance
-/// [`config::runtime::SlotBinding`] map produced by the launcher's
-/// binding validator. The map is keyed by `consumer_instance_id`; each
-/// inner map is keyed by the consumer's manifest `link_id`.
-type ResolvedSlotBindings = std::collections::BTreeMap<
-    String,
-    std::collections::BTreeMap<String, config::runtime::SlotBinding>,
->;
-
-/// Step 3: Validate dependencies and compute a stable topological order.
-async fn validate_and_order_dependencies(
-    ctx: &ProcessLaunchContext,
-    planned: &[PlannedDeployment],
-    root_config: &config::node::NodeConfig,
-) -> std::result::Result<(Vec<NodeKey>, ResolvedSlotBindings), LaunchResult> {
-    publish_stdout(
-        ctx,
-        "Validating dependencies",
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-
-    let root_key = NodeKey::new(
-        root_config.manifest.name.as_str(),
-        root_config.manifest.tag.as_str(),
-    );
-
-    let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
-    configs_by_key.insert(root_key.clone(), root_config.clone());
-    for item in planned {
-        configs_by_key.insert(
-            NodeKey::new(&item.node_name, &item.node_tag),
-            item.config.clone(),
-        );
-    }
-
-    let planned_keys: HashSet<NodeKey> = planned
-        .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
-        .collect();
-
-    // Validate all dependencies exist and expose the required interfaces.
-    let dependency_errors: Vec<String> = planned
-        .iter()
-        .flat_map(|item| {
-            config::node::validate_dependency_specs(
-                &item.config.manifest,
-                &item.config.interfaces,
-                &item.node_name,
-                &item.node_tag,
-                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
-            )
-        })
-        .map(|e| e.to_string())
-        .collect();
-
-    if !dependency_errors.is_empty() {
-        let msg = config::format_bulleted(&dependency_errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    // The root entity stays in the stack across launches (teardown_and_reset_stack
-    // preserves it), so its instance_id must participate in stack-wide uniqueness
-    // checks. Synthesize a single-instance DeploymentInstance for it, but pass
-    // `depends_on: None` / empty `conforms_to` in the binding item below so the
-    // per-instance binding rules treat the root as inert and only
-    // check_stack_wide_instance_id_uniqueness (which reads name/tag/instance_id)
-    // acts on it. Forwarding the root's real depends_on would make Rule 1 emit
-    // BindingMissingForPinnedDep, because the synthesized instance has no bindings.
-    let root_instance_id_str = ctx
-        .node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .map(|inst| inst.instance_id().as_str().to_owned());
-    let root_instances: Vec<config::launcher::DeploymentInstance> = root_instance_id_str
-        .and_then(|id_str| config::launcher::Name::new(id_str).ok())
-        .map(|instance_id| config::launcher::DeploymentInstance {
-            instance_id,
-            arguments: Default::default(),
-            env_vars: Default::default(),
-            framework: Default::default(),
-            bindings: Default::default(),
-        })
-        .into_iter()
-        .collect();
-
-    let mut binding_items: Vec<config::launcher::BindingValidationItem<'_>> = planned
-        .iter()
-        .map(|p| config::launcher::BindingValidationItem {
-            node_name: &p.node_name,
-            node_tag: &p.node_tag,
-            instances: &p.deployment.instances,
-            depends_on: p.config.manifest.depends_on.as_ref(),
-            conforms_to: p.config.interfaces.conforms_to.as_deref().unwrap_or(&[]),
-        })
-        .collect();
-    if !root_instances.is_empty() {
-        binding_items.push(config::launcher::BindingValidationItem {
-            node_name: root_config.manifest.name.as_str(),
-            node_tag: root_config.manifest.tag.as_str(),
-            instances: &root_instances,
-            depends_on: None,
-            conforms_to: &[],
-        });
-    }
-    // Stamp every resolved producer reference with this daemon's core_node:
-    // stacks are daemon-scoped, so the launching daemon is where every
-    // producer instance in the snapshot lives.
-    let validated =
-        config::launcher::validate_bindings(&binding_items, ctx.bound_core_node.as_str());
-    if !validated.errors.is_empty() {
-        let msg = config::format_bulleted(&validated.errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-    let resolved_slot_bindings = validated.slot_bindings;
-
-    // Build the dependency graph for topological ordering.
-    let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
-    for item in planned {
-        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
-        let mut deps = HashSet::new();
-        for spec in config::node::collect_dependency_specs(&item.config) {
-            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
-            if dep_key != root_key && planned_keys.contains(&dep_key) {
-                deps.insert(dep_key);
-            }
-        }
-        deps_for.insert(dependant_key, deps);
-    }
-
-    // Stable topological sort using original plan order as tie-breaker.
-    let ordered = topological_sort(planned, &deps_for, &ctx.log_path).map_err(|e| *e)?;
-
-    publish_stdout(
-        ctx,
-        format!(
-            "Dependency order: {}",
-            ordered
-                .iter()
-                .map(|k| k.label())
-                .collect::<Vec<_>>()
-                .join(" -> ")
-        ),
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-
-    Ok((ordered, resolved_slot_bindings))
-}
-
-/// Perform a stable topological sort.
-fn topological_sort(
-    planned: &[PlannedDeployment],
-    deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
-    log_path: &PathBuf,
-) -> std::result::Result<Vec<NodeKey>, Box<LaunchResult>> {
-    let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
-    let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
-
-    for key in planned
-        .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
-    {
-        in_degree.entry(key.clone()).or_insert(0);
-        dependents.entry(key).or_default();
-    }
-
-    for (dependant, deps) in deps_for {
-        in_degree.insert(dependant.clone(), deps.len());
-        for dep in deps {
-            dependents
-                .entry(dep.clone())
-                .or_default()
-                .push(dependant.clone());
-        }
-    }
-
-    let order_index: HashMap<NodeKey, usize> = planned
-        .iter()
-        .enumerate()
-        .map(|(idx, p)| (NodeKey::new(&p.node_name, &p.node_tag), idx))
-        .collect();
-
-    let mut ready: Vec<NodeKey> = in_degree
-        .iter()
-        .filter(|(_, deg)| **deg == 0)
-        .map(|(k, _)| k.clone())
-        .collect();
-    ready.sort_by_key(|k| order_index.get(k).copied().unwrap_or(usize::MAX));
-
-    let mut queue: VecDeque<NodeKey> = ready.into();
-    let mut ordered: Vec<NodeKey> = Vec::new();
-
-    while let Some(node) = queue.pop_front() {
-        ordered.push(node.clone());
-        let Some(children) = dependents.get(&node) else {
-            continue;
-        };
-        for child in children {
-            if let Some(deg) = in_degree.get_mut(child) {
-                *deg = deg.saturating_sub(1);
-                if *deg == 0 {
-                    queue.push_back(child.clone());
-                }
-            }
-        }
-        // Keep stable ordering when multiple nodes become ready at once.
-        let mut drained: Vec<NodeKey> = queue.drain(..).collect();
-        drained.sort_by_key(|k| order_index.get(k).copied().unwrap_or(usize::MAX));
-        queue = drained.into();
-    }
-
-    if ordered.len() != planned.len() {
-        let mut remaining: Vec<String> = in_degree
-            .into_iter()
-            .filter(|(_, deg)| *deg > 0)
-            .map(|(k, _)| k.label())
-            .collect();
-        remaining.sort();
-        let msg = format!(
-            "unable to resolve dependency order (cycle suspected). Remaining nodes: {}",
-            remaining.join(", ")
-        );
-        return Err(Box::new(LaunchResult::failure(log_path, msg)));
-    }
-
-    Ok(ordered)
-}
-
-/// Step 4: Stop the currently-running stack and clear it.
-///
-/// Cooperatively shuts down every running instance, force-killing the process
-/// group of any straggler, before dropping them from the stack, so a relaunch
-/// never orphans the previous stack's processes. Also reused by the launch
-/// failure path to tear down a partial new stack. Infallible.
-async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
-    publish_stdout(
-        ctx,
-        "Stopping current node stack",
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-    teardown_all_instances(
-        &ctx.messenger,
-        &ctx.bound_core_node,
-        &ctx.core_instance_id,
-        &ctx.node_stack,
-    )
-    .await;
-    ctx.node_stack.reset();
-}
 
 /// Step 5: Add every node to the node stack in dependency order.
 async fn add_nodes_to_stack(
@@ -1280,7 +270,7 @@ async fn add_nodes_to_stack(
                 let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
 
                 // Stack launch chains directly from add into build, since the
-                // launcher's contract is "the stack is up and running" — an
+                // launcher's contract is "the stack is up and running"; an
                 // `Added` entity isn't actually buildable from the user's
                 // perspective until `node build` has run.
                 let (build_result, build_log_path) =
@@ -1873,18 +863,20 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 ///
 /// The invariant under test: when a run-phase timeout fires,
 /// `run_phase_cancel_on_timeout` must signal the cancel token *and* drive the
-/// phase future to completion so its cleanup runs — not drop it. Using
+/// phase future to completion so its cleanup runs, not drop it. Using
 /// `tokio::time::pause()` + manual advancement so these tests are
 /// deterministic (no wall-clock dependency, no risk of CI flake).
 #[cfg(test)]
 mod tests {
+    use super::phases::{PhaseOutcome, run_phase_cancel_on_timeout};
     use super::*;
     use config::AnyType;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
 
     /// Builds a phase future that signals `cleanup_ran` if it observes the
-    /// cancel token — simulating `run_node_run`'s `abort_started` branch.
+    /// cancel token, simulating `run_node_run`'s `abort_started` branch.
     /// If instead the outer runner drops this future, the flag stays false
     /// and the test fails, matching the real-world orphan bug.
     async fn cancellable_phase(
@@ -1960,7 +952,7 @@ mod tests {
         let cleanup_ran = Arc::new(AtomicBool::new(false));
         let cleanup_ran_for_phase = Arc::clone(&cleanup_ran);
 
-        // Phase completes immediately with a value — no timeout should fire.
+        // Phase completes immediately with a value; no timeout should fire.
         let phase = async move {
             // Reset-like ping proves we keep the happy-path contract (no cancel signal).
             let _ = cleanup_ran_for_phase;
@@ -1991,12 +983,12 @@ mod tests {
     /// `Some(false)` forces wall even when the daemon default is sim.
     #[test]
     fn resolve_framework_per_instance_wins() {
-        let force_sim = config::launcher::FrameworkOverrides {
+        let force_sim = daemon_config::launcher::FrameworkOverrides {
             use_sim_time: Some(true),
         };
         assert!(resolve_framework(&force_sim, false).use_sim_time);
 
-        let force_wall = config::launcher::FrameworkOverrides {
+        let force_wall = daemon_config::launcher::FrameworkOverrides {
             use_sim_time: Some(false),
         };
         assert!(!resolve_framework(&force_wall, true).use_sim_time);
@@ -2005,7 +997,7 @@ mod tests {
     /// When the instance omits the override, the daemon default decides.
     #[test]
     fn resolve_framework_falls_through_to_daemon_default() {
-        let none = config::launcher::FrameworkOverrides::default();
+        let none = daemon_config::launcher::FrameworkOverrides::default();
         assert!(!resolve_framework(&none, false).use_sim_time);
         assert!(resolve_framework(&none, true).use_sim_time);
     }

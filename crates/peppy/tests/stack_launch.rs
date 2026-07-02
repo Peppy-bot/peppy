@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
@@ -961,8 +962,8 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
 }
 
 /// Stack-wide `instance_id` uniqueness (spec rule 7): two instances
-/// anywhere in the launcher — even across different `(node_name,
-/// node_tag)` pairs — sharing an `instance_id` must fail at the parse
+/// anywhere in the launcher, even across different `(node_name,
+/// node_tag)` pairs, sharing an `instance_id` must fail at the parse
 /// stage, before any node is added, built, or spawned. The binding
 /// model addresses producers by raw `instance_id` so a duplicate
 /// would make `--bind KEY@id` ambiguous.
@@ -1010,7 +1011,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
 
     // Two completely separate node types both claiming `shared_inst`
     // as their instance_id. Under the new spec, this is rejected at
-    // the launcher level — instance_ids must be unique across the
+    // the launcher level: instance_ids must be unique across the
     // entire stack, not merely within a `(node_name, node_tag)` group.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1136,7 +1137,7 @@ fn write_interface_v1_doc_with_topic(
 /// the producer's `interfaces.conforms_to` declaration. Exercises a real
 /// `peppy_schema: "interface/v1"` document on disk alongside a `node/v1`
 /// producer declaring conformance and a `node/v1` consumer declaring
-/// the interface dep — pairs the unit-level binding validator tests
+/// the interface dep; pairs the unit-level binding validator tests
 /// with the full launch pipeline (cache resolution + daemon node-add).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
@@ -1164,7 +1165,7 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
     // the containing directory as an fs-type repo. The launcher binding
     // validator only inspects `conforms_to` claims, but the daemon's
     // node-add path also resolves the interface document from cache
-    // for consumers declaring `depends_on.interfaces` — without the
+    // for consumers declaring `depends_on.interfaces`; without the
     // repo refresh the consumer node-add would fail before
     // `validate_bindings` ever runs.
     write_interface_v1_doc(

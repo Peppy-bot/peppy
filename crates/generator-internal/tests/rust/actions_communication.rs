@@ -1,4 +1,8 @@
 use crate::helpers::{
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
+    EXPOSED_ACTION_EXAMPLE,
+};
+use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project,
     copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
     test_peppy_dirs, wait_for_action_service_reachable_or_exit, wait_for_child,
@@ -7,9 +11,8 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    launcher::Name,
     node::{ConsumedAction, ExposedAction, MessageFormat},
-    runtime::RuntimeConfig,
+    runtime::{Name, RuntimeConfig},
 };
 use generator::{ConsumedActionMessage, LanguageGenerator};
 use std::path::Path;
@@ -24,89 +27,10 @@ const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
 
-const EXPOSED_ACTION_EXAMPLE: &str = r#"
-{
-  name: "move_arm",
-  goal_service: {
-    request_message_format: {
-      arm_id: "u16",
-      desired_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    },
-    response_message_format: {
-      accepted: "bool"
-    }
-  },
-  feedback_topic: {
-    qos_profile: "sensor_data",
-    message_format: {
-      new_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  },
-  result_service: {
-    response_message_format: {
-      success: "bool",
-      error_msg: {
-        $type: "string",
-        $optional: true
-      },
-      final_position: {
-        $type: "array",
-        $items: "i32",
-        $length: 3
-      }
-    }
-  }
-}
-"#;
-
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
   link_id: "brain",
   name: "move_arm",
-}
-"#;
-
-const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
-{
-  new_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
-{
-  success: "bool",
-  error_msg: {
-    $type: "string",
-    $optional: true
-  },
-  final_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
-}
-"#;
-
-const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
-{
-  arm_id: "u16",
-  desired_position: {
-    $type: "array",
-    $items: "i32",
-    $length: 3
-  }
 }
 "#;
 
@@ -138,7 +62,7 @@ const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
 /// runtime-config parse (`SlotBinding::Pinned { producer: ProducerRef }`)
 /// → processor filter resolution → generated `fire_goal` target splice →
 /// pinned wire delivery. Every goal must run on the bound instance and the
-/// sibling instance must never execute a goal handler — pre-`ProducerRef`,
+/// sibling instance must never execute a goal handler; pre-`ProducerRef`,
 /// this exact shape ran a discovery probe per call and timed out whenever
 /// the producer was busy (the bimanual `fire_goal` timeout).
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -189,7 +113,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     );
 
     // Bind the consumer's pinned slot to the LEFT arm with the full
-    // (core_node, instance_id) pair — exactly what the validator stamps
+    // (core_node, instance_id) pair, exactly what the validator stamps
     // when a stack launches with `--bind brain@left_arm_instance`.
     let mut consumer_node_instance =
         NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap());
@@ -1720,7 +1644,7 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             let _ = ctx
                 .complete_cancelled(false, Some("cancelled".to_owned()), [0, 0, 0])
                 .await;
-            println!("server observed cancel — completing cancelled closes the feedback stream");
+            println!("server observed cancel: completing cancelled closes the feedback stream");
         }
     });
 
@@ -1856,7 +1780,7 @@ fn main() -> Result<()> {
     );
     assert!(
         !consumer_stdout.contains("UNEXPECTED feedback after cancel-accept"),
-        "consumer received unexpected feedback after cancel-accept — close signal must come first.\nstdout:\n{}",
+        "consumer received unexpected feedback after cancel-accept: close signal must come first.\nstdout:\n{}",
         consumer_stdout
     );
 
@@ -1879,7 +1803,7 @@ fn main() -> Result<()> {
 
 /// Verifies the cancel-ignored side of the action lifecycle contract: a
 /// worker is free to observe `ctx.cancel_signal()` and keep going. Ignoring
-/// the cancel does NOT close the feedback stream — the goal stays alive,
+/// the cancel does NOT close the feedback stream; the goal stays alive,
 /// feedback keeps flowing, and the stream is closed only when the worker
 /// finally calls `ctx.complete(...)` as part of normal goal completion.
 ///
@@ -1997,7 +1921,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     );
     println!("cancel accepted={} error=<none>", accepted);
 
-    // CRITICAL: feedback after cancel-reject must still arrive — the goal
+    // CRITICAL: feedback after cancel-reject must still arrive; the goal
     // continues running and the stream stays open.
     let post_cancel = action_handle.on_next_feedback_message().await?;
     println!("post_cancel feedback new_position={:?}", post_cancel.new_position);
@@ -2232,7 +2156,7 @@ fn main() -> Result<()> {
     );
     assert!(
         consumer_stdout.contains("post_cancel feedback new_position=[2, 2, 2]"),
-        "consumer did not receive post-cancel feedback — a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
+        "consumer did not receive post-cancel feedback: a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
         consumer_stdout
     );
     assert!(
@@ -2269,21 +2193,21 @@ fn main() -> Result<()> {
 /// when the exposer PROCESS is SIGKILLed mid-goal, no end-of-stream sentinel
 /// is ever published (the `GoalContext` dies with the process), so the
 /// consumer's feedback drain must fail over to the typed
-/// `Error::ActionFeedbackProducerGone` — driven by the producer's liveliness
-/// token disappearing — instead of hanging forever or reporting a clean
+/// `Error::ActionFeedbackProducerGone` (driven by the producer's liveliness
+/// token disappearing) instead of hanging forever or reporting a clean
 /// close. `get_result` must then resolve to `ResultOutcome::Abandoned` via
 /// the goal handle's confirmed-gone fast path.
 ///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts and publishes feedback in an
-///      endless loop — it never completes the goal, so only the kill ends it.
+///      endless loop; it never completes the goal, so only the kill ends it.
 ///   2. Client receives the first feedback (proves the goal is live), then
 ///      keeps draining.
 ///   3. The test SIGKILLs the exposer process. SIGKILL closes the TCP socket,
 ///      so the liveliness DELETE propagates immediately and the consumer's
 ///      watcher confirms the producer gone after its probe window.
 ///   4. The client's drain unblocks with `ActionFeedbackProducerGone`
-///      (matched explicitly — a clean-close error here would mean a phantom
+///      (matched explicitly; a clean-close error here would mean a phantom
 ///      sentinel) and `get_result` yields `ResultOutcome::Abandoned`.
 ///
 /// In-library parity is
@@ -2375,7 +2299,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     println!("first feedback received new_position={:?}", first.new_position);
 
     // Drain until the producer dies. SIGKILL leaves the goal incomplete, so
-    // the clean-close sentinel can never arrive — the only valid exit is the
+    // the clean-close sentinel can never arrive; the only valid exit is the
     // typed producer-gone error. Matching it apart from other errors is the
     // point of this test.
     loop {
@@ -2475,7 +2399,7 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             println!("server accepted goal");
 
             // Publish feedback forever and never complete: the goal must be
-            // live — sentinel unpublished — when the test SIGKILLs this
+            // live (sentinel unpublished) when the test SIGKILLs this
             // process. Per-beat prints are deliberately omitted so the
             // undrained stdout pipe cannot fill and block the loop.
             let mut beat: i32 = 0;
@@ -2532,7 +2456,7 @@ fn main() -> Result<()> {
     .await;
 
     // The consumer's setup fn blocks inside the drain loop until the
-    // producer-gone error fires, so its stdout — not a health probe — is the
+    // producer-gone error fires, so its stdout (not a health probe) is the
     // only way to observe progress before the kill.
     let mut consumer = CapturedChild::new(spawn_cargo_run(
         &user_node_consumer,
@@ -2586,7 +2510,7 @@ fn main() -> Result<()> {
     )
     .await;
 
-    // Only the consumer's exit is meaningful — the exposer was SIGKILLed, so
+    // Only the consumer's exit is meaningful; the exposer was SIGKILLed, so
     // its status is unconditionally a failure and is not asserted.
     let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
 
@@ -2610,7 +2534,7 @@ fn main() -> Result<()> {
         consumer_stdout
     );
     // Critical assertion: the drain exited through the typed producer-gone
-    // error carrying the dead producer's identity — not a clean close, not a
+    // error carrying the dead producer's identity, not a clean close, not a
     // hang, not some other error.
     assert!(
         consumer_stdout.contains(
