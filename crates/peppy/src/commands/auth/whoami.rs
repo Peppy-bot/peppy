@@ -25,7 +25,8 @@ pub struct WhoamiCommand {
 impl Command for WhoamiCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
-        let config = daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
+        let config =
+            daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();

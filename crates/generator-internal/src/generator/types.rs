@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
-use daemon_config::consts::PeppyDirs;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat, PrimitiveSchema, SchemaType, TypeToken,
 };
+use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::path::Path;

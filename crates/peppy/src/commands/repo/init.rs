@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use daemon_config::consts::PeppyDirs;
 use core_node::{InitOutcome, ensure_default_repos, repositories_list_path};
+use daemon_config::consts::PeppyDirs;
 use tracing::info;
 
 use crate::context::AppContext;

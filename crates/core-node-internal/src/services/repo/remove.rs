@@ -5,8 +5,8 @@ use crate::services::repo::refresh::{
     process_refresh, read_or_create_repos, write_cache, write_interface_cache, write_launcher_cache,
 };
 use crate::services::response::into_service_response;
-use daemon_config::consts::PeppyDirs;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
+use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;

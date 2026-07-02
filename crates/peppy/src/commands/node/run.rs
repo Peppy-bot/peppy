@@ -1,12 +1,12 @@
 use config::AnyType;
 use config::node::ConformsToItem;
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
-use daemon_config::launcher::{BindingValidationItem, DeploymentInstance, validate_bindings};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, StackListRequest,
 };
+use daemon_config::launcher::{BindingValidationItem, DeploymentInstance, validate_bindings};
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;

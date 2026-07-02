@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use daemon_config::consts::PeppyDirs;
 use config::node::{EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
 use core_node::nodes_repo_cache_path;
+use daemon_config::consts::PeppyDirs;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
 use peppy::context::AppContext;

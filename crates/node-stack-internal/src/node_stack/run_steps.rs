@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
-use daemon_config::consts::PeppyDirs;
 use config::node::{NodeConfig, PeppygenLanguage};
+use daemon_config::consts::PeppyDirs;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};

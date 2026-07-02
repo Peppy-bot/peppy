@@ -364,7 +364,6 @@ mod tests {
         } else {
             panic!("Expected DuplicateName, got {:?}", err);
         }
-
     }
 
     #[test]

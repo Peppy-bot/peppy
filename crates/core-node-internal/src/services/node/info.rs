@@ -5,12 +5,12 @@ use crate::Result;
 use crate::names;
 use crate::services::repo::cache as repo_cache;
 use config::consts::NODE_CONFIG_FILE;
-use daemon_config::consts::PeppyDirs;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::{
     NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource,
 };
+use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;

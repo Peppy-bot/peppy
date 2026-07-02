@@ -5,10 +5,10 @@ use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use crate::services::repo::source_identity;
 use crate::services::response::into_service_response;
-use daemon_config::consts::PeppyDirs;
 use core_node_api::encoding::{
     RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
 };
+use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;

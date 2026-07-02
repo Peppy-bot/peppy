@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use config::consts::{DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use daemon_config::consts::{PEPPY_OUTPUT_DIR, PeppyDirs};
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::names;
 use core_node::nodes_repo_cache_path;
@@ -13,6 +12,7 @@ use core_node_api::encoding::{
     NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
     NodeBuildResult, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, NodeSource,
 };
+use daemon_config::consts::{PEPPY_OUTPUT_DIR, PeppyDirs};
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;

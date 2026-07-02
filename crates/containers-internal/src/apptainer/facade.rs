@@ -134,6 +134,60 @@ impl SetupStatus {
     }
 }
 
+/// AppArmor profile identity for one apptainer installation.
+///
+/// The profile name embeds a stable hash of the canonical starter path, so
+/// every installation on a machine (the version-keyed build caches under
+/// `~/.peppy/tmp/`, installed release layouts, `PEPPY_APPTAINER_DIR`
+/// overrides) gets its own profile file under `/etc/apparmor.d/`. A single
+/// shared profile can only reference one starter path, so regenerating it for
+/// one installation used to silently invalidate every other one: after an
+/// apptainer version bump renamed the build cache, CI runs on commits from
+/// either side of the bump needed different profiles and kept breaking each
+/// other depending on which one ran `peppy container setup` last.
+#[cfg(target_os = "linux")]
+pub(crate) struct ApparmorProfileRef {
+    /// Canonical starter path, exactly as embedded in the profile body.
+    pub(crate) starter_path: String,
+    /// AppArmor profile name (`peppy-apptainer-<hash>`).
+    pub(crate) name: String,
+    /// Profile file under `/etc/apparmor.d/`.
+    pub(crate) file: PathBuf,
+}
+
+/// Resolve the AppArmor profile identity for the installation at `apptainer_dir`.
+///
+/// Uses the canonicalized starter path when the binary exists (the kernel
+/// resolves symlinks at exec time, so the profile must reference the resolved
+/// path) and falls back to the literal path otherwise.
+#[cfg(target_os = "linux")]
+pub(crate) fn apparmor_profile_ref(apptainer_dir: &Path) -> ApparmorProfileRef {
+    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
+    let starter_canonical = starter.canonicalize().unwrap_or(starter);
+    let starter_path = starter_canonical.display().to_string();
+    let name = format!("peppy-apptainer-{:016x}", fnv1a_64(starter_path.as_bytes()));
+    let file = Path::new("/etc/apparmor.d").join(&name);
+    ApparmorProfileRef {
+        starter_path,
+        name,
+        file,
+    }
+}
+
+/// 64-bit FNV-1a hash. Profile names derived from it are persisted in
+/// `/etc/apparmor.d/`, so the hash must stay stable across peppy releases:
+/// `DefaultHasher` gives no such guarantee, and a cryptographic hash would add
+/// a dependency for no benefit (the hash only namespaces profile files, it is
+/// not a security boundary).
+#[cfg(target_os = "linux")]
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    bytes.iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    })
+}
+
 /// Inspect the Apptainer user namespace prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
@@ -143,7 +197,6 @@ impl SetupStatus {
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
-    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
     let apparmor_manageable = is_apparmor_manageable();
 
     // newuidmap is required for fakeroot mode (unprivileged user namespaces).
@@ -160,14 +213,16 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
-    let starter_canonical = starter.canonicalize().unwrap_or_else(|_| starter.clone());
+    let profile = apparmor_profile_ref(apptainer_dir);
 
     let apparmor_ok = if apparmor_restricted {
-        // The profile must exist AND reference the current starter path.
-        // A stale profile pointing to a different binary (e.g. a previous build
-        // artifact) won't grant the current binary namespace privileges.
-        std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-            .map(|content| content.contains(&starter_canonical.display().to_string()))
+        // The per-install profile file must exist AND reference the current
+        // starter path. The hashed file name already namespaces installations;
+        // the content check additionally catches a manually edited or
+        // corrupted profile that would not grant the binary namespace
+        // privileges.
+        std::fs::read_to_string(&profile.file)
+            .map(|content| content.contains(&profile.starter_path))
             .unwrap_or(false)
     } else {
         true
@@ -176,12 +231,13 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let apparmor_loaded = if apparmor_restricted {
         // /sys/kernel/security/apparmor/profiles requires CAP_MAC_ADMIN, so
         // use the policy directory listing which is world-readable.
+        let kernel_entry_prefix = format!("{}.", profile.name);
         std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
             .map(|entries| {
                 entries.filter_map(|e| e.ok()).any(|e| {
                     e.file_name()
                         .to_str()
-                        .is_some_and(|name| name.starts_with("peppy-apptainer."))
+                        .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
                 })
             })
             .unwrap_or(false)
@@ -192,7 +248,6 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let fix_script = if newuidmap_ok && apparmor_ok && apparmor_loaded {
         None
     } else {
-        let starter_path = starter_canonical.display();
         let mut parts: Vec<String> = Vec::new();
 
         if !newuidmap_ok {
@@ -209,13 +264,19 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
                 "echo 'abi <abi/4.0>,\n\
                  include <tunables/global>\n\
                  \n\
-                 profile peppy-apptainer {starter_path} flags=(unconfined) {{\n\
+                 profile {profile_name} {starter_path} flags=(unconfined) {{\n\
                  \x20 userns,\n\
-                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
-                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+                 }}' | sudo tee {profile_file} > /dev/null \\\n  \
+                 && sudo apparmor_parser -r {profile_file}",
+                profile_name = profile.name,
+                starter_path = profile.starter_path,
+                profile_file = profile.file.display(),
             ));
         } else if apparmor_restricted && !apparmor_loaded {
-            parts.push("sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer".to_string());
+            parts.push(format!(
+                "sudo apparmor_parser -r {}",
+                profile.file.display()
+            ));
         }
 
         if parts.is_empty() {

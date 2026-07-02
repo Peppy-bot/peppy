@@ -16,9 +16,9 @@ mod run;
 mod stop;
 mod sync;
 
-use daemon_config::consts::PeppyDirs;
 use config::node::NodeConfig;
 use core_node_api::encoding::NodeSource;
+use daemon_config::consts::PeppyDirs;
 
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).

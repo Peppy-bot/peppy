@@ -53,8 +53,7 @@ where
     D: Deserializer<'de>,
 {
     let tag = String::deserialize(deserializer)?;
-    config::repo_node_id::validate_repo_node_tag(&tag, "tag")
-        .map_err(de::Error::custom)?;
+    config::repo_node_id::validate_repo_node_tag(&tag, "tag").map_err(de::Error::custom)?;
     Ok(tag)
 }
 
