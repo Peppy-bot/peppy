@@ -70,13 +70,6 @@ fn instance_matches(inst: &TrackedNodeInstance, instance_id: &Name, require_runn
         && (!require_running || inst.state() == InstanceState::Running)
 }
 
-/// Builds the trimmed `(name, tag)` key used by the `add_log_paths` cache.
-/// Trimming matches [`NodeKey::new`] so a log path stored under one spelling
-/// of the key is found again regardless of incidental surrounding whitespace.
-fn add_log_key(name: &str, tag: &str) -> (String, String) {
-    (name.trim().to_owned(), tag.trim().to_owned())
-}
-
 struct NodeStackInner {
     graph: StableDiGraph<EntityHandle, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
@@ -658,10 +651,10 @@ impl NodeStackInner {
 #[derive(Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
-    /// Most-recent add log path per `(node_name, node_tag)`. This is a
-    /// daemon-only cache (not persisted) so it lives here rather than on
-    /// `NodeEntity`, which is a pure lifecycle/config model.
-    add_log_paths: Arc<parking_lot::Mutex<HashMap<(String, String), PathBuf>>>,
+    /// Most-recent add log path per node key. This is a daemon-only cache
+    /// (not persisted) so it lives here rather than on `NodeEntity`, which is
+    /// a pure lifecycle/config model.
+    add_log_paths: Arc<parking_lot::Mutex<HashMap<NodeKey, PathBuf>>>,
     /// How long a clean daemon shutdown and `peppy node stop` wait for a node to
     /// exit cooperatively before force-killing its process group. Daemon-only
     /// state resolved once from `peppy_config.json5`
@@ -728,14 +721,14 @@ impl NodeStack {
     pub fn set_add_log_path(&self, name: &str, tag: &str, path: PathBuf) {
         self.add_log_paths
             .lock()
-            .insert(add_log_key(name, tag), path);
+            .insert(NodeKey::new(name, tag), path);
     }
 
     /// Returns the most-recent add-log path for `(name, tag)`, if any.
     pub fn add_log_path(&self, name: &str, tag: &str) -> Option<PathBuf> {
         self.add_log_paths
             .lock()
-            .get(&add_log_key(name, tag))
+            .get(&NodeKey::new(name, tag))
             .cloned()
     }
 
@@ -852,7 +845,7 @@ impl NodeStack {
             });
         }
         guard.remove_entity(&key);
-        self.add_log_paths.lock().remove(&add_log_key(name, tag));
+        self.add_log_paths.lock().remove(&key);
         // Keep `entity_guard` alive until *after* the unlink so an outside
         // thread holding a clone of the handle still cannot mutate the
         // entity between the check and the removal.
@@ -896,7 +889,7 @@ impl NodeStack {
         }
 
         guard.remove_entity(&key);
-        self.add_log_paths.lock().remove(&add_log_key(name, tag));
+        self.add_log_paths.lock().remove(&key);
         true
     }
 
