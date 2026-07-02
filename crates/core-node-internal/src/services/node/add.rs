@@ -400,24 +400,100 @@ fn bundle_file_name(url: &url::Url) -> String {
         .unwrap_or_else(|| "bundle.tar.zst".to_string())
 }
 
+/// Total attempts (initial try plus retries) for a bundle download that
+/// keeps failing transiently.
+const DOWNLOAD_ATTEMPTS: usize = 3;
+/// Backoff before retry N+1; short and growing, since most transient
+/// failures either clear immediately or not at all.
+const DOWNLOAD_RETRY_DELAYS: [Duration; DOWNLOAD_ATTEMPTS - 1] =
+    [Duration::from_millis(250), Duration::from_secs(1)];
+
+/// A failed download attempt, split by whether retrying could help.
+enum DownloadAttemptError {
+    /// Transport-level failure or server-side 5xx; worth retrying.
+    Transient(String),
+    /// Client error (4xx), checksum mismatch, or local I/O failure;
+    /// retrying cannot change the outcome.
+    Fatal(String),
+}
+
+/// Whether a failed HTTP request is worth retrying. Transport-level
+/// failures (I/O, timeout, connection, DNS) and server-side 5xx responses
+/// are transient; anything else (4xx status, bad URI, TLS setup, redirect
+/// loops) will not improve on retry.
+fn is_transient_http_error(err: &HttpError) -> bool {
+    match err {
+        HttpError::StatusCode(code) => *code >= 500,
+        HttpError::Io(_)
+        | HttpError::Timeout(_)
+        | HttpError::ConnectionFailed
+        | HttpError::HostNotFound => true,
+        _ => false,
+    }
+}
+
+/// Downloads the bundle at `url` to `destination`, retrying transient
+/// failures up to [`DOWNLOAD_ATTEMPTS`] times with a short growing backoff.
+/// Non-transient failures (see [`is_transient_http_error`]) and checksum
+/// mismatches surface immediately.
 fn download_http_bundle(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
     feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
 ) -> std::result::Result<(), String> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let err = match download_http_bundle_once(url, destination, expected_sha256, feedback_tx) {
+            Ok(()) => return Ok(()),
+            Err(DownloadAttemptError::Fatal(msg)) => return Err(msg),
+            Err(DownloadAttemptError::Transient(msg)) if attempt >= DOWNLOAD_ATTEMPTS => {
+                return Err(msg);
+            }
+            Err(DownloadAttemptError::Transient(msg)) => msg,
+        };
+        let delay = DOWNLOAD_RETRY_DELAYS[attempt - 1];
+        if let Some(tx) = feedback_tx {
+            let _ = tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!(
+                    "Download attempt {attempt} of {DOWNLOAD_ATTEMPTS} failed ({err}); retrying in {delay:?}"
+                ),
+            });
+        }
+        std::thread::sleep(delay);
+    }
+}
+
+/// One download attempt. Only the HTTP request and response-body reads can
+/// yield [`DownloadAttemptError::Transient`]; local file I/O and checksum
+/// verification are always fatal.
+fn download_http_bundle_once(
+    url: &url::Url,
+    destination: &Path,
+    expected_sha256: Option<&str>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+) -> std::result::Result<(), DownloadAttemptError> {
     use sha2::{Digest, Sha256};
 
     let expected_bytes = expected_sha256
         .map(|hex| decode_sha256_hex(hex).map_err(|e| format!("Invalid SHA256 for {}: {}", url, e)))
-        .transpose()?;
+        .transpose()
+        .map_err(DownloadAttemptError::Fatal)?;
 
     let response = ureq::get(url.as_str()).call().map_err(|err| {
+        let transient = is_transient_http_error(&err);
         let reason = match err {
             HttpError::StatusCode(code) => format!("unexpected status code {code}"),
             other => other.to_string(),
         };
-        format!("Failed to download bundle from {}: {}", url, reason)
+        let msg = format!("Failed to download bundle from {}: {}", url, reason);
+        if transient {
+            DownloadAttemptError::Transient(msg)
+        } else {
+            DownloadAttemptError::Fatal(msg)
+        }
     })?;
 
     let total_size: Option<u64> = response
@@ -428,11 +504,11 @@ fn download_http_bundle(
 
     let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination).map_err(|e| {
-        format!(
+        DownloadAttemptError::Fatal(format!(
             "Failed to create bundle file {}: {}",
             destination.display(),
             e
-        )
+        ))
     })?;
 
     let mut hasher = expected_bytes.as_ref().map(|_| Sha256::new());
@@ -440,19 +516,24 @@ fn download_http_bundle(
     let mut bytes_downloaded: u64 = 0;
     let mut last_report = Instant::now();
     loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|e| format!("Failed to read response body from {}: {}", url, e))?;
+        let read = reader.read(&mut buffer).map_err(|e| {
+            // A connection dropped mid-transfer is as transient as one that
+            // never opened; the retry restarts from File::create's truncate.
+            DownloadAttemptError::Transient(format!(
+                "Failed to read response body from {}: {}",
+                url, e
+            ))
+        })?;
         if read == 0 {
             break;
         }
         bytes_downloaded += read as u64;
         file.write_all(&buffer[..read]).map_err(|e| {
-            format!(
+            DownloadAttemptError::Fatal(format!(
                 "Failed to write bundle file {}: {}",
                 destination.display(),
                 e
-            )
+            ))
         })?;
         if let Some(ref mut h) = hasher {
             h.update(&buffer[..read]);
@@ -483,23 +564,23 @@ fn download_http_bundle(
         }
     }
     file.flush().map_err(|e| {
-        format!(
+        DownloadAttemptError::Fatal(format!(
             "Failed to flush bundle file {}: {}",
             destination.display(),
             e
-        )
+        ))
     })?;
 
     if let Some((hasher, expected)) = hasher.zip(expected_bytes) {
         let computed = hasher.finalize();
         if computed.as_slice() != expected.as_slice() {
             std::fs::remove_file(destination).ok();
-            return Err(format!(
+            return Err(DownloadAttemptError::Fatal(format!(
                 "SHA256 checksum mismatch for {}: expected {}, computed {}",
                 url,
                 expected_sha256.unwrap_or_default(),
                 encode_hex(computed.as_slice()),
-            ));
+            )));
         }
     }
 
@@ -1463,5 +1544,60 @@ mod tests {
         let result = download_http_bundle(&url, &dest, None, None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(dest.exists(), "bundle file should exist");
+    }
+
+    #[test]
+    fn test_is_transient_http_error_classification() {
+        assert!(is_transient_http_error(&HttpError::StatusCode(500)));
+        assert!(is_transient_http_error(&HttpError::StatusCode(503)));
+        assert!(is_transient_http_error(&HttpError::ConnectionFailed));
+        assert!(is_transient_http_error(&HttpError::Io(
+            std::io::Error::other("reset")
+        )));
+        assert!(!is_transient_http_error(&HttpError::StatusCode(404)));
+        assert!(!is_transient_http_error(&HttpError::StatusCode(403)));
+        assert!(!is_transient_http_error(&HttpError::TooManyRedirects));
+    }
+
+    #[test]
+    fn test_download_http_bundle_retries_5xx_then_succeeds() {
+        let bundle = create_test_tar_zst(b"hello world");
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .times(3)
+                .respond_with(httptest::responders::cycle![
+                    status_code(503),
+                    status_code(503),
+                    status_code(200).body(bundle),
+                ]),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let result = download_http_bundle(&url, &dest, None, None);
+        assert!(result.is_ok(), "expected Ok after retries, got: {result:?}");
+        assert!(dest.exists(), "bundle file should exist");
+    }
+
+    #[test]
+    fn test_download_http_bundle_does_not_retry_4xx() {
+        let server = Server::run();
+        // `times(1)` makes the server itself assert (on drop) that no
+        // retry request ever arrived.
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .times(1)
+                .respond_with(status_code(404)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let err = download_http_bundle(&url, &dest, None, None).unwrap_err();
+        assert!(err.contains("404"), "error should carry the status: {err}");
     }
 }
