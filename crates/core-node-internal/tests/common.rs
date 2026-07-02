@@ -204,7 +204,7 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
 /// state (not lingering as terminal after a stop/reset).
 pub fn instance_state_in_any_state(
     node_stack: &NodeStack,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
 ) -> Option<core_node_api::InstanceState> {
     node_stack.snapshot().into_iter().find_map(|handle| {
         handle
@@ -1831,7 +1831,7 @@ async fn start_core_node_with_messenger(
 #[must_use = "guard keeps the spawned child alive; drop it to tear down the instance"]
 pub struct TestRunningInstance {
     pub pid: u32,
-    pub instance_id: config::node::Name,
+    pub instance_id: config::runtime::Name,
     handle: node_stack::EntityHandle,
     _working_dir: Option<TempDir>,
     _feedback_drain: tokio::task::JoinHandle<()>,
@@ -1854,7 +1854,7 @@ impl node_stack::build_io::OutputReaderHooks for NoOpOutputHooks {}
 
 fn make_real_output_sinks(
     peppy_dirs: &PeppyDirs,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
 ) -> (
     node_stack::OutputSinks,
     tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
@@ -1895,7 +1895,7 @@ pub async fn spawn_real_running_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
 ) -> TestRunningInstance {
     spawn_real_running_instance_inner(started, name, tag, instance_id, true).await
 }
@@ -1909,7 +1909,7 @@ pub async fn spawn_real_stuck_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
 ) -> TestRunningInstance {
     spawn_real_running_instance_inner(started, name, tag, instance_id, false).await
 }
@@ -1918,7 +1918,7 @@ async fn spawn_real_running_instance_inner(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
     install_shutdown_listener: bool,
 ) -> TestRunningInstance {
     let handle = started
@@ -1998,7 +1998,7 @@ async fn spawn_real_running_instance_inner(
 pub async fn install_kill_on_shutdown_listener(
     started: &StartedCoreNode,
     name: &str,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
     pid: u32,
 ) -> AbortOnDrop<peppylib::PeppyResult<()>> {
     let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
@@ -2030,7 +2030,7 @@ pub async fn install_kill_on_shutdown_listener(
 #[must_use = "guard keeps the half-started child alive; drop it to clean up"]
 pub struct TestStartingInstance {
     pub pid: u32,
-    pub instance_id: config::node::Name,
+    pub instance_id: config::runtime::Name,
     _child: tokio::process::Child,
     _started_ctx: node_stack::StartedInstanceCtx,
     _feedback_drain: tokio::task::JoinHandle<()>,
@@ -2060,7 +2060,7 @@ pub async fn spawn_real_starting_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
 ) -> TestStartingInstance {
     let handle = started
         .node_stack
@@ -2102,7 +2102,7 @@ pub async fn real_build_and_spawn_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
-    instance_id: &config::node::Name,
+    instance_id: &config::runtime::Name,
 ) -> TestRunningInstance {
     use parking_lot::Mutex as StdMutex;
 

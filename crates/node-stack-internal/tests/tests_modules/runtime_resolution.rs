@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use config::node::Name;
+use config::runtime::Name;
 use config::{ConfigError, ParsingError};
 use node_stack::{NodeStack, NodeStackError};
 

@@ -649,8 +649,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
     );
     build_staged_node(&started_core_node, NODE_NAME, NODE_TAG).await;
 
-    let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
-    let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
+    let instance_id_1 = config::runtime::Name::new(INSTANCE_1).expect("valid instance id 1");
+    let instance_id_2 = config::runtime::Name::new(INSTANCE_2).expect("valid instance id 2");
     // Stuck variant: no helper-installed shutdown listener, so the endpoints
     // below are the ONLY listeners on each instance's SHUTDOWN_SERVICE. With
     // two listeners the mock delivers the daemon's single request to both;
@@ -1012,7 +1012,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     // the endpoint below is the only SHUTDOWN_SERVICE listener; see
     // node_add_same_node_shutdown_existing_instances for the lost-request
     // race a second listener introduces.
-    let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
+    let instance_id = config::runtime::Name::new(INSTANCE_ID).expect("valid instance id");
     let running = spawn_real_stuck_instance(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
@@ -1250,7 +1250,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     // the endpoint below is the only SHUTDOWN_SERVICE listener; see
     // node_add_same_node_shutdown_existing_instances for the lost-request
     // race a second listener introduces.
-    let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
+    let instance_id = config::runtime::Name::new(INSTANCE_ID).expect("valid instance id");
     let running = spawn_real_stuck_instance(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
@@ -1485,7 +1485,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     // Spawn a real running instance WITHOUT the auto-shutdown listener so
     // the production shutdown path observes a stuck process that never
     // responds or terminates.
-    let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
+    let instance_id = config::runtime::Name::new(INSTANCE_ID).expect("valid instance id");
     let running = spawn_real_stuck_instance(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
@@ -1606,8 +1606,8 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     // Two stuck instances of the same entity: neither installs a shutdown
     // listener, so the overwrite's cooperative phase can never succeed and the
     // full grace window is burned before the force phase.
-    let id_a = config::node::Name::new("two_stuck_a").expect("valid instance id");
-    let id_b = config::node::Name::new("two_stuck_b").expect("valid instance id");
+    let id_a = config::runtime::Name::new("two_stuck_a").expect("valid instance id");
+    let id_b = config::runtime::Name::new("two_stuck_b").expect("valid instance id");
     let inst_a = spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &id_a).await;
     let inst_b = spawn_real_stuck_instance(&started_core_node, NODE_NAME, NODE_TAG, &id_b).await;
     let pid_a = inst_a.pid;

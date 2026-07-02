@@ -4,7 +4,7 @@ use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to
 use crate::Result;
 use crate::names;
 use daemon_config::consts::PeppyDirs;
-use config::node::Name;
+use config::runtime::Name;
 use config::peppy_config::PeerConfig;
 use daemon_config::peppy_config::{Mode, PeppyConfig};
 use config::runtime::RuntimeConfig;

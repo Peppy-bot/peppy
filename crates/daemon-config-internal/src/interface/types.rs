@@ -1,5 +1,6 @@
 use config::{
-    node::{EmittedTopic, ExposedAction, ExposedService, Name},
+    node::{EmittedTopic, ExposedAction, ExposedService},
+    runtime::Name,
     schema::PeppySchema,
 };
 use serde::{

@@ -7,7 +7,7 @@ use common::{
     send_node_run_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use config::node::Name;
+use config::runtime::Name;
 use core_node_api::encoding::NodeResetRequest;
 use peppylib::core_node::transport::poll_node_reset;
 use peppylib::messaging::MessengerHandle;

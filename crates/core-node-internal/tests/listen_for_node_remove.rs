@@ -4,7 +4,7 @@ use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
     spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use config::node::Name;
+use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::core_node::transport::poll_node_remove;
 use peppylib::messaging::MessengerHandle;

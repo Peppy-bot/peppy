@@ -1423,7 +1423,8 @@ mod conforms_to_tests {
     //! tests in `crates/generator-internal/tests/{rust,python}/conforms_to.rs`.
 
     use super::*;
-    use config::node::{ConformsToItem, Interfaces, Name};
+    use config::node::{ConformsToItem, Interfaces};
+    use config::runtime::Name;
     use core_node_api::encoding::RepoSourceKind;
     use std::fs;
     use tempfile::TempDir;

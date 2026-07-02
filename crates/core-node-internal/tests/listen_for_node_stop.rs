@@ -8,7 +8,7 @@ use common::{
     spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
-use config::node::Name;
+use config::runtime::Name;
 use core_node::force_kill_deadline;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;

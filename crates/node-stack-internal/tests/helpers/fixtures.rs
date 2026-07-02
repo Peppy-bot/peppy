@@ -8,7 +8,8 @@
 
 #![allow(dead_code)] // Some helpers are reserved for future tests.
 
-use config::node::{Name, NodeConfig};
+use config::node::NodeConfig;
+use config::runtime::Name;
 use node_stack::{EntityHandle, NodeStack};
 
 use crate::helpers::real_lifecycle::{

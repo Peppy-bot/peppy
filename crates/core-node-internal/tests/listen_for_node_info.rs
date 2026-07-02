@@ -5,7 +5,7 @@ use common::{
     send_node_add_then_build, send_node_run_and_wait, start_core_node_with_mock_messenger,
     write_peppy_json5,
 };
-use config::node::Name;
+use config::runtime::Name;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::core_node::transport::poll_node_info as transport_poll_node_info;

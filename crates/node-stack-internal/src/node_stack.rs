@@ -11,9 +11,10 @@ pub use entity::{
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    Name, NodeConfig, collect_dependency_specs, collect_interface_conformance_edges,
+    NodeConfig, collect_dependency_specs, collect_interface_conformance_edges,
     validate_dependency_specs,
 };
+use config::runtime::Name;
 use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;

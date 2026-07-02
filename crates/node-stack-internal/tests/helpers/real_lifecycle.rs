@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use daemon_config::consts::PeppyDirs;
-use config::node::{Name, NodeConfig};
+use config::node::NodeConfig;
+use config::runtime::Name;
 use core_node_api::NodeStage as SerializedNodeStage;
 use node_stack::{
     BuildContext, EntityHandle, NodeEntity, NodeStack, OutputSinks, StartContext,

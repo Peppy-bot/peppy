@@ -9,7 +9,7 @@ mod container_e2e_tests {
         start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
     };
     use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-    use config::node::Name as NodeName;
+    use config::runtime::Name as NodeName;
     use config::node::Toolchain;
     use core_node_api::encoding::NodeInitRequest;
     use node_stack::{NodeStack, NodeStage};
