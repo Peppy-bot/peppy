@@ -398,7 +398,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -599,7 +599,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "askama",
  "git2",
@@ -720,7 +720,7 @@ dependencies = [
  "peppy-config-model",
  "peppylib-rs",
  "pmi",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rstest",
  "rust-embed",
  "serde",
@@ -742,7 +742,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -1868,9 +1868,9 @@ dependencies = [
 
 [[package]]
 name = "humantime"
-version = "2.3.0"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
 
 [[package]]
 name = "hybrid-array"
@@ -2299,7 +2299,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "serde",
  "serde_json",
@@ -2617,7 +2617,7 @@ dependencies = [
  "peppy-config-model",
  "petgraph",
  "process-wrap",
- "rand 0.10.1",
+ "rand 0.10.2",
  "serde_json5",
  "tar",
  "tempfile",
@@ -3002,7 +3002,7 @@ dependencies = [
  "peppy-config-model",
  "peppylib-rs",
  "pmi",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rustix 1.1.4",
  "secrecy 0.10.3",
  "serde",
@@ -3022,7 +3022,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "capnp",
  "clap",
@@ -3045,7 +3045,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3221,7 +3221,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#d027f0f3d004760b8f1f3b9deba45156109c2e23"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#9844b960439124a5795c926b7a73a19d3dba1dcb"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3452,9 +3452,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
