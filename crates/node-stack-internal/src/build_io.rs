@@ -7,7 +7,7 @@
 //!   inside `tokio::task::spawn_blocking`. This is the right shape for the
 //!   build path, where the child is launched via `std::process::Command` (see
 //!   `node_stack::build_steps::build_container_image`) and we wait for it to
-//!   exit before continuing — no concurrent monitoring of `child.try_wait()`
+//!   exit before continuing; no concurrent monitoring of `child.try_wait()`
 //!   is needed.
 //!
 //! - [`spawn_output_reader_async`] uses `tokio::io::AsyncBufReadExt` on a
@@ -15,7 +15,7 @@
 //!   start path, where the daemon must call `child.try_wait()` concurrently
 //!   with reading stdout/stderr (so it can detect early child exit while
 //!   polling the ready/health signals). The reader tasks also outlive the
-//!   `prepare_and_spawn` call — they remain alive as long as the spawned
+//!   `prepare_and_spawn` call; they remain alive as long as the spawned
 //!   node is running so its stdout/stderr keeps streaming.
 
 use chrono::Local;
@@ -41,7 +41,7 @@ pub const STDERR_TAIL_LINES: usize = 20;
 pub use core_node_api::encoding::FeedbackStream;
 
 /// Writes a single feedback line to the log file in the canonical
-/// `[timestamp] [stream] line` format. Errors are swallowed — log writes are
+/// `[timestamp] [stream] line` format. Errors are swallowed; log writes are
 /// best-effort.
 pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackStream, line: &str) {
     let mut file = log_file.lock();
@@ -53,7 +53,7 @@ pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackS
 /// `[timestamp] Executing {label}: {cmd} (working_dir: {dir}[, k: v...])`
 /// format used by every spawn-and-stream step. `extras` is appended as
 /// comma-separated `key: value` pairs inside the trailing parenthesis. Errors
-/// are swallowed — log writes are best-effort.
+/// are swallowed; log writes are best-effort.
 pub fn log_cmd_header(
     log_file: &Arc<StdMutex<File>>,
     label: &str,
@@ -141,8 +141,8 @@ use process_wrap::tokio::{CommandWrap, ProcessGroup};
 /// Spawns `cmd` as a process-group leader so [`stream_child_output`]'s
 /// `KillGuard` can signal the entire subprocess tree on cancellation.
 ///
-/// A single-pid kill would only reach the immediate child; descendants — e.g.
-/// `sleep` inside a `sh -c "..."` wrapper, or `cargo` under a `make` target —
+/// A single-pid kill would only reach the immediate child; descendants (e.g.
+/// `sleep` inside a `sh -c "..."` wrapper, or `cargo` under a `make` target)
 /// would be orphaned and keep the daemon's stdio pipes open until they exit
 /// naturally, stalling cancellation. Making the child its own process-group
 /// leader (PGID == its PID) lets `start_kill()` signal the whole group.
@@ -254,7 +254,7 @@ pub async fn stream_child_output(
     // Join reader tasks and surface the first error so build diagnostics
     // receive failures instead of masked truncated output. The tasks were
     // already spawned, so awaiting them sequentially here does not stall
-    // concurrency — each completes as soon as its reader drains. Process
+    // concurrency; each completes as soon as its reader drains. Process
     // wait already returned above, so we are guaranteed not to leak the
     // child here.
     let mut reader_error: Option<String> = None;
@@ -316,7 +316,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 /// The reader task is spawned via `tokio::spawn` and remains alive as long as
 /// the underlying reader yields data. On the start path, this means the reader
 /// continues running past the return of `prepare_and_spawn`/`commit_started`
-/// for as long as the spawned node is alive — which is the desired behavior so
+/// for as long as the spawned node is alive, which is the desired behavior so
 /// the daemon keeps streaming the running node's stdout/stderr.
 pub fn spawn_output_reader_async<R>(
     reader: R,

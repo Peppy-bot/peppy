@@ -207,7 +207,7 @@ pub fn auto_sync_if_missing(
                 // to a background thread: the next stage (`process_node_add`)
                 // copies the source directory recursively, walks
                 // `.peppy-backup-PID-NANOS` (which is not in the excluded
-                // list), and would race with a concurrent deletion — surfacing
+                // list), and would race with a concurrent deletion, surfacing
                 // as intermittent "No such file or directory" errors.
                 //
                 // A failure here must be surfaced rather than silently
@@ -224,7 +224,7 @@ pub fn auto_sync_if_missing(
                 }
             }
             Err(e) => {
-                // Generation failed — remove partial .peppy and restore backup.
+                // Generation failed; remove partial .peppy and restore backup.
                 let _ = std::fs::remove_dir_all(&peppy_dir);
                 if had_backup && let Err(restore_err) = std::fs::rename(&backup_dir, &peppy_dir) {
                     tracing::error!(

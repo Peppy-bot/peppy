@@ -25,7 +25,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — should be accepted and start running the add.
+    // Send first goal; should be accepted and start running the add.
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
@@ -48,7 +48,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         .expect("failed to decode first goal response");
     assert!(first_response.accepted, "first goal should be accepted");
 
-    // Send second goal (no force) — should be rejected.
+    // Send second goal (no force); should be rejected.
     let second_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -104,7 +104,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — starts the add.
+    // Send first goal; starts the add.
     let first_goal = NodeAddGoal::new(
         slow_source_dir.path(),
         TEST_GIT_HASH,
@@ -140,7 +140,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     );
     write_peppy_json5(fast_source_dir.path(), &fast_peppy_json5);
 
-    // Send second goal with force — should abort the slow action and succeed.
+    // Send second goal with force; should abort the slow action and succeed.
     let second_result = send_node_add_and_wait_with_force(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,

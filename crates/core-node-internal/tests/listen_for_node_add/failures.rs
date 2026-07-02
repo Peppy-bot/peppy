@@ -188,7 +188,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     .expect("node_add should complete");
 
     assert!(!res.success, "add should fail on missing transitive dep");
-    // Stack must be unchanged — no partial add.
+    // Stack must be unchanged; no partial add.
     assert_eq!(node_stack.len(), pre_len, "stack should be unchanged");
     assert!(!node_stack.contains("a", "v1"));
     assert!(!node_stack.contains("b", "v1"));

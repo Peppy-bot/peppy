@@ -6,7 +6,7 @@
 //! service roundtrip on a single clock and reports the distribution back over a
 //! raw control service.
 //!
-//! Prints a self-explanatory summary table — p50 / p90 / mean per scenario, the
+//! Prints a self-explanatory summary table: p50 / p90 / mean per scenario, the
 //! ceiling, and the change in the **median (p50)** versus the previous run **on
 //! this machine** (baselines are keyed by /etc/machine-id and stored under the
 //! machine-local `target/`, so numbers are never compared across machines). The
@@ -121,7 +121,7 @@ fn main() {
 
 /// Print the CPU/scheduling environment that governs run-to-run variance, so a
 /// slow run is self-explanatory. On a shared host with turbo enabled, per-core
-/// frequency and noisy-neighbor load — not the code — dominate absolute numbers.
+/// frequency and noisy-neighbor load (not the code) dominate absolute numbers.
 fn print_environment() {
     let env = CpuEnvironment::detect();
     println!("\nenv: {}", env.summary_line());
@@ -133,7 +133,7 @@ fn print_environment() {
         println!(
             "note: turbo and/or shared-host load make absolute latency swing run-to-run regardless \
              of the code. For stable comparisons, measure on a quiet host with turbo disabled and \
-             the measured processes pinned to isolated cores — see .github/workflows/latency.yml."
+             the measured processes pinned to isolated cores; see .github/workflows/latency.yml."
         );
     }
 }
@@ -170,7 +170,7 @@ fn print_table(rows: &[Row]) {
                 format::fmt_duration(Duration::from_nanos(prev_ns)),
                 format::fmt_delta(row.p50.as_nanos() as u64, prev_ns),
             ),
-            None => ("—".to_string(), "—".to_string()),
+            None => ("-".to_string(), "-".to_string()),
         };
         let status = if row.p50 <= Duration::from_millis(row.ceiling_ms) {
             "✓"

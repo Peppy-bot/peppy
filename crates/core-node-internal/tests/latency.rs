@@ -4,7 +4,7 @@
 //! and measures topic and service roundtrip latency. The pass/fail assertion is
 //! on the **median (p50)**, not a tail percentile: the median is a robust,
 //! run-to-run-stable statistic, whereas p90/p99 are estimated from a handful of
-//! tail samples and swing with any scheduler preemption or CPU down-clock —
+//! tail samples and swing with any scheduler preemption or CPU down-clock;
 //! gating on them is the dominant flakiness source for sub-millisecond IPC. p90
 //! and mean are still printed as diagnostics.
 //!
@@ -81,13 +81,13 @@ async fn check_lang(lang: Lang) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "spawns real node processes; heavy — run via the dev->main latency.yml workflow"]
+#[ignore = "spawns real node processes; heavy: run via the dev->main latency.yml workflow"]
 async fn rust_roundtrip_latency_under_threshold() {
     check_lang(Lang::Rust).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "spawns real node processes; heavy — run via the dev->main latency.yml workflow"]
+#[ignore = "spawns real node processes; heavy: run via the dev->main latency.yml workflow"]
 async fn python_roundtrip_latency_under_threshold() {
     check_lang(Lang::Python).await;
 }

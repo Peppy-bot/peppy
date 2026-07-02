@@ -57,8 +57,8 @@ where
     Ok(tag)
 }
 
-/// The body of an interface document. Each section is a flat list of items
-/// — there is no `emits`/`consumes` split because an interface describes the
+/// The body of an interface document. Each section is a flat list of items;
+/// there is no `emits`/`consumes` split because an interface describes the
 /// provider side only. Conformance for the consumer side is checked separately
 /// against the node's declared interfaces.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -277,7 +277,7 @@ mod tests {
         assert!(action.feedback_topic.is_none());
     }
 
-    /// The schema field is the source of truth — a node-shaped document
+    /// The schema field is the source of truth: a node-shaped document
     /// must not be accepted by the interface parser, even if no
     /// interface-specific field is present.
     #[test]
@@ -332,7 +332,7 @@ mod tests {
         assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
     }
 
-    /// `labels` are descriptive metadata on the manifest — accepted so
+    /// `labels` are descriptive metadata on the manifest, accepted so
     /// catalog tooling can filter interfaces (e.g., `vendor`, `domain`)
     /// without changing the contract itself.
     #[test]
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(parsed.interfaces.actions.len(), 1);
     }
 
-    /// Round-tripping survives canonicalization — the parsed AST serializes
+    /// Round-tripping survives canonicalization: the parsed AST serializes
     /// back to a form that re-parses to the same AST.
     #[test]
     fn round_trips_through_serde() {

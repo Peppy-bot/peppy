@@ -4,7 +4,7 @@
 //! Rust path, the per-link Rust module would reference a struct name that had
 //! been overwritten in the deduplicated capnp source. Python's
 //! `register_schema` already derives the struct identity from the file_stem,
-//! so this test passes both before and after the fix — but it acts as a
+//! so this test passes both before and after the fix, but it acts as a
 //! forward-looking guardrail so the Python generator can't regress into the
 //! same divergence.
 //!
@@ -83,7 +83,7 @@ right_struct_name = referenced_struct(right)
 
 # Force-resolve each referenced struct. AttributeError here means the per-link
 # Python module references a struct that doesn't exist in the deduplicated
-# cap'n proto file — the same class of bug that bit the Rust generator.
+# cap'n proto file, the same class of bug that bit the Rust generator.
 getattr(left_schema, left_struct_name)
 getattr(right_schema, right_struct_name)
 

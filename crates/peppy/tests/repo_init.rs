@@ -31,7 +31,7 @@ fn repo_init_creates_file_when_missing() {
 
     assert!(repos_path.exists(), "repositories.json5 should be created");
     // Fresh-write path keeps the JSON5 template verbatim (comments and all),
-    // so don't try to parse it as strict JSON — match on substring instead.
+    // so don't try to parse it as strict JSON; match on substring instead.
     let content = std::fs::read_to_string(&repos_path).unwrap();
     assert!(
         content.contains("Peppy-bot/launchers_hub.git"),

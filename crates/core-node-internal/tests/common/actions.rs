@@ -38,7 +38,7 @@ pub enum NodeAddSource<'a> {
         url: url::Url,
         sha256: Option<String>,
     },
-    /// Add a node by `(name, tag)` against the repo cache — the daemon
+    /// Add a node by `(name, tag)` against the repo cache; the daemon
     /// resolves transitive deps from `~/.peppy/cache/nodes.json5`.
     RepoNode { name: &'a str, tag: &'a str },
 }
@@ -95,7 +95,7 @@ pub fn build_runtime_config_json5(
 }
 
 /// Convenience wrapper around `build_runtime_config_json5` using `127.0.0.1`,
-/// the default messaging port, and no node arguments — the shape used by most tests.
+/// the default messaging port, and no node arguments: the shape used by most tests.
 pub fn default_runtime_config_json5(
     core_node_name: &str,
     node_name: &str,
@@ -162,7 +162,7 @@ async fn send_node_run_goal(
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     // A rejected goal never streams feedback or produces a result, so callers
-    // must not proceed to drain — they would just burn the full result budget
+    // must not proceed to drain; they would just burn the full result budget
     // and surface a generic timeout instead of the actual rejection reason.
     if !goal_response.accepted {
         return Err(format!(
@@ -777,7 +777,7 @@ pub async fn send_node_add_then_build<'a>(
 }
 
 /// Adds and builds a node whose `run_cmd` forks two grandchild `sleep`s and
-/// waits — all three processes share the node's process group (nodes are
+/// waits; all three processes share the node's process group (nodes are
 /// spawned as group leaders). Used by the force-kill tests to prove a group
 /// kill reaps descendants, not just the leader. Returns the source dir guard.
 pub async fn add_and_build_forking_node(

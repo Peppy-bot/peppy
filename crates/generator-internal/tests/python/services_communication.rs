@@ -1056,7 +1056,7 @@ if __name__ == "__main__":
     // Under discover-then-pin, the consumer sends a lightweight probe and
     // pins to whichever producer responds first; the real request is
     // delivered only to that producer's handler. The loser must NOT run its
-    // handler — that's the load-bearing safety guarantee of the wildcard
+    // handler; that's the load-bearing safety guarantee of the wildcard
     // flow. Either exposer can win the probe race; identify the winner by
     // the response marker the consumer printed (exposer1 emits
     // `error=handled`, exposer2 emits `error=handled_by_exposer2`).
@@ -1105,7 +1105,7 @@ if __name__ == "__main__":
     );
     assert!(
         !loser_stdout.contains(&expected_request_log),
-        "{} must NOT process the enable_camera request — discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
+        "{} must NOT process the enable_camera request: discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
         loser_label,
         loser_stdout,
         loser_stderr

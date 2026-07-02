@@ -142,7 +142,7 @@ pub(super) async fn parse_launcher_config(
 /// `Fs` is a no-op; `Repository` looks up the launcher in the cache and, for git-sourced
 /// entries, materializes the checkout via `ensure_checkout`. Progress lines emitted by the
 /// (blocking) checkout are buffered into a `Vec` and flushed to the launch feedback topic
-/// after the resolver returns — quiet for cached/Fs entries, a few lines for fresh clones.
+/// after the resolver returns: quiet for cached/Fs entries, a few lines for fresh clones.
 async fn resolve_launcher_origin(
     ctx: &ProcessLaunchContext,
     origin: &LauncherOrigin,

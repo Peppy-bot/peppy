@@ -162,7 +162,7 @@ pub struct DuplicateInstanceIdAcrossStack {
 }
 
 /// Payload for [`ParsingError::BindingDeadKey`]. Boxed for the same
-/// `result_large_err` reason as the other binding variants — the six
+/// `result_large_err` reason as the other binding variants; the six
 /// `String` fields push the enum past the lint threshold otherwise.
 #[derive(Debug, Clone, Error)]
 #[error(
@@ -221,8 +221,8 @@ pub enum ParsingError {
     #[error(transparent)]
     BindingDeadKey(Box<BindingDeadKey>),
     /// Two `--bind KEY@…` entries on the same invocation share the same
-    /// `KEY`. Each `KEY` is the binding's label — pinned KEYs match a
-    /// declared link_id; `from_any` KEYs are free-form — and must be
+    /// `KEY`. Each `KEY` is the binding's label (pinned KEYs match a
+    /// declared link_id; `from_any` KEYs are free-form) and must be
     /// distinct so the validator can resolve each to a slot
     /// unambiguously.
     #[error(

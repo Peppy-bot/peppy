@@ -189,7 +189,7 @@ impl TestPackagesCache {
     }
 }
 
-/// Convenience helper — writes `peppy.json5` under `dir` but skips the
+/// Convenience helper: writes `peppy.json5` under `dir` but skips the
 /// fingerprint generation (useful for packages-cache FS fixtures that
 /// aren't going through the fingerprint verification path).
 pub fn write_plain_peppy_json5(dir: &Path, content: &str) {
@@ -208,8 +208,8 @@ pub fn create_test_node() -> TempDir {
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
 ///
-/// The returned [`TempDir`] owns the directory and deletes it — including the
-/// multi-GB cargo `target/` — when it drops, so test runs never accumulate
+/// The returned [`TempDir`] owns the directory and deletes it, including the
+/// multi-GB cargo `target/`, when it drops, so test runs never accumulate
 /// build artifacts. Bind it for as long as the node is needed (e.g. for the
 /// whole test body) and let it drop at scope end.
 pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {

@@ -122,7 +122,7 @@ pub(super) async fn build_container_image(
     // make `output_path` escape `working_dir` and apptainer would happily
     // write the image outside the build sandbox. The downstream
     // `move_sif_to_storage` already calls `validate_node_tag`, but only
-    // *after* apptainer has run — too late to prevent the escape.
+    // *after* apptainer has run, too late to prevent the escape.
     validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
 
     if !containers::Apptainer::is_lima_ready() {
@@ -278,7 +278,7 @@ pub(super) async fn run_build_cmd(
     // every error string surfaced to clients.
     //
     // For the shell form (single string), do NOT pre-expand `${VAR}`
-    // references — let `sh -c` expand them at runtime against the env vars
+    // references; let `sh -c` expand them at runtime against the env vars
     // already set on the spawned command via `.env()`. Pre-expansion would
     // splice user-supplied values straight into the shell command line,
     // turning any metacharacters in env values into shell injection.

@@ -8,7 +8,7 @@
 //! resolved CLI-side at connect time (see [`resolve_router_ca`]), **not** taken
 //! from the server's response: a debug build trusts the committed dev CA embedded
 //! in the binary; a release build validates against the system trust store. There
-//! is no env var or runtime override — dev federation works with zero config.
+//! is no env var or runtime override; dev federation works with zero config.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -102,7 +102,7 @@ pub fn resolve_router_ca_from(embedded: Option<&[u8]>, cache_dir: &Path) -> Opti
 /// with zero configuration, mirroring [`resolve_router_ca`]. In a debug build it is
 /// the committed dev client leaf embedded at compile time, materialized to the cache
 /// dir (since [`pmi::TlsConfig`] takes paths). A release build embeds neither, so it
-/// returns `None` and the CLI does one-way TLS (no client cert) — per-user client
+/// returns `None` and the CLI does one-way TLS (no client cert); per-user client
 /// certs are a follow-up.
 pub fn resolve_router_client_identity() -> Option<(PathBuf, PathBuf)> {
     resolve_router_client_identity_from(
@@ -225,7 +225,7 @@ fn pull_and_cache(
     let mut cred = resolver::resolve(creds_path, http, pat)?;
     // The identity this pull is actually authenticated as drives the cache tag
     // below. A PAT is not the on-disk session, so it must not be tagged with the
-    // session subject — doing so would let the session reuse the PAT's org once the
+    // session subject; doing so would let the session reuse the PAT's org once the
     // PAT is gone (a cross-identity leak).
     let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
     let cfg = client::establish_messaging_federation(http, api_url, &mut cred)?;
@@ -253,8 +253,8 @@ fn pull_and_cache(
     // Tag the cache with the backend identity the config was pulled for so a stale
     // cache that outlives an identity change is re-pulled (see
     // `resolve_router_endpoint`). For a session that is the session subject; for a
-    // PAT it is the PAT owner's stable, non-secret subject from the backend (`/me`)
-    // — never the session subject (which is a different identity) or an empty
+    // PAT it is the PAT owner's stable, non-secret subject from the backend (`/me`);
+    // never the session subject (which is a different identity) or an empty
     // string (which an empty active subject would spuriously match).
     let subject = if is_pat {
         client::get_me(http, api_url, &mut cred)?.sub
@@ -280,7 +280,7 @@ fn pull_and_cache(
 /// `tls/<host>:<port>` connect endpoint plus the connect-side mTLS material,
 /// resolved by pulling the shared router's connection config.
 ///
-/// Returns `None` — and the local router stays standalone (plaintext-only) — when
+/// Returns `None`, and the local router stays standalone (plaintext-only), when
 /// the user is not logged in, no backend is configured/reachable, or the pull
 /// fails, so the daemon always starts. The daemon dials the returned endpoint over
 /// mTLS, presenting the embedded dev client cert (debug builds); there is no
@@ -390,9 +390,9 @@ pub fn cached_organization_id_default() -> Option<String> {
 
 /// Client TLS material for dialing the shared router: validate it against the
 /// resolved trust anchor (`ca_certificate`, or the system store if `None`), with
-/// name verification on — the dialed host must match the router's certificate SAN.
+/// name verification on: the dialed host must match the router's certificate SAN.
 /// When a `client_identity` (cert + key) is present, present it as the mTLS client
-/// certificate and enable mutual TLS — the shared router requires it. A release
+/// certificate and enable mutual TLS; the shared router requires it. A release
 /// build with no embedded client identity falls back to one-way TLS.
 fn client_tls(
     ca_certificate: Option<PathBuf>,
@@ -493,7 +493,7 @@ mod tests {
     }
 
     /// Breaking-change guard: the legacy router-CA env override and the
-    /// env-reading CA helper are gone for good — the router CA reads no env var.
+    /// env-reading CA helper are gone for good; the router CA reads no env var.
     /// The needles are assembled from fragments (and the prose avoids spelling
     /// them) so this assertion never matches its own source text.
     #[test]

@@ -119,7 +119,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 
 When you are logged in, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Authentication](/advanced_guides/authentication/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
 
-- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router — once at startup, and again each time `peppy auth login` / `logout` pokes the daemon — before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
+- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
 
 ## Reference
 

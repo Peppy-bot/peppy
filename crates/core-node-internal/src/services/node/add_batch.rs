@@ -31,7 +31,7 @@ use tracing::{debug, warn};
 /// Upper bound on concurrently-running `materialize_entry` tasks inside a
 /// single batch. Bundles are materialized through git clones and HTTP
 /// downloads; spawning an unbounded number of them at once thrashes disk
-/// and network. 8 is empirical — enough to overlap IO latency, low
+/// and network. 8 is empirical: enough to overlap IO latency, low
 /// enough to avoid saturating a developer laptop.
 const MATERIALIZE_CONCURRENCY: usize = 8;
 
@@ -120,7 +120,7 @@ pub(crate) async fn run_repo_node_add(
         &feedback_tx,
         FeedbackStream::Stdout,
         format!(
-            "Batch resolved — {} node(s) to add: {}",
+            "Batch resolved: {} node(s) to add: {}",
             resolution.to_add.len(),
             resolution
                 .to_add
@@ -166,7 +166,7 @@ pub(crate) async fn run_repo_node_add(
         // We also clone the previous entity's `pending_working_dir` Arc so
         // its `WorkingDirGuard` stays alive through the sub-add. The
         // sub-add's `push_config` drops the previous entity (and its only
-        // owning reference to the guard) — without this clone the guard
+        // owning reference to the guard); without this clone the guard
         // would drop and the temp dir backing `config_path` would be
         // removed before rollback ever runs.
         let previous = action_context
@@ -212,14 +212,14 @@ pub(crate) async fn run_repo_node_add(
         });
     }
 
-    // Batch succeeded — defuse rollback and report.
+    // Batch succeeded; defuse rollback and report.
     rollback.disarm();
 
     emit(
         &feedback_tx,
         FeedbackStream::Stdout,
         format!(
-            "Batch add complete — {} node(s) added",
+            "Batch add complete: {} node(s) added",
             resolution.to_add.len()
         ),
     );
@@ -438,7 +438,7 @@ async fn run_single_batched_add(
 
 /// Snapshot of a stack entity captured before the batch replaced it, so
 /// rollback can re-install the prior config instead of removing the slot.
-/// Artifact/stage state is intentionally omitted — a successful rollback
+/// Artifact/stage state is intentionally omitted: a successful rollback
 /// returns the entity to `Added` (pending build); any previously built
 /// artifact remains on disk and a follow-up `node build` rewires it.
 ///
@@ -516,14 +516,14 @@ impl Drop for RollbackGuard {
                             debug!("Rolled back batched replacement of {}:{}", name, tag)
                         }
                         Err(e) => warn!(
-                            "Batch-add rollback (restore previous) failed for {}:{} — {}",
+                            "Batch-add rollback (restore previous) failed for {}:{}: {}",
                             name, tag, e
                         ),
                     }
                 }
                 None => match self.node_stack.remove_config(&name, &tag) {
                     Ok(_) => debug!("Rolled back batched add of {}:{}", name, tag),
-                    Err(e) => warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e),
+                    Err(e) => warn!("Batch-add rollback failed for {}:{}: {}", name, tag, e),
                 },
             }
         }

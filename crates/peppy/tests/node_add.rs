@@ -1035,7 +1035,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
 /// daemon round-trip is attempted.
 #[test]
 fn node_add_with_sync_flag_rejects_remote_source() {
-    // No daemon / runtime setup needed — the error fires during local arg
+    // No daemon / runtime setup needed; the error fires during local arg
     // validation before any async work. We still need a minimal AppContext.
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
@@ -1085,7 +1085,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
 // through the same launcher binding rules as a standalone `peppy node run`.
 // Before the fix, `add -r` constructed the launch with an empty
 // `slot_bindings` map and skipped `validate_bindings`, so a consumer with
-// pinned `depends_on` would silently spawn unbound — exactly the
+// pinned `depends_on` would silently spawn unbound, exactly the
 // regression spec'd at the top of this file.
 
 /// Writes a consumer manifest declaring `depends_on.nodes` pinned to
@@ -1133,7 +1133,7 @@ fn write_consumer_with_pinned_depends_on(
 /// manifest declares a pinned `depends_on` entry MUST fail validation when
 /// no `--bind` is supplied. Before the fix the chained-run path called
 /// `run_instance_async` with an empty slot map, so the daemon would spawn
-/// the consumer despite the missing binding — exactly the bug from the
+/// the consumer despite the missing binding, exactly the bug from the
 /// reproducer at the top of this file. The fix routes both `node run` and
 /// `node add -r` through `validate_and_run_instance`, so the same
 /// unbound-slot error fires for both.
@@ -1164,7 +1164,7 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
 
     // Set up a built producer the consumer depends on; we don't spawn an
     // instance of it because the validator's pinned-unbound rule fires on
-    // declaration alone — no producer instance is needed to reproduce.
+    // declaration alone; no producer instance is needed to reproduce.
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),
@@ -1223,7 +1223,7 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
 
     let err = result.expect_err(
         "node add -r on a consumer with unbound pinned deps must fail with the same error \
-         as `node run` — chaining must NOT bypass binding validation",
+         as `node run`; chaining must NOT bypass binding validation",
     );
     let msg = err.to_string();
     assert!(
@@ -1248,7 +1248,7 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
 /// Positive control: `peppy node add -r --bind KEY@VALUE` (where KEY is a
 /// declared pinned link_id and VALUE is the producer's instance_id) is the
 /// supported path. The same producer/consumer scaffolding as the
-/// rejection test above, but with the binding supplied — the consumer
+/// rejection test above, but with the binding supplied; the consumer
 /// must launch cleanly.
 #[test]
 fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
@@ -1368,7 +1368,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         ))
         .expect("consumer health service should start");
 
-    // `node add -r --bind wrist_left@cam_a` — exactly the invocation the
+    // `node add -r --bind wrist_left@cam_a`, exactly the invocation the
     // reproducer at the top of this file wanted to work.
     NodeCommand {
         command: NodeCommands::Add {
@@ -1390,7 +1390,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
 
     let logs = log_capture.logs();
     // Match the consumer's specific instance_id so this stays a real
-    // signal — bare "Started node instance" would also match the producer
+    // signal; bare "Started node instance" would also match the producer
     // we spawned above and pass even if the consumer never launched.
     assert!(
         logs.contains(&format!("Started node instance '{consumer_instance_id}'")),
@@ -1516,7 +1516,7 @@ fn node_add_with_run_rejects_dead_binding_key() {
             run: true,
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
-            // `ghost` is not declared in the consumer's depends_on —
+            // `ghost` is not declared in the consumer's depends_on:
             // dead-binding.
             binds: vec![("ghost".to_string(), producer_instance_id.to_string())],
             idle_timeout: 60,

@@ -48,7 +48,7 @@ fn install_peppy_service() {
 #[test]
 fn stop_peppy_daemon_does_not_panic() {
     let result = install::stop_peppy_daemon();
-    // We only care that it doesn't panic — the error (service not found) is expected
+    // We only care that it doesn't panic; the error (service not found) is expected
     // on machines where the service isn't installed.
     if let Err(e) = &result {
         eprintln!("stop_peppy_daemon returned expected error: {e}");

@@ -1,6 +1,6 @@
 //! Persistent HTTP bundle cache shared across `node add` batches.
 //!
-//! Mirrors [`super::git`] but keyed by `(url, sha256)` — a given
+//! Mirrors [`super::git`] but keyed by `(url, sha256)`: a given
 //! URL + checksum can only ever refer to one archive, so once we've
 //! downloaded and extracted it we reuse the extraction indefinitely.
 //!
@@ -47,7 +47,7 @@ fn recorded_sha(dir: &Path) -> Option<String> {
 /// the expected one are wiped.
 ///
 /// When no `sha256` is supplied we cannot verify integrity, so there is
-/// nothing safe to reuse — every call downloads fresh into a unique
+/// nothing safe to reuse; every call downloads fresh into a unique
 /// per-call directory (courtesy of `download_and_extract_http_source`,
 /// which stages into `http_downloads_dir()/node_add_<ts>_<rand>/`) and
 /// returns that directory directly. This isolates concurrent callers

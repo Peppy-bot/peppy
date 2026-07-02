@@ -5,8 +5,8 @@ use std::path::Path;
 /// Parser responsible for extracting interface documents.
 ///
 /// Interface files are stand-alone JSON5 documents declaring
-/// `peppy_schema: "interface/v1"`. Like launchers, they are filename-agnostic
-/// — schema and shape validation are handled by serde so callers walking a
+/// `peppy_schema: "interface/v1"`. Like launchers, they are filename-agnostic:
+/// schema and shape validation are handled by serde so callers walking a
 /// repository can attempt to parse and treat failures as "not an interface."
 pub struct PeppyInterfaceParser;
 

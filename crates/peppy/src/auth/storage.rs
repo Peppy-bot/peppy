@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 pub const CREDENTIALS_VERSION: u32 = 1;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
-/// session, and the cached shared-router connection — or empty (just the
+/// session, and the cached shared-router connection, or empty (just the
 /// current version) when not logged in.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
@@ -57,7 +57,7 @@ impl Default for Credentials {
 
 /// Cached per-user zenoh-router connection. Pulled from the backend after login
 /// and reused until [`is_stale`](Self::is_stale). `Clone` is derivable (no
-/// secrets — the capability lives in the endpoint and the link is end-to-end
+/// secrets; the capability lives in the endpoint and the link is end-to-end
 /// TLS), unlike [`ProfileCreds`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterSession {

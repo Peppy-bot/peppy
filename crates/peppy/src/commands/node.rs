@@ -138,7 +138,7 @@ pub enum NodeCommands {
         /// peppygen interface code to be regenerated from the current
         /// `peppy.json5`, so the snapshot taken by `node add` is up-to-date.
         ///
-        /// Only valid for local filesystem sources — remote (git/http)
+        /// Only valid for local filesystem sources; remote (git/http)
         /// sources are synced server-side when the daemon fetches them.
         ///
         /// This flag is NOT implied by `--build` or `--run`; it's a
@@ -161,7 +161,7 @@ pub enum NodeCommands {
         run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30).
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG and only make
-        /// sense when `--run` is set — `requires = "run"` so a bare
+        /// sense when `--run` is set; `requires = "run"` so a bare
         /// `peppy node add . frequency=30` errors at parse time instead of
         /// silently ignoring the argument.
         #[arg(value_parser = parse_key_value_arg, requires = "run")]
@@ -176,7 +176,7 @@ pub enum NodeCommands {
         /// (`--bind a@p1,b@p2`). Only valid alongside `--run`: without a
         /// chained run there is no instance to apply the bindings to, so
         /// `requires = "run"` rejects the combination at parse time.
-        /// Validation is shared with `peppy node run` — see
+        /// Validation is shared with `peppy node run`; see
         /// `validate_and_run_instance` for the rule set.
         #[arg(
             long = "bind",
@@ -186,7 +186,7 @@ pub enum NodeCommands {
             requires = "run",
         )]
         binds: Vec<(String, String)>,
-        /// Idle timeout in seconds — resets whenever output is received
+        /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
@@ -206,7 +206,7 @@ pub enum NodeCommands {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
-        /// Idle timeout in seconds — resets whenever output is received
+        /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
@@ -263,7 +263,7 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         binds: Vec<(String, String)>,
-        /// Idle timeout in seconds — resets whenever output is received
+        /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
@@ -308,7 +308,7 @@ pub enum NodeCommands {
     ///
     /// Takes a reference to a node that has already been added via
     /// `peppy node add`. If the node is not in the stack, the command exits
-    /// with an error — inspecting sources on disk is the job of `node add`,
+    /// with an error; inspecting sources on disk is the job of `node add`,
     /// not `node info`.
     Info {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
@@ -857,8 +857,8 @@ mod tests {
         );
     }
 
-    /// Sanity: a plain `add` with neither run-only flag must keep parsing
-    /// — `requires = "run"` only fires when one of the gated fields is
+    /// Sanity: a plain `add` with neither run-only flag must keep parsing:
+    /// `requires = "run"` only fires when one of the gated fields is
     /// present.
     #[test]
     fn add_without_any_run_only_args_still_parses() {

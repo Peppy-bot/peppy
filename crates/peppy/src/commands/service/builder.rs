@@ -120,7 +120,7 @@ impl ServeCommandBuilder {
                 // The local router always starts STANDALONE here. Federating it to
                 // the caller's per-user cloud router (so messages cross both routers
                 // as one network; only the inter-router hop is TLS, local nodes stay
-                // plaintext loopback) needs a backend round-trip — done *off* this
+                // plaintext loopback) needs a backend round-trip, done *off* this
                 // synchronous startup path by the `RouterFederation` task (registered
                 // in `build`), which applies the initial federation as soon as the
                 // router is up and re-applies it live on login/logout. Resolving it
@@ -264,11 +264,11 @@ impl ServeCommandBuilder {
             }
         }
 
-        // Per-user-router federation manager (zenoh engine only — other engines
+        // Per-user-router federation manager (zenoh engine only; other engines
         // never set `federation_api_url`). Applies the initial federation once the
         // router is up (gating `serve` reporting ready, bounded by the timeout),
         // keeps the cloud router alive, and (de)federates the local router live on
-        // login/logout — immediately when poked over the control socket, else on
+        // login/logout: immediately when poked over the control socket, else on
         // the next poll. It waits on `messaging_ready` before touching the router,
         // so it can't race MessagingRouter's initial `start_router`.
         // In-process restart channel. `None` for the mock engine (no federation

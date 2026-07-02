@@ -16,7 +16,7 @@ use std::time::Duration;
 
 /// Polls a datastore service on the started core node using the shared test
 /// routing and 5-second timeout, returning the response message. Panics on any
-/// transport failure — the datastore endpoints should always answer a
+/// transport failure; the datastore endpoints should always answer a
 /// well-formed request.
 async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Payload) -> Message {
     ServiceMessenger::poll(
@@ -34,7 +34,7 @@ async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Paylo
 }
 
 /// Sends a `datastore_store` request to the started core node and decodes the
-/// (empty) acknowledgement. Panics on any transport or decode failure — the
+/// (empty) acknowledgement. Panics on any transport or decode failure; the
 /// store endpoint should always succeed for a well-formed request.
 pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
     let payload = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
@@ -81,7 +81,7 @@ pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
 
 /// Stores an arbitrary binary value, reads it back, and asserts the value and
 /// encoding survive the round trip. Shared between the mock-messenger and
-/// real-zenoh datastore tests — the latter exercises real cross-process
+/// real-zenoh datastore tests; the latter exercises real cross-process
 /// serialization of the Cap'n Proto `Data` field.
 pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
     let key = "binary_key_1";

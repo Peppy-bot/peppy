@@ -217,7 +217,7 @@ impl DependencyContext {
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 ///
 /// Construct values through the [`DeploymentInterface`] constructors
-/// (`consumed_service`, `emitted_topic`, …) rather than naming these fields directly — that keeps
+/// (`consumed_service`, `emitted_topic`, …) rather than naming these fields directly; that keeps
 /// callers decoupled from the variant layout. The variants stay public so consumers can read them
 /// back via [`DeploymentInterface::interface`] in an exhaustive `match`; that read shape is the
 /// deliberate, semver-relevant contract.
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(conformed.producer_tag, "v1");
         assert_eq!(conformed.origin, Some(origin.clone()));
 
-        // interface: no producer node — (name, tag) double as producer identity and origin.
+        // interface: no producer node; (name, tag) double as producer identity and origin.
         let iface = DependencyContext::interface("camera_iface", "v2");
         assert_eq!(iface.producer_name, "camera_iface");
         assert_eq!(iface.producer_tag, "v2");

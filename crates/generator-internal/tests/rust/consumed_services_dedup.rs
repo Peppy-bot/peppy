@@ -5,15 +5,15 @@
 //! Concretely, `add_consumed_service` ([rust.rs `add_consumed_service`])
 //! registers each schema under
 //! `method_label = "poll_{producer_node}_{service_name}"`, NOT under the
-//! bare `service_name` — so the cross-producer same-service-name scenario
+//! bare `service_name`, so the cross-producer same-service-name scenario
 //! produces two distinct capnp files (one per producer) and the consumers'
 //! deserializers can each reference their own producer's exact message
 //! shape, even when the two producers' formats diverge.
 //!
 //! Today this works. This test pins that down. If a future refactor ever
-//! drops the producer-node prefix from the service schema key — making
+//! drops the producer-node prefix from the service schema key (making
 //! consumed_service susceptible to the same dedup divergence that bit
-//! consumed_topic — the assertion on the per-producer capnp file pair, or
+//! consumed_topic), the assertion on the per-producer capnp file pair, or
 //! the build itself, will fail.
 //!
 //! The Python counterpart lives in
@@ -133,7 +133,7 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
 
     // The producer-node-scoped schema keys must yield distinct capnp files
     // for each producer. If both producers ever shared a single capnp file,
-    // one consumer's payload shape would lose to the other's — this is the
+    // one consumer's payload shape would lose to the other's; this is the
     // file-level evidence that the dedup bug from consumed_topic doesn't
     // apply here.
     let capnp_dir = peppygen_dir.join("src/capnp");
@@ -165,7 +165,7 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
     );
     assert!(
         !front_request_text.contains("intensity @"),
-        "front request capnp must NOT carry the rear producer's `intensity` field — \
+        "front request capnp must NOT carry the rear producer's `intensity` field; \
          that would prove the schemas got deduplicated. Got:\n{front_request_text}"
     );
     assert!(

@@ -46,7 +46,7 @@ pub(crate) struct ServiceActionCycle {
     pub nodes: Vec<String>,
     /// The `name:tag` of the dependency whose caller-driven edge closes the
     /// cycle. This is an interface for an interface-routed edge, or a direct
-    /// node identity for a direct `depends_on.nodes` edge — hence the neutral
+    /// node identity for a direct `depends_on.nodes` edge; hence the neutral
     /// name rather than `interface`.
     pub closing_dependency: String,
     /// Whether the closing edge is a service or an action dependency.

@@ -27,14 +27,14 @@ use peppylib::messaging::SenderTarget;
 pub const TEST_NODE_TAG: &str = "v1";
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
-/// invalid names — tests use known-good values only.
+/// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
 /// Builds a node-shaped [`SenderTarget`] tagged with [`names::CORE_NODE_TAG`].
 /// Use this when the test caller is addressing one of the daemon's own services
-/// (clock, info, ping, node_add, …) — the daemon's listeners pin their tag to
+/// (clock, info, ping, node_add, …); the daemon's listeners pin their tag to
 /// `CORE_NODE_TAG`, not the `v1` used for ordinary test nodes.
 pub fn core_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")

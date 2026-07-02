@@ -65,7 +65,7 @@ pub(super) async fn materialize_repo_deps(
         if !seen.insert((name.clone(), tag.clone())) {
             continue;
         }
-        // Stack tier wins — record the hit (de-duped via `seen` above)
+        // Stack tier wins; record the hit (de-duped via `seen` above)
         // and skip materialization for anything already pushed onto the
         // persistent NodeStack.
         if node_stack.find(&name, &tag).is_some() {
@@ -210,7 +210,7 @@ pub(super) fn build_dependency_context_for_interface(
         .with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
 }
 
-/// What a single dependency can provide to consumers — its native
+/// What a single dependency can provide to consumers: its native
 /// emits/exposes merged with the topics/services/actions it pulls in via
 /// `conforms_to`. Native entries store `None` as origin; conformed entries
 /// carry the `(iface_name, iface_tag)` origin so the consumer can address the
@@ -257,7 +257,7 @@ pub(super) fn build_dependency_offerings(
     let mut actions: HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)> =
         HashMap::new();
 
-    // Native side first — native entries win on key collision.
+    // Native side first; native entries win on key collision.
     if let Some(topic_ifaces) = &dep_config.interfaces.topics
         && let Some(emits) = &topic_ifaces.emits
     {

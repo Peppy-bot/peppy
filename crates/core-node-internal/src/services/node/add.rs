@@ -124,7 +124,7 @@ pub(crate) struct ExtractedHttpSource {
 /// clone) and an infrastructure failure during the shallow probe (fall back to
 /// full clone).
 enum ShallowCheckError {
-    /// The config was found but is invalid — a full clone would fail the same way.
+    /// The config was found but is invalid; a full clone would fail the same way.
     InvalidConfig(String),
     /// The shallow fetch itself failed (e.g. server doesn't support shallow
     /// clones, network error, ref not found). Fall back to full clone.
@@ -132,7 +132,7 @@ enum ShallowCheckError {
 }
 
 /// Performs a depth-1 shallow fetch into a bare repo and reads the node config
-/// blob directly from the git object database — no working-directory checkout.
+/// blob directly from the git object database, with no working-directory checkout.
 fn shallow_validate_config(
     repo_url: &str,
     repo_relative_path: &Path,
@@ -299,7 +299,7 @@ async fn shallow_probe_config(
     // The shallow probe is only a preflight hint: if it rejects the config,
     // fail fast; otherwise proceed to the full clone and reparse the config
     // from the actual checkout. Never use the probe's parsed value as the
-    // final NodeConfig — the clone is the source of truth.
+    // final NodeConfig; the clone is the source of truth.
     match probe_result {
         Ok(_) => Ok(()),
         Err(ShallowCheckError::InvalidConfig(msg)) => Err(msg),
@@ -384,7 +384,7 @@ fn parse_config_from_checkout(
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
     // Always parse the config from the cloned checkout. The shallow probe
-    // in phase 1 is only a preflight hint — its result is not trusted as
+    // in phase 1 is only a preflight hint; its result is not trusted as
     // the final config, since the probe and the clone could in principle
     // disagree (e.g. a force-push between the two fetches).
     let node_config = match NodeConfigParser::from_path(&config_path) {
@@ -1389,7 +1389,7 @@ async fn process_node_add_inner(
 
     // Generate the peppygen library in the working directory.
     // Container builds need Copy mode because Apptainer's `%files` copies symlinks
-    // as-is — absolute symlinks to the host cache would be broken inside the container.
+    // as-is; absolute symlinks to the host cache would be broken inside the container.
     let language = node_config.execution.language;
     let deploy_mode = if node_config.execution.container.is_some() {
         generator::CrateDeployMode::Copy

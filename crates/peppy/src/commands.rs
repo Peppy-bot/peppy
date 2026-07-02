@@ -37,7 +37,7 @@ pub(crate) fn health_label(healthy: bool) -> &'static str {
 
 /// The health cell for an instance, accounting for its lifecycle state. A
 /// terminal instance (`Finished`/`Failed`) has exited, so its last health probe
-/// is meaningless — render a neutral `-` rather than a stale `healthy`/
+/// is meaningless: render a neutral `-` rather than a stale `healthy`/
 /// `unhealthy`. Live instances render their probed health via [`health_label`].
 /// Shared by `stack list` and `node info` so the two never diverge.
 pub(crate) fn instance_health_label(state: InstanceState, healthy: bool) -> &'static str {
@@ -112,7 +112,7 @@ mod tests {
             instance_health_label(InstanceState::Starting, false),
             "unhealthy"
         );
-        // Terminal instances have exited, so health is not applicable — the
+        // Terminal instances have exited, so health is not applicable; the
         // stale `healthy` flag must never surface as a verdict.
         assert_eq!(instance_health_label(InstanceState::Finished, true), "-");
         assert_eq!(instance_health_label(InstanceState::Finished, false), "-");

@@ -16,7 +16,7 @@ pub const DEFAULT_RUST_BASE_IMAGE: &str = "tuatini/peppy-rust-cargo-base:latest"
 /// Default base container image for Python nodes (Ubuntu 24.04 + Python 3, uv).
 pub const DEFAULT_PYTHON_BASE_IMAGE: &str = "tuatini/peppy-python-uv-base:latest";
 
-/// Default base container image for lightweight test containers (Google mirror — CI-friendly).
+/// Default base container image for lightweight test containers (Google mirror, CI-friendly).
 pub const DEFAULT_ALPINE_BASE_IMAGE: &str = "mirror.gcr.io/library/alpine:3.20";
 
 // Application runtime environment (dev/prod) tracked internally.
@@ -36,14 +36,14 @@ static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 /// This is the crate's only mutable global state. It is **set-once**: the
 /// first call wins and every later call is silently ignored (so a binary can
 /// pin the environment at startup without callers downstream being able to
-/// flip it). It is also **optional** — if never called, the environment
+/// flip it). It is also **optional**: if never called, the environment
 /// defaults to [`AppEnv::Dev`].
 ///
 /// The only thing it influences is the *default* peppy data root: it shifts
 /// [`peppy_root_dir`] (and therefore [`PeppyDirs::default`]) between
 /// `~/.peppy` (prod) and `/tmp/.peppy` (dev). It has no effect on parsing,
 /// validation, or any [`PeppyDirs`] constructed explicitly via
-/// [`PeppyDirs::new`]. Code that wants a deterministic root — including tests —
+/// [`PeppyDirs::new`]. Code that wants a deterministic root, including tests,
 /// should construct [`PeppyDirs::new`] directly rather than rely on this
 /// global; that keeps it independent of call ordering across threads.
 pub fn set_app_env(env: AppEnv) {
@@ -122,7 +122,7 @@ impl PeppyDirs {
     /// visible inside the guest VM. Use this instead of `std::env::temp_dir()`.
     ///
     /// In production this resolves to `~/.peppy/tmp`, which doubles as the
-    /// persistent build cache root used by `build_helpers::cache_dir` — never
+    /// persistent build cache root used by `build_helpers::cache_dir`; never
     /// bulk-clean this directory.
     pub fn tmp_dir(&self) -> PathBuf {
         self.root.join("tmp")

@@ -169,12 +169,12 @@ fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
 /// plus client slack so the daemon always has time to apply and reply.
 ///
 /// For [`FederationPokeAction::Login`] this is **strict**: if federation cannot
-/// be established — the daemon isn't running, the apply timed out, no upstream
-/// resolved, or the federation link does not validate — it returns an actionable
+/// be established (the daemon isn't running, the apply timed out, no upstream
+/// resolved, or the federation link does not validate), it returns an actionable
 /// [`Error::Auth`]. The caller has already persisted the credentials, so the user
 /// stays authenticated; only the command exits non-zero. For
 /// [`FederationPokeAction::Logout`] it is best-effort and never returns `Err`
-/// (de-federation that didn't reach the daemon is harmless — the daemon
+/// (de-federation that didn't reach the daemon is harmless; the daemon
 /// re-resolves on its next poll).
 pub(crate) fn poke_federation_and_report(
     dirs: &PeppyDirs,
@@ -184,7 +184,7 @@ pub(crate) fn poke_federation_and_report(
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = Duration::from_secs(connect_timeout_secs) + daemon_control::POKE_READ_SLACK;
     // The poke blocks while the daemon re-resolves the user's cloud router and
-    // verifies the TLS link, which can take a few seconds — show the same
+    // verifies the TLS link, which can take a few seconds; show the same
     // steady-tick spinner as the browser-approval wait so the step isn't a silent
     // pause. Only for a login: a logout's de-federation is best-effort and quick.
     // Cleared before the outcome is reported so the result prints on a clean line.
@@ -290,7 +290,7 @@ fn await_restart(
 /// Strict reporting for a login poke: success and the operator-pinned case print
 /// and return `Ok`; every "federation not in effect" outcome returns an
 /// actionable [`Error::Auth`] (credentials are already saved by the caller, so
-/// the identity is kept — only the command fails).
+/// the identity is kept; only the command fails).
 fn report_login(outcome: PokeOutcome) -> Result<()> {
     match outcome {
         PokeOutcome::Applied(Some(_)) => {
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn logout_is_always_best_effort() {
-        // `report_logout` returns `()` for every variant — a logout can never be
+        // `report_logout` returns `()` for every variant; a logout can never be
         // failed by the federation poke.
         for outcome in [
             PokeOutcome::Applied(None),

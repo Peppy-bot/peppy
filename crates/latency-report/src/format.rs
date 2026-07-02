@@ -15,10 +15,10 @@ pub fn fmt_duration(duration: Duration) -> String {
 }
 
 /// Format the percentage change of `now_ns` versus `prev_ns` (e.g. `+12.3%`).
-/// Returns `—` when there is no usable baseline.
+/// Returns `-` when there is no usable baseline.
 pub fn fmt_delta(now_ns: u64, prev_ns: u64) -> String {
     if prev_ns == 0 {
-        return "—".to_string();
+        return "-".to_string();
     }
     let pct = (now_ns as f64 - prev_ns as f64) / prev_ns as f64 * 100.0;
     format!("{pct:+.1}%")
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn fmt_delta_handles_zero_baseline() {
-        assert_eq!(fmt_delta(100, 0), "—");
+        assert_eq!(fmt_delta(100, 0), "-");
         assert_eq!(fmt_delta(110, 100), "+10.0%");
         assert_eq!(fmt_delta(90, 100), "-10.0%");
     }

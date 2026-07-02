@@ -193,7 +193,7 @@ impl DaemonState {
     /// Whether the daemon that wrote this state still appears to be running, by
     /// probing its recorded pid. A state file outlives a crashed daemon (it is
     /// left on disk), so a successful [`read`](Self::read) is not by itself proof
-    /// of liveness — a caller that needs "is a daemon actually up" must check this.
+    /// of liveness; a caller that needs "is a daemon actually up" must check this.
     pub(crate) fn is_running(&self) -> bool {
         self.daemon_pid.is_some_and(Self::pid_looks_alive)
     }

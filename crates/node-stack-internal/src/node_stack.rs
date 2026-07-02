@@ -160,7 +160,7 @@ impl NodeStackInner {
         // `push_config_impl` calls us while holding that entity's *write* lock
         // (it validates and replaces the entity under one held lock). Reading
         // its handle here would re-enter a lock the current thread already
-        // holds — `parking_lot::RwLock` is not reentrant, so it would
+        // holds; `parking_lot::RwLock` is not reentrant, so it would
         // self-deadlock. Identify the candidate's slot by index up front and
         // skip it without ever locking it; its incoming config is appended
         // below instead of the stale stored one.
@@ -314,7 +314,7 @@ impl NodeStackInner {
     }
 
     /// Looks up a tracked instance by id across all entities. **Only matches
-    /// `Running` instances** — `Starting` instances are skipped because they
+    /// `Running` instances**; `Starting` instances are skipped because they
     /// haven't subscribed to messenger services yet, so a handle to one would
     /// let callers reach into something that can't respond. Callers wanting
     /// to clean up an in-flight start should use `NodeEntity::abort_started`
@@ -330,13 +330,13 @@ impl NodeStackInner {
     }
 
     /// Find the `(node_name, node_tag)` of any entity in the stack that
-    /// already tracks an instance with `instance_id`, in any state —
+    /// already tracks an instance with `instance_id`, in any state:
     /// `Starting`, `Running`, etc. Used by the daemon's stack-wide
     /// instance_id uniqueness guard at spawn time (the validator's
     /// `rule 7` is the primary check at plan time; this is the
     /// defensive backstop at the trust boundary).
     ///
-    /// Skips the root entity — the daemon's own internals own an
+    /// Skips the root entity; the daemon's own internals own an
     /// `instance_id`, but it's not user-namable, so a collision there
     /// is structurally impossible.
     fn find_entity_label_for_instance_id_any_state(
@@ -396,7 +396,7 @@ impl NodeStackInner {
     /// entity *before* calling `push_config` for a re-add. (See
     /// `shutdown_existing_instances` in `services/node/add.rs`.) The on-disk
     /// `.sif`/archive of the previous build is the caller's responsibility to
-    /// clean up — `push_config` only manages the in-memory entity.
+    /// clean up; `push_config` only manages the in-memory entity.
     ///
     /// Dependency checks and rewiring only occur when interfaces change.
     /// Returns `Err(CannotModifyRootNode)` if trying to modify the root node config.
@@ -471,7 +471,7 @@ impl NodeStackInner {
                     if allow_missing_dependencies {
                         // A permissive (missing-dependency) re-add skips the full
                         // dependency check, but must still not close a
-                        // service/action cycle — run the cycle check on the
+                        // service/action cycle; run the cycle check on the
                         // candidate's incoming config regardless.
                         self.validate_no_service_action_cycle(&candidate)?;
                     } else {
@@ -496,8 +496,8 @@ impl NodeStackInner {
             // Entity doesn't exist, create new one in the Added stage.
             let entity = NodeEntity::new(config, config_path);
             if allow_missing_dependencies {
-                // `insert_entity` skips dependency validation — and with it the
-                // cycle check — on a permissive add, so run the cycle check
+                // `insert_entity` skips dependency validation (and with it the
+                // cycle check) on a permissive add, so run the cycle check
                 // explicitly. The entity is not in the graph yet, so this sees
                 // it as the candidate appended to the live stack.
                 self.validate_no_service_action_cycle(&entity)?;
@@ -619,7 +619,7 @@ impl NodeStackInner {
 
         // Interface-conformance edges (`depends_on.interfaces` → a `conforms_to`
         // provider) are deliberately kept out of the DAG so they never constrain
-        // launch ordering, but they are real dependencies — surface them in the
+        // launch ordering, but they are real dependencies; surface them in the
         // display graph, annotated with the interface they route through.
         let config_refs: Vec<&NodeConfig> = configs.iter().collect();
         let node_by_key: HashMap<(&str, &str), &SerializedNode> = nodes
@@ -676,7 +676,7 @@ impl NodeStack {
     /// the running daemon itself and has no buildable artifact, so it is
     /// constructed directly in `Ready { instances: [Running] }` via
     /// [`NodeEntity::root`]. The root instance is in `Running` state because
-    /// the daemon process is already alive — there's no spawn-then-commit to
+    /// the daemon process is already alive; there's no spawn-then-commit to
     /// model.
     pub fn new<P: Into<PathBuf>>(
         root_config: NodeConfig,
@@ -774,7 +774,7 @@ impl NodeStack {
     }
 
     /// Return the `(node_name, node_tag)` of any entity in the stack that
-    /// tracks an instance with `instance_id` in any state — `Starting`,
+    /// tracks an instance with `instance_id` in any state: `Starting`,
     /// `Running`, etc. Used by the daemon to enforce stack-wide
     /// `instance_id` uniqueness at the spawn trust boundary (per spec
     /// rule 7). The validator catches collisions at plan time; this is
@@ -858,7 +858,7 @@ impl NodeStack {
     /// handle the caller already holds and the entity's `generation` matches.
     ///
     /// Used by the `process_node_add` failure path: after a build error, the
-    /// caller wants to remove the entity it created — but a concurrent
+    /// caller wants to remove the entity it created, but a concurrent
     /// `push_config` may have replaced the entity in-place between the
     /// failure and the cleanup. The pointer + generation check rules out the
     /// race: if either differs, the entity is no longer the one we built and

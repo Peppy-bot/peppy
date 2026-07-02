@@ -38,7 +38,7 @@ impl PeppyPythonConfigTemplate<'_> {
 ///
 /// A PEP 440 local version: public indexes reject local versions, so
 /// peppygen's exact `peppylib==<this>` requirement can never be satisfied
-/// from PyPI — a node missing the `.peppy/libs/peppylib` path source fails
+/// from PyPI; a node missing the `.peppy/libs/peppylib` path source fails
 /// loudly instead of silently installing an outdated release. Intentionally
 /// differs from `peppylib.__version__` (which is stamped from PEPPY_GIT_TAG).
 pub(crate) const PYTHON_PEPPYLIB_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+peppy");
@@ -53,7 +53,7 @@ struct PeppylibPythonProjectTemplate<'a> {
 
 /// Renders the manifest of the standalone peppylib Python project deployed
 /// at `.peppy/libs/peppylib/pyproject.toml`. Plain setuptools packaging of
-/// the prebuilt wrappers + native extension — never maturin, since end-user
+/// the prebuilt wrappers + native extension, never maturin, since end-user
 /// machines have no Rust toolchain.
 pub(crate) fn render_peppylib_python_pyproject() -> Result<String> {
     let tpl = PeppylibPythonProjectTemplate {
@@ -143,7 +143,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 // rust-embed (the `interpolate-folder-path` feature). generator's build script
 // sets it to the `peppyos-shared` directory located via build-helpers, so these
 // resolve to the real source trees whether peppyos builds in the superproject or
-// from a cargo git checkout of public-peppy-libs — no `../../../` reach required.
+// from a cargo git checkout of public-peppy-libs; no `../../../` reach required.
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]
@@ -232,7 +232,7 @@ pub fn cache_sibling_path(cache_dir: &Path, suffix: &str) -> std::path::PathBuf 
 
 /// Controls how vendored crates are linked into a node's `.peppy/libs/` directory.
 ///
-/// `Symlink` (the default) creates symlinks to a shared cache — fast and avoids
+/// `Symlink` (the default) creates symlinks to a shared cache: fast and avoids
 /// duplicating files across nodes on the host filesystem.
 ///
 /// `Copy` physically copies the crate sources into the node directory.

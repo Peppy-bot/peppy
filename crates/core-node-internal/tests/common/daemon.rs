@@ -334,7 +334,7 @@ fn make_real_output_sinks(
 
 /// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
 /// `(name, tag)`, which must already be in `Ready`. Spawns a real child via
-/// the entity's existing `run_cmd` — callers are responsible for ensuring
+/// the entity's existing `run_cmd`; callers are responsible for ensuring
 /// the node config's run_cmd is spawnable in the test environment (the
 /// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
 /// task on the messenger that SIGKILLs the entity-tracked pid when the

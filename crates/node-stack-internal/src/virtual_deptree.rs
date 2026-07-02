@@ -6,7 +6,7 @@
 //! daemon tries to resolve their interfaces. Unlike the persistent
 //! [`crate::NodeStack`], a `VirtualDeptree` is built from on-disk
 //! `peppy.json5` files, lives only for the duration of the operation, and is
-//! discarded immediately after — it never mutates the daemon's real node
+//! discarded immediately after; it never mutates the daemon's real node
 //! stack.
 //!
 //! Edges in the underlying graph go from a *dependency* to its *dependant*, so
@@ -46,7 +46,7 @@ impl VirtualNodeInfo {
 ///
 /// Construction validates uniqueness (no two inputs may share the same
 /// `name:tag`) and freedom from cycles. `depends_on` entries that don't match
-/// any node in the input set are silently ignored — those are external
+/// any node in the input set are silently ignored; those are external
 /// dependencies that the daemon will resolve via its persistent node stack.
 #[derive(Debug)]
 pub struct VirtualDeptree {
@@ -94,7 +94,7 @@ impl VirtualDeptree {
         }
 
         // Second pass: add edges from each declared dependency that is also
-        // present in the input set. Unknown deps are skipped here — the daemon
+        // present in the input set. Unknown deps are skipped here; the daemon
         // will resolve them against its persistent node stack at sync time.
         for idx in graph.node_indices().collect::<Vec<_>>() {
             let info = &infos[&idx];
@@ -135,8 +135,8 @@ impl VirtualDeptree {
             })
             .collect();
         // `infos` is a `HashMap`, so its iteration order is nondeterministic.
-        // Sort by `(name, tag)` so the node-index order handed to the finder —
-        // and thus which SCC it reports when several exist — is stable.
+        // Sort by `(name, tag)` so the node-index order handed to the finder
+        // (and thus which SCC it reports when several exist) is stable.
         cycle_nodes.sort_by(|a, b| (a.name, a.tag).cmp(&(b.name, b.tag)));
         if let Some(cycle) = find_service_action_cycle(&cycle_nodes) {
             return Err(Error::ServiceActionInterfaceCycle {

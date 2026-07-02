@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Throttle window between consecutive `transfer_progress` reports surfaced
-/// to the user — fast enough to feel live, slow enough to avoid flooding
+/// to the user: fast enough to feel live, slow enough to avoid flooding
 /// the feedback channel.
 const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 

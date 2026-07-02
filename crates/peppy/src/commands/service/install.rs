@@ -161,7 +161,7 @@ fn service_environment(
     // that installed it. systemd/launchd start the service with a clean
     // environment, so without this the daemon falls back to the default
     // `~/.peppy` while a caller that set PEPPY_HOME (CI per-run isolation or a
-    // custom install prefix) reads daemon state from the override path — the two
+    // custom install prefix) reads daemon state from the override path; the two
     // never find each other and the install's readiness probe times out. Empty
     // is treated as unset, matching `daemon_config::consts::peppy_root_dir`.
     if let Some(home) = peppy_home.filter(|value| !value.is_empty()) {

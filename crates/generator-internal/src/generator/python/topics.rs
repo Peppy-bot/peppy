@@ -16,7 +16,7 @@ pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
 ///
 /// Schemas are resolved via `importlib.resources.files("peppygen")` so the
 /// lookup is independent of where the calling file lives in the package
-/// tree — native artifacts at `peppygen/{category}/{leaf}.py` and conformed
+/// tree: native artifacts at `peppygen/{category}/{leaf}.py` and conformed
 /// ones nested under `peppygen/{category}/{iface}/{tag}/{leaf}.py` share
 /// the same loader body.
 pub(crate) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {

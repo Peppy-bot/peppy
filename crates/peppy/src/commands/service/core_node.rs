@@ -161,14 +161,14 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 // closes it (logging a failed publish on every tick).
                 shutdown_token.cancel();
                 // Catchable shutdown (ctrl+C / SIGTERM): the daemon is exiting,
-                // so tear down every spawned node now — cooperatively, then
-                // force-kill any straggler's process group — so none is left
+                // so tear down every spawned node now (cooperatively, then
+                // force-kill any straggler's process group) so none is left
                 // orphaned. `&mut core_node_future` still holds a shared borrow
                 // of `core_node`; `teardown_node_stack` also takes `&self`, so
                 // this second shared borrow is fine. Runs before this handler
                 // returns, so the kills complete before the daemon process exits.
                 // The cooperative stop sends SHUTDOWN_SERVICE over the messaging
-                // session, so the session must still be open here — the router
+                // session, so the session must still be open here; the router
                 // waits for the `core_node_done` signal below before closing it.
                 core_node.teardown_node_stack().await;
                 // Release the messaging router to close the session now that the

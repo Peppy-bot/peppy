@@ -58,7 +58,7 @@ pub fn apply_mode(
 }
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
-/// invalid names — tests use known-good values only.
+/// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
@@ -235,8 +235,8 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
 
 /// Wraps a spawned child whose stdout/stderr are piped, draining them
 /// from background threads into shared buffers. This lets a test
-/// inspect stdout while the child is still running — for example, to
-/// wait for a specific line to appear before sending shutdown — without
+/// inspect stdout while the child is still running (for example, to
+/// wait for a specific line to appear before sending shutdown) without
 /// blocking on the pipe. Existing helpers that take a plain
 /// `&mut std::process::Child` keep working against the exposed `child`
 /// field.
@@ -473,7 +473,7 @@ pub fn wait_for_child(
 /// reuse the same dir across runs.
 ///
 /// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
-/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// NOT `PeppyDirs::default()`: the latter resolves to `/tmp/.peppy` in dev, and a
 /// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
 /// mid-link.
 fn stable_test_target_dir() -> std::path::PathBuf {
@@ -489,7 +489,7 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     // before building. The generator names every node's library `peppygen`, so in
     // the shared target dir cargo treats them as one interchangeable
     // `peppygen v0.1.0` unit and may link a *different* test's cached rlib into
-    // this `user_node` — e.g. a pinned consumer silently getting another test's
+    // this `user_node`: e.g. a pinned consumer silently getting another test's
     // unpinned `fire_goal`, which then discovers instead of pinning. A unique
     // name forces cargo to compile (and link) the peppygen this test just
     // generated. Mirrors the unique `user_node` wrapper name; the heavy shared
@@ -634,7 +634,7 @@ pub struct WaitContext<'a> {
 /// endpoint that will never come up) fails loudly with a clear panic
 /// instead of stalling the whole test binary. Each helper accepts an
 /// explicit `timeout` so call sites can opt into something larger or
-/// smaller — pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
+/// smaller; pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
 pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn wait_for_service_reachable_or_exit(

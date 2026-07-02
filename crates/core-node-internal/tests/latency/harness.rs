@@ -6,13 +6,13 @@
 //! - a **driver** node (always Rust) that times each roundtrip with a single
 //!   `Instant` clock and reports the distribution back to this process over a
 //!   raw `bench_control` service, and
-//! - a **responder** node whose language is the variable — Rust or Python.
+//! - a **responder** node whose language is the variable: Rust or Python.
 //!
 //! Both are launched exactly the way peppy launches nodes (`NodeBuilder` reading
 //! `PEPPY_RUNTIME_CONFIG`, with a generated `peppygen` library present), reusing
 //! the codegen + build + spawn machinery from [`crate::helpers`]. The measured
 //! hot path uses the raw peppylib messaging API on `node_runner.messenger()`
-//! (persistent subscription / queryable — what peppygen wraps) so the tight
+//! (persistent subscription / queryable, what peppygen wraps) so the tight
 //! request/reply loop is race-free; peppygen is still generated so the processes
 //! are genuine peppygen nodes.
 //!
@@ -117,7 +117,7 @@ pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
     (Lang::Python, Transport::Service),
 ];
 
-/// Per (lang, transport) **median (p50)** ceiling in milliseconds — the
+/// Per (lang, transport) **median (p50)** ceiling in milliseconds: the
 /// threshold the guard test asserts and the bench's status column reports
 /// against. The median is the gated metric because it is stable run-to-run;
 /// p90/p99 are too sample-starved at these counts to gate on without flaking.
@@ -224,7 +224,7 @@ fn ensure_peppylib_dep(user_node: &Path) {
 /// peppylib/zenoh stack is compiled once and reused across scenarios).
 ///
 /// Rooted at [`config_test_support::test_data_root`] (the disk-backed test root),
-/// NOT `PeppyDirs::default()` — the latter resolves to `/tmp/.peppy` in dev, and a
+/// NOT `PeppyDirs::default()`; the latter resolves to `/tmp/.peppy` in dev, and a
 /// tens-of-GB cargo target dir on `/tmp` tmpfs exhausts it and makes `ld` SIGBUS
 /// mid-link.
 fn shared_target_dir() -> PathBuf {

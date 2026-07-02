@@ -129,7 +129,7 @@ async fn start_with_ready_rejects_a_second_start() {
     )));
 
     // Drive the first start on a task: it registers listeners then serves until
-    // the session closes. The ready signal is a deterministic barrier — once it
+    // the session closes. The ready signal is a deterministic barrier: once it
     // fires, the `started` flag is set.
     let first = Arc::clone(&core_node);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

@@ -80,7 +80,7 @@ pub async fn list_nodes_collecting(
     Ok(out)
 }
 
-/// Pure formatter for the `peppy stack list` output — kept free of any IO so
+/// Pure formatter for the `peppy stack list` output, kept free of any IO so
 /// it can be unit-tested directly. `colorize` tints node labels, instances,
 /// and bindings with ANSI SGR codes; the caller passes `false` for
 /// non-interactive output so piped/redirected text and tests stay plain.
@@ -103,8 +103,8 @@ pub fn format_stack_list(
     }
 
     // Per-instance bindings. A distinct view from the node table above, but it
-    // rides the same `graph_json` payload — each instance now carries its
-    // resolved slot bindings — so there is no extra wire round-trip.
+    // rides the same `graph_json` payload (each instance now carries its
+    // resolved slot bindings) so there is no extra wire round-trip.
     let _ = writeln!(out, "Instance bindings");
     let _ = writeln!(out);
     let binding_nodes: Vec<&SerializedNode> =
@@ -186,7 +186,7 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool
 const BINDING_HEADERS: [&str; 5] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "BINDINGS"];
 
 /// Renders the per-instance bindings table. `nodes` must already be filtered
-/// to entries with at least one instance — the caller prints `(none)` when
+/// to entries with at least one instance; the caller prints `(none)` when
 /// none qualify, so this never emits an empty body.
 fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
     // One block of rows per node, so `render_table` draws a rule between node
@@ -222,8 +222,8 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
 }
 
 /// The instance's lifecycle state for the STATUS column. Tinted as a
-/// traffic-light cue — green once running, yellow while still starting, blue
-/// once finished cleanly, red if it crashed — and rendered from the same
+/// traffic-light cue (green once running, yellow while still starting, blue
+/// once finished cleanly, red if it crashed) and rendered from the same
 /// `InstanceState` that `peppy node info` shows as `[running]`/`[starting]`,
 /// without the brackets since the column delimits it.
 fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> String {
@@ -237,8 +237,8 @@ fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> Stri
 }
 
 /// The instance's health for the HEALTH column. For a live instance this is the
-/// daemon's last `node_health` probe carried in [`SerializedInstance::healthy`]
-/// — green for `healthy`, red for `unhealthy`, so a failing instance stands out.
+/// daemon's last `node_health` probe carried in [`SerializedInstance::healthy`]:
+/// green for `healthy`, red for `unhealthy`, so a failing instance stands out.
 /// A terminal (finished/failed) instance has exited, so it has no live health to
 /// report and renders a neutral, uncolored `-`.
 fn format_instance_health(instance: &SerializedInstance, colorize: bool) -> String {
@@ -282,8 +282,8 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// Right-hand side of a `link_id -> …` binding line: the producer the slot
 /// resolves to, rendered as `instance_id@core_node` (the full wire address
 /// every binding now carries). A `from_any` slot with explicit producers
-/// lists them comma-separated; a `from_any` slot left bindless — and the
-/// degenerate "bound to nothing" case — render as `(any)`.
+/// lists them comma-separated; a `from_any` slot left bindless (and the
+/// degenerate "bound to nothing" case) render as `(any)`.
 fn format_slot_binding(binding: &SlotBinding) -> String {
     let render =
         |producer: &ProducerRef| format!("{}@{}", producer.instance_id, producer.core_node);
@@ -300,7 +300,7 @@ fn format_slot_binding(binding: &SlotBinding) -> String {
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
-/// intentionally deferred to `peppy node info` — the list view is meant to
+/// intentionally deferred to `peppy node info`; the list view is meant to
 /// fit one node per row. Terminal instances (finished/crashed) are counted too,
 /// so a one-shot node that has completed still shows up rather than reading as
 /// `0` once its only instance exits.
@@ -931,8 +931,8 @@ mod tests {
             "instance-less node should be filtered out:\n{out}"
         );
 
-        // Each present node label appears exactly once — on its group's first
-        // row — proving the node-cell continuation blanking across a real group
+        // Each present node label appears exactly once, on its group's first
+        // row, proving the node-cell continuation blanking across a real group
         // boundary (not just within a single node).
         assert_eq!(
             section.matches("alpha:v1").count(),
@@ -1031,7 +1031,7 @@ mod tests {
 
     #[test]
     fn colorize_is_purely_additive() {
-        // Colorizing must only inject SGR codes — it must never move a column.
+        // Colorizing must only inject SGR codes; it must never move a column.
         // Stripping the codes back out has to reproduce the plain render byte
         // for byte, which also exercises the ANSI-aware `col_width`.
         let nodes = vec![binding_node(

@@ -273,7 +273,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         "dependent node should still exist after failed overwrite"
     );
 
-    // Path equality alone isn't enough — assert the live entity config still
+    // Path equality alone isn't enough; assert the live entity config still
     // exposes the v1-only interface (`reset_sensor`) and does NOT expose the
     // v2-only interface (`new_service`). This proves the failed overwrite
     // truly preserved the original revision rather than just the path.
@@ -1495,7 +1495,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     .await;
     let stuck_pid = running.pid;
 
-    // Register a SHUTDOWN_SERVICE handler that blocks forever — simulates a frozen/unresponsive node.
+    // Register a SHUTDOWN_SERVICE handler that blocks forever; simulates a frozen/unresponsive node.
     // `notify_one` is never called, so the handler never returns, causing the poll to time out.
     let instance_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -1516,7 +1516,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
                 let never_unblock_clone = Arc::clone(&never_unblock_clone);
                 async move {
                     let payload = context.message().payload();
-                    // Block forever — the node never acknowledges the shutdown
+                    // Block forever; the node never acknowledges the shutdown
                     never_unblock_clone.notified().await;
                     Ok(payload)
                 }
@@ -1570,7 +1570,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
         "dependent node should still be in the stack"
     );
 
-    // The real process must be gone — no orphan. Poll: the reap is bounded and
+    // The real process must be gone, with no orphan. Poll: the reap is bounded and
     // best-effort, so the OS may finish teardown a beat after the add returns.
     poll_until(
         Duration::from_secs(5),
@@ -1581,8 +1581,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
 }
 
 /// Overwriting an entity with SEVERAL stuck running instances must stop them as
-/// one batch — every cooperative shutdown sent concurrently, one shared
-/// force-kill window — exactly like the SIGINT teardown, not one full window per
+/// one batch (every cooperative shutdown sent concurrently, one shared
+/// force-kill window), exactly like the SIGINT teardown, not one full window per
 /// instance. Locks in both halves of `stop_instances`: correctness (both
 /// process groups force-killed and removed, no orphans) and the shared-budget
 /// timing (a per-instance loop would burn at least 2 × the force-kill window in
@@ -1660,7 +1660,7 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     );
 
     // Lower bound: the stuck instances really did sit out a full force-kill
-    // window (neither answers SHUTDOWN_SERVICE). Pins the test's premise — if a
+    // window (neither answers SHUTDOWN_SERVICE). Pins the test's premise: if a
     // future change short-circuits the wait on an unreachable/failed cooperative
     // send, this fires instead of the upper bound passing vacuously.
     assert!(
@@ -1668,7 +1668,7 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
         "stuck instances should burn the full force-kill window ({window:?}), took only {elapsed:?}"
     );
     // Upper bound (shared budget): the whole batch burns ONE force-kill window
-    // (plus the bounded reap and the add's own staging work — comfortably under
+    // (plus the bounded reap and the add's own staging work, comfortably under
     // a second window). A per-instance loop burns ≥ 2 × the window in stuck-grace
     // alone, so it cannot finish under this bound.
     assert!(

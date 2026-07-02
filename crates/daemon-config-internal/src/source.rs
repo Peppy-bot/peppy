@@ -66,7 +66,7 @@ where
 {
     let pre_trim = value.trim();
     // Reject absolute paths (including leading-slash form) and parent-dir
-    // components *before* stripping leading slashes — otherwise `/foo/bar`
+    // components *before* stripping leading slashes; otherwise `/foo/bar`
     // would be silently coerced to a valid relative path.
     let original_path = Path::new(pre_trim);
     if original_path.is_absolute()

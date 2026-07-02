@@ -1,7 +1,7 @@
 //! CPU / scheduling environment detection.
 //!
 //! On a shared host with turbo enabled, per-core frequency and noisy-neighbor
-//! load — not the code — dominate absolute latency numbers. Surfacing the
+//! load, not the code, dominate absolute latency numbers. Surfacing the
 //! environment makes a slow run self-explanatory. Linux-only; unknown values
 //! read back as `"?"`.
 

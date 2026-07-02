@@ -138,7 +138,7 @@ async fn handle_node_sync_request_inner(
     };
 
     // Resolver closure: node stack first, then any repository-materialized
-    // deps. Stack always wins — the repo cache is a fallback opt-in via
+    // deps. Stack always wins; the repo cache is a fallback opt-in via
     // the request's `include_repositories` flag.
     let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
         node_stack

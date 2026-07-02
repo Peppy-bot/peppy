@@ -36,7 +36,7 @@ async fn poll_node_info_raw(
 }
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
-/// if the daemon answers `NotInStack` — happy-path tests expect the node
+/// if the daemon answers `NotInStack`; happy-path tests expect the node
 /// they set up to be present.
 async fn poll_node_info(
     started_core_node: &common::StartedCoreNode,
@@ -78,7 +78,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         }"#;
     write_peppy_json5(node_dir.path(), peppy_json5);
 
-    // Parse the config and push it directly — we don't need the full add
+    // Parse the config and push it directly; we don't need the full add
     // pipeline for an info-only test, and `real_build_and_spawn_instance`
     // takes it from there.
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
@@ -134,7 +134,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         "force_built bypass does not record an add log"
     );
 
-    // Record an add log path via the public setter and re-poll — the response
+    // Record an add log path via the public setter and re-poll; the response
     // should surface it.
     let recorded_add_log = started_core_node
         .peppy_dirs
@@ -155,7 +155,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
 
     // Flip the tracked instance unhealthy (as the health monitor does on a
     // failed `node_health` probe) and re-poll. `node info` reads the live flag
-    // off the tracked instance, so the response must now report `unhealthy` —
+    // off the tracked instance, so the response must now report `unhealthy`;
     // this makes the handler's `healthy: instance.healthy()` wiring
     // load-bearing rather than a value a test never distinguishes from a
     // hardcoded `true`.
@@ -350,7 +350,7 @@ async fn node_info_has_instance_ids() {
 }
 
 /// An unknown `(name, tag)` should be reported as a *successful*
-/// `NodeInfoResponse::NotInStack` rather than a protocol-level error — this
+/// `NodeInfoResponse::NotInStack` rather than a protocol-level error; this
 /// is the whole point of the breaking response-shape change. The listener
 /// must also remain healthy after a negative lookup and serve a follow-up
 /// valid request.
@@ -361,7 +361,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // First: an unknown node — the daemon answers `NotInStack` on the
+    // First: an unknown node; the daemon answers `NotInStack` on the
     // successful response channel. No error log, no transport fault.
     let response = poll_node_info_raw(
         &started_core_node,
@@ -376,7 +376,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     );
 
     // Then: after the negative lookup, a valid request against a
-    // stack-resident node must still succeed — i.e., the info listener
+    // stack-resident node must still succeed, i.e., the info listener
     // is still alive.
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = r#"{

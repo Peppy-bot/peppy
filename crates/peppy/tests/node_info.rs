@@ -43,7 +43,7 @@ fn add_node_to_stack(peppy_json5: &str) -> AddedNode {
 }
 
 /// Adds each `dependency` config first, then the main `peppy_json5`. Useful
-/// for tests where the main node declares `depends_on` — the stack rejects
+/// for tests where the main node declares `depends_on`; the stack rejects
 /// adds whose declared dependencies aren't already present.
 fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -54,7 +54,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     let core_node_name = serve.core_node_name().to_string();
 
     // A separate working directory for AppContext so it doesn't clobber any
-    // node's `peppy.json5` — the CLI treats `.` as the working dir, not the
+    // node's `peppy.json5`; the CLI treats `.` as the working dir, not the
     // node source.
     let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
 
@@ -207,7 +207,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     .replace("{NODE_NAME}", NODE_NAME)
     .replace("{NODE_TAG}", NODE_TAG);
 
-    // The stack rejects adds whose declared dependencies are missing — spin
+    // The stack rejects adds whose declared dependencies are missing; spin
     // up minimal publisher nodes that expose exactly the interfaces
     // `consumer_node` consumes, so the add resolves cleanly.
     let camera_node = r#"{
@@ -392,7 +392,7 @@ fn node_info_no_dependencies_when_no_consumes() {
 
 /// Asking for a node that was never added returns a *successful*
 /// `NodeInfoResponse::NotInStack`. Prior to the response-shape change,
-/// the daemon answered with `InvalidServiceRequest` — a protocol error
+/// the daemon answered with `InvalidServiceRequest`, a protocol error
 /// that produced a spurious ERROR log on every first-time `peppy node
 /// add` because the preflight check passes through this same path.
 #[test]
@@ -407,7 +407,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let caller_handle = peppylib::MessengerHandle::from_shared(shared_messenger);
 
     // Also capture daemon-side logs so we can assert that no
-    // service-handler ERROR is emitted for the negative lookup — the
+    // service-handler ERROR is emitted for the negative lookup; the
     // original regression pollution came from this path.
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()

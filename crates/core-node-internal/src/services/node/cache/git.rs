@@ -9,7 +9,7 @@
 //! Concurrency is serialized with an in-process mutex map keyed by
 //! `<slug>-<hash>` so two concurrent batches inside the same daemon
 //! can't race on the same directory. Cross-process safety is not a
-//! concern yet — the daemon is the only writer.
+//! concern yet; the daemon is the only writer.
 
 use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_with_progress, fetch_with_progress};
@@ -57,7 +57,7 @@ fn refreshed_generations() -> &'static Mutex<HashMap<String, SystemTime>> {
 /// `nodes.json5` generation they resolved the repo entry from so the
 /// checkout stays consistent with that snapshot.
 ///
-/// Blocking — callers inside tokio should run this via
+/// Blocking; callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
 pub fn ensure_checkout(
     peppy_dirs: &PeppyDirs,
@@ -95,7 +95,7 @@ pub fn ensure_checkout(
         refresh_existing(&dir, repo_url, repo_ref, on_feedback)
     } else {
         if dir.exists() {
-            // Partial/stale checkout — wipe and re-clone to avoid git2
+            // Partial/stale checkout; wipe and re-clone to avoid git2
             // tripping on a populated but non-git directory.
             std::fs::remove_dir_all(&dir).ok();
         }

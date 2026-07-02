@@ -192,7 +192,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 Err(e) => RepoRefreshResult::failure(format!("task panicked: {}", e)),
             };
 
-            // Flush all pending feedbacks before completing — the end-of-stream
+            // Flush all pending feedbacks before completing: the end-of-stream
             // sentinel that `complete` emits must not race ahead of the final
             // feedback lines.
             let _ = drain.await;
@@ -301,7 +301,7 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 /// repository at query time; the `sha256` on each entry lets users
 /// distinguish entries with the same identity but different content.
 /// Discovery feedback is emitted once per unique identity from the
-/// highest-priority repository — extra entries are silently cached.
+/// highest-priority repository; extra entries are silently cached.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
@@ -469,7 +469,7 @@ fn count_unique_by_name<'a>(it: impl Iterator<Item = &'a str>) -> u32 {
 /// as nodes first (preserves filename-driven node ergonomics); any
 /// `.json5` whose body declares a `peppy_schema` value is dispatched to
 /// the matching collector. Within a single repository walk, a given
-/// `(name, tag)` (or launcher name) is collected only once — the
+/// `(name, tag)` (or launcher name) is collected only once; the
 /// global cross-repo dedup happens in `process_refresh`.
 pub(crate) fn walk_directory(
     root: &Path,
@@ -539,7 +539,7 @@ pub(crate) fn walk_directory(
         if file_name == NODE_CONFIG_FILE {
             // Try node parse first to preserve the documented filename
             // convention for nodes. If the file's schema doesn't match,
-            // fall through to the launcher/interface dispatch — that
+            // fall through to the launcher/interface dispatch; that
             // way a non-node `peppy.json5` is still discoverable.
             if try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes) {
                 continue;
@@ -577,7 +577,7 @@ fn has_json5_extension(path: &Path) -> bool {
 
 /// Cheap schema sniff over the raw bytes. Returns `None` when the file
 /// either doesn't declare a `peppy_schema` field or declares one we
-/// don't know about — the caller treats both as "skip silently".
+/// don't know about; the caller treats both as "skip silently".
 fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
     #[derive(Deserialize)]
     struct SchemaPeek {
@@ -591,7 +591,7 @@ fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
 
 /// Returns `true` when the file parsed cleanly as a node and was
 /// collected (or skipped because of an intra-repo duplicate). `false`
-/// means parsing failed — the caller can fall back to a different
+/// means parsing failed; the caller can fall back to a different
 /// schema dispatch.
 fn try_collect_node_entry(
     ctx: &EntryContext<'_>,
@@ -796,7 +796,7 @@ pub(crate) fn clone_shallow(
 /// re-fetch and re-check-out the same state.
 ///
 /// `checkout_repo_ref` always detaches HEAD, which leaves `head().shorthand()`
-/// equal to `"HEAD"` whenever the repo config pinned a ref — storing that
+/// equal to `"HEAD"` whenever the repo config pinned a ref; storing that
 /// makes `add_batch` install the remote's default branch tip instead of the
 /// pinned ref. Prefer the explicit config ref, then the cloned repo's
 /// symbolic HEAD (for repos without a pin), and finally the commit OID.
@@ -865,7 +865,7 @@ mod tests {
         let repos = read_or_create_repos(&peppy_dirs).unwrap();
         assert!(repos_path.exists(), "repositories.json5 should be created");
 
-        // Don't pin the exact count — defaults grow over time. Just
+        // Don't pin the exact count; defaults grow over time. Just
         // assert that the well-known entries shipped in the template are
         // present with their expected shape.
         let by_id = |id: u64| -> &Value {
@@ -1398,7 +1398,7 @@ mod tests {
             "the two manifest bodies must produce distinct sha256s"
         );
 
-        // Only one discovery feedback for this (name, tag) — the
+        // Only one discovery feedback for this (name, tag): the
         // higher-priority repo (lower id) wins.
         let discovered_paths: Vec<&str> = feedbacks
             .iter()
@@ -1526,7 +1526,7 @@ mod tests {
     }
 
     /// `.json5` files that don't declare `peppy_schema: "launcher/v1"`
-    /// must be skipped silently — they're unrelated configuration, not
+    /// must be skipped silently; they're unrelated configuration, not
     /// launchers.
     #[test]
     fn process_refresh_ignores_non_launcher_json5_files() {
@@ -1544,7 +1544,7 @@ mod tests {
             r#"{ theme: "dark", verbose: true }"#,
         )
         .unwrap();
-        // Another node config in the wrong shape — this lives elsewhere
+        // Another node config in the wrong shape; this lives elsewhere
         // in the repo and must not be misclassified.
         std::fs::write(
             repo.join("manifest.json5"),
@@ -1882,7 +1882,7 @@ mod tests {
 
     /// `checkout_repo_ref` detaches HEAD for every pinned ref, so
     /// `head().shorthand()` of the cloned repo is always `"HEAD"`. Guard
-    /// against falling back to that literal — batch installs reuse
+    /// against falling back to that literal; batch installs reuse
     /// `resolved_ref` as the fetch/checkout ref, so storing `"HEAD"`
     /// silently resolves to the remote's default branch instead of the
     /// pinned ref.

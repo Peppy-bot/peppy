@@ -208,7 +208,7 @@ pub(super) async fn start_node_directly(
     )
     .await;
 
-    // Don't await _forwarder_handle — the node process is still running and
+    // Don't await _forwarder_handle: the node process is still running and
     // output readers keep the internal channel alive.
 
     let node_log_path = Some(log_path);

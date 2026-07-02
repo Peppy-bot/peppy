@@ -191,7 +191,7 @@ impl Serve {
             for (ready, required) in readiness {
                 if ready.await.is_err() {
                     if !required {
-                        // A best-effort gate (federation) dropped without firing —
+                        // A best-effort gate (federation) dropped without firing,
                         // e.g. its task exited early or shutdown raced startup.
                         // Proceed (standalone) rather than failing the daemon.
                         warn!(
@@ -474,7 +474,7 @@ mod tests {
     }
 
     /// A best-effort (optional) readiness gate that drops without firing must not
-    /// fail daemon startup — `serve` proceeds (standalone) and the run completes.
+    /// fail daemon startup; `serve` proceeds (standalone) and the run completes.
     #[test]
     fn optional_gate_drop_does_not_fail_startup() {
         let composite = CompositeCommand::default()

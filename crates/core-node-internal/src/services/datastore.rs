@@ -62,7 +62,7 @@ impl Datastore {
 
     /// Returns the metadata (key, encoding, last writer) of every stored key.
     /// Values are deliberately omitted to keep the list cheap. Order is
-    /// unspecified — the store is a `HashMap`.
+    /// unspecified: the store is a `HashMap`.
     pub fn list(&self) -> Vec<DatastoreListEntry> {
         self.map
             .read()

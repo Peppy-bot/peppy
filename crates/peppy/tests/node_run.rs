@@ -1489,7 +1489,7 @@ async fn node_run_bind_rejects_target_mismatch() {
 /// Setup: producer `cam` is built, plus a built consumer `cons_a` with
 /// two pinned `link_id`s on `cam`. Spawn two `cam` instances and
 /// `cons_a` with valid `--bind`s satisfying both pins. Then spawn a
-/// THIRD `cam` instance — `cons_a` is running clean, the new
+/// THIRD `cam` instance: `cons_a` is running clean, the new
 /// invocation has no binds at all, and Rule 1 must NOT fire against
 /// `cons_a`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1585,7 +1585,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     // Third producer instance: `cons_a` is already running with all
     // its pinned slots satisfied, and this invocation has nothing to
     // do with `cons_a`. The pre-flight must validate only the new
-    // synthesized instance — `cons_a`'s pinned slots are out of scope.
+    // synthesized instance; `cons_a`'s pinned slots are out of scope.
     let _extra_svcs = install_node_services(
         &node_messenger,
         &core_node_name,
@@ -1632,7 +1632,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
 /// with both pins bound) and consumer `cons_b` (a second consumer
 /// with one pinned `link_id`). Launching `cons_b` with no `--bind`
 /// must be rejected with an error naming `cons_b`'s missing link_id
-/// only — never `cons_a`'s.
+/// only, never `cons_a`'s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_clean() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1899,7 +1899,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .expect("second consumer instance must succeed when its own binds are valid");
 
     // Third consumer instance with deliberately missing binds. The
-    // error must name only cons_inst_3 — never cons_inst_1 or
+    // error must name only cons_inst_3, never cons_inst_1 or
     // cons_inst_2 (whose binds were already validated at their own
     // spawn time).
     let result = NodeCommand {

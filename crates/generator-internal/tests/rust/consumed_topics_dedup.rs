@@ -45,8 +45,8 @@ const LEFT_CONSUMER: &str = r#"{ link_id: "left_arm", name: "joint_states" }"#;
 const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#;
 
 /// User crate `main.rs` that explicitly names both per-link consumer modules.
-/// The references aren't strictly necessary to catch the bug — the generated
-/// `peppygen` lib will fail to compile on its own — but they document what
+/// The references aren't strictly necessary to catch the bug (the generated
+/// `peppygen` lib will fail to compile on its own), but they document what
 /// the test is exercising and mirror the explicit-probe style of the Python
 /// counterpart.
 const USER_MAIN: &str = r#"

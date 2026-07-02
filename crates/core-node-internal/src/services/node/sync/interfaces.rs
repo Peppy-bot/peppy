@@ -17,7 +17,7 @@ use std::collections::HashMap;
 /// `(name, tag)` pair, or `None` if the dependency cannot be found. Callers
 /// usually wrap a [`NodeStack`] (see [`stack_resolver`]) but can also chain a
 /// peer map first to resolve sibling nodes that haven't been added to the
-/// stack yet — used by `node sync -a` for batch operations.
+/// stack yet; used by `node sync -a` for batch operations.
 pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
@@ -336,11 +336,11 @@ pub(crate) fn resolve_interface_doc(
 ///
 /// Errors:
 /// - Duplicate raw `(name, tag)` entries (sha256 differences do not count).
-/// - Two entries that sanitize to the same `(iface_name, iface_tag)` — e.g.
+/// - Two entries that sanitize to the same `(iface_name, iface_tag)`, e.g.
 ///   `v1` and `v-1` collide because the wire-path tag normalization replaces
 ///   hyphens with underscores. Refusing this keeps generated symbols
 ///   addressable without ambiguity.
-/// - Cache miss — surfaces "run `peppy repo refresh`".
+/// - Cache miss, which surfaces "run `peppy repo refresh`".
 /// - `sha256` pin set but the on-disk content has drifted.
 pub fn resolve_conforms_to(
     interfaces_cfg: &config::node::Interfaces,
@@ -357,7 +357,7 @@ pub fn resolve_conforms_to(
     // Sanitized-key collisions strictly dominate raw-key duplicates (an exact
     // raw dup collides post-sanitize too), so one pass catches both. Compare
     // the prior raw tag to distinguish "duplicate" from "collides after
-    // hyphen→underscore normalization" (e.g. `v1` vs `v-1`) — both would
+    // hyphen→underscore normalization" (e.g. `v1` vs `v-1`); both would
     // generate to the same module path and wire segments.
     let mut seen: HashMap<(String, String), String> = HashMap::new();
     for item in items {
@@ -421,7 +421,7 @@ pub fn resolve_conforms_to(
 /// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
 ///
 /// Use this for callers that don't have any local peers to layer on top of
-/// the daemon's persistent stack — i.e. `node add` and `auto_sync_if_missing`.
+/// the daemon's persistent stack, i.e. `node add` and `auto_sync_if_missing`.
 pub fn stack_resolver(
     node_stack: &NodeStack,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
@@ -552,7 +552,7 @@ mod conforms_to_tests {
 
     #[test]
     fn cache_miss_suggests_repo_refresh() {
-        // Empty cache — any lookup misses.
+        // Empty cache; any lookup misses.
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
         let cfg = interfaces_with_conforms(vec![ConformsToItem {
             name: Name::new("depth_camera").unwrap(),
@@ -573,7 +573,7 @@ mod conforms_to_tests {
         let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
-        // Two entries with the same raw `(name, tag)` — sha256 differing
+        // Two entries with the same raw `(name, tag)`; sha256 differing
         // should NOT rescue this case per the spec.
         let cfg = interfaces_with_conforms(vec![
             ConformsToItem {
@@ -691,7 +691,7 @@ mod conforms_to_tests {
         let tmp = TempDir::new().unwrap();
         let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         // Rewrite the underlying file so its fingerprint no longer matches
-        // the cache's `sha256` — i.e. the cache thinks the file is X but it
+        // the cache's `sha256`, i.e. the cache thinks the file is X but it
         // is now Y. resolve_conforms_to must catch this.
         fs::write(
             &entry.path,
@@ -829,7 +829,7 @@ mod conforms_to_tests {
         let entry = repo_cache::InterfaceCacheEntry {
             interface_name: "depth_camera".to_string(),
             tag: "v1".to_string(),
-            // Deliberately wrong fingerprint — must trigger drift detection.
+            // Deliberately wrong fingerprint; must trigger drift detection.
             sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
             source_type: RepoSourceKind::Git,
             source_uri: Some(repo_url),
@@ -910,7 +910,7 @@ mod conforms_to_tests {
         assert_eq!(
             out.len(),
             1,
-            "expected exactly one ConsumedService, got {} entries (pre-fix this was 0 — \
+            "expected exactly one ConsumedService, got {} entries (pre-fix this was 0: \
              the service was silently dropped)",
             out.len()
         );

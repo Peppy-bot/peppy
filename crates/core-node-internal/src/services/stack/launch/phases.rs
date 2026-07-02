@@ -142,7 +142,7 @@ where
     // Timeout fired. Ask the phase to tear itself down, then drive it to
     // completion so its cleanup (kill child, remove `Starting` entry, delete
     // instance dir) actually runs. If cleanup stalls past the budget we drop
-    // the future as a last resort — still strictly better than today, since
+    // the future as a last resort; still strictly better than today, since
     // the run phase would have been dropped immediately in that branch.
     cancel_token.cancel();
     let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
@@ -155,7 +155,7 @@ where
 /// receives the same string that was logged so phase-specific failure types (differing in
 /// whether they carry a `log_path`) can embed it verbatim.
 ///
-/// `cancel_and_drain` controls what happens to the phase future on timeout — see
+/// `cancel_and_drain` controls what happens to the phase future on timeout; see
 /// [`run_phase_with_timeouts`] for the per-phase rationale.
 #[allow(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
 pub(super) async fn run_phase<F, T>(

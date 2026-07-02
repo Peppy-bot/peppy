@@ -152,7 +152,7 @@ struct ProcessLaunchContext {
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
     timeouts: StackLaunchTimeouts,
-    /// Whole-launch deadline. `None` means the user did not opt into a max — only idle timeouts
+    /// Whole-launch deadline. `None` means the user did not opt into a max; only idle timeouts
     /// are enforced.
     launch_deadline: Option<Instant>,
     idle_timeouts: IdleTimeouts,
@@ -268,7 +268,7 @@ async fn add_nodes_to_stack(
                 let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
 
                 // Stack launch chains directly from add into build, since the
-                // launcher's contract is "the stack is up and running" — an
+                // launcher's contract is "the stack is up and running"; an
                 // `Added` entity isn't actually buildable from the user's
                 // perspective until `node build` has run.
                 let (build_result, build_log_path) =
@@ -861,7 +861,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 ///
 /// The invariant under test: when a run-phase timeout fires,
 /// `run_phase_cancel_on_timeout` must signal the cancel token *and* drive the
-/// phase future to completion so its cleanup runs — not drop it. Using
+/// phase future to completion so its cleanup runs, not drop it. Using
 /// `tokio::time::pause()` + manual advancement so these tests are
 /// deterministic (no wall-clock dependency, no risk of CI flake).
 #[cfg(test)]
@@ -874,7 +874,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Builds a phase future that signals `cleanup_ran` if it observes the
-    /// cancel token — simulating `run_node_run`'s `abort_started` branch.
+    /// cancel token, simulating `run_node_run`'s `abort_started` branch.
     /// If instead the outer runner drops this future, the flag stays false
     /// and the test fails, matching the real-world orphan bug.
     async fn cancellable_phase(
@@ -950,7 +950,7 @@ mod tests {
         let cleanup_ran = Arc::new(AtomicBool::new(false));
         let cleanup_ran_for_phase = Arc::clone(&cleanup_ran);
 
-        // Phase completes immediately with a value — no timeout should fire.
+        // Phase completes immediately with a value; no timeout should fire.
         let phase = async move {
             // Reset-like ping proves we keep the happy-path contract (no cancel signal).
             let _ = cleanup_ran_for_phase;

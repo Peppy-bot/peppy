@@ -49,7 +49,7 @@ pub(super) async fn publish_stderr(
 /// watcher uses to reset its idle clock. The notify is the single seam where real subprocess /
 /// git2 / http-downloader output (which all flow through this mpsc) gets observed; launcher
 /// orchestration messages (`publish_stdout` / `publish_stderr`) bypass this channel and so do
-/// NOT reset the idle clock — which is the right behavior, since they're operator narration,
+/// NOT reset the idle clock, which is the right behavior, since they're operator narration,
 /// not subprocess liveness.
 ///
 /// Returns the sender end (to pass into the process context) and a join handle

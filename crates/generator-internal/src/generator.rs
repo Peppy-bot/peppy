@@ -45,13 +45,13 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
 ///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
 /// - deploys five vendored crates (`peppylib`, `peppy-messaging-interface`, `config`, `core-node-api`,
-///   `build-helpers`) into `node_dir/.peppy/libs/` — a sibling of `peppygen` — either as
+///   `build-helpers`) into `node_dir/.peppy/libs/` (a sibling of `peppygen`), either as
 ///   symlinks into a host-wide shared cache or as physical copies, per `deploy_mode`;
 /// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
 ///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not
 ///   pruned;
 /// - writes `node_dir/.peppy/git.hash` and the config fingerprint
-///   `…/peppygen/peppy.json5.sha256` — but **only after** generation succeeds, so a failed run
+///   `…/peppygen/peppy.json5.sha256`, but **only after** generation succeeds, so a failed run
 ///   leaves neither behind.
 ///
 /// # Errors
@@ -558,7 +558,7 @@ mod tests {
         let node_dir = temp_dir.path().join("node");
         fs::create_dir_all(&node_dir).unwrap();
 
-        // Do NOT write any peppy.json5 — generation should fail with NodeNotFound
+        // Do NOT write any peppy.json5; generation should fail with NodeNotFound
         let peppy_dirs = daemon_config::consts::PeppyDirs::default();
         let result = generate_peppygen_lib(
             config::node::PeppygenLanguage::Rust,

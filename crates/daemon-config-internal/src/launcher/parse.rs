@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// Parser responsible for extracting launcher documents.
 ///
-/// Launcher files have no fixed name — any `.json5` file whose body
+/// Launcher files have no fixed name: any `.json5` file whose body
 /// declares `peppy_schema: "launcher/v1"` is a launcher. Schema and
 /// shape validation are handled by serde
 /// (`#[serde(deny_unknown_fields)]` + the typed `PeppySchema` enum), so
@@ -119,7 +119,7 @@ mod tests {
         );
     }
 
-    /// Launcher files have no fixed name — any path with valid launcher
+    /// Launcher files have no fixed name: any path with valid launcher
     /// content parses regardless of basename.
     #[test]
     fn test_from_path_accepts_arbitrary_file_name() {
@@ -141,7 +141,7 @@ mod tests {
 
     /// A file declaring `peppy_schema: "node/v1"` is not a launcher.
     /// The strict deserializer either rejects unexpected node fields or
-    /// the caller can gate on `peppy_schema` after parsing — either way
+    /// the caller can gate on `peppy_schema` after parsing; either way
     /// node configs do not slip through `from_path`.
     #[test]
     fn test_from_path_rejects_node_schema() {
@@ -165,7 +165,7 @@ mod tests {
     }
 
     /// A document whose shape is launcher-compatible but whose
-    /// `peppy_schema` claims to be a node must still be rejected — the
+    /// `peppy_schema` claims to be a node must still be rejected; the
     /// schema field is the source of truth, so `deny_unknown_fields`
     /// alone isn't enough.
     #[test]

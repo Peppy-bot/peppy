@@ -249,7 +249,7 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     TestPackagesCache::new()
         .fs_entry("a", "v1", &a_dir)
         .fs_entry("b", "v1", &b_dir)
-        // NB: intentionally no entry for `d` — a correct resolver only
+        // NB: intentionally no entry for `d`; a correct resolver only
         // walks deps declared by the resolved manifests, and none of them
         // mention `d`.
         .fs_entry("c", "v1", &c_dir)
@@ -282,7 +282,7 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     assert!(node_stack.contains("c", "v1"));
     assert!(
         !node_stack.contains("d", "v1"),
-        "d must never be added — no manifest in the tree declares it"
+        "d must never be added; no manifest in the tree declares it"
     );
 }
 

@@ -185,7 +185,7 @@ impl CapnpFacade {
                 }
                 Ok(())
             });
-            // Tolerate a lost rename race against another process — if the
+            // Tolerate a lost rename race against another process; if the
             // file is now in place, that's the outcome we wanted.
             if let Err(err) = result
                 && !binary_path.exists()

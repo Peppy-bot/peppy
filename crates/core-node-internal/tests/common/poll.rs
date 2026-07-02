@@ -37,7 +37,7 @@ pub async fn poll_until<T>(
     }
 }
 
-/// True if a process exists and is not a zombie — matches the daemon's own
+/// True if a process exists and is not a zombie; matches the daemon's own
 /// liveness definition (sysinfo, status != Zombie), so tests agree with what
 /// `node_stop`/teardown consider "gone". A libc `kill(pid, 0)` check would
 /// report a reaped-but-unwaited zombie as still running.

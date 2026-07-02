@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 /// Concurrent readers never observe a partial file, and concurrent
 /// writers don't race over a shared staging path. Staging in the same
 /// directory keeps the rename on the same filesystem (cross-fs
-/// `rename(2)` returns `EXDEV`). On any error — closure failure or
-/// rename failure — the tmp file is removed before returning.
+/// `rename(2)` returns `EXDEV`). On any error (closure failure or
+/// rename failure), the tmp file is removed before returning.
 pub fn publish_atomic<F>(final_path: &Path, write: F) -> std::io::Result<PathBuf>
 where
     F: FnOnce(&Path) -> std::io::Result<()>,
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn creates_missing_parent_directories() {
         let dir = tempfile::tempdir().expect("temp dir");
-        // Two levels that do not exist yet — publish_atomic must create them.
+        // Two levels that do not exist yet; publish_atomic must create them.
         let target = dir.path().join("nested").join("deeper").join("out.txt");
 
         publish_atomic(&target, |tmp| std::fs::write(tmp, b"x")).expect("publish");
