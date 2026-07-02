@@ -737,8 +737,8 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
         );
     }
 
-    // If both are true, the full check should pass.
-    if status.apparmor_ok && status.apparmor_loaded {
+    // If both are true (and newuidmap is present), the full check passes.
+    if status.apparmor_ok && status.apparmor_loaded && status.newuidmap_ok {
         assert!(
             status.is_ok(),
             "is_ok() should be true when all checks pass"
