@@ -103,20 +103,6 @@ fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
-/// Value parser for the now-removed `--link-id` flag. Always returns an
-/// error pointing the user at the replacement surface. See [`NodeCommands::Run`]
-/// for the hidden, parser-only flag that wires this in.
-fn link_id_removed_error(_: &str) -> Result<String, String> {
-    Err(
-        "--link-id has been removed. Producer-side link_id binding no longer \
-         exists; consumers pin to a specific producer via\n  \
-         peppy node run <node> --bind <KEY>@<PRODUCER_INSTANCE_ID>\n\
-         where KEY is a link_id declared in the consumer's depends_on and \
-         PRODUCER_INSTANCE_ID is the running producer's instance_id (peppy node list)."
-            .to_string(),
-    )
-}
-
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
@@ -277,18 +263,6 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         binds: Vec<(String, String)>,
-        /// Removed. The `--link-id` flag has been replaced by `--bind
-        /// KEY@VALUE`; the value parser always errors with a migration
-        /// hint. Kept as a hidden clap arg so legacy invocations get a
-        /// clear message instead of a generic "unknown flag" error.
-        #[arg(
-            long = "link-id",
-            hide = true,
-            value_delimiter = ',',
-            value_parser = link_id_removed_error,
-            action = clap::ArgAction::Append,
-        )]
-        _link_id_removed: Vec<String>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -448,7 +422,6 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 binds,
-                _link_id_removed,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -776,19 +749,6 @@ mod tests {
             .expect("`_` should be rejected");
         let msg = err.to_string();
         assert!(msg.contains("reserved"), "msg: {msg}");
-    }
-
-    #[test]
-    fn test_link_id_removed_with_migration_hint() {
-        let err = try_parse_run(&["foo:v1", "--link-id", "anything"])
-            .err()
-            .expect("--link-id should error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--link-id has been removed"),
-            "msg should explain removal: {msg}"
-        );
-        assert!(msg.contains("--bind"), "msg should point at --bind: {msg}");
     }
 
     // ─── `peppy node add` --bind / requires=run parse-time enforcement ───
