@@ -1,4 +1,4 @@
-use crate::{
+use config::{
     node::{EmittedTopic, ExposedAction, ExposedService, Name},
     schema::PeppySchema,
 };
@@ -52,7 +52,7 @@ where
     D: Deserializer<'de>,
 {
     let tag = String::deserialize(deserializer)?;
-    crate::internal::repo_node_id::validate_repo_node_tag(&tag, "tag")
+    config::repo_node_id::validate_repo_node_tag(&tag, "tag")
         .map_err(de::Error::custom)?;
     Ok(tag)
 }
@@ -138,7 +138,7 @@ pub(crate) fn validate_named_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::{ArrayKind, MessageFormat, QoSProfile, SchemaType, TypeToken};
+    use config::node::{ArrayKind, MessageFormat, QoSProfile, SchemaType, TypeToken};
 
     /// The depth-camera example from the schema doc parses end-to-end and
     /// exposes every field the way the user wrote it.

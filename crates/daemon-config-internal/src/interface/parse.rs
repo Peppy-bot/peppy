@@ -26,10 +26,8 @@ impl PeppyInterfaceParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        error::{Error, ParsingError},
-        schema::PeppySchema,
-    };
+    use crate::error::{Error, ParsingError};
+    use config::schema::PeppySchema;
     use tempfile::NamedTempFile;
 
     #[test]

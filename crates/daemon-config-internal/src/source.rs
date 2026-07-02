@@ -181,9 +181,9 @@ where
         (name_trimmed.to_owned(), tag.to_owned())
     };
 
-    crate::internal::repo_node_id::validate_repo_node_name(&name, "repo source name")
+    config::repo_node_id::validate_repo_node_name(&name, "repo source name")
         .map_err(invalid_deployment_source::<E>)?;
-    crate::internal::repo_node_id::validate_repo_node_tag(&tag, "repo source tag")
+    config::repo_node_id::validate_repo_node_tag(&tag, "repo source tag")
         .map_err(invalid_deployment_source::<E>)?;
 
     Ok((name, tag))

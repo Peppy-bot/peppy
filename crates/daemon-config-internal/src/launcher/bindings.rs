@@ -16,14 +16,14 @@
 //!
 //! The validator emits both errors and the resolved per-slot
 //! `SlotBinding` map per consumer instance, which the caller
-//! serializes into [`crate::runtime::NodeInstanceConfig::slot_bindings`].
+//! serializes into [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
     BindingDeadKey, BindingInterfaceNotConformed, BindingMissingForPinnedDep,
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
-use crate::node::{ConformsToItem, DependsOn};
-use crate::runtime::{ProducerRef, SlotBinding};
+use config::node::{ConformsToItem, DependsOn};
+use config::runtime::{ProducerRef, SlotBinding};
 use std::collections::BTreeMap;
 
 use super::types::DeploymentInstance;

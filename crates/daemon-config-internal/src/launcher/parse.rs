@@ -28,7 +28,9 @@ impl PeppyLauncherParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::{launcher::DeploymentSource, schema::PeppySchema};
+    use crate::error::{Error, ParsingError};
+    use crate::launcher::DeploymentSource;
+    use config::schema::PeppySchema;
     use tempfile::tempdir;
 
     use super::PeppyLauncherParser;
@@ -178,10 +180,29 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_deployment_source() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { local: "" },
+                    instances: []
+                }
+            ]
+        }"#;
+
+        let result = PeppyLauncherParser::from_content(json5);
+        let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
+            panic!("expected InvalidDeploymentSource error");
+        };
+        assert_eq!(msg, "local path cannot be empty");
+    }
+
+    #[test]
     fn test_examples_peppy_launcher_parses() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("examples")
-            .join("nodes_example_1")
+            .join("tests")
+            .join("fixtures")
             .join("peppy_launcher.json5");
         let cfg = PeppyLauncherParser::from_path(&path).expect("example launcher should parse");
         assert!(
