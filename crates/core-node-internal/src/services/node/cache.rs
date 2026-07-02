@@ -8,6 +8,7 @@
 pub(super) mod bundle;
 pub(crate) mod git;
 mod key;
+mod keyed_lock;
 pub(super) mod materialize;
 
 pub(super) use bundle::ensure_bundle;

@@ -14,12 +14,15 @@
 use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_with_progress, fetch_with_progress};
 use super::key;
+use super::keyed_lock::KeyedLocks;
 use daemon_config::consts::PeppyDirs;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::SystemTime;
+
+static LOCKS: KeyedLocks = KeyedLocks::new();
 
 /// Path where the checkout for `(repo_url, repo_ref)` lives (whether or
 /// not it has been populated yet). Exposed for tests and diagnostics.
@@ -36,22 +39,6 @@ pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, repo_ref: Option
 /// crashed mid-way) is wiped and re-cloned.
 fn is_populated(dir: &Path) -> bool {
     dir.join(".git").exists()
-}
-
-fn locks_map() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
-    static MAP: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn lock_for(key: &str) -> Arc<Mutex<()>> {
-    let mut map = locks_map().lock();
-    // GC entries not currently held by any caller. `strong_count == 1`
-    // means only the map still references the Arc, so no one can race on
-    // rebuilding the slot (the map lock serializes all access).
-    map.retain(|_, v| Arc::strong_count(v) > 1);
-    map.entry(key.to_owned())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
 }
 
 /// Per-process map of cache keys to the repo-cache generation they were
@@ -81,7 +68,7 @@ pub fn ensure_checkout(
 ) -> std::result::Result<PathBuf, String> {
     let dir = checkout_dir_for(peppy_dirs, repo_url, repo_ref);
     let lock_key = dir.to_string_lossy().into_owned();
-    let lock = lock_for(&lock_key);
+    let lock = LOCKS.lock_for(&lock_key);
     let _guard = lock.lock();
 
     if let Some(parent) = dir.parent() {
