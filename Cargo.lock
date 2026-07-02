@@ -3141,7 +3141,6 @@ dependencies = [
  "ipnet",
  "json5-pretty",
  "latency-report",
- "libc",
  "names-generator2",
  "netdev",
  "node-stack",

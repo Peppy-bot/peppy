@@ -77,9 +77,6 @@ tempfile = "3.8"
 # In-process HTTP mock server for the auth integration tests (cli-config, OIDC
 # discovery, device/token endpoints, /me, /logout) — blocking API, fits ureq.
 httpmock = "0.8"
-# Only the daemon-lifecycle e2e test needs raw `kill(2)` to signal a spawned
-# child process; the library itself uses `rustix` and carries no `libc`.
-libc = "0.2"
 # Self-reference so `cargo test` builds this crate with the test-only helpers
 # enabled, without making `test-support` a default feature of the shipped CLI.
 peppy = { path = ".", features = ["test-support"] }
