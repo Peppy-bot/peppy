@@ -1,8 +1,8 @@
 use crate::daemon_state::DaemonState;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use daemon_config::consts::PeppyDirs;
 use config::node::NodeConfigParser;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
+use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};

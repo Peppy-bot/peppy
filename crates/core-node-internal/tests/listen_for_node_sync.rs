@@ -4,8 +4,8 @@ use common::{
     CALLER_INSTANCE_ID, StartedCoreNode, TestPackagesCache, start_core_node_with_mock_messenger,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use core_node_api::encoding::{NodeSyncRequest, RepoSourceKind};
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppylib::core_node::transport::poll_node_sync;
 use std::fs;
 use std::path::Path;

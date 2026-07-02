@@ -17,7 +17,8 @@ pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances
 use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
-    node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage, TypeToken},
+    node::{Execution, Manifest, NodeConfig, PeppygenLanguage, TypeToken},
+    runtime::Name,
     schema::PeppySchema,
 };
 use daemon_config::consts::PeppyDirs;

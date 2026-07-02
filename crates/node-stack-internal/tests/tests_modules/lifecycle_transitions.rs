@@ -5,7 +5,7 @@ use parking_lot::{Mutex as StdMutex, RwLock};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use config::node::Name;
+use config::runtime::Name;
 use node_stack::{
     BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage, WorkingDirGuard,
 };

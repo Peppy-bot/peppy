@@ -22,7 +22,6 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_interface_doc;
-use daemon_config::consts::PeppyDirs;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_conforms_to,
@@ -32,6 +31,7 @@ use core_node_api::encoding::{
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
     StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
+use daemon_config::consts::PeppyDirs;
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
@@ -451,8 +451,10 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
         .iter()
         .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
         .collect();
-    let mut iface_cache: HashMap<(String, String), Option<daemon_config::interface::PeppyInterface>> =
-        HashMap::new();
+    let mut iface_cache: HashMap<
+        (String, String),
+        Option<daemon_config::interface::PeppyInterface>,
+    > = HashMap::new();
 
     for edge in edges.iter_mut() {
         let (req, resp) = match &edge.origin {

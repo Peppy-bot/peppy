@@ -3,8 +3,8 @@
 use config::consts::{
     NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
 };
-use daemon_config::consts::{PEPPYLIB_OUTPUT_PATH, PeppyDirs};
 use config::node::PeppygenLanguage;
+use daemon_config::consts::{PEPPYLIB_OUTPUT_PATH, PeppyDirs};
 use generator::generate_peppygen_lib;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceTarget;

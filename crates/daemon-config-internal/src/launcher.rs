@@ -10,6 +10,5 @@ pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
 pub use parse::PeppyLauncherParser;
 pub use types::{
     Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
-    DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides,
-    PeppyLauncher,
+    DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, PeppyLauncher,
 };

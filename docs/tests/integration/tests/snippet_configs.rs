@@ -10,9 +10,9 @@
 //! snippets — either the code or the snippets need updating.
 
 use config::consts::NODE_CONFIG_FILE;
-use daemon_config::interface::PeppyInterfaceParser;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
+use daemon_config::interface::PeppyInterfaceParser;
 use docs_integration_tests::workspace_root;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};

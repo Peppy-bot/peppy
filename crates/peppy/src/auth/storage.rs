@@ -185,7 +185,8 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
 /// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
 /// both auth files from one [`PeppyDirs`].
 pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
-    dirs.conf_dir().join(daemon_config::consts::CREDENTIALS_FILE)
+    dirs.conf_dir()
+        .join(daemon_config::consts::CREDENTIALS_FILE)
 }
 
 /// Default credentials path: `<peppy root>/conf/credentials.json5`, honouring

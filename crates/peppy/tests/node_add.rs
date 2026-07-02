@@ -1,8 +1,8 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use config::node::Toolchain;
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
 use peppy::commands::node::{
     AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,

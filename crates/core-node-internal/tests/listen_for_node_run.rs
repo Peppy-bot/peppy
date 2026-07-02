@@ -6,9 +6,9 @@ use common::{
     start_core_node_with_health_monitor, start_core_node_with_health_timeout,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger, write_peppy_json5,
 };
-use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use config::node::Name as NodeName;
+use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
+use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;

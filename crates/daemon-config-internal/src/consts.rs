@@ -231,5 +231,4 @@ mod tests {
             unset.display()
         );
     }
-
 }

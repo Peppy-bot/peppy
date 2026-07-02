@@ -2,12 +2,12 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use daemon_config::consts::{
-    DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH,
-};
 use config::node::Toolchain;
 use config_test_support::assert_contains_all;
 use core_node_api::encoding::NodeInitRequest;
+use daemon_config::consts::{
+    DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH,
+};
 use peppylib::core_node::transport::poll_node_init;
 use std::fs;
 use std::time::Duration;

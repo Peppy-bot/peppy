@@ -4,9 +4,9 @@ use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
 use crate::services::response::into_service_response;
 use config::ParsingError;
-use daemon_config::consts::PeppyDirs;
 use config::node::{NodeConfigParser, validate_dependency_specs};
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse, RepoResolvedEntry};
+use daemon_config::consts::PeppyDirs;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
@@ -69,7 +69,10 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     let peppy_output_dir = node_root_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
 
     // Path-string sanity check; pure CPU, no syscall.
-    if peppy_output_dir.file_name() != Some(std::ffi::OsStr::new(daemon_config::consts::PEPPY_OUTPUT_DIR))
+    if peppy_output_dir.file_name()
+        != Some(std::ffi::OsStr::new(
+            daemon_config::consts::PEPPY_OUTPUT_DIR,
+        ))
     {
         debug!(
             "Unexpected directory name, expected {}: {}",
@@ -1247,7 +1250,9 @@ pub fn auto_sync_if_missing(
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
 ) -> crate::Result<()> {
-    let peppy_dir = params.node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_dir = params
+        .node_dir
+        .join(daemon_config::consts::PEPPY_OUTPUT_DIR);
     if needs_sync(params.node_dir) {
         // Back up existing .peppy so we can restore it on failure.
         let backup_dir = params.node_dir.join(format!(
@@ -1423,7 +1428,8 @@ mod conforms_to_tests {
     //! tests in `crates/generator-internal/tests/{rust,python}/conforms_to.rs`.
 
     use super::*;
-    use config::node::{ConformsToItem, Interfaces, Name};
+    use config::node::{ConformsToItem, Interfaces};
+    use config::runtime::Name;
     use core_node_api::encoding::RepoSourceKind;
     use std::fs;
     use tempfile::TempDir;

@@ -2,13 +2,13 @@ mod common;
 
 use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeout};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use daemon_config::consts::PEPPY_OUTPUT_DIR;
-use config::node::Name;
 use config::node::NodeConfigParser;
+use config::runtime::Name;
 use core_node::names;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin,
 };
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
 use peppylib::messaging::{MessengerHandle, ResultStatus};

@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ConsumedTopic, DependsOn, EmittedTopic, Name as ConfigName, NodeConfigParser, NodeDependency,
-    Toolchain, TopicInterfaces,
+    ConsumedTopic, DependsOn, EmittedTopic, NodeConfigParser, NodeDependency, Toolchain,
+    TopicInterfaces,
 };
+use config::runtime::Name as ConfigName;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;

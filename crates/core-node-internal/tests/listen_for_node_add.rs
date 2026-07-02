@@ -9,11 +9,11 @@ use common::{
     start_core_node_with_mock_messenger, wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use config::node::QoSProfile;
 use config_test_support as test_helpers;
 use core_node::names;
 use core_node_api::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
+use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
 use peppylib::ActionMessenger;

@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use daemon_config::consts::PeppyDirs;
-use config::node::{Name, NodeConfig};
+use config::node::NodeConfig;
+use config::runtime::Name;
 use core_node_api::{
     InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
 };
+use daemon_config::consts::PeppyDirs;
 use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;

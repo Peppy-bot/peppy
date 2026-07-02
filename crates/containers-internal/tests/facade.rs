@@ -1,5 +1,5 @@
-use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use containers::Apptainer;
+use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;

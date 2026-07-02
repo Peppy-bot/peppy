@@ -15,7 +15,7 @@ use common::{
     add_and_build_forking_node, children_of, is_process_running, poll_until,
     spawn_real_starting_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
 };
-use config::node::Name;
+use config::runtime::Name;
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
 use std::time::Duration;

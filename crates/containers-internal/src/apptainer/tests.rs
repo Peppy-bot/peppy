@@ -1,6 +1,6 @@
-#[cfg(target_os = "linux")]
-use super::facade::check_setup_status;
 use super::facade::{Apptainer, Backend, is_uri};
+#[cfg(target_os = "linux")]
+use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
 use crate::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,23 +16,84 @@ use std::process::ExitStatus;
 // Shared test fixtures
 // ---------------------------------------------------------------------------
 
-/// Construct a fully-initialized `Apptainer` for tests that need the real
-/// runtime. apptainer is bundled at compile time, so construction must succeed.
-fn ready_facade() -> Apptainer {
-    Apptainer::new().expect("Apptainer::new() should succeed; apptainer is bundled at compile time")
+/// Construct a fully-initialized `Apptainer` for integration tests that need
+/// the real runtime, or `None` (after printing a SKIPPING diagnostic) when
+/// this host does not meet the user namespace prerequisites. Prerequisites are
+/// machine state (an AppArmor profile installed via `peppy container setup`),
+/// not code under test, so integration tests self-skip on an unprovisioned
+/// host, mirroring the setup-status tests below and the e2e suite in
+/// tests/facade.rs. Pure command-assembly and path-translation tests use
+/// [`native_facade`] / [`lima_facade`] instead: they must never depend on
+/// host state.
+fn ready_facade() -> Option<Apptainer> {
+    if !host_meets_userns_prerequisites() {
+        eprintln!(
+            "SKIPPING: apptainer user namespace prerequisites not met on this host; \
+             run `peppy container setup`"
+        );
+        return None;
+    }
+    Some(
+        Apptainer::new()
+            .expect("Apptainer::new() should succeed; apptainer is bundled at compile time"),
+    )
+}
+
+/// Whether this host meets apptainer's user namespace prerequisites. Always
+/// `true` off Linux: macOS routes through the Lima VM and has no AppArmor
+/// prerequisites to check.
+fn host_meets_userns_prerequisites() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        check_setup_status(&ready_apptainer_dir()).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 /// Resolve the bundled apptainer install dir directly, bypassing the
-/// construction-time readiness check in `new()`. The Linux setup-status tests
-/// must inspect a real install even when prerequisites are not yet met.
-#[cfg(target_os = "linux")]
+/// construction-time readiness check in `new()`. Lets tests inspect the real
+/// install layout even when prerequisites are not met, without booting the
+/// Lima VM on macOS.
 fn ready_apptainer_dir() -> PathBuf {
     Apptainer::resolve_apptainer_dir()
         .expect("resolve_apptainer_dir should succeed; apptainer is bundled at compile time")
 }
 
-/// Whether this host restricts unprivileged user namespaces via AppArmor, the
-/// gate the setup-status tests branch on.
+/// Builds a Native-backend facade for command-assembly and path-translation
+/// tests without touching host state. The apptainer path need not exist: these
+/// tests only inspect assembled argv, translated paths, and the no-op kill path.
+fn native_facade() -> Apptainer {
+    Apptainer {
+        apptainer_dir: PathBuf::from("/opt/apptainer"),
+        backend: Backend::Native {
+            apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
+        },
+        extra_mounts: Vec::new(),
+    }
+}
+
+/// Builds a Lima-backend facade for command-assembly and path-translation
+/// tests. The limactl/apptainer paths need not exist: nothing is spawned, only
+/// argv construction and path translation are exercised.
+fn lima_facade() -> Apptainer {
+    Apptainer {
+        apptainer_dir: PathBuf::from("/opt/apptainer"),
+        backend: Backend::Lima {
+            apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+            limactl_path: PathBuf::from("/opt/lima/bin/limactl"),
+            lima_home: PathBuf::from("/home/u/.lima"),
+        },
+        extra_mounts: Vec::new(),
+    }
+}
+
+/// Whether this host's kernel restricts unprivileged user namespaces via
+/// AppArmor (raw procfs flag, without the manageability gate production
+/// applies on top). Used to skip the not-restricted setup-status test; the
+/// restricted-state tests gate on `SetupStatus::apparmor_restricted` instead.
 #[cfg(target_os = "linux")]
 fn apparmor_restricts_userns() -> bool {
     std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -46,7 +107,7 @@ fn apparmor_restricts_userns() -> bool {
 
 #[test]
 fn test_run_command_builds_correct_args() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let cmd = facade.run("image.sif");
     let args = cmd.build_args().expect("build_args should succeed");
@@ -61,7 +122,7 @@ fn test_run_command_builds_correct_args() {
 
 #[test]
 fn test_exec_command_builds_correct_args() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let cmd = facade.exec("container.sif", &["echo", "hello"]);
     let args = cmd.build_args().expect("build_args should succeed");
@@ -73,7 +134,7 @@ fn test_exec_command_builds_correct_args() {
 
 #[test]
 fn test_build_command_builds_correct_args() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let home = std::env::var("HOME").unwrap();
     let output = PathBuf::from(&home).join("test/output.sif");
@@ -88,7 +149,7 @@ fn test_build_command_builds_correct_args() {
 
 #[test]
 fn test_bind_flag_accumulates() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let home = std::env::var("HOME").unwrap();
     let dev1 = format!("{home}/dev1");
@@ -106,7 +167,7 @@ fn test_bind_flag_accumulates() {
 
 #[test]
 fn test_bind_with_dest() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
@@ -125,7 +186,7 @@ fn test_bind_with_dest() {
 
 #[test]
 fn test_bind_with_opts() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
@@ -146,7 +207,7 @@ fn test_bind_with_opts() {
 
 #[test]
 fn test_env_flag_format() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let cmd = facade.run("image.sif").env("FOO", "bar");
     let args = cmd.build_args().expect("build_args should succeed");
@@ -157,10 +218,12 @@ fn test_env_flag_format() {
 
 #[test]
 fn test_lima_shell_extra_args_does_not_affect_build_args() {
-    let facade = ready_facade();
+    let facade = lima_facade();
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let sif = PathBuf::from(&home).join("peppy_extra_args_test/node.sif");
 
     let cmd = facade
-        .run("image.sif")
+        .run(sif.to_str().expect("utf-8 sif path"))
         .lima_shell_extra_args(&["--timeout".to_string(), "30".to_string()]);
     let args = cmd.build_args().expect("build_args should succeed");
 
@@ -215,7 +278,7 @@ fn test_lima_shell_extra_args_reach_limactl_argv_before_separator() {
 
 #[test]
 fn test_raw_flag_passthrough() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let cmd = facade.run("image.sif").raw_flag("--force");
     let args = cmd.build_args().expect("build_args should succeed");
@@ -229,7 +292,7 @@ fn test_raw_flag_passthrough() {
 
 #[test]
 fn test_args_appended_after_image() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let cmd = facade.run("image.sif").args(&["--config", "app.yaml"]);
     let args = cmd.build_args().expect("build_args should succeed");
@@ -241,7 +304,7 @@ fn test_args_appended_after_image() {
 
 #[test]
 fn test_flags_come_before_positional_args() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let cmd = facade
         .run("image.sif")
@@ -275,7 +338,9 @@ fn test_flags_come_before_positional_args() {
 
 #[test]
 fn test_from_valid_dir() {
-    let facade = ready_facade();
+    let Some(facade) = ready_facade() else {
+        return;
+    };
 
     assert!(
         facade.apptainer_dir.is_dir(),
@@ -335,7 +400,9 @@ fn test_from_dir_fails_when_binary_missing() {
 /// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
 fn test_apptainer_version_integration() {
-    let facade = ready_facade();
+    let Some(facade) = ready_facade() else {
+        return;
+    };
 
     // On macOS, the invocation binary should point to the guest-side installation.
     if cfg!(target_os = "macos") {
@@ -367,128 +434,107 @@ fn test_apptainer_version_integration() {
 
 #[test]
 fn test_translate_path_under_home() {
-    let facade = ready_facade();
-
     let home = std::env::var("HOME").unwrap();
     let path = PathBuf::from(&home).join("projects/my_node/apptainer.def");
-    assert_eq!(
-        facade.translate_path(&path).unwrap(),
-        path,
-        "Paths under $HOME should pass through unchanged"
-    );
+
+    for facade in [native_facade(), lima_facade()] {
+        assert_eq!(
+            facade.translate_path(&path).unwrap(),
+            path,
+            "Paths under $HOME should pass through unchanged on both backends"
+        );
+    }
 }
 
 #[test]
 fn test_translate_path_outside_home() {
-    let facade = ready_facade();
-
     let path = Path::new("/opt/external/file.def");
-    let result = facade.translate_path(path);
 
-    if cfg!(target_os = "macos") {
-        assert!(
-            result.is_err(),
-            "Paths outside $HOME should error under Lima"
-        );
+    assert_eq!(
+        native_facade().translate_path(path).unwrap(),
+        path,
+        "Native: paths outside $HOME should pass through unchanged"
+    );
 
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("not accessible inside the Lima VM"),
-            "Error should mention Lima VM inaccessibility, got: {}",
-            err_msg
-        );
-        assert!(
-            err_msg.contains("/opt/external/file.def"),
-            "Error should include the offending path, got: {}",
-            err_msg
-        );
-    } else {
-        assert_eq!(
-            result.unwrap(),
-            path,
-            "On Linux, paths outside $HOME should pass through unchanged"
-        );
-    }
+    let err_msg = lima_facade()
+        .translate_path(path)
+        .expect_err("Lima: paths outside $HOME should be rejected")
+        .to_string();
+    assert!(
+        err_msg.contains("not accessible inside the Lima VM"),
+        "Error should mention Lima VM inaccessibility, got: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("/opt/external/file.def"),
+        "Error should include the offending path, got: {}",
+        err_msg
+    );
 }
 
 /// macOS `tempfile::tempdir()` creates directories under `/var/folders/...`,
-/// which is NOT mounted in the Lima VM. This test documents that
-/// `translate_path()` correctly rejects such paths on macOS.
+/// which is NOT mounted in the Lima VM. `translate_path()` must reject such
+/// paths on the Lima backend and pass them through on the native backend.
 #[test]
 fn test_translate_path_rejects_var_folders() {
-    let facade = ready_facade();
-
     let path = Path::new("/var/folders/T4/random123abc/T/tempdir/output.sif");
-    let result = facade.translate_path(path);
 
-    if cfg!(target_os = "macos") {
-        assert!(
-            result.is_err(),
-            "Paths under /var/folders should be rejected under Lima (not mounted in guest)"
-        );
-    } else {
-        assert_eq!(
-            result.unwrap(),
-            path,
-            "On Linux, all absolute paths should pass through unchanged"
-        );
-    }
+    assert_eq!(
+        native_facade().translate_path(path).unwrap(),
+        path,
+        "Native: all absolute paths should pass through unchanged"
+    );
+    assert!(
+        lima_facade().translate_path(path).is_err(),
+        "Lima: paths under /var/folders should be rejected (not mounted in guest)"
+    );
 }
 
 /// Verifies that `translate_path()` accepts paths outside `$HOME` when they have
 /// been registered in `extra_mounts` (simulating what `ensure_host_mounts()` does).
 #[test]
 fn test_translate_path_accepts_registered_extra_mount() {
-    let mut facade = ready_facade();
+    let mut facade = lima_facade();
 
     let mount_dir = PathBuf::from("/var/folders/T4/random123abc/T/tempdir");
     let file_in_mount = mount_dir.join("output.sif");
 
-    if cfg!(target_os = "macos") {
-        // Before registration: should be rejected
-        assert!(
-            facade.translate_path(&file_in_mount).is_err(),
-            "Path outside $HOME should be rejected before registration"
-        );
+    // Before registration: should be rejected
+    assert!(
+        facade.translate_path(&file_in_mount).is_err(),
+        "Path outside $HOME should be rejected before registration"
+    );
 
-        // Register the mount directory
-        facade.extra_mounts.push(mount_dir);
+    // Register the mount directory
+    facade.extra_mounts.push(mount_dir);
 
-        // After registration: should be accepted
-        let result = facade.translate_path(&file_in_mount);
-        assert!(
-            result.is_ok(),
-            "Path under a registered extra mount should be accepted, got: {:?}",
-            result.unwrap_err()
-        );
-        assert_eq!(result.unwrap(), file_in_mount);
-    } else {
-        // On Linux, all paths pass through regardless
-        assert!(facade.translate_path(&file_in_mount).is_ok());
-    }
+    // After registration: should be accepted
+    let result = facade.translate_path(&file_in_mount);
+    assert!(
+        result.is_ok(),
+        "Path under a registered extra mount should be accepted, got: {:?}",
+        result.unwrap_err()
+    );
+    assert_eq!(result.unwrap(), file_in_mount);
 }
 
-/// Verifies that `build().build_args()` rejects paths outside `$HOME` on macOS,
-/// exercising the full command-builder pipeline (not just `translate_path` directly).
+/// Verifies that `build().build_args()` rejects paths outside `$HOME` under
+/// Lima, exercising the full command-builder pipeline (not just
+/// `translate_path` directly), while the native backend accepts all paths.
 #[test]
 fn test_build_args_rejects_path_outside_home() {
-    let facade = ready_facade();
-
     let output = Path::new("/var/folders/xx/temp123/output.sif");
     let home = std::env::var("HOME").unwrap();
     let def = PathBuf::from(&home).join("project/test.def");
 
-    let cmd = facade.build(output, &def);
-    let result = cmd.build_args();
-
-    if cfg!(target_os = "macos") {
-        assert!(
-            result.is_err(),
-            "build_args() should reject output paths outside $HOME under Lima"
-        );
-    } else {
-        assert!(result.is_ok(), "On Linux, all paths should be accepted");
-    }
+    assert!(
+        native_facade().build(output, &def).build_args().is_ok(),
+        "Native: all paths should be accepted"
+    );
+    assert!(
+        lima_facade().build(output, &def).build_args().is_err(),
+        "Lima: build_args() should reject output paths outside $HOME"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +562,7 @@ fn test_is_uri() {
 
 #[test]
 fn test_translate_path_resolves_relative() {
-    let facade = ready_facade();
+    let facade = native_facade();
 
     let relative = Path::new("project/my_image.sif");
     let result = facade.translate_path(relative).unwrap();
@@ -546,7 +592,9 @@ fn test_translate_path_resolves_relative() {
 /// the backend is Native.
 #[test]
 fn test_lima_instance_running_after_init() {
-    let facade = ready_facade();
+    let Some(facade) = ready_facade() else {
+        return;
+    };
 
     match &facade.backend {
         Backend::Lima {
@@ -580,21 +628,16 @@ fn test_lima_instance_running_after_init() {
 
 #[test]
 fn test_host_gateway_returns_correct_value() {
-    let facade = ready_facade();
-
-    if cfg!(target_os = "macos") {
-        assert_eq!(
-            facade.host_gateway(),
-            Some("host.lima.internal"),
-            "On macOS (Lima), host_gateway() should return the Lima host gateway hostname"
-        );
-    } else {
-        assert_eq!(
-            facade.host_gateway(),
-            None,
-            "On Linux (Native), host_gateway() should return None"
-        );
-    }
+    assert_eq!(
+        native_facade().host_gateway(),
+        None,
+        "Native: apptainer shares the host network namespace, so no gateway"
+    );
+    assert_eq!(
+        lima_facade().host_gateway(),
+        Some("host.lima.internal"),
+        "Lima: host_gateway() should return the Lima host gateway hostname"
+    );
 }
 
 /// On non-macOS there is no VM, so `is_lima_ready()` is unconditionally `true`
@@ -669,22 +712,17 @@ fn check_setup_status_no_apparmor_restriction() {
 fn check_setup_status_requires_apparmor_profile_loaded() {
     // On systems where AppArmor restricts unprivileged user namespaces,
     // check_setup_status must verify the profile is loaded into the kernel,
-    // not just that the file exists on disk.
-    let apparmor_restricted = apparmor_restricts_userns();
+    // not just that the file exists on disk. Gate on the status's own
+    // apparmor_restricted (procfs flag AND manageability) rather than the raw
+    // procfs flag: inside containers the flag can read "1" while AppArmor is
+    // not manageable, and production treats that as not restricted.
+    let apptainer_dir = ready_apptainer_dir();
+    let status = check_setup_status(&apptainer_dir);
 
-    if !apparmor_restricted {
+    if !status.apparmor_restricted {
         eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
         return;
     }
-
-    let apptainer_dir = ready_apptainer_dir();
-
-    let status = check_setup_status(&apptainer_dir);
-
-    assert!(
-        status.apparmor_restricted,
-        "apparmor_restricted should be true on this system"
-    );
 
     // If the profile file exists but isn't loaded, is_ok() must be false.
     if status.apparmor_ok && !status.apparmor_loaded {
@@ -699,8 +737,8 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
         );
     }
 
-    // If both are true, the full check should pass.
-    if status.apparmor_ok && status.apparmor_loaded {
+    // If both are true (and newuidmap is present), the full check passes.
+    if status.apparmor_ok && status.apparmor_loaded && status.newuidmap_ok {
         assert!(
             status.is_ok(),
             "is_ok() should be true when all checks pass"
@@ -714,23 +752,21 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
     // When the AppArmor profile references a different starter path than
     // the current installation (e.g. a previous build artifact), apparmor_ok
     // must be false so the profile gets regenerated with the correct path.
-    let apparmor_restricted = apparmor_restricts_userns();
+    // Gate on the status's own apparmor_restricted (procfs flag AND
+    // manageability), matching production: inside containers the raw flag can
+    // read "1" while no profile can exist, which would fail the asserts below.
+    let apptainer_dir = ready_apptainer_dir();
+    let status = check_setup_status(&apptainer_dir);
 
-    if !apparmor_restricted {
+    if !status.apparmor_restricted {
         eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
         return;
     }
 
-    let apptainer_dir = ready_apptainer_dir();
-
-    let status = check_setup_status(&apptainer_dir);
-
-    // Read the installed profile and check if it references the current path.
-    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
-    let canonical = starter.canonicalize().unwrap_or_else(|_| starter.clone());
-
-    let profile_references_current_path = fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-        .map(|content| content.contains(&format!("{}", canonical.display())))
+    // Read this install's profile and check if it references the current path.
+    let profile = apparmor_profile_ref(&apptainer_dir);
+    let profile_references_current_path = fs::read_to_string(&profile.file)
+        .map(|content| content.contains(&profile.starter_path))
         .unwrap_or(false);
 
     if !profile_references_current_path {
@@ -741,14 +777,65 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
         assert!(!status.is_ok(), "is_ok should be false with stale profile");
         let script = status.fix_script.as_ref().expect("fix_script should exist");
         assert!(
-            script.contains("tee /etc/apparmor.d/peppy-apptainer"),
-            "fix script should regenerate the profile, got: {script}"
+            script.contains(&format!("tee {}", profile.file.display())),
+            "fix script should regenerate this install's profile, got: {script}"
         );
         assert!(
-            script.contains(&format!("{}", canonical.display())),
-            "fix script should use the current starter path, got: {script}"
+            script.contains(&shell_escape_single_quoted(&profile.starter_path)),
+            "fix script should use the current starter path (shell-escaped), got: {script}"
         );
     }
+}
+
+/// Distinct installations must map to distinct AppArmor profiles: the
+/// per-install naming is what keeps `peppy container setup` for one
+/// installation (e.g. after an apptainer version bump renames the build
+/// cache) from invalidating every other installation on the machine.
+#[cfg(target_os = "linux")]
+#[test]
+fn apparmor_profile_is_namespaced_per_install_path() {
+    let a = apparmor_profile_ref(Path::new("/opt/peppy-a/apptainer"));
+    let b = apparmor_profile_ref(Path::new("/opt/peppy-b/apptainer"));
+
+    assert_ne!(
+        a.name, b.name,
+        "distinct installs need distinct profile names"
+    );
+    assert_ne!(
+        a.file, b.file,
+        "distinct installs need distinct profile files"
+    );
+
+    let suffix = a
+        .name
+        .strip_prefix("peppy-apptainer-")
+        .expect("profile name should carry the peppy-apptainer- prefix");
+    assert_eq!(suffix.len(), 16, "hash suffix is a full 64-bit hex value");
+    assert!(
+        suffix.chars().all(|c| c.is_ascii_hexdigit()),
+        "hash suffix must be hex, got: {suffix}"
+    );
+    assert!(
+        a.file.starts_with("/etc/apparmor.d"),
+        "profiles live in /etc/apparmor.d, got: {}",
+        a.file.display()
+    );
+
+    // The name is persisted in /etc, so the derivation must be deterministic.
+    let a_again = apparmor_profile_ref(Path::new("/opt/peppy-a/apptainer"));
+    assert_eq!(a.name, a_again.name, "profile naming must be deterministic");
+}
+
+/// The starter path is interpolated inside the single-quoted `echo '...'`
+/// body of the fix script; an embedded quote must not break out of it.
+#[cfg(target_os = "linux")]
+#[test]
+fn shell_escape_single_quoted_survives_embedded_quotes() {
+    assert_eq!(
+        shell_escape_single_quoted("/home/o'brien/.peppy/starter"),
+        r"/home/o'\''brien/.peppy/starter"
+    );
+    assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
 // ---------------------------------------------------------------------------
@@ -892,28 +979,18 @@ fn gocryptfs_bundled_binary_is_runnable() {
 /// automatically with no environment manipulation.
 #[test]
 fn gocryptfs_path_matches_apptainer_search_dir() {
-    let facade = ready_facade();
+    // The install dir is the *host-side* installation root for both backends:
+    // on macOS the same layout (including libexec/) is synced into the Lima
+    // guest, so the host-side location is what matters on every platform.
+    // Resolved directly so this needs no host prerequisites and boots no VM.
+    let apptainer_dir = ready_apptainer_dir();
+    let expected = apptainer_dir.join("libexec/apptainer/bin/gocryptfs");
 
-    // apptainer_dir is the *host-side* installation root for both backends.
-    // For Lima, the same layout (including libexec/) is synced into the guest,
-    // so the relative location is what matters.
-    let expected = facade.apptainer_dir.join("libexec/apptainer/bin/gocryptfs");
-
-    if cfg!(target_os = "linux") {
-        assert!(
-            expected.exists(),
-            "gocryptfs should be bundled at {:?}",
-            expected
-        );
-    } else {
-        // On macOS the host cache lives under ~/.peppy/tmp/... and is the
-        // source of the guest sync; the same path must exist host-side.
-        assert!(
-            expected.exists(),
-            "gocryptfs should be bundled host-side at {:?} for sync into Lima VM",
-            expected
-        );
-    }
+    assert!(
+        expected.exists(),
+        "gocryptfs should be bundled at {:?}",
+        expected
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,34 +1092,6 @@ fn lima_terminate_pgid_argv_sigterms_without_removing_pgid_file() {
         "`$1`: the pgid file"
     );
     assert_eq!(argv.len(), 5);
-}
-
-/// Builds a Native-backend facade for command-assembly tests without booting a
-/// VM. The apptainer path need not exist: these tests only inspect the assembled
-/// argv and the no-op kill path.
-fn native_facade() -> Apptainer {
-    Apptainer {
-        apptainer_dir: PathBuf::from("/opt/apptainer"),
-        backend: Backend::Native {
-            apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
-        },
-        extra_mounts: Vec::new(),
-    }
-}
-
-/// Builds a Lima-backend facade for command-assembly tests. The limactl/apptainer
-/// paths need not exist: `into_std_command` only constructs the argv, it does not
-/// spawn anything.
-fn lima_facade() -> Apptainer {
-    Apptainer {
-        apptainer_dir: PathBuf::from("/opt/apptainer"),
-        backend: Backend::Lima {
-            apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
-            limactl_path: PathBuf::from("/opt/lima/bin/limactl"),
-            lima_home: PathBuf::from("/home/u/.lima"),
-        },
-        extra_mounts: Vec::new(),
-    }
 }
 
 /// The guest-build PGID path is guest-native (`/tmp/peppy/pgids/<key>.pgid`), so
