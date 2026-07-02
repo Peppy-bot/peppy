@@ -43,12 +43,17 @@ impl Command for UninstallCommand {
     }
 }
 
+/// Maps a service-manager error into the CLI's `ExecutionFailed` error.
+fn execution_failed(e: impl std::fmt::Display) -> Error {
+    Error::ExecutionFailed(e.to_string())
+}
+
 pub fn stop_peppy_daemon() -> Result<()> {
     let (manager, kind) = create_service_manager()?;
     let label: ServiceLabel = service_label(kind).parse()?;
     manager
         .stop(ServiceStopCtx { label })
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))
+        .map_err(execution_failed)
 }
 
 pub fn uninstall_peppy_daemon() -> Result<()> {
@@ -56,7 +61,7 @@ pub fn uninstall_peppy_daemon() -> Result<()> {
     let label: ServiceLabel = service_label(kind).parse()?;
     manager
         .uninstall(ServiceUninstallCtx { label })
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))
+        .map_err(execution_failed)
 }
 
 pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<PathBuf> {
@@ -83,13 +88,13 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
 
     manager
         .install(ctx)
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        .map_err(execution_failed)?;
 
     manager
         .start(ServiceStartCtx {
             label: label.clone(),
         })
-        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        .map_err(execution_failed)?;
 
     default_service_path(kind, manager_level, &label)
 }
@@ -252,7 +257,7 @@ fn create_service_manager() -> Result<(TypedServiceManager, ServiceManagerKind)>
     if manager.level() != manager_level {
         manager
             .set_level(manager_level)
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+            .map_err(execution_failed)?;
     }
 
     Ok((manager, kind))
