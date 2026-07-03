@@ -1,6 +1,6 @@
 //! Generate-and-compile fixture for pairing peer modules (Rust): a synthetic
 //! two-role pairing (`arm_link/v1`, roles controller/arm) generates
-//! `peers/<link_id>/<topic>` modules for both directions, and a user node
+//! `pairings/<link_id>/<topic>` modules for both directions, and a user node
 //! exercising the full generated surface — slot consts, `paired()` /
 //! `wait_paired()`, the slot-scoped publisher, and the pin-following
 //! subscription — must compile against the real peppylib. This is the
@@ -75,12 +75,12 @@ fn generated_peer_modules_compile_against_peppylib() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    // Both directions of the slot nest flat under peers/<link_id>/<topic>.
-    let peers_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src/peers");
+    // Both directions of the slot nest flat under pairings/<link_id>/<topic>.
+    let pairings_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src/pairings");
     for module in ["arm/joint_commands.rs", "arm/joint_states.rs"] {
         assert!(
-            peers_dir.join(module).exists(),
-            "expected generated module peers/{module}"
+            pairings_dir.join(module).exists(),
+            "expected generated module pairings/{module}"
         );
     }
 
@@ -90,12 +90,12 @@ fn generated_peer_modules_compile_against_peppylib() {
     let user_main = r#"
 use peppygen::NodeBuilder;
 use peppygen::Result;
-use peppygen::peers::arm::{joint_commands, joint_states};
+use peppygen::pairings::arm::{joint_commands, joint_states};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         // Slot consts are plain strings shared by both topic modules.
-        assert_eq!(joint_commands::PEER_LINK_ID, "arm");
+        assert_eq!(joint_commands::LINK_ID, "arm");
         assert_eq!(joint_states::PAIRING_NAME, "arm_link");
         assert_eq!(joint_states::PAIRING_TAG, "v1");
 

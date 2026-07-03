@@ -219,7 +219,7 @@ fn build_topic_build_message(
 }
 
 /// Module-level constants + `paired()`/`wait_paired()` helpers shared by both
-/// directions of a peer topic module. Every `peers/<link_id>/<topic>` module
+/// directions of a peer topic module. Every `pairings/<link_id>/<topic>` module
 /// carries its slot identity as consts and exposes the slot's live pin state.
 pub fn build_peer_module_header(
     topic_name: &str,
@@ -233,7 +233,7 @@ pub fn build_peer_module_header(
     quote! {
         pub const TOPIC_NAME: &str = #topic_literal;
         /// This node's own pairing-slot link_id.
-        pub const PEER_LINK_ID: &str = #link_id_literal;
+        pub const LINK_ID: &str = #link_id_literal;
         pub const PAIRING_NAME: &str = #pairing_name_literal;
         pub const PAIRING_TAG: &str = #pairing_tag_literal;
 
@@ -241,7 +241,7 @@ pub fn build_peer_module_header(
         pub fn paired(
             node_runner: &crate::NodeRunner,
         ) -> crate::Result<Option<peppylib::messaging::PeerInfo>> {
-            Ok(node_runner.peer(PEER_LINK_ID)?.paired())
+            Ok(node_runner.peer(LINK_ID)?.paired())
         }
 
         /// Waits until a peer is paired on this slot and returns its
@@ -249,7 +249,7 @@ pub fn build_peer_module_header(
         pub async fn wait_paired(
             node_runner: &crate::NodeRunner,
         ) -> crate::Result<peppylib::messaging::PeerInfo> {
-            node_runner.peer(PEER_LINK_ID)?.wait_paired().await
+            node_runner.peer(LINK_ID)?.wait_paired().await
         }
     }
 }
@@ -289,7 +289,7 @@ pub fn build_peer_topic_publisher(
                 with_core_node,
                 as_instance_id,
                 as_target,
-                Some(PEER_LINK_ID),
+                Some(LINK_ID),
                 TOPIC_NAME,
                 qos,
             )
@@ -377,7 +377,7 @@ pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Res
             let qos = #qos_tokens;
             let inner = peppylib::runtime::subscribe_peer(
                 node_runner,
-                PEER_LINK_ID,
+                LINK_ID,
                 PAIRING_NAME,
                 PAIRING_TAG,
                 TOPIC_NAME,

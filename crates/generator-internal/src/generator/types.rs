@@ -80,7 +80,7 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
 
 /// Identifies the pairing slot a peer topic belongs to. "Pairing" names the
 /// mechanism/contract/slot; "peer" names the other end. Both directions of a
-/// pairing live under the slot's module (`peers/<link_id>/<topic>`), so the
+/// pairing live under the slot's module (`pairings/<link_id>/<topic>`), so the
 /// module path is flat `[link_id, topic]` — deliberately NOT reusing
 /// [`InterfaceOrigin`], whose `[name, tag, leaf]` nesting reflects contract
 /// identity rather than slot identity.
@@ -104,7 +104,7 @@ impl PeerContext {
 }
 
 /// Backstop for the pairing document's flat topic-name uniqueness rule:
-/// two peer artifacts must never land on the same `peers/<link_id>/<topic>`
+/// two peer artifacts must never land on the same `pairings/<link_id>/<topic>`
 /// module path. Shared by the Rust and Python generators so the invariant
 /// cannot drift between them.
 pub fn ensure_no_peer_collision(
@@ -1085,8 +1085,8 @@ pub(crate) enum ModuleCategory {
     ConsumedServices,
     ExposedActions,
     ConsumedActions,
-    /// Both directions of every pairing slot: `peers/<link_id>/<topic>`.
-    Peers,
+    /// Both directions of every pairing slot: `pairings/<link_id>/<topic>`.
+    Pairings,
 }
 
 impl ModuleCategory {
@@ -1097,7 +1097,7 @@ impl ModuleCategory {
         Self::ConsumedServices,
         Self::ExposedActions,
         Self::ConsumedActions,
-        Self::Peers,
+        Self::Pairings,
     ];
 
     pub fn from_kind(kind: InterfaceKind) -> Self {
@@ -1108,7 +1108,7 @@ impl ModuleCategory {
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
             InterfaceKind::ConsumedAction => Self::ConsumedActions,
-            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => Self::Peers,
+            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => Self::Pairings,
         }
     }
 
@@ -1120,7 +1120,7 @@ impl ModuleCategory {
             Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
             Self::ConsumedActions => "consumed_actions",
-            Self::Peers => "peers",
+            Self::Pairings => "pairings",
         }
     }
 }

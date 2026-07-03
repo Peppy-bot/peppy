@@ -1,8 +1,8 @@
-use peppygen::peers::arm::{joint_commands, joint_states};
+use peppygen::pairings::arm::{joint_commands, joint_states};
 use peppygen::{NodeBuilder, Parameters, Result};
 
 // `arm_controller` plays the `controller` role of the `arm_link` pairing.
-// Both directions of its `arm` slot live under `peppygen::peers::arm`: it
+// Both directions of its `arm` slot live under `peppygen::pairings::arm`: it
 // emits `joint_commands` to and consumes `joint_states` from the single
 // arm instance currently paired on the slot. If that arm dies, the slot
 // unpairs and the loop simply stops receiving until a new arm is paired.

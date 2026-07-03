@@ -3,10 +3,10 @@ import sys
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.peers.arm import joint_commands, joint_states
+from peppygen.pairings.arm import joint_commands, joint_states
 
 # `arm_controller` plays the `controller` role of the `arm_link` pairing.
-# Both directions of its `arm` slot live under `peppygen.peers.arm`: it
+# Both directions of its `arm` slot live under `peppygen.pairings.arm`: it
 # emits `joint_commands` to and consumes `joint_states` from the single
 # arm instance currently paired on the slot. If that arm dies, the slot
 # unpairs and the loop simply stops receiving until a new arm is paired.

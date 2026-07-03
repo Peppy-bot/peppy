@@ -1,5 +1,5 @@
 //! Python template snapshots for peer (pairing) topics — twins of the Rust
-//! suite: slot-scoped publisher (`link_id=PEER_LINK_ID`), the pairing wire
+//! suite: slot-scoped publisher (`link_id=LINK_ID`), the pairing wire
 //! target, the `subscribe_peer` seam, `paired()`/`wait_paired()`, and no
 //! `from_any` involvement.
 
@@ -50,16 +50,16 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
     let code = &artifact.code_output;
     for needle in [
         "TOPIC_NAME = \"joint_states\"",
-        "PEER_LINK_ID = \"controller\"",
+        "LINK_ID = \"controller\"",
         "PAIRING_NAME = \"arm_link\"",
         "PAIRING_TAG = \"v1\"",
         "peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG)",
-        "link_id=PEER_LINK_ID",
+        "link_id=LINK_ID",
         "def build_message(",
         "async def declare_publisher(",
         "def paired(",
         "async def wait_paired(",
-        "node_runner.peer(PEER_LINK_ID)",
+        "node_runner.peer(LINK_ID)",
     ] {
         assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
     }
@@ -84,7 +84,7 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
     let code = &artifact.code_output;
     for needle in [
         "node_runner.subscribe_peer(",
-        "PEER_LINK_ID,",
+        "LINK_ID,",
         "PAIRING_NAME,",
         "PAIRING_TAG,",
         "TOPIC_NAME,",

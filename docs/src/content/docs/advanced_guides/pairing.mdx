@@ -153,7 +153,7 @@ arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@core-node-adoring-wiles-
 
 ## Using the generated API
 
-`peppy node sync` generates a module per slot topic under `peppygen.peers.<link_id>.<topic>` (Python) / `peppygen::peers::<link_id>::<topic>` (Rust) — both directions of a slot live under the same `link_id`. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
+`peppy node sync` generates a module per slot topic under `peppygen.pairings.<link_id>.<topic>` (Python) / `peppygen::pairings::<link_id>::<topic>` (Rust) — both directions of a slot live under the same `link_id`. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
 
 <Tabs>
   <TabItem label="Python">
@@ -222,7 +222,7 @@ peppy node run --instance-id cmd_1 two_arm_commander:v1 \
   --pair left_arm@arm_l --pair right_arm@arm_r
 ```
 
-The generated code addresses each arm through its slot module — `peers::left_arm::joint_commands` vs `peers::right_arm::joint_commands` — and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
+The generated code addresses each arm through its slot module — `pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands` — and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
 
 ## Why topics only?
 

@@ -158,7 +158,7 @@ fn emit_peer_module_header(
     builder.add_import("import peppylib");
     builder.add_import("from typing import Optional");
     builder.line(&format!("TOPIC_NAME = \"{topic_name}\""));
-    builder.line(&format!("PEER_LINK_ID = \"{}\"", peer.link_id));
+    builder.line(&format!("LINK_ID = \"{}\"", peer.link_id));
     builder.line(&format!("PAIRING_NAME = \"{}\"", peer.pairing_name));
     builder.line(&format!("PAIRING_TAG = \"{}\"", peer.pairing_tag));
     builder.line(&format!("QOS = {qos}"));
@@ -167,14 +167,14 @@ fn emit_peer_module_header(
     builder.line("def paired(node_runner: peppylib.NodeRunner) -> Optional[peppylib.PeerInfo]:");
     builder.indent();
     builder.line("\"\"\"The peer currently paired on this slot, or None while unpaired.\"\"\"");
-    builder.line("return node_runner.peer(PEER_LINK_ID).paired()");
+    builder.line("return node_runner.peer(LINK_ID).paired()");
     builder.dedent();
     builder.blank_line();
 
     builder.line("async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:");
     builder.indent();
     builder.line("\"\"\"Wait until a peer is paired on this slot and return its identity.\"\"\"");
-    builder.line("return await node_runner.peer(PEER_LINK_ID).wait_paired()");
+    builder.line("return await node_runner.peer(LINK_ID).wait_paired()");
     builder.dedent();
     builder.blank_line();
 }
@@ -246,7 +246,7 @@ pub fn build_peer_emitted_topic(
     builder.line("peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),");
     builder.line("TOPIC_NAME,");
     builder.line("QOS,");
-    builder.line("link_id=PEER_LINK_ID,");
+    builder.line("link_id=LINK_ID,");
     builder.dedent();
     builder.line(")");
     builder.dedent();
@@ -339,7 +339,7 @@ pub fn build_peer_consumed_topic(
     );
     builder.line("inner = await node_runner.subscribe_peer(");
     builder.indent();
-    builder.line("PEER_LINK_ID,");
+    builder.line("LINK_ID,");
     builder.line("PAIRING_NAME,");
     builder.line("PAIRING_TAG,");
     builder.line("TOPIC_NAME,");

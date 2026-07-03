@@ -1,6 +1,6 @@
 //! Generate-and-import fixture for pairing peer modules (Python) — twin of
 //! the Rust `pairing_lib` test: a synthetic two-role pairing (`arm_link/v1`,
-//! seen from the arm side) generates `peers/<link_id>/<topic>` modules, and
+//! seen from the arm side) generates `pairings/<link_id>/<topic>` modules, and
 //! importing them from the project venv proves the generated code parses and
 //! its whole surface (slot consts, `paired()`/`wait_paired()`, publisher,
 //! subscription) resolves against the installed peppylib.
@@ -73,11 +73,11 @@ fn generated_peer_modules_import_from_venv() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let peers_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("peppygen/peers");
+    let pairings_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("peppygen/pairings");
     for module in ["controller/joint_states.py", "controller/joint_commands.py"] {
         assert!(
-            peers_dir.join(module).exists(),
-            "expected generated module peers/{module}"
+            pairings_dir.join(module).exists(),
+            "expected generated module pairings/{module}"
         );
     }
 
@@ -86,10 +86,10 @@ fn generated_peer_modules_import_from_venv() {
 
     let check = r#"
 import inspect
-from peppygen.peers.controller import joint_states, joint_commands
+from peppygen.pairings.controller import joint_states, joint_commands
 
 # Slot consts shared by both directions of the slot.
-assert joint_states.PEER_LINK_ID == "controller"
+assert joint_states.LINK_ID == "controller"
 assert joint_states.PAIRING_NAME == "arm_link"
 assert joint_states.PAIRING_TAG == "v1"
 assert joint_commands.TOPIC_NAME == "joint_commands"

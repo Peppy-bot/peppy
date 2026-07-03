@@ -4,11 +4,11 @@ import time
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.peers.controller import joint_commands, joint_states
+from peppygen.pairings.controller import joint_commands, joint_states
 
 # `robot_arm` plays the `arm` role of the `arm_link` pairing. Both
 # directions of its `controller` slot live under
-# `peppygen.peers.controller`: it consumes `joint_commands` from and emits
+# `peppygen.pairings.controller`: it consumes `joint_commands` from and emits
 # `joint_states` to whichever single controller instance is currently
 # paired on the slot. Unpaired, the subscription stays silent and
 # publishes go nowhere; the code does not change either way.

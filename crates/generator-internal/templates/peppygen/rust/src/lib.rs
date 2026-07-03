@@ -8,7 +8,7 @@ pub mod exposed_actions;
 pub mod exposed_services;
 pub mod consumed_actions;
 pub mod consumed_services;
-pub mod peers;
+pub mod pairings;
 
 pub use parameters::Parameters;
 pub use peppylib::config::QoSProfile;

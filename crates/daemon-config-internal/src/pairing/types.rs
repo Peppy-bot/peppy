@@ -36,7 +36,7 @@ pub struct PeppyPairing {
     pub roles: Vec<Name>,
     /// The whole conversation, flat. Topic names are unique across the list
     /// (one namespace regardless of direction), which is what keeps the
-    /// generated `peers.<link_id>.<topic>` module namespace unambiguous.
+    /// generated `pairings.<link_id>.<topic>` module namespace unambiguous.
     pub topics: Vec<PairingTopic>,
 }
 
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_topic_names_across_directions() {
         // The flat-list uniqueness rule: one namespace regardless of which
-        // role emits — this keeps the generated peers.<link_id>.* module
+        // role emits — this keeps the generated pairings.<link_id>.* module
         // namespace unambiguous.
         let json5 = r#"{
             peppy_schema: "pairing/v1",

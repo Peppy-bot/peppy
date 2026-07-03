@@ -492,7 +492,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     );
 }
 
-/// A node declaring `depends_on.pairings` syncs into `peers/<link_id>/<topic>`
+/// A node declaring `depends_on.pairings` syncs into `pairings/<link_id>/<topic>`
 /// modules once the pairing doc is in the daemon's pairing cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_sync_generates_peer_modules_for_pairing_slots() {
@@ -543,16 +543,16 @@ async fn node_sync_generates_peer_modules_for_pairing_slots() {
     .expect("node sync with a cached pairing doc should succeed");
 
     // Both directions of the slot: the arm emits joint_states and consumes
-    // joint_commands, all under peers/<link_id>/.
-    let peers_dir = node_dir
+    // joint_commands, all under pairings/<link_id>/.
+    let pairings_dir = node_dir
         .path()
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
-        .join("src/peers/controller");
+        .join("src/pairings/controller");
     for module in ["joint_states.rs", "joint_commands.rs"] {
         assert!(
-            peers_dir.join(module).exists(),
+            pairings_dir.join(module).exists(),
             "expected generated module at {}",
-            peers_dir.join(module).display()
+            pairings_dir.join(module).display()
         );
     }
 }

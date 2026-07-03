@@ -45,7 +45,7 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
     assert_eq!(
         artifact.module_path,
         vec!["arm".to_string(), "joint_commands".to_string()],
-        "peer artifacts nest flat under peers/<link_id>/<topic>"
+        "peer artifacts nest flat under pairings/<link_id>/<topic>"
     );
 
     let rendered = &artifact.code_output;
@@ -54,17 +54,17 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
         &[
             // Slot consts.
             "pub const TOPIC_NAME: &str = \"joint_commands\"",
-            "pub const PEER_LINK_ID: &str = \"arm\"",
+            "pub const LINK_ID: &str = \"arm\"",
             "pub const PAIRING_NAME: &str = \"arm_link\"",
             "pub const PAIRING_TAG: &str = \"v1\"",
             // The pairing wire target + the OWN slot link_id splice.
             "SenderTarget::pairing(",
             "PAIRING_NAME",
-            "Some(PEER_LINK_ID)",
+            "Some(LINK_ID)",
             // Pin-state helpers.
             "pub fn paired(",
             "pub async fn wait_paired(",
-            "node_runner.peer(PEER_LINK_ID)",
+            "node_runner.peer(LINK_ID)",
             // Standard emit surface.
             "pub fn build_message(",
             "pub async fn declare_publisher(",
@@ -100,7 +100,7 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
         &[
             // The subscribe_peer seam with the slot consts spliced.
             "peppylib::runtime::subscribe_peer(",
-            "PEER_LINK_ID",
+            "LINK_ID",
             "PAIRING_NAME",
             "PAIRING_TAG",
             "TOPIC_NAME",
@@ -176,11 +176,11 @@ fn two_slots_of_the_same_pairing_generate_isolated_modules() {
     assert!(
         artifacts[0]
             .code_output
-            .contains("pub const PEER_LINK_ID: &str = \"left_arm\"")
+            .contains("pub const LINK_ID: &str = \"left_arm\"")
     );
     assert!(
         artifacts[1]
             .code_output
-            .contains("pub const PEER_LINK_ID: &str = \"right_arm\"")
+            .contains("pub const LINK_ID: &str = \"right_arm\"")
     );
 }

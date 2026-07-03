@@ -116,7 +116,7 @@ pub(crate) fn validate_pairing_specs(
 }
 
 /// Resolves every `depends_on.pairings` slot into the generator inputs for
-/// the `peers/<link_id>/<topic>` modules: per slot, topics with
+/// the `pairings/<link_id>/<topic>` modules: per slot, topics with
 /// `emitted_by == entry.role` become peer-emitted and all others
 /// peer-consumed. Runs [`validate_pairing_specs`] first, so role errors and
 /// cache misses surface before any codegen.
