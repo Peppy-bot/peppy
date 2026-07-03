@@ -87,30 +87,6 @@ impl RustGenerator {
         self.parameters = parameters;
     }
 
-    /// Backstop for the pairing document's flat topic-name uniqueness rule:
-    /// two peer artifacts must never land on the same `peers/<link_id>/<topic>`
-    /// module path.
-    fn ensure_no_peer_collision(
-        &self,
-        module_path: &[String],
-        peer: &crate::generator::types::PeerContext,
-        topic: &EmittedTopic,
-    ) -> Result<()> {
-        let collides = self.sections.iter().any(|s| {
-            matches!(
-                s.kind,
-                InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
-            ) && s.module_path == module_path
-        });
-        if collides {
-            return Err(Error::PeerTopicNameCollision {
-                link_id: peer.link_id.clone(),
-                topic: topic.name.clone(),
-            });
-        }
-        Ok(())
-    }
-
     fn push_section(&mut self, section: InterfaceArtifact) {
         if !section.code_output.is_empty() {
             self.sections.push(section);
@@ -1461,7 +1437,12 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
 
         let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
-        self.ensure_no_peer_collision(&module_path, peer, topic)?;
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
         self.push_section(InterfaceArtifact {
             module_path,
             kind: InterfaceKind::PeerEmittedTopic,
@@ -1534,7 +1515,12 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
 
         let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
-        self.ensure_no_peer_collision(&module_path, peer, topic)?;
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
         self.push_section(InterfaceArtifact {
             module_path,
             kind: InterfaceKind::PeerConsumedTopic,

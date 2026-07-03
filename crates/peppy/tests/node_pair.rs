@@ -225,12 +225,15 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
-    // `stack list` shows the pair with the bidirectional arrow.
+    // `stack list` shows the pair with the bidirectional arrow, the peer
+    // slot carrying its core node like the bindings table's producers.
     let listing = peppy::commands::stack::list_nodes_collecting(&ctx, None, false)
         .await
         .expect("stack list should succeed");
     assert!(
-        listing.contains("controller ⇌ ctrl_1:arm (arm_link:v1)"),
+        listing.contains(&format!(
+            "controller ⇌ ctrl_1:arm@{core_node_name} (arm_link:v1)"
+        )),
         "stack list should show the established pair:\n{listing}"
     );
 

@@ -268,9 +268,12 @@ fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
 }
 
 /// One display string per pairing slot on the instance, ordered by link id:
-/// `link_id ⇌ peer_instance:peer_link (pairing:tag)` while paired,
-/// `link_id ⇌ (unpaired) [role r of pairing:tag]` while not — the role makes
-/// an unpaired row self-describing when composing a `--pair` for it.
+/// `link_id ⇌ peer_instance:peer_link@core_node (pairing:tag)` while paired
+/// (the `@core_node` suffix matches the bindings table's `instance@node`
+/// producer style), `link_id ⇌ (unpaired) [role r of pairing:tag]` while
+/// not; the role makes an unpaired row self-describing when composing a
+/// `--pair` for it, and an `optional: true` slot is labelled
+/// `(unpaired, optional)` so it never reads as a missing required peer.
 fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
     instance
         .pairing_slots
@@ -283,15 +286,22 @@ fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Ve
                     paint(
                         colorize,
                         INSTANCE_COLOR,
-                        &format!("{}:{}", peer.instance_id, peer_link_id),
+                        &format!("{}:{}@{}", peer.instance_id, peer_link_id, peer.core_node),
                     ),
                     slot.pairing_name,
                     slot.pairing_tag,
                 ),
-                PairingSlotBinding::Unpaired => format!(
-                    "{link} ⇌ (unpaired) [role {} of {}:{}]",
-                    slot.role, slot.pairing_name, slot.pairing_tag,
-                ),
+                PairingSlotBinding::Unpaired => {
+                    let state = if slot.optional {
+                        "(unpaired, optional)"
+                    } else {
+                        "(unpaired)"
+                    };
+                    format!(
+                        "{link} ⇌ {state} [role {} of {}:{}]",
+                        slot.role, slot.pairing_name, slot.pairing_tag,
+                    )
+                }
             }
         })
         .collect()
@@ -695,12 +705,24 @@ mod tests {
     }
 
     /// Slice of the rendered output covering only the "Instance bindings"
-    /// section, so assertions don't accidentally match the node table or the
-    /// dependency list (both of which also use `->`).
+    /// section, so assertions don't accidentally match the node table, the
+    /// pairings table, or the dependency list.
     fn bindings_section(out: &str) -> &str {
         let start = out
             .find("Instance bindings")
             .expect("Instance bindings heading missing");
+        let rest = &out[start..];
+        let end = rest
+            .find("Pairings")
+            .or_else(|| rest.find("Dependencies"))
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Slice covering only the "Pairings" section, mirroring
+    /// [`bindings_section`].
+    fn pairings_section(out: &str) -> &str {
+        let start = out.find("Pairings").expect("Pairings heading missing");
         let rest = &out[start..];
         let end = rest.find("Dependencies").unwrap_or(rest.len());
         &rest[..end]
@@ -972,16 +994,32 @@ mod tests {
                 binding: config::runtime::PairingSlotBinding::Unpaired,
             },
         );
+        ctrl.instances[0].pairing_slots.insert(
+            "spare".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "controller".to_string(),
+                optional: true,
+                binding: config::runtime::PairingSlotBinding::Unpaired,
+            },
+        );
 
         let out = format_stack_list(&[arm, ctrl], &[], false);
         assert!(out.contains("Pairings"), "missing Pairings section:\n{out}");
+        // The paired peer carries its core_node, matching the bindings
+        // table's `instance@node` producer style.
         assert!(
-            out.contains("controller ⇌ ctrl_1:arm (arm_link:v1)"),
-            "paired row should name the peer slot and contract:\n{out}"
+            out.contains("controller ⇌ ctrl_1:arm@core_a (arm_link:v1)"),
+            "paired row should name the peer slot with its node:\n{out}"
         );
         assert!(
             out.contains("arm ⇌ (unpaired) [role controller of arm_link:v1]"),
-            "unpaired row should carry the role and contract:\n{out}"
+            "required unpaired row should carry the role and contract:\n{out}"
+        );
+        assert!(
+            out.contains("spare ⇌ (unpaired, optional) [role controller of arm_link:v1]"),
+            "optional unpaired row should be labelled distinctly:\n{out}"
         );
     }
 
@@ -1105,7 +1143,7 @@ mod tests {
         // Double-width CJK glyphs span two display columns but more than two
         // bytes, so a byte-length or `char`-count measure would skew the box.
         // Every box-drawing line within a table must share one display width.
-        let nodes = vec![binding_node(
+        let mut nodes = vec![binding_node(
             "机器人",
             vec![(
                 "实例-uno",
@@ -1118,6 +1156,21 @@ mod tests {
                 )],
             )],
         )];
+        // A pairing row mixes the `⇌` separator with CJK link and peer ids,
+        // exercising the same width computation for the Pairings table.
+        nodes[0].instances[0].pairing_slots.insert(
+            "机械臂".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "臂链".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "控制器".to_string(),
+                optional: false,
+                binding: config::runtime::PairingSlotBinding::Paired {
+                    peer: ProducerRef::new("core_a", "机械臂-1"),
+                    peer_link_id: "控制".to_string(),
+                },
+            },
+        );
         let out = format_stack_list(&nodes, &[], false);
 
         fn box_line_widths(block: &str) -> Vec<usize> {
@@ -1135,10 +1188,12 @@ mod tests {
         }
 
         // Node table region (between the "Node stack" and "Instance bindings"
-        // headings) and the bindings table region must each be internally aligned.
+        // headings), the bindings table region, and the pairings table region
+        // must each be internally aligned.
         let node_region = &out[..out.find("Instance bindings").expect("bindings heading")];
         assert_uniform("node table", &box_line_widths(node_region));
         assert_uniform("bindings table", &box_line_widths(bindings_section(&out)));
+        assert_uniform("pairings table", &box_line_widths(pairings_section(&out)));
     }
 
     #[test]

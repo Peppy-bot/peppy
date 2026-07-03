@@ -384,6 +384,16 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
+    /// A `pairings:` key that is the reserved producer-default sentinel.
+    /// Mirror of [`ParsingError::BindingSentinelKey`] with pairing wording.
+    #[error(
+        "pairing key `{key}` on instance `{owner_instance_id}` is the reserved \
+         default-link_id sentinel and cannot be used as a pairing slot"
+    )]
+    PairingSentinelKey {
+        owner_instance_id: String,
+        key: String,
+    },
     #[error(transparent)]
     PairingDeadKey(Box<PairingDeadKey>),
     #[error(transparent)]
@@ -425,6 +435,10 @@ pub enum StructuredError {
         owner_instance_id: String,
         binding: String,
     },
+    PairingSentinelKey {
+        owner_instance_id: String,
+        key: String,
+    },
 }
 
 impl StructuredError {
@@ -455,6 +469,13 @@ impl From<StructuredError> for ParsingError {
             } => ParsingError::BindingSentinelKey {
                 owner_instance_id,
                 binding,
+            },
+            StructuredError::PairingSentinelKey {
+                owner_instance_id,
+                key,
+            } => ParsingError::PairingSentinelKey {
+                owner_instance_id,
+                key,
             },
         }
     }

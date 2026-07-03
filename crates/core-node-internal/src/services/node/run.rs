@@ -732,12 +732,17 @@ async fn process_node_run(
             return NodeRunResult::failure(msg);
         }
     };
+    // Deferred slots ride the same goal field for a manual `--defer-pair`
+    // and for the earlier endpoint of a launch-planned pair (which the later
+    // endpoint pairs automatically), so the wording must fit both: state the
+    // mechanism, never instruct a manual step.
     for link_id in &deferred_pairs {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
             line: format!(
-                "pairing slot `{link_id}` deferred: instance starts unpaired; pair it later \
-                 by starting the peer with `--pair <its_link_id>@{instance_id_str}/{link_id}`"
+                "pairing slot `{link_id}` deferred: instance starts unpaired; the pair is \
+                 established automatically when a peer instance starts with \
+                 `{instance_id_str}/{link_id}` as its pair target"
             ),
         });
     }
@@ -1102,7 +1107,7 @@ async fn process_node_run(
                         if let Err(reason) = ctx
                             .action
                             .pairing
-                            .deliver_pairs_for_instance(instance_id_str)
+                            .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
                             .await
                         {
                             ctx.action

@@ -69,9 +69,9 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                 }
                 for (key, target) in &instance.pairings {
                     if key == DEFAULT_LINK_ID_SENTINEL {
-                        let err = StructuredError::BindingSentinelKey {
+                        let err = StructuredError::PairingSentinelKey {
                             owner_instance_id: instance.instance_id.to_string(),
-                            binding: key.clone(),
+                            key: key.clone(),
                         };
                         return Err(de::Error::custom(err.json5_message()));
                     }
@@ -189,10 +189,10 @@ where
 
 /// Mirror of [`deserialize_bindings`] for the per-instance `pairings` map:
 /// keys are the instance's own pairing-slot link_ids, values name the peer
-/// instance (optionally suffixed `/<peer_link_id>`). Duplicate keys and
-/// empty keys/values are rejected here; sentinel keys and unknown target
-/// instances are checked at the [`PeppyLauncher`] level where the owning
-/// `instance_id` and the full instance set are in scope.
+/// instance (optionally suffixed `/<peer_link_id>`). Duplicate keys, empty
+/// keys/values, and malformed targets are rejected here; sentinel keys and
+/// unknown target instances are checked at the [`PeppyLauncher`] level where
+/// the owning `instance_id` and the full instance set are in scope.
 fn deserialize_pairings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -204,6 +204,16 @@ where
         if value.trim().is_empty() {
             return Err(de::Error::custom(format!(
                 "pairing target for key `{key}` cannot be empty"
+            )));
+        }
+        // Reject malformed targets at parse time rather than letting an
+        // empty or slash-bearing peer_link fail later as "no complementary
+        // slot" during plan validation.
+        let (instance, peer_link) = split_pair_target(value);
+        if instance.is_empty() || peer_link.is_some_and(|l| l.is_empty() || l.contains('/')) {
+            return Err(de::Error::custom(format!(
+                "pairing target `{value}` for key `{key}` is malformed: expected \
+                 `<peer_instance>` or `<peer_instance>/<peer_link_id>`"
             )));
         }
     }
@@ -626,9 +636,18 @@ mod tests {
         let err = serde_json5::from_str::<PeppyLauncher>(json5)
             .expect_err("`_` pairing key must be rejected");
         let parsing_err = ParsingError::from(err);
+        let ParsingError::PairingSentinelKey {
+            owner_instance_id,
+            key,
+        } = &parsing_err
+        else {
+            panic!("expected PairingSentinelKey, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "ctrl_1");
+        assert_eq!(key, "_");
         assert!(
-            matches!(parsing_err, ParsingError::BindingSentinelKey { .. }),
-            "expected BindingSentinelKey, got {parsing_err:?}"
+            parsing_err.to_string().contains("pairing"),
+            "message should use pairing wording: {parsing_err}"
         );
     }
 
@@ -642,13 +661,43 @@ mod tests {
             .expect_err("duplicate pairing key must be rejected");
         assert!(err.to_string().contains("duplicate"), "error: {err}");
 
-        let empty = r#"{
+        let empty_value = r#"{
             instance_id: "ctrl_1",
             pairings: { "arm": "" }
         }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(empty)
+        let err = serde_json5::from_str::<DeploymentInstance>(empty_value)
             .expect_err("empty pairing target must be rejected");
         assert!(err.to_string().contains("empty"), "error: {err}");
+
+        let empty_key = r#"{
+            instance_id: "ctrl_1",
+            pairings: { "": "arm_1" }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(empty_key)
+            .expect_err("empty pairing key must be rejected");
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    /// A pairing target must be `<peer_instance>` or
+    /// `<peer_instance>/<peer_link_id>`; empty parts or extra `/` segments
+    /// fail at parse time with a targeted message instead of surfacing later
+    /// as a plan-phase "no complementary slot" error.
+    #[test]
+    fn pairings_reject_malformed_targets() {
+        for target in ["arm_1/", "/controller", "arm_1/ctl/extra"] {
+            let json5 = format!(
+                r#"{{
+                    instance_id: "ctrl_1",
+                    pairings: {{ "arm": "{target}" }}
+                }}"#
+            );
+            let err = serde_json5::from_str::<DeploymentInstance>(&json5)
+                .expect_err("malformed pairing target must be rejected");
+            assert!(
+                err.to_string().contains("malformed"),
+                "target `{target}` should be reported as malformed: {err}"
+            );
+        }
     }
 
     /// Duplicate binding keys must be rejected. The raw map deserializer

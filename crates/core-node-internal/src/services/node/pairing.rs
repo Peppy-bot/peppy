@@ -96,6 +96,13 @@ impl PairingCoordinator {
     /// from their own `node_run` flow; `peer_update` is absolute-state and
     /// idempotent, so double delivery converges).
     ///
+    /// `planned` is the set of pairs this run reserved. A concurrent
+    /// stop/unpair can dissolve a reserved pair between reservation and this
+    /// call; delivering whatever remains would let the run report "paired"
+    /// for a pair that no longer exists, so every planned pair is re-checked
+    /// against the registry (under the same `op_lock` as the delivery) and a
+    /// missing one fails the call.
+    ///
     /// On a delivery failure the failed pair is reverted (registry cleared +
     /// best-effort Unpaired to whichever side already acked) and an error
     /// naming the pair is returned; pairs already delivered in this call are
@@ -103,6 +110,7 @@ impl PairingCoordinator {
     pub async fn deliver_pairs_for_instance(
         &self,
         instance_id: &str,
+        planned: &[PlannedPair],
     ) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
         let pairs: Vec<Pairing> = self
@@ -111,6 +119,13 @@ impl PairingCoordinator {
             .into_iter()
             .filter(|p| p.involves_instance(instance_id))
             .collect();
+        if let Some(missing) = find_missing_planned_pair(&pairs, planned) {
+            return Err(format!(
+                "pair `{} ⇌ {}` was dissolved before delivery completed \
+                 (its peer was stopped or unpaired concurrently)",
+                missing.own, missing.peer
+            ));
+        }
         for pairing in pairs {
             self.deliver_pair(&pairing).await?;
         }
@@ -247,6 +262,20 @@ impl PairingCoordinator {
 /// logs and error messages (matches `peppy stack list`).
 pub fn pairing_label(pairing: &Pairing) -> String {
     format!("{} ⇌ {}", pairing.a.slot, pairing.b.slot)
+}
+
+/// The first planned pair with no matching registry pair (either endpoint
+/// order), or `None` when every planned pair is present.
+fn find_missing_planned_pair<'a>(
+    pairs: &[Pairing],
+    planned: &'a [PlannedPair],
+) -> Option<&'a PlannedPair> {
+    planned.iter().find(|plan| {
+        !pairs.iter().any(|pair| {
+            (pair.a.slot == plan.own && pair.b.slot == plan.peer)
+                || (pair.a.slot == plan.peer && pair.b.slot == plan.own)
+        })
+    })
 }
 
 /// One resolved `--pair` request: this instance's slot and the concrete peer
@@ -581,6 +610,57 @@ mod tests {
         )
         .expect_err("self-pairing rejected");
         assert!(err.contains("own instance"), "{err}");
+    }
+
+    #[test]
+    fn missing_planned_pair_is_detected_in_either_endpoint_order() {
+        use node_stack::PairEndpoint;
+
+        let registry_pair = |a: SlotAddr, b: SlotAddr| Pairing {
+            pairing_name: "arm_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            a: PairEndpoint {
+                slot: a,
+                role: "controller".to_string(),
+            },
+            b: PairEndpoint {
+                slot: b,
+                role: "arm".to_string(),
+            },
+        };
+        let planned = vec![PlannedPair {
+            own: SlotAddr::new("ctrl_1", "arm"),
+            peer: SlotAddr::new("arm_1", "controller"),
+        }];
+
+        // Present as reserved: no missing pair, whichever side is `a`.
+        let same_order = [registry_pair(
+            SlotAddr::new("ctrl_1", "arm"),
+            SlotAddr::new("arm_1", "controller"),
+        )];
+        assert!(find_missing_planned_pair(&same_order, &planned).is_none());
+        let swapped = [registry_pair(
+            SlotAddr::new("arm_1", "controller"),
+            SlotAddr::new("ctrl_1", "arm"),
+        )];
+        assert!(find_missing_planned_pair(&swapped, &planned).is_none());
+
+        // Dissolved (registry empty) or replaced by an unrelated pair: the
+        // planned pair is reported missing.
+        assert_eq!(
+            find_missing_planned_pair(&[], &planned),
+            Some(&planned[0]),
+            "an empty registry must flag the planned pair"
+        );
+        let unrelated = [registry_pair(
+            SlotAddr::new("ctrl_1", "arm"),
+            SlotAddr::new("arm_2", "controller"),
+        )];
+        assert_eq!(
+            find_missing_planned_pair(&unrelated, &planned),
+            Some(&planned[0]),
+            "a pair with a different peer must not satisfy the plan"
+        );
     }
 
     #[test]

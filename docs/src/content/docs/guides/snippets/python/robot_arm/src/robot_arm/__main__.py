@@ -38,7 +38,20 @@ async def handle_commands(node_runner: NodeRunner):
         print(f"Failed to wait for a paired controller: {e}", file=sys.stderr)
         return
 
-    async for producer, command in subscription:
+    while True:
+        try:
+            received = await subscription.next()
+        except Exception as e:
+            # Log the failure, then pause before retrying so a persistent
+            # receive error does not spin the loop at full speed.
+            print(f"Error receiving joint command: {e}", file=sys.stderr)
+            await asyncio.sleep(1.0)
+            continue
+
+        if received is None:
+            break  # subscription closed
+        producer, command = received
+
         # `producer` is always the paired controller's identity.
         print(
             f"command from {producer.core_node}/{producer.instance_id}: "

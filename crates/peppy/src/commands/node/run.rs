@@ -283,21 +283,39 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Collapse the clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`,
-/// rejecting duplicate `KEY`s. Each `KEY` must be unique per invocation
-/// (rule 6): pinned `KEY`s match a declared link_id, free-form `KEY`s
-/// label a `from_any` binding, and either way two bindings on the same
-/// key would clobber.
-fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+/// Collapse a clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`, rejecting
+/// duplicate `KEY`s: a plain `collect()` would silently keep the last VALUE.
+/// `kind`/`flag` splice the surface-specific wording into the error.
+fn entries_to_unique_map(
+    entries: &[(String, String)],
+    instance_id: &str,
+    kind: &str,
+    flag: &str,
+) -> Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
-    for (key, value) in binds {
+    for (key, value) in entries {
         if map.insert(key.clone(), value.clone()).is_some() {
             return Err(Error::ExecutionFailed(format!(
-                "duplicate binding key `{key}` on instance `{instance_id}` (each --bind KEY must be distinct)"
+                "duplicate {kind} key `{key}` on instance `{instance_id}` (each {flag} must be distinct)"
             )));
         }
     }
     Ok(map)
+}
+
+/// `--bind KEY@VALUE` entries as a map. Each `KEY` must be unique per
+/// invocation (rule 6): pinned `KEY`s match a declared link_id, free-form
+/// `KEY`s label a `from_any` binding, and either way two bindings on the
+/// same key would clobber.
+fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+    entries_to_unique_map(binds, instance_id, "binding", "--bind KEY")
+}
+
+/// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
+/// most once per invocation, so a repeated LINK_ID is a hard error just
+/// like a duplicate `--bind` key.
+fn pairs_to_map(pairs: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+    entries_to_unique_map(pairs, instance_id, "pairing", "--pair LINK_ID")
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
@@ -596,7 +614,7 @@ pub async fn validate_and_run_instance(
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
     let binds_map = binds_to_map(binds, &prelaunch_instance_id)?;
-    let pairs_map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+    let pairs_map = pairs_to_map(pairs, &prelaunch_instance_id)?;
     let slot_bindings = match validate_binds_against_stack(
         messenger,
         core_node_name,
@@ -890,6 +908,37 @@ mod tests {
             parse_value("foo=bar"),
             AnyType::String("foo=bar".to_string())
         );
+    }
+
+    /// Duplicate `--bind` and `--pair` keys are hard errors: collecting
+    /// straight into the `BTreeMap` would silently keep the last value.
+    #[test]
+    fn duplicate_bind_and_pair_keys_are_rejected() {
+        let entries = vec![
+            ("arm".to_string(), "arm_1".to_string()),
+            ("arm".to_string(), "arm_2".to_string()),
+        ];
+
+        let err = binds_to_map(&entries, "ctrl_1").expect_err("duplicate --bind rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate binding key `arm`") && msg.contains("--bind"),
+            "unexpected error: {msg}"
+        );
+
+        let err = pairs_to_map(&entries, "ctrl_1").expect_err("duplicate --pair rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate pairing key `arm`") && msg.contains("--pair"),
+            "unexpected error: {msg}"
+        );
+
+        // Distinct keys pass through untouched.
+        let ok = vec![
+            ("left".to_string(), "arm_1".to_string()),
+            ("right".to_string(), "arm_2".to_string()),
+        ];
+        assert_eq!(pairs_to_map(&ok, "cmd_1").expect("distinct keys").len(), 2);
     }
 
     #[test]

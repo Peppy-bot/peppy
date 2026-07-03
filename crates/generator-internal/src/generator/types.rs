@@ -103,6 +103,31 @@ impl PeerContext {
     }
 }
 
+/// Backstop for the pairing document's flat topic-name uniqueness rule:
+/// two peer artifacts must never land on the same `peers/<link_id>/<topic>`
+/// module path. Shared by the Rust and Python generators so the invariant
+/// cannot drift between them.
+pub fn ensure_no_peer_collision(
+    sections: &[InterfaceArtifact],
+    module_path: &[String],
+    peer: &PeerContext,
+    topic: &EmittedTopic,
+) -> Result<()> {
+    let collides = sections.iter().any(|s| {
+        matches!(
+            s.kind,
+            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
+        ) && s.module_path == module_path
+    });
+    if collides {
+        return Err(Error::PeerTopicNameCollision {
+            link_id: peer.link_id.clone(),
+            topic: topic.name.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// What the generator should splice into the consumer's subscribe / poll /
 /// send_goal call for the `(from_link_id, from_instance_id)` pair.
 ///

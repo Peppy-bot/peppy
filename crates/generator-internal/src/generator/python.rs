@@ -78,30 +78,6 @@ impl PythonGenerator {
         }
     }
 
-    /// Backstop for the pairing document's flat topic-name uniqueness rule:
-    /// two peer artifacts must never land on the same
-    /// `peers/<link_id>/<topic>` module path.
-    fn ensure_no_peer_collision(
-        &self,
-        module_path: &[String],
-        peer: &crate::generator::types::PeerContext,
-        topic: &EmittedTopic,
-    ) -> Result<()> {
-        let collides = self.sections.iter().any(|s| {
-            matches!(
-                s.kind,
-                InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
-            ) && s.module_path == module_path
-        });
-        if collides {
-            return Err(crate::error::Error::PeerTopicNameCollision {
-                link_id: peer.link_id.clone(),
-                topic: topic.name.clone(),
-            });
-        }
-        Ok(())
-    }
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
@@ -336,7 +312,12 @@ impl LanguageGenerator for PythonGenerator {
 
         let code = topics::build_peer_emitted_topic(topic, schema_info.as_ref(), peer)?;
         let module_path = peer.module_path_for(&topic.name);
-        self.ensure_no_peer_collision(&module_path, peer, topic)?;
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
         self.push_section(InterfaceArtifact {
             module_path,
             kind: InterfaceKind::PeerEmittedTopic,
@@ -361,7 +342,12 @@ impl LanguageGenerator for PythonGenerator {
 
         let code = topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?;
         let module_path = peer.module_path_for(&topic.name);
-        self.ensure_no_peer_collision(&module_path, peer, topic)?;
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
         self.push_section(InterfaceArtifact {
             module_path,
             kind: InterfaceKind::PeerConsumedTopic,
