@@ -73,7 +73,9 @@ fn generated_peer_modules_import_from_venv() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let pairings_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("peppygen/pairings");
+    let pairings_dir = user_node
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join("peppygen/pairings");
     for module in ["controller/joint_states.py", "controller/joint_commands.py"] {
         assert!(
             pairings_dir.join(module).exists(),

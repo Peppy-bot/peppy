@@ -124,7 +124,7 @@ pub fn format_stack_list(
         .filter(|n| n.instances.iter().any(|i| !i.pairing_slots.is_empty()))
         .collect();
     if !pairing_nodes.is_empty() {
-        let _ = writeln!(out, "Pairings");
+        let _ = writeln!(out, "Instance pairings");
         let _ = writeln!(out);
         render_pairings_table(&mut out, &pairing_nodes, colorize);
     }
@@ -713,16 +713,18 @@ mod tests {
             .expect("Instance bindings heading missing");
         let rest = &out[start..];
         let end = rest
-            .find("Pairings")
+            .find("Instance pairings")
             .or_else(|| rest.find("Dependencies"))
             .unwrap_or(rest.len());
         &rest[..end]
     }
 
-    /// Slice covering only the "Pairings" section, mirroring
+    /// Slice covering only the "Instance pairings" section, mirroring
     /// [`bindings_section`].
     fn pairings_section(out: &str) -> &str {
-        let start = out.find("Pairings").expect("Pairings heading missing");
+        let start = out
+            .find("Instance pairings")
+            .expect("Instance pairings heading missing");
         let rest = &out[start..];
         let end = rest.find("Dependencies").unwrap_or(rest.len());
         &rest[..end]
@@ -1006,7 +1008,10 @@ mod tests {
         );
 
         let out = format_stack_list(&[arm, ctrl], &[], false);
-        assert!(out.contains("Pairings"), "missing Pairings section:\n{out}");
+        assert!(
+            out.contains("Instance pairings"),
+            "missing Instance pairings section:\n{out}"
+        );
         // The paired peer carries its core_node, matching the bindings
         // table's `instance@node` producer style.
         assert!(
@@ -1033,8 +1038,8 @@ mod tests {
         )];
         let out = format_stack_list(&nodes, &[], false);
         assert!(
-            !out.contains("Pairings"),
-            "Pairings section must be omitted for pairing-free stacks:\n{out}"
+            !out.contains("Instance pairings"),
+            "Instance pairings section must be omitted for pairing-free stacks:\n{out}"
         );
     }
 
