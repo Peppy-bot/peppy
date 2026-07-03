@@ -2,7 +2,7 @@
   {
     id: 1000,
     type: "git",
-    url: "https://github.com/Peppy-bot/nodes-hub",
+    url: "https://github.com/Peppy-bot/nodes-hub.git",
     ref: "main"
   },
   {
@@ -21,7 +21,7 @@
   {
     id: 1003,
     type: "git",
-    url: "https://github.com/Peppy-bot/interfaces-hub",
+    url: "https://github.com/Peppy-bot/interfaces-hub.git",
     ref: "main"
   },
 ]
