@@ -398,7 +398,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -599,7 +599,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "askama",
  "git2",
@@ -742,7 +742,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -2299,7 +2299,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "serde",
  "serde_json",
@@ -3031,7 +3031,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "capnp",
  "clap",
@@ -3054,7 +3054,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3230,7 +3230,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#bbb38318286062e01506a9f219a0e5e6e758cbdb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7a9e85409d4cec759fb1849adc89ce6ade117af8"
 dependencies = [
  "build-helpers",
  "bytes",
