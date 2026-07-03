@@ -42,7 +42,7 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
  3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `bindings` (pinning `depends_on` slots to producer instances), and — for nodes declaring [pairing](/advanced_guides/pairing) slots — `pairings` (pairing a slot with a peer instance at launch) and `defer_pairings` (explicitly starting a required slot unpaired)
 
 The `source` attribute supports four formats:
- - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes
+ - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
  - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
  - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
