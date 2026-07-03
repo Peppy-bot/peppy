@@ -2,26 +2,26 @@
   {
     id: 1000,
     type: "git",
-    url: "https://github.com/Peppy-bot/nodes_hub",
+    url: "https://github.com/Peppy-bot/nodes-hub",
     ref: "main"
   },
   {
     id: 1001,
     type: "git",
-    url: "https://github.com/Peppy-bot/launchers_hub.git",
+    url: "https://github.com/Peppy-bot/launchers-hub.git",
     ref: "main"
   },
   // OpenArm01 specific nodes
   {
     id: 1002,
     type: "git",
-    url: "https://github.com/Peppy-bot/openarm01_nodes.git",
+    url: "https://github.com/Peppy-bot/openarm-nodes.git",
     ref: "main"
   },
   {
     id: 1003,
     type: "git",
-    url: "https://github.com/Peppy-bot/interfaces_hub",
+    url: "https://github.com/Peppy-bot/interfaces-hub",
     ref: "main"
   },
 ]
