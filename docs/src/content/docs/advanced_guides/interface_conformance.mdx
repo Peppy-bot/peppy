@@ -163,7 +163,7 @@ If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, t
 
 A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
 
-A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the natural shape for optional many-to-one fan-in — telemetry, monitoring, any consumer that accepts data from whichever producers happen to exist. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the natural shape for optional many-to-one fan-in: telemetry, monitoring, any consumer that accepts data from whichever producers happen to exist. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {

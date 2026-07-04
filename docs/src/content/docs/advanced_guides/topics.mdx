@@ -271,7 +271,7 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 
 ## Bindings and routing
 
-Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself — established with `--pair` at instance start — not by a binding.)
+Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--pair` at instance start, not by a binding.)
 
 A binding takes the form `KEY: VALUE`, where `KEY` is a label local to the consumer (typically a `link_id` from `depends_on`) and `VALUE` is the target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to one of the consumer's declared slots.
 
