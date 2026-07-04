@@ -973,7 +973,7 @@ mod tests {
         assert_eq!(nodes_hub.get("type").unwrap().as_str().unwrap(), "git");
         assert_eq!(
             nodes_hub.get("url").unwrap().as_str().unwrap(),
-            "https://github.com/Peppy-bot/nodes_hub"
+            "https://github.com/Peppy-bot/nodes-hub.git"
         );
         assert_eq!(nodes_hub.get("ref").unwrap().as_str().unwrap(), "main");
 
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(launchers_hub.get("type").unwrap().as_str().unwrap(), "git");
         assert_eq!(
             launchers_hub.get("url").unwrap().as_str().unwrap(),
-            "https://github.com/Peppy-bot/launchers_hub.git"
+            "https://github.com/Peppy-bot/launchers-hub.git"
         );
     }
 

@@ -116,7 +116,7 @@ mod tests {
         assert_eq!(written, DEFAULT_REPOS_TEMPLATE);
     }
 
-    /// A user upgrades peppy and a new entry (`launchers_hub`) is added
+    /// A user upgrades peppy and a new entry (`launchers-hub`) is added
     /// to the bundled defaults, but their pre-existing `repositories.json5`
     /// only contains the older entries.
     /// `ensure_default_repos` must add the missing default(s) without
@@ -131,7 +131,7 @@ mod tests {
         std::fs::write(
             &repos_path,
             r#"[
-                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes_hub", "ref": "main" }
+                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub.git", "ref": "main" }
             ]"#,
         )
         .unwrap();
@@ -140,12 +140,12 @@ mod tests {
 
         let repos = read_repos(&peppy_dirs);
         assert!(
-            has_git_url(&repos, "https://github.com/Peppy-bot/nodes_hub"),
-            "pre-existing nodes_hub entry must be preserved, got: {repos:?}"
+            has_git_url(&repos, "https://github.com/Peppy-bot/nodes-hub.git"),
+            "pre-existing nodes-hub entry must be preserved, got: {repos:?}"
         );
         assert!(
-            has_git_url(&repos, "https://github.com/Peppy-bot/launchers_hub.git"),
-            "missing launchers_hub default must be appended, got: {repos:?}"
+            has_git_url(&repos, "https://github.com/Peppy-bot/launchers-hub.git"),
+            "missing launchers-hub default must be appended, got: {repos:?}"
         );
     }
 
@@ -175,11 +175,11 @@ mod tests {
         );
         assert!(has_git_url(
             &repos,
-            "https://github.com/Peppy-bot/nodes_hub"
+            "https://github.com/Peppy-bot/nodes-hub.git"
         ));
         assert!(has_git_url(
             &repos,
-            "https://github.com/Peppy-bot/launchers_hub.git"
+            "https://github.com/Peppy-bot/launchers-hub.git"
         ));
     }
 
@@ -216,7 +216,7 @@ mod tests {
         std::fs::write(
             conf_dir.join("repositories.json5"),
             r#"[
-                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes_hub", "ref": "main" }
+                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub.git", "ref": "main" }
             ]"#,
         )
         .unwrap();
@@ -245,7 +245,7 @@ mod tests {
         std::fs::write(
             conf_dir.join("repositories.json5"),
             r#"[
-                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes_hub", "ref": "feature/v0.10.0" },
+                { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub.git", "ref": "feature/v0.10.0" },
                 { "id": 1001, "type": "fs", "path": "/some/where" }
             ]"#,
         )
@@ -285,10 +285,10 @@ mod tests {
             "user's fs entry at id 1001 must be preserved"
         );
 
-        // launchers_hub default is not present; id 1001 is taken, so it is skipped.
+        // launchers-hub default is not present; id 1001 is taken, so it is skipped.
         assert!(
-            !has_git_url(&repos, "https://github.com/Peppy-bot/launchers_hub.git"),
-            "launchers_hub default must not be added when its id 1001 is taken"
+            !has_git_url(&repos, "https://github.com/Peppy-bot/launchers-hub.git"),
+            "launchers-hub default must not be added when its id 1001 is taken"
         );
     }
 
@@ -305,15 +305,15 @@ mod tests {
         let initial = read_repos(&peppy_dirs);
         assert!(has_git_url(
             &initial,
-            "https://github.com/Peppy-bot/launchers_hub.git"
+            "https://github.com/Peppy-bot/launchers-hub.git"
         ));
 
-        // Simulate `repo remove` deleting the launchers_hub entry.
+        // Simulate `repo remove` deleting the launchers-hub entry.
         let mut without_launchers: Vec<Value> = initial
             .into_iter()
             .filter(|e| {
                 e.get("url").and_then(|v| v.as_str())
-                    != Some("https://github.com/Peppy-bot/launchers_hub.git")
+                    != Some("https://github.com/Peppy-bot/launchers-hub.git")
             })
             .collect();
         let serialized = json5_pretty::to_string_pretty(&without_launchers).unwrap();
@@ -324,7 +324,7 @@ mod tests {
 
         let after = read_repos(&peppy_dirs);
         assert!(
-            has_git_url(&after, "https://github.com/Peppy-bot/launchers_hub.git"),
+            has_git_url(&after, "https://github.com/Peppy-bot/launchers-hub.git"),
             "init should re-add a removed default"
         );
     }
