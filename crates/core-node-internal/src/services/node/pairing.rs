@@ -81,13 +81,12 @@ impl PairingCoordinator {
     /// `Starting`, and pins are only delivered once it commits to Running).
     /// All of `pair_slots`' validation applies: existence, liveness,
     /// same-pairing, complementary roles, sha pins, exclusivity.
-    pub async fn reserve(
-        &self,
-        a: &SlotAddr,
-        b: &SlotAddr,
-    ) -> std::result::Result<Pairing, String> {
+    pub async fn reserve(&self, a: &SlotAddr, b: &SlotAddr) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
-        self.node_stack.pair_slots(a, b).map_err(|e| e.to_string())
+        self.node_stack
+            .pair_slots(a, b)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Delivers the current pin state of every pair involving `instance_id`
@@ -135,15 +134,13 @@ impl PairingCoordinator {
     /// Dissolves every pair involving `instance_id` and best-effort notifies
     /// each live survivor that its slot is now Unpaired. Called from the
     /// stop paths, the process-exit watcher, and the `node_run` unwind
-    /// branches (death auto-clears; re-pairing is explicit). Returns the
-    /// dissolved pairs for logging.
-    pub async fn dissolve_for_instance(&self, instance_id: &str) -> Vec<Pairing> {
+    /// branches (death auto-clears; re-pairing is explicit).
+    pub async fn dissolve_for_instance(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
-        let dissolved = self.node_stack.dissolve_pairs_for_instance(instance_id);
-        for pairing in &dissolved {
+        for pairing in self.node_stack.dissolve_pairs_for_instance(instance_id) {
             debug!(
                 "Dissolved pair `{}` ({}:{}) — instance '{}' is gone",
-                pairing_label(pairing),
+                pairing_label(&pairing),
                 pairing.pairing_name,
                 pairing.pairing_tag,
                 instance_id
@@ -155,7 +152,6 @@ impl PairingCoordinator {
                 self.notify_unpaired_best_effort(&endpoint.slot).await;
             }
         }
-        dissolved
     }
 
     /// Sends both endpoints of `pairing` their pins; reverts on failure per
@@ -260,7 +256,7 @@ impl PairingCoordinator {
 
 /// `a_inst:a_link ⇌ b_inst:b_link`, the human-readable pair label used in
 /// logs and error messages (matches `peppy stack list`).
-pub fn pairing_label(pairing: &Pairing) -> String {
+fn pairing_label(pairing: &Pairing) -> String {
     format!("{} ⇌ {}", pairing.a.slot, pairing.b.slot)
 }
 
@@ -272,8 +268,8 @@ fn find_missing_planned_pair<'a>(
 ) -> Option<&'a PlannedPair> {
     planned.iter().find(|plan| {
         !pairs.iter().any(|pair| {
-            (pair.a.slot == plan.own && pair.b.slot == plan.peer)
-                || (pair.a.slot == plan.peer && pair.b.slot == plan.own)
+            pair.peer_of(&plan.own)
+                .is_some_and(|peer| peer.slot == plan.peer)
         })
     })
 }

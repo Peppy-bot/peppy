@@ -163,28 +163,9 @@ fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Stri
 where
     D: Deserializer<'de>,
 {
-    // Capture entries as a Vec to preserve duplicate keys: a direct
-    // BTreeMap::deserialize would silently overwrite, hiding the
-    // duplicate from `validate_named_items`. The sentinel-key check
-    // lives in `PeppyLauncher::deserialize` where the owning
-    // `instance_id` is in scope and can be attached to the structured
-    // error.
-    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
-    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "binding")
-        .map_err(de::Error::custom)?;
-    // Duplicate binding values are intentionally permitted: a single
-    // producer may serve multiple `link_id` slots on the same consumer
-    // (or across consumers), which the launch-time wiring materializes
-    // as a producer with multiple `link_ids` advertised in parallel.
-    // Only non-emptiness is enforced here.
-    for (key, value) in &entries {
-        if value.trim().is_empty() {
-            return Err(de::Error::custom(format!(
-                "binding target for key `{key}` cannot be empty"
-            )));
-        }
-    }
-    Ok(entries.into_iter().collect())
+    Ok(deserialize_kv_entries(deserializer, "binding")?
+        .into_iter()
+        .collect())
 }
 
 /// Mirror of [`deserialize_bindings`] for the per-instance `pairings` map:
@@ -197,15 +178,8 @@ fn deserialize_pairings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Stri
 where
     D: Deserializer<'de>,
 {
-    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
-    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "pairing")
-        .map_err(de::Error::custom)?;
+    let entries = deserialize_kv_entries(deserializer, "pairing")?;
     for (key, value) in &entries {
-        if value.trim().is_empty() {
-            return Err(de::Error::custom(format!(
-                "pairing target for key `{key}` cannot be empty"
-            )));
-        }
         // Reject malformed targets at parse time rather than letting an
         // empty or slash-bearing peer_link fail later as "no complementary
         // slot" during plan validation.
@@ -218,6 +192,34 @@ where
         }
     }
     Ok(entries.into_iter().collect())
+}
+
+/// Shared scaffold of [`deserialize_bindings`] / [`deserialize_pairings`]:
+/// duplicate-key and empty-key/value checks over a `link_id -> target` map,
+/// with `kind` labeling the errors. Entries are captured as a Vec because a
+/// direct `BTreeMap::deserialize` would silently overwrite duplicate keys,
+/// hiding them from `validate_named_items`. Duplicate VALUES are
+/// intentionally permitted: one producer/peer may serve multiple `link_id`
+/// slots. Sentinel-key checks live in `PeppyLauncher::deserialize` where
+/// the owning `instance_id` is in scope for the structured error.
+fn deserialize_kv_entries<'de, D>(
+    deserializer: D,
+    kind: &'static str,
+) -> Result<Vec<(String, String)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), kind)
+        .map_err(de::Error::custom)?;
+    for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "{kind} target for key `{key}` cannot be empty"
+            )));
+        }
+    }
+    Ok(entries)
 }
 
 /// Splits a launcher `pairings` value (or CLI `--pair` right-hand side) into

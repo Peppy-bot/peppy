@@ -333,40 +333,29 @@ pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Res
         struct_prefix,
     )?;
 
-    Ok(quote! {
-        /// A held subscription to this pairing topic. Yields nothing while
-        /// the slot is unpaired; while paired, only the paired peer's
-        /// messages surface (triple wire pin + delivery-time identity
-        /// check). A pairing is a live stream, not a mailbox: messages
-        /// published before pairing are never delivered.
-        pub struct Subscription {
-            inner: peppylib::runtime::PeerSubscription,
-        }
-
-        impl Subscription {
+    let subscription_tokens = build_subscription_struct(
+        quote! {
+            /// A held subscription to this pairing topic. Yields nothing while
+            /// the slot is unpaired; while paired, only the paired peer's
+            /// messages surface (triple wire pin + delivery-time identity
+            /// check). A pairing is a live stream, not a mailbox: messages
+            /// published before pairing are never delivered.
+        },
+        quote!(peppylib::runtime::PeerSubscription),
+        quote! {
             /// Awaits the next message from the currently paired peer.
             ///
             /// Returns `Ok(Some((producer, message)))` for each message,
             /// `Ok(None)` once the runtime shuts down, and `Err(..)` if a
             /// received payload fails to deserialize. `producer` is always
             /// the paired peer's identity.
-            #[allow(clippy::should_implement_trait)]
-            pub async fn next(
-                &mut self,
-            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
-                let Some(message) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
+        },
+        helper_fn_ident,
+        args_struct_ident,
+    );
 
-                let payload = message.payload();
-                let producer = peppylib::messaging::ProducerRef::new(
-                    message.core_node(),
-                    message.instance_id(),
-                );
-                let message = #helper_fn_ident(payload.as_ref())?;
-                Ok(Some((producer, message)))
-            }
-        }
+    Ok(quote! {
+        #subscription_tokens
 
         /// Subscribes to this pairing topic and returns a held
         /// `Subscription` that follows the slot's live pin. Legal while
@@ -389,6 +378,47 @@ pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Res
 
         #helper_fn_tokens
     })
+}
+
+/// The held-`Subscription` struct plus its `next()` impl, shared by the
+/// plain and peer consumer modules: same buffer/decode contract, differing
+/// only in the inner subscription type and the doc text (passed as
+/// `quote!`d `///` blocks so the generated docs stay per-module).
+fn build_subscription_struct(
+    struct_doc: TokenStream,
+    inner_type: TokenStream,
+    next_doc: TokenStream,
+    helper_fn_ident: &Ident,
+    args_struct_ident: &Ident,
+) -> TokenStream {
+    quote! {
+        #struct_doc
+        pub struct Subscription {
+            inner: #inner_type,
+        }
+
+        impl Subscription {
+            #next_doc
+            // An async `next` returning `Result<Option<_>>` is intentionally not
+            // `Iterator::next`; silence clippy's lookalike heuristic.
+            #[allow(clippy::should_implement_trait)]
+            pub async fn next(
+                &mut self,
+            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
+                let Some(message) = self.inner.on_next_message().await else {
+                    return Ok(None);
+                };
+
+                let payload = message.payload();
+                let producer = peppylib::messaging::ProducerRef::new(
+                    message.core_node(),
+                    message.instance_id(),
+                );
+                let message = #helper_fn_ident(payload.as_ref())?;
+                Ok(Some((producer, message)))
+            }
+        }
+    }
 }
 
 /// Returns the `SenderTarget` constructor expression to splice into a
@@ -441,40 +471,27 @@ pub fn build_consumed_topic_subscription(
     let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
     let is_from_any_lit = is_from_any_literal(dependency);
 
-    Ok(quote! {
-        /// A held subscription to this topic. Declared once via `subscribe`; its
-        /// buffer keeps every message in arrival order, so looping on `next` never
-        /// drops a message published between calls. Filter inside the loop on the
-        /// returned producer identity or the message fields.
-        pub struct Subscription {
-            inner: peppylib::messaging::Subscription,
-        }
-
-        impl Subscription {
+    let subscription_tokens = build_subscription_struct(
+        quote! {
+            /// A held subscription to this topic. Declared once via `subscribe`; its
+            /// buffer keeps every message in arrival order, so looping on `next` never
+            /// drops a message published between calls. Filter inside the loop on the
+            /// returned producer identity or the message fields.
+        },
+        quote!(peppylib::messaging::Subscription),
+        quote! {
             /// Awaits the next message on this subscription.
             ///
             /// Returns `Ok(Some((producer, message)))` for each message in arrival
             /// order, `Ok(None)` once the subscription has closed, and `Err(..)` if
             /// a received payload fails to deserialize.
-            // An async `next` returning `Result<Option<_>>` is intentionally not
-            // `Iterator::next`; silence clippy's lookalike heuristic.
-            #[allow(clippy::should_implement_trait)]
-            pub async fn next(
-                &mut self,
-            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
-                let Some(message) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
+        },
+        helper_fn_ident,
+        args_struct_ident,
+    );
 
-                let payload = message.payload();
-                let producer = peppylib::messaging::ProducerRef::new(
-                    message.core_node(),
-                    message.instance_id(),
-                );
-                let message = #helper_fn_ident(payload.as_ref())?;
-                Ok(Some((producer, message)))
-            }
-        }
+    Ok(quote! {
+        #subscription_tokens
 
         /// Subscribes to this topic and returns a held `Subscription`.
         ///

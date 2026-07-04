@@ -136,9 +136,9 @@ async fn handle_node_info_request_inner(
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
     };
 
-    // Live pairs, read before the entity lock (pairs() takes the stack
-    // write lock for its lazy pruning).
-    let live_pairs = node_stack.pairs();
+    // Live pairs, read before the entity lock (`live_pairs` filters dead
+    // endpoints without taking the stack write lock).
+    let live_pairs = node_stack.live_pairs();
     let core_node = node_stack
         .root()
         .read()
@@ -164,39 +164,17 @@ async fn handle_node_info_request_inner(
         let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
         for instance in tracked.iter() {
             let id = instance.instance_id().as_str();
-            // Pairing-slot view: every declared slot with its live binding
-            // from the registry (mirrors the stack-list graph overlay).
-            let mut pairing_slots = std::collections::BTreeMap::new();
-            for dep in pairing_deps {
-                let slot = node_stack::SlotAddr::new(id, &dep.link_id);
-                let binding = live_pairs
-                    .iter()
-                    .find_map(|pair| pair.peer_of(&slot))
-                    .map(|peer| config::runtime::PairingSlotBinding::Paired {
-                        peer: config::runtime::ProducerRef::new(
-                            core_node.clone(),
-                            peer.slot.instance_id.clone(),
-                        ),
-                        peer_link_id: peer.slot.link_id.clone(),
-                    })
-                    .unwrap_or(config::runtime::PairingSlotBinding::Unpaired);
-                pairing_slots.insert(
-                    dep.link_id.clone(),
-                    core_node_api::SerializedPairingSlot {
-                        pairing_name: dep.name.as_str().to_string(),
-                        pairing_tag: dep.tag.clone(),
-                        role: dep.role.clone(),
-                        optional: dep.optional,
-                        binding,
-                    },
-                );
-            }
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),
                 state: instance.state(),
                 healthy: instance.healthy(),
                 slot_bindings: instance.slot_bindings().clone(),
-                pairing_slots,
+                pairing_slots: node_stack::pairing_slot_view(
+                    &core_node,
+                    id,
+                    pairing_deps,
+                    &live_pairs,
+                ),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }

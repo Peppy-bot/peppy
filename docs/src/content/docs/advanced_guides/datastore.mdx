@@ -32,7 +32,7 @@ Each takes a `NodeRunner`, the same handle your node receives from `NodeBuilder:
 - **Last-known-value handoff.** A node that restarts can read back the value it stored before, as long as the core node stayed up, instead of recomputing from scratch.
 - **Small cross-node state that does not warrant a service contract.** When defining a request/response service is more ceremony than the data is worth, a well-known key is often enough.
 
-It is **not** a database. The store is in-memory and process-local to the core node (see the notes below), so reach for topics when you need streaming data, for services when you need a node to *act* on a request, and for a real persistence layer when you need durability.
+It is **not** a database. The store is in-memory and process-local to the core node (see the notes below), so reach for topics when you need streaming data, for services when you need a node to *act* on a request, and for a real persistence layer when you need durability. The full map of mechanisms is in [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## `store`
 

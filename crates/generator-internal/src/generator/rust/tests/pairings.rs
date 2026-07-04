@@ -22,8 +22,6 @@ fn peer_context() -> crate::generator::types::PeerContext {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        own_role: "controller".to_string(),
-        counterpart_role: "arm".to_string(),
     }
 }
 

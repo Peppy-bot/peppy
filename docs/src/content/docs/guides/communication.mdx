@@ -96,8 +96,9 @@ PeppyOS provides three primary communication patterns for nodes to exchange data
   A client sends a goal to an action node, which provides periodic feedback during execution and a final result upon completion.
   Actions are built on top of topics and services internally.
   Use them for tasks like navigation or arm movement.
-  Actions are processed serially by a node: two requests to the same action cannot run in parallel.
-  For example, a `move_arm` action that moves a robot's arm can only perform one movement at a time.
+  A node can drive multiple goals of the same action concurrently; its goal handler decides whether to accept a new goal or reject it, for example while the arm it targets is already moving.
+
+These three are not the whole story: [pairing](/advanced_guides/pairing/) covers exclusive bidirectional exchanges between two instances, and [interface conformance](/advanced_guides/interface_conformance/) lets any conforming producer fill a consumer's slot. For a side-by-side decision guide, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## Consumed interfaces
 

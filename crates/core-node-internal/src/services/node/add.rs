@@ -2,8 +2,8 @@ use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_actio
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
-    self, AutoSyncParams, collect_consumed_interfaces, collect_pairing_interfaces,
-    generate_peppygen_for_node, resolve_conforms_to, stack_resolver,
+    self, AutoSyncParams, collect_all_deployment_interfaces, generate_peppygen_for_node,
+    stack_resolver,
 };
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
@@ -1412,30 +1412,13 @@ async fn process_node_add_inner(
             line: line.to_string(),
         });
     };
-    let mut consumed_interfaces = collect_consumed_interfaces(
+    let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
         &ctx.action.peppy_dirs,
         &interface_feedback,
-    )
-    .map_err(|reason| format!("Failed to resolve consumed interfaces: {}", reason))?;
-    let conformed = resolve_conforms_to(
-        &node_config.interfaces,
-        &ctx.action.peppy_dirs,
-        &interface_feedback,
-    )
-    .map_err(|reason| format!("Failed to resolve `conforms_to` interfaces: {}", reason))?;
-    consumed_interfaces.extend(conformed);
-    // Both directions of every declared pairing slot, resolved from the
-    // pairing docs (role-validated, sha-pinned, drift-checked).
-    let pairing_interfaces = collect_pairing_interfaces(
-        &node_config.manifest,
-        &ctx.action.peppy_dirs,
-        &interface_feedback,
-    )
-    .map_err(|reason| format!("Failed to resolve `depends_on.pairings`: {}", reason))?;
-    consumed_interfaces.extend(pairing_interfaces);
+    )?;
     generate_peppygen_for_node(
         language,
         &working_dir,

@@ -687,6 +687,93 @@ pub(crate) fn resolve_cached_artifact_path(
     }
 }
 
+/// Borrowed view over the fields shared by [`InterfaceCacheEntry`] and
+/// [`PairingCacheEntry`] that [`resolve_cached_doc`] needs.
+pub(crate) struct CachedDocEntryRef<'a> {
+    pub sha256: &'a str,
+    pub source_type: RepoSourceKind,
+    pub source_uri: Option<&'a str>,
+    pub resolved_ref: Option<&'a str>,
+    pub path: &'a str,
+}
+
+impl<'a> From<&'a InterfaceCacheEntry> for CachedDocEntryRef<'a> {
+    fn from(e: &'a InterfaceCacheEntry) -> Self {
+        Self {
+            sha256: &e.sha256,
+            source_type: e.source_type,
+            source_uri: e.source_uri.as_deref(),
+            resolved_ref: e.resolved_ref.as_deref(),
+            path: &e.path,
+        }
+    }
+}
+
+impl<'a> From<&'a PairingCacheEntry> for CachedDocEntryRef<'a> {
+    fn from(e: &'a PairingCacheEntry) -> Self {
+        Self {
+            sha256: &e.sha256,
+            source_type: e.source_type,
+            source_uri: e.source_uri.as_deref(),
+            resolved_ref: e.resolved_ref.as_deref(),
+            path: &e.path,
+        }
+    }
+}
+
+/// Shared tail of the interface/pairing document resolvers: turns a cache
+/// lookup result into a parsed document — resolves the entry's on-disk
+/// path, reads the bytes, rejects fingerprint drift, and hands the UTF-8
+/// content to `parse`. `kind` labels every error ("interface" /
+/// "pairing") and `id` is the document's `name:tag` label; `entry: None`
+/// produces the cache-miss error (naming the sha pin when one was set).
+pub(crate) fn resolve_cached_doc<T>(
+    peppy_dirs: &PeppyDirs,
+    kind: &str,
+    id: &str,
+    sha256_pin: Option<&str>,
+    entry: Option<CachedDocEntryRef<'_>>,
+    parse: impl FnOnce(&str) -> std::result::Result<T, String>,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<T, String> {
+    let entry = entry.ok_or_else(|| match sha256_pin {
+        Some(sha) => format!(
+            "{kind} `{id}` (sha256 `{sha}`) not in {kind} cache; \
+             run `peppy repo refresh`"
+        ),
+        None => format!("{kind} `{id}` not in {kind} cache; run `peppy repo refresh`"),
+    })?;
+
+    let resolved_path = resolve_cached_artifact_path(
+        peppy_dirs,
+        entry.source_type,
+        entry.source_uri,
+        entry.resolved_ref,
+        entry.path,
+        on_feedback,
+    )
+    .map_err(|e| format!("{kind} `{id}`: {e}"))?;
+
+    let bytes = std::fs::read(&resolved_path).map_err(|e| {
+        format!(
+            "failed to read cached {kind} `{id}` at {}: {e}",
+            resolved_path.display()
+        )
+    })?;
+    let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
+    if actual_sha != entry.sha256 {
+        return Err(format!(
+            "{kind} `{id}` content drifted from cache fingerprint \
+             (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
+            entry.sha256
+        ));
+    }
+
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("cached {kind} `{id}` is not UTF-8: {e}"))?;
+    parse(content).map_err(|e| format!("failed to parse cached {kind} `{id}`: {e}"))
+}
+
 struct MemoEntry {
     mtime: SystemTime,
     repos_mtime: SystemTime,

@@ -9,7 +9,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **interface**. An interface is a standalone document with its own `peppy_schema: "interface/v1"` that names a set of topics, services and actions. Producers conform to the interface; consumers depend on the interface. Both sides cite the interface by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
 
-Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot.
+Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how conformance compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## The three pieces
 

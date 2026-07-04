@@ -106,16 +106,12 @@ impl PairingRegistry {
     }
 
     /// Drops every pair for which `is_live` rejects either endpoint's
-    /// instance, returning the pruned pairs. The lazy half of cleanup: the
-    /// process-exit watcher has no stack back-reference, so registry reads
-    /// prune dead pairs on the fly instead of trusting eager dissolution
-    /// alone.
-    pub(crate) fn prune_dead(&mut self, is_live: impl Fn(&str) -> bool) -> Vec<Pairing> {
-        let (kept, pruned): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pairs)
-            .into_iter()
-            .partition(|p| is_live(&p.a.slot.instance_id) && is_live(&p.b.slot.instance_id));
-        self.pairs = kept;
-        pruned
+    /// instance. The lazy half of cleanup: the process-exit watcher has no
+    /// stack back-reference, so registry reads prune dead pairs on the fly
+    /// instead of trusting eager dissolution alone.
+    pub(crate) fn prune_dead(&mut self, is_live: impl Fn(&str) -> bool) {
+        self.pairs
+            .retain(|p| is_live(&p.a.slot.instance_id) && is_live(&p.b.slot.instance_id));
     }
 
     pub(crate) fn pairs(&self) -> &[Pairing] {

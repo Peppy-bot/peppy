@@ -719,8 +719,16 @@ async fn process_node_run(
         .as_ref()
         .map(|d| d.pairings.as_slice())
         .unwrap_or_default();
+    // The candidate pool takes the stack write lock (lazy pruning), so only
+    // fetch it when this run involves pairing at all.
+    let unpaired_slots =
+        if pairing_deps.is_empty() && requested_pairs.is_empty() && deferred_pairs.is_empty() {
+            Vec::new()
+        } else {
+            ctx.action.node_stack.unpaired_pairing_slots()
+        };
     let planned_pairs = match plan_requested_pairs(
-        &ctx.action.node_stack.unpaired_pairing_slots(),
+        &unpaired_slots,
         instance_id_str,
         pairing_deps,
         &requested_pairs,
@@ -919,17 +927,14 @@ async fn process_node_run(
     // slot claimed by a concurrent `node_run` since the pre-spawn check
     // fails here — loudly — instead of double-pairing. Pins are NOT
     // delivered yet; that happens after the instance commits to Running.
-    let mut reserve_error = None;
     for pair in &planned_pairs {
-        if let Err(msg) = ctx.action.pairing.reserve(&pair.own, &pair.peer).await {
-            reserve_error = Some(format!(
-                "failed to reserve pair for slot `{}`: {msg}",
-                pair.own.link_id
-            ));
-            break;
-        }
-    }
-    if let Some(reason) = reserve_error {
+        let Err(reserve_msg) = ctx.action.pairing.reserve(&pair.own, &pair.peer).await else {
+            continue;
+        };
+        let reason = format!(
+            "failed to reserve pair for slot `{}`: {reserve_msg}",
+            pair.own.link_id
+        );
         ctx.action
             .pairing
             .dissolve_for_instance(instance_id_str)

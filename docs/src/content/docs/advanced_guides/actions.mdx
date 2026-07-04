@@ -10,7 +10,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 Actions are for **long-running tasks** that need feedback during execution and support cancellation.
 A client sends a goal to an action node, which can provide periodic feedback while working and delivers a final result upon completion.
 
-Use actions for tasks like navigation, arm movement, or any operation that runs over time and benefits from progress updates. (For a *continuous* bidirectional exchange with no defined end, an inner control loop rather than a discrete job, use a [pairing](/advanced_guides/pairing/#pairing-vs-actions) instead.)
+Use actions for tasks like navigation, arm movement, or any operation that runs over time and benefits from progress updates. (For a *continuous* bidirectional exchange with no defined end, an inner control loop rather than a discrete job, use a [pairing](/advanced_guides/pairing/#pairing-vs-actions) instead.) For the full map of mechanisms, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 A node can drive **multiple goals concurrently** for the same action. Each accepted goal yields its own `GoalContext` (owning that goal's feedback stream, cancel signal, and result), so one server can route by a discriminator in the request (e.g. `arm_id`) and drive several independent resources in parallel. The framework routes each client's cancel and result requests to the right goal by `goal_id`; deciding whether to accept a second concurrent goal is up to your goal handler.
 

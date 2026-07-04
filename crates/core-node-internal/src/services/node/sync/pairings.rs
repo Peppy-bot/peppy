@@ -9,9 +9,11 @@ use std::collections::HashMap;
 
 /// Loads a `PeppyPairing` document from the local pairing cache for
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
-/// against the cached fingerprint. Verbatim mirror of
-/// `interfaces::resolve_interface_doc` for the pairing cache.
-pub(crate) fn resolve_pairing_doc(
+/// against the cached fingerprint. Production goes through
+/// [`resolve_pairing_doc_cached`] via [`validate_pairing_specs`]; this
+/// load-then-resolve wrapper only backs the sha-pin/drift tests below.
+#[cfg(test)]
+fn resolve_pairing_doc(
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
@@ -20,50 +22,36 @@ pub(crate) fn resolve_pairing_doc(
 ) -> std::result::Result<PeppyPairing, String> {
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
+    resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, on_feedback)
+}
 
+/// Resolves one pairing document against an already-loaded cache, so
+/// multi-slot validation doesn't re-read `pairings.json5` per entry.
+fn resolve_pairing_doc_cached(
+    cache: &[repo_cache::PairingCacheEntry],
+    peppy_dirs: &PeppyDirs,
+    name: &str,
+    tag: &str,
+    sha256_pin: Option<&str>,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<PeppyPairing, String> {
     let entry = match sha256_pin {
-        Some(sha) => {
-            repo_cache::lookup_pairing_by_sha256(&cache, name, tag, sha).ok_or_else(|| {
-                format!(
-                    "pairing `{name}:{tag}` (sha256 `{sha}`) not in pairing cache; \
-                     run `peppy repo refresh`"
-                )
-            })?
-        }
-        None => repo_cache::lookup_pairing(&cache, name, tag).ok_or_else(|| {
-            format!("pairing `{name}:{tag}` not in pairing cache; run `peppy repo refresh`")
-        })?,
+        Some(sha) => repo_cache::lookup_pairing_by_sha256(cache, name, tag, sha),
+        None => repo_cache::lookup_pairing(cache, name, tag),
     };
 
-    let resolved_path = repo_cache::resolve_cached_artifact_path(
+    repo_cache::resolve_cached_doc(
         peppy_dirs,
-        entry.source_type,
-        entry.source_uri.as_deref(),
-        entry.resolved_ref.as_deref(),
-        &entry.path,
+        "pairing",
+        &format!("{name}:{tag}"),
+        sha256_pin,
+        entry.map(Into::into),
+        |content| {
+            daemon_config::pairing::PeppyPairingParser::from_content(content)
+                .map_err(|e| e.to_string())
+        },
         on_feedback,
     )
-    .map_err(|e| format!("pairing `{name}:{tag}`: {e}"))?;
-
-    let bytes = std::fs::read(&resolved_path).map_err(|e| {
-        format!(
-            "failed to read cached pairing `{name}:{tag}` at {}: {e}",
-            resolved_path.display()
-        )
-    })?;
-    let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
-    if actual_sha != entry.sha256 {
-        return Err(format!(
-            "pairing `{name}:{tag}` content drifted from cache fingerprint \
-             (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
-            entry.sha256
-        ));
-    }
-
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|e| format!("cached pairing `{name}:{tag}` is not UTF-8: {e}"))?;
-    daemon_config::pairing::PeppyPairingParser::from_content(content)
-        .map_err(|e| format!("failed to parse cached pairing `{name}:{tag}`: {e}"))
 }
 
 /// Validates every `depends_on.pairings` entry of a manifest against its
@@ -89,16 +77,26 @@ pub(crate) fn validate_pairing_specs(
         return Ok(HashMap::new());
     };
 
+    let cache = repo_cache::load_pairing_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load pairing cache: {e}"))?;
+
+    // Two slots referencing the same document (e.g. a commander driving two
+    // arms over the same pairing) resolve it once, not once per slot.
+    let mut resolved: HashMap<(&str, &str, Option<&str>), PeppyPairing> = HashMap::new();
     let mut out = HashMap::new();
     for dep in pairing_deps {
         let name = dep.name.as_str();
-        let doc = resolve_pairing_doc(
-            peppy_dirs,
-            name,
-            &dep.tag,
-            dep.sha256.as_deref(),
-            on_feedback,
-        )?;
+        let doc = match resolved.entry((name, dep.tag.as_str(), dep.sha256.as_deref())) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => v.insert(resolve_pairing_doc_cached(
+                &cache,
+                peppy_dirs,
+                name,
+                &dep.tag,
+                dep.sha256.as_deref(),
+                on_feedback,
+            )?),
+        };
         if !doc.has_role(&dep.role) {
             let declared: Vec<&str> = doc.roles.iter().map(|r| r.as_str()).collect();
             return Err(format!(
@@ -110,7 +108,7 @@ pub(crate) fn validate_pairing_specs(
                 declared.join(", "),
             ));
         }
-        out.insert(dep.link_id.clone(), doc);
+        out.insert(dep.link_id.clone(), doc.clone());
     }
     Ok(out)
 }
@@ -140,16 +138,10 @@ pub fn collect_pairing_interfaces(
         let doc = docs
             .get(&dep.link_id)
             .expect("validate_pairing_specs returns a doc per declared slot");
-        let counterpart = doc
-            .counterpart_role(&dep.role)
-            .expect("validate_pairing_specs verified the role")
-            .to_string();
         let peer = generator::PeerContext {
             link_id: dep.link_id.clone(),
             pairing_name: dep.name.as_str().to_string(),
             pairing_tag: dep.tag.clone(),
-            own_role: dep.role.clone(),
-            counterpart_role: counterpart,
         };
         for topic in &doc.topics {
             let emitted = config::node::EmittedTopic {
@@ -245,7 +237,7 @@ mod tests {
         let docs = validate_pairing_specs(&m, &dirs, &|_| {}).expect("valid role resolves");
         let doc = docs.get("controller").expect("doc keyed by link_id");
         assert_eq!(doc.manifest.name.as_str(), "arm_link");
-        assert_eq!(doc.counterpart_role("arm"), Some("controller"));
+        assert!(doc.has_role("arm") && doc.has_role("controller"));
     }
 
     #[test]

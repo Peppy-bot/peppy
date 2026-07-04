@@ -19,14 +19,14 @@ import armControllerRust from '../guides/snippets/rust/arm_controller/src/main.r
 In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
 This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm`, but not the other way around, since a return dependency would make the graph circular.
 
-**Pairing** is PeppyOS's first-class mechanism for the cases where two nodes genuinely talk to each other. A *pairing* is a named, versioned contract with exactly **two roles**; two node **instances** (one per role) are *paired* 1:1 over it, and each side's topics flow only to its paired peer. The mental model is Bluetooth:
+**Pairing** is PeppyOS's first-class mechanism for the cases where two nodes genuinely talk to each other. A *pairing* is a named, versioned contract with exactly **two roles**; two node **instances** (one per role) are *paired* 1:1 over it, and each side's topics flow only to its paired peer:
 
 - **Explicit**: a pair is established by an operator action (`--pair` on `peppy node run`, or `pairings:` in a launcher), never by discovery.
 - **Exclusive**: a pairing slot holds at most one peer at a time. A second instance trying to pair at a taken slot is rejected.
 - **Pair-before-traffic**: pairs are established when an instance starts. While unpaired, a slot is silent: publishes go nowhere and subscriptions receive nothing.
 - **Unpair on death**: when either instance dies, the pair dissolves automatically. The survivor keeps running with its slot unpaired until a new peer instance is started against it.
 
-A pairing dependency is deliberately **invisible to the node dependency graph**: two nodes paired with each other never form a cycle, and neither requires the other to be present at build time. Pairings are **topics only**; see [Why topics only?](#why-topics-only).
+A pairing dependency is deliberately **invisible to the node dependency graph**: two nodes paired with each other never form a cycle, and neither requires the other to be present at build time. Pairings are **topics only**; see [Why topics only?](#why-topics-only). For where pairing sits among the other mechanisms, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## Example: robot arm control loop
 
@@ -235,7 +235,7 @@ PeppyOS has three communication patterns (topics, services, and actions), but a 
 | Consuming means | "I passively receive these messages" | "I actively call this provider" | "I actively orchestrate this provider" |
 | Allowed in a pairing? | Yes | No | No |
 
-A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [interface conformance](/advanced_guides/interface_conformance#service--action-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
+A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [interface conformance](/advanced_guides/interface_conformance#caller-driven-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
 
 If two paired nodes also need a bounded request-response exchange, keep the continuous streams in the pairing and model the bounded job as an [action](/advanced_guides/actions) in one direction (the client depends on the server, no cycle).
 
@@ -262,7 +262,7 @@ Pairing and [actions](/advanced_guides/actions/) can both look like "two nodes t
 |---|---|---|
 | Lifecycle | Continuous; runs for as long as the pair is live | Bounded; each goal has an explicit start (goal accepted) and end (result delivered, cancelled, or errored) |
 | Initiator | Either side publishes whenever it has data | Client issues a goal; server responds |
-| Concurrency | Both streams flow in parallel, indefinitely | One goal at a time per action (serial) |
+| Concurrency | Both streams flow in parallel, indefinitely | Concurrent goals allowed; the server's goal handler sets the acceptance policy |
 | Per-exchange feedback | Implicit (each side publishes its own stream) | Explicit feedback channel during the goal |
 | Cancellation | Unpair (stop an endpoint); or just stop publishing | First-class cancel request mid-flight |
 | Natural fit | Inner control loops, continuous state mirroring | Discrete jobs with a clear "done" condition |

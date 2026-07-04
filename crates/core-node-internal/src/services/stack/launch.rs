@@ -500,19 +500,23 @@ async fn start_node_instances(
     // re-check passes; the later endpoint carries the fully-disambiguated
     // `link_id -> "peer_instance/peer_link"` request.
     let mut start_index: HashMap<&str, usize> = HashMap::new();
-    for key in ordered {
-        if let Some(item) = planned_by_key.get(key) {
-            for instance in &item.deployment.instances {
-                let next = start_index.len();
-                start_index
-                    .entry(instance.instance_id.as_str())
-                    .or_insert(next);
-            }
-        }
-    }
     let mut requested_by_instance: HashMap<&str, std::collections::BTreeMap<String, String>> =
         HashMap::new();
     let mut deferred_by_instance: HashMap<&str, Vec<String>> = HashMap::new();
+    for instance in ordered
+        .iter()
+        .filter_map(|key| planned_by_key.get(key))
+        .flat_map(|item| &item.deployment.instances)
+    {
+        start_index.insert(instance.instance_id.as_str(), start_index.len());
+        // Explicit `defer_pairings:` entries start unpaired on purpose.
+        if !instance.defer_pairings.is_empty() {
+            deferred_by_instance
+                .entry(instance.instance_id.as_str())
+                .or_default()
+                .extend(instance.defer_pairings.iter().cloned());
+        }
+    }
     for pairing in planned_pairings {
         let idx_a = start_index.get(pairing.a.instance_id.as_str()).copied();
         let idx_b = start_index.get(pairing.b.instance_id.as_str()).copied();
@@ -532,19 +536,6 @@ async fn start_node_instances(
             .entry(earlier.instance_id.as_str())
             .or_default()
             .push(earlier.link_id.clone());
-    }
-    // Explicit `defer_pairings:` entries start unpaired on purpose.
-    for key in ordered {
-        if let Some(item) = planned_by_key.get(key) {
-            for instance in &item.deployment.instances {
-                for link_id in &instance.defer_pairings {
-                    deferred_by_instance
-                        .entry(instance.instance_id.as_str())
-                        .or_default()
-                        .push(link_id.clone());
-                }
-            }
-        }
     }
 
     // Compute runtime config host/port.
@@ -611,16 +602,10 @@ async fn start_node_instances(
             .with_env_vars(ctx.env_vars.clone())
             .with_requested_pairs(
                 requested_by_instance
-                    .get(instance_id)
-                    .cloned()
+                    .remove(instance_id)
                     .unwrap_or_default(),
             )
-            .with_deferred_pairs(
-                deferred_by_instance
-                    .get(instance_id)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
+            .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default());
 
             // Create log file for this node start
             let log_dir = ctx.peppy_dirs.logs_dir_run();

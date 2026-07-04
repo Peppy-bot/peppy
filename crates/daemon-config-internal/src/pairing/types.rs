@@ -41,31 +41,8 @@ pub struct PeppyPairing {
 }
 
 impl PeppyPairing {
-    /// The counterpart of `role` in this pairing, or `None` when `role` is
-    /// not one of the document's two roles.
-    pub fn counterpart_role(&self, role: &str) -> Option<&str> {
-        let [a, b] = self.roles.as_slice() else {
-            return None;
-        };
-        if a.as_str() == role {
-            Some(b.as_str())
-        } else if b.as_str() == role {
-            Some(a.as_str())
-        } else {
-            None
-        }
-    }
-
     pub fn has_role(&self, role: &str) -> bool {
         self.roles.iter().any(|r| r.as_str() == role)
-    }
-
-    /// Topics the given role emits (the other role consumes them).
-    pub fn topics_emitted_by<'a>(
-        &'a self,
-        role: &'a str,
-    ) -> impl Iterator<Item = &'a PairingTopic> {
-        self.topics.iter().filter(move |t| t.emitted_by == role)
     }
 }
 
@@ -223,19 +200,8 @@ mod tests {
             Some(SchemaType::Type(TypeToken::F64))
         ));
 
-        assert_eq!(parsed.counterpart_role("controller"), Some("arm"));
-        assert_eq!(parsed.counterpart_role("arm"), Some("controller"));
-        assert_eq!(parsed.counterpart_role("observer"), None);
         assert!(parsed.has_role("arm"));
         assert!(!parsed.has_role("observer"));
-        assert_eq!(parsed.topics_emitted_by("arm").count(), 1);
-        assert_eq!(
-            parsed
-                .topics_emitted_by("controller")
-                .next()
-                .map(|t| t.name.as_str()),
-            Some("joint_commands")
-        );
     }
 
     #[test]
@@ -250,7 +216,7 @@ mod tests {
             ]
         }"#;
         let parsed: PeppyPairing = serde_json5::from_str(json5).expect("should parse");
-        assert_eq!(parsed.topics_emitted_by("receiver").count(), 0);
+        assert!(parsed.topics.iter().all(|t| t.emitted_by == "sender"));
     }
 
     #[test]

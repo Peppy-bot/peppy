@@ -54,6 +54,85 @@ pub(crate) fn emit_capnp_schema_loader(
     emit_capnp_loader_fn(builder, schema_info);
 }
 
+/// Emits the pure `build_message(...) -> bytes` serializer shared by the
+/// plain and peer publisher modules. Pure (no node_runner, no I/O), so a
+/// publish loop can build the payload off the asyncio event loop thread
+/// and hand only the finished bytes to the loop, keeping per-message
+/// serialization off the loop's GIL time.
+fn emit_build_message_fn(
+    builder: &mut PythonCodeBuilder,
+    fields: &[super::type_mapping::PythonField],
+    schema_info: Option<&PythonSchemaInfo>,
+    message_format: Option<&MessageFormat>,
+) {
+    let field_params: Vec<String> = fields
+        .iter()
+        .map(|field| format!("{}: {}", field.name, field.type_str))
+        .collect();
+    builder.line(&format!(
+        "def build_message({}) -> bytes:",
+        field_params.join(", ")
+    ));
+    builder.indent();
+    if let (Some(info), Some(fmt)) = (schema_info, message_format) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "", &mut counter);
+        builder.line("return capnp_msg.to_bytes()");
+    } else {
+        builder.line("return b\"\"");
+    }
+    builder.dedent();
+    builder.blank_line();
+}
+
+/// Emits the held-`Subscription` class shared by the plain and peer
+/// consumer modules; only the docstring differs. `next()` mirrors the Rust
+/// `Subscription::next`: a `(producer, message)` tuple, or `None` once the
+/// subscription has closed.
+fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str) {
+    builder.line("class Subscription:");
+    builder.indent();
+    builder.line(&format!("\"\"\"{docstring}\"\"\""));
+    builder.blank_line();
+    builder.line("def __init__(self, inner) -> None:");
+    builder.indent();
+    builder.line("self._inner = inner");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
+    builder.indent();
+    builder.line("raw_message = await self._inner.on_next_message()");
+    builder.line("if raw_message is None:");
+    builder.indent();
+    builder.line("return None");
+    builder.dedent();
+    builder.line("producer = raw_message.producer");
+    builder.line("message = _deserialize_payload(raw_message.payload)");
+    builder.line("return producer, message");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("def __aiter__(self) -> \"Subscription\":");
+    builder.indent();
+    builder.line("return self");
+    builder.dedent();
+    builder.blank_line();
+    builder.line("async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:");
+    builder.indent();
+    builder.line("result = await self.next()");
+    builder.line("if result is None:");
+    builder.indent();
+    builder.line("raise StopAsyncIteration");
+    builder.dedent();
+    builder.line("return result");
+    builder.dedent();
+    builder.dedent();
+}
+
 /// Generates Python code for an emitted (publishing) topic.
 pub fn build_emitted_topic(
     topic: &EmittedTopic,
@@ -89,40 +168,18 @@ pub fn build_emitted_topic(
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
 
-    // Field params for build_message.
-    let field_params: Vec<String> = fields
-        .iter()
-        .map(|field| format!("{}: {}", field.name, field.type_str))
-        .collect();
-    let field_params_str = field_params.join(", ");
-
     // Module-level topic constants, shared by build_message and
     // declare_publisher.
     builder.line(&format!("TOPIC_NAME = \"{}\"", topic.name));
     builder.line(&format!("QOS = {qos}"));
     builder.blank_line();
 
-    // build_message: serialize the message to wire bytes. Pure (no node_runner,
-    // no I/O), so a publish loop can build the payload off the asyncio event
-    // loop thread (for example on a decoder worker) and hand only the finished
-    // bytes to the loop, keeping per-message serialization off the loop's GIL
-    // time.
-    builder.line(&format!("def build_message({field_params_str}) -> bytes:"));
-    builder.indent();
-    if let (Some(info), Some(fmt)) = (schema_info, topic.message_format.as_ref()) {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
-        builder.line("return capnp_msg.to_bytes()");
-    } else {
-        builder.line("return b\"\"");
-    }
-    builder.dedent();
-    builder.blank_line();
+    emit_build_message_fn(
+        &mut builder,
+        &fields,
+        schema_info,
+        topic.message_format.as_ref(),
+    );
 
     // declare_publisher: take the central messenger lock ONCE and return a
     // lock-free publisher whose publish(payload) never re-takes that lock.
@@ -208,28 +265,12 @@ pub fn build_peer_emitted_topic(
     let qos = qos_profile_python(&topic.qos_profile);
     emit_peer_module_header(&mut builder, &topic.name, qos, peer);
 
-    let field_params: Vec<String> = fields
-        .iter()
-        .map(|field| format!("{}: {}", field.name, field.type_str))
-        .collect();
-    let field_params_str = field_params.join(", ");
-
-    builder.line(&format!("def build_message({field_params_str}) -> bytes:"));
-    builder.indent();
-    if let (Some(info), Some(fmt)) = (schema_info, topic.message_format.as_ref()) {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
-        builder.line("return capnp_msg.to_bytes()");
-    } else {
-        builder.line("return b\"\"");
-    }
-    builder.dedent();
-    builder.blank_line();
+    emit_build_message_fn(
+        &mut builder,
+        &fields,
+        schema_info,
+        topic.message_format.as_ref(),
+    );
 
     // Slot-scoped publisher: publishing while unpaired is a legal no-op (the
     // mesh drops it); the paired peer's triple-pinned subscription receives
@@ -292,44 +333,10 @@ pub fn build_peer_consumed_topic(
     let qos = qos_profile_python(&topic.qos_profile);
     emit_peer_module_header(&mut builder, &topic.name, qos, peer);
 
-    builder.line("class Subscription:");
-    builder.indent();
-    builder.line(
-        "\"\"\"A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.\"\"\"",
+    emit_subscription_class(
+        &mut builder,
+        "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.",
     );
-    builder.blank_line();
-    builder.line("def __init__(self, inner) -> None:");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
-    builder.indent();
-    builder.line("raw_message = await self._inner.on_next_message()");
-    builder.line("if raw_message is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line("producer = raw_message.producer");
-    builder.line("message = _deserialize_payload(raw_message.payload)");
-    builder.line("return producer, message");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def __aiter__(self) -> \"Subscription\":");
-    builder.indent();
-    builder.line("return self");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:");
-    builder.indent();
-    builder.line("result = await self.next()");
-    builder.line("if result is None:");
-    builder.indent();
-    builder.line("raise StopAsyncIteration");
-    builder.dedent();
-    builder.line("return result");
-    builder.dedent();
-    builder.dedent();
 
     builder.blank_line();
     builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
@@ -403,45 +410,10 @@ pub fn build_consumed_topic(
     builder.add_import("import peppylib");
 
     builder.blank_line();
-    builder.line("class Subscription:");
-    builder.indent();
-    builder
-        .line("\"\"\"A held subscription whose buffer keeps every message in arrival order.\"\"\"");
-    builder.blank_line();
-    builder.line("def __init__(self, inner) -> None:");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.dedent();
-    builder.blank_line();
-    // `next()` mirrors the Rust `Subscription::next`: a message tuple, or
-    // `None` once the subscription has closed.
-    builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
-    builder.indent();
-    builder.line("raw_message = await self._inner.on_next_message()");
-    builder.line("if raw_message is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line("producer = raw_message.producer");
-    builder.line("message = _deserialize_payload(raw_message.payload)");
-    builder.line("return producer, message");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def __aiter__(self) -> \"Subscription\":");
-    builder.indent();
-    builder.line("return self");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:");
-    builder.indent();
-    builder.line("result = await self.next()");
-    builder.line("if result is None:");
-    builder.indent();
-    builder.line("raise StopAsyncIteration");
-    builder.dedent();
-    builder.line("return result");
-    builder.dedent();
-    builder.dedent();
+    emit_subscription_class(
+        &mut builder,
+        "A held subscription whose buffer keeps every message in arrival order.",
+    );
 
     builder.blank_line();
     builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");

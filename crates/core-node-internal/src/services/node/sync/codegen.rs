@@ -1,5 +1,4 @@
-use super::interfaces::{collect_consumed_interfaces, resolve_conforms_to, stack_resolver};
-use super::pairings::collect_pairing_interfaces;
+use super::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 use daemon_config::consts::PeppyDirs;
 use generator::DeploymentInterface;
 use node_stack::NodeStack;
@@ -169,36 +168,14 @@ pub fn auto_sync_if_missing(
         };
 
         let gen_result: crate::Result<()> = (|| {
-            let mut consumed = collect_consumed_interfaces(
+            let consumed = collect_all_deployment_interfaces(
                 params.manifest,
                 params.interfaces,
                 stack_resolver(node_stack),
                 peppy_dirs,
                 params.on_feedback,
             )
-            .map_err(|reason| {
-                crate::Error::Io(std::io::Error::other(format!(
-                    "failed to resolve consumed interfaces: {}",
-                    reason
-                )))
-            })?;
-            let conformed = resolve_conforms_to(params.interfaces, peppy_dirs, params.on_feedback)
-                .map_err(|reason| {
-                    crate::Error::Io(std::io::Error::other(format!(
-                        "failed to resolve `conforms_to` interfaces: {}",
-                        reason
-                    )))
-                })?;
-            consumed.extend(conformed);
-            let pairing_interfaces =
-                collect_pairing_interfaces(params.manifest, peppy_dirs, params.on_feedback)
-                    .map_err(|reason| {
-                        crate::Error::Io(std::io::Error::other(format!(
-                            "failed to resolve `depends_on.pairings`: {}",
-                            reason
-                        )))
-                    })?;
-            consumed.extend(pairing_interfaces);
+            .map_err(|reason| crate::Error::Io(std::io::Error::other(reason)))?;
             generate_peppygen_for_node(
                 params.execution_language,
                 params.node_dir,

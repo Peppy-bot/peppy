@@ -90,10 +90,6 @@ pub struct PeerContext {
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
-    /// The role this node plays in the pairing.
-    pub own_role: String,
-    /// The other role (the peer's).
-    pub counterpart_role: String,
 }
 
 impl PeerContext {

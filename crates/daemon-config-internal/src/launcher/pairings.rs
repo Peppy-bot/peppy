@@ -189,6 +189,28 @@ fn resolve_pair_declaration(
 
     let own_slot = (owner_id.to_string(), key.to_string());
 
+    // Error builders shared by the rule branches below (each is raised from
+    // several sites with the same payload shape).
+    let slot_taken = |instance_id: String, link_id: String, existing_peer: String| {
+        ParsingError::PairingSlotAlreadyPaired(Box::new(PairingSlotAlreadyPaired {
+            instance_id,
+            link_id,
+            existing_peer,
+        }))
+    };
+    let not_complementary = || {
+        ParsingError::PairingTargetNotComplementary(Box::new(PairingTargetNotComplementary {
+            owner_instance_id: owner_id.to_string(),
+            key: key.to_string(),
+            target_instance_id: target_instance.to_string(),
+            producer_name: target_item.node_name.to_string(),
+            producer_tag: target_item.node_tag.to_string(),
+            pairing_name: own_dep.name.as_str().to_string(),
+            pairing_tag: own_dep.tag.clone(),
+            role: own_dep.role.clone(),
+        }))
+    };
+
     // Both-sides agreement: the reciprocal declaration may have already
     // claimed our slot. Agreement = it claimed us against the same peer
     // instance (and slot, when we name one); anything else conflicts.
@@ -208,13 +230,11 @@ fn resolve_pair_declaration(
         })));
     }
     if let Some(peer_label) = already_paired.get(&own_slot) {
-        return Err(ParsingError::PairingSlotAlreadyPaired(Box::new(
-            PairingSlotAlreadyPaired {
-                instance_id: owner_id.to_string(),
-                link_id: key.to_string(),
-                existing_peer: peer_label.clone(),
-            },
-        )));
+        return Err(slot_taken(
+            owner_id.to_string(),
+            key.to_string(),
+            peer_label.clone(),
+        ));
     }
 
     // Candidate peer slots: same pairing (name, tag), opposite role.
@@ -229,20 +249,7 @@ fn resolve_pair_declaration(
         // complementary; claimed-ness is reported precisely below.
         match complementary.iter().find(|d| d.link_id == peer_link) {
             Some(dep) => dep.link_id.clone(),
-            None => {
-                return Err(ParsingError::PairingTargetNotComplementary(Box::new(
-                    PairingTargetNotComplementary {
-                        owner_instance_id: owner_id.to_string(),
-                        key: key.to_string(),
-                        target_instance_id: target_instance.to_string(),
-                        producer_name: target_item.node_name.to_string(),
-                        producer_tag: target_item.node_tag.to_string(),
-                        pairing_name: own_dep.name.as_str().to_string(),
-                        pairing_tag: own_dep.tag.clone(),
-                        role: own_dep.role.clone(),
-                    },
-                )));
-            }
+            None => return Err(not_complementary()),
         }
     } else {
         // No explicit slot: exactly one AVAILABLE complementary slot
@@ -287,24 +294,9 @@ fn resolve_pair_declaration(
                             target_b: target.to_string(),
                         }))
                     } else if let Some((taken_link, peer_label)) = taken_running {
-                        ParsingError::PairingSlotAlreadyPaired(Box::new(PairingSlotAlreadyPaired {
-                            instance_id: target_instance.to_string(),
-                            link_id: taken_link,
-                            existing_peer: peer_label,
-                        }))
+                        slot_taken(target_instance.to_string(), taken_link, peer_label)
                     } else {
-                        ParsingError::PairingTargetNotComplementary(Box::new(
-                            PairingTargetNotComplementary {
-                                owner_instance_id: owner_id.to_string(),
-                                key: key.to_string(),
-                                target_instance_id: target_instance.to_string(),
-                                producer_name: target_item.node_name.to_string(),
-                                producer_tag: target_item.node_tag.to_string(),
-                                pairing_name: own_dep.name.as_str().to_string(),
-                                pairing_tag: own_dep.tag.clone(),
-                                role: own_dep.role.clone(),
-                            },
-                        ))
+                        not_complementary()
                     },
                 );
             }
@@ -329,22 +321,18 @@ fn resolve_pair_declaration(
     // `/<peer_link_id>` path; the implicit path filtered claimed slots).
     let peer_slot = (target_instance.to_string(), resolved_peer_link.clone());
     if let Some((existing_inst, existing_link)) = claims.get(&peer_slot) {
-        return Err(ParsingError::PairingSlotAlreadyPaired(Box::new(
-            PairingSlotAlreadyPaired {
-                instance_id: target_instance.to_string(),
-                link_id: resolved_peer_link.clone(),
-                existing_peer: format!("{existing_inst}:{existing_link}"),
-            },
-        )));
+        return Err(slot_taken(
+            target_instance.to_string(),
+            resolved_peer_link.clone(),
+            format!("{existing_inst}:{existing_link}"),
+        ));
     }
     if let Some(peer_label) = already_paired.get(&peer_slot) {
-        return Err(ParsingError::PairingSlotAlreadyPaired(Box::new(
-            PairingSlotAlreadyPaired {
-                instance_id: target_instance.to_string(),
-                link_id: resolved_peer_link.clone(),
-                existing_peer: peer_label.clone(),
-            },
-        )));
+        return Err(slot_taken(
+            target_instance.to_string(),
+            resolved_peer_link.clone(),
+            peer_label.clone(),
+        ));
     }
 
     // Rule 6: both-pinned sha256 must match.
