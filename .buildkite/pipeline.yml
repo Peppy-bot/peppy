@@ -14,6 +14,13 @@
 # For pull-request builds, build.branch is the PR head branch, so
 # `build.branch == "dev"` is the old `github.head_ref == 'dev'` guard.
 
+# All steps run on the self-hosted queue — the cluster's default queue is a
+# Buildkite-hosted one (linux-small) that has none of the toolchain. The key
+# must match the queue key shown under Agents → Default cluster → Queues →
+# (your queue) → Settings, which is also the agent's queue tag.
+agents:
+  queue: self-hosted
+
 env:
   CARGO_TERM_COLOR: "always"
 
@@ -26,10 +33,6 @@ steps:
       build.pull_request.base_branch == "dev" ||
       build.source == "ui"
     command: .buildkite/scripts/tests.sh
-    # Target a dedicated queue instead if the peppyos agents are not on the
-    # default one:
-    #   agents:
-    #     queue: default
     env:
       # CI does the full cross-platform peppylib build: cross-compile the .so
       # for every Linux arch. A plain `cargo build` leaves this unset and, like
