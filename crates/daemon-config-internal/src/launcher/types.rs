@@ -113,6 +113,24 @@ pub struct Deployment {
     pub instances: Vec<DeploymentInstance>,
 }
 
+impl DeploymentInstance {
+    /// An instance entry carrying only its id, every other field at its
+    /// default-empty value. Validation feeders use this to represent
+    /// already-running instances without fabricating per-instance data the
+    /// validators do not consult.
+    pub fn empty(instance_id: Name) -> Self {
+        Self {
+            instance_id,
+            arguments: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
+            framework: FrameworkOverrides::default(),
+            bindings: BTreeMap::new(),
+            pairings: BTreeMap::new(),
+            defer_pairings: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {

@@ -9,8 +9,8 @@ mod types;
 // `.json5` file whose body declares the launcher schema.
 pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
 pub use pairings::{
-    AlreadyPairedSlots, PairingValidationItem, PlannedPairEndpoint, PlannedPairing,
-    ValidatedPairings, validate_pairings,
+    AlreadyPairedSlots, OptionalDeferPolicy, PairingValidationItem, PlannedPairEndpoint,
+    PlannedPairing, ValidatedPairings, validate_pairings,
 };
 pub use parse::PeppyLauncherParser;
 pub use types::{

@@ -69,6 +69,21 @@ pub struct ValidatedPairings {
 /// peer label for error messages.
 pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 
+/// How `defer_pairings` entries naming an `optional` slot are treated.
+///
+/// User-facing surfaces (launcher files, the CLI preflight) reject them
+/// ([`Self::Reject`]): optional slots boot unpaired without ceremony, so
+/// deferring one is a user error worth flagging. The daemon's `node_run`
+/// re-check accepts them ([`Self::Allow`]): `stack launch` auto-defers the
+/// earlier endpoint of every planned pair — optional slots included — and
+/// those mechanism-generated defers ride the same goal field as user
+/// `--defer-pair`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionalDeferPolicy {
+    Reject,
+    Allow,
+}
+
 /// Run all pairing validator rules over the plan.
 ///
 /// Rules:
@@ -86,11 +101,13 @@ pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 ///    must match (`PairingSha256Mismatch`).
 /// 7. Coverage: every required slot of every planned instance is paired or
 ///    listed in `defer_pairings` (`PairingSlotUncovered`); a
-///    `defer_pairings` entry naming an unknown slot, an optional slot, or a
-///    slot that is also paired is `PairingDeferInvalid`.
+///    `defer_pairings` entry naming an unknown slot, a slot that is also
+///    paired, or — under [`OptionalDeferPolicy::Reject`] — an optional slot
+///    is `PairingDeferInvalid`.
 pub fn validate_pairings(
     items: &[PairingValidationItem<'_>],
     already_paired: &AlreadyPairedSlots,
+    optional_defers: OptionalDeferPolicy,
 ) -> ValidatedPairings {
     let mut out = ValidatedPairings::default();
 
@@ -144,7 +161,7 @@ pub fn validate_pairings(
         }
     }
 
-    validate_coverage_and_defers(items, &claims, &mut out.errors);
+    validate_coverage_and_defers(items, &claims, optional_defers, &mut out.errors);
 
     out
 }
@@ -374,11 +391,12 @@ fn resolve_pair_declaration(
 
 /// Rule 7 of [`validate_pairings`], over every planned (non-preexisting)
 /// instance: each required slot must be paired or deferred, and each
-/// `defer_pairings` entry must name a known, non-optional slot that is not
-/// also paired in the same plan.
+/// `defer_pairings` entry must name a known slot that is not also paired in
+/// the same plan (nor optional, when `optional_defers` rejects those).
 fn validate_coverage_and_defers(
     items: &[PairingValidationItem<'_>],
     claims: &BTreeMap<(String, String), (String, String)>,
+    optional_defers: OptionalDeferPolicy,
     errors: &mut Vec<ParsingError>,
 ) {
     for item in items.iter().filter(|i| !i.preexisting) {
@@ -388,11 +406,11 @@ fn validate_coverage_and_defers(
                 let dep = item.pairing_deps.iter().find(|d| &d.link_id == link_id);
                 let reason = match dep {
                     None => Some("no such pairing slot is declared".to_string()),
-                    Some(dep) if dep.optional => {
-                        Some("the slot is optional and boots unpaired without deferral".to_string())
-                    }
                     Some(_) if claims.contains_key(&(owner_id.to_string(), link_id.clone())) => {
                         Some("the slot is also paired in this plan".to_string())
+                    }
+                    Some(dep) if dep.optional && optional_defers == OptionalDeferPolicy::Reject => {
+                        Some("the slot is optional and boots unpaired without deferral".to_string())
                     }
                     Some(_) => None,
                 };
@@ -486,7 +504,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
         let pair = &out.planned[0];
@@ -511,7 +529,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1, "agreeing pair must dedupe");
     }
@@ -536,7 +554,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(
             out.errors
                 .iter()
@@ -557,7 +575,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         let dead = out
             .errors
             .iter()
@@ -577,7 +595,7 @@ mod tests {
             parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "ghost" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(
             out.errors
                 .iter()
@@ -599,7 +617,7 @@ mod tests {
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("other_controller", &other_ctrl_instances, &other_ctrl_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         let info = out
             .errors
             .iter()
@@ -630,7 +648,7 @@ mod tests {
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("dual_arm", &dual_arm_instances, &dual_arm_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         let info = out
             .errors
             .iter()
@@ -652,7 +670,7 @@ mod tests {
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("dual_arm", &dual_arm_instances, &dual_arm_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
         assert_eq!(out.planned[0].b.link_id, "left_ctl");
@@ -673,7 +691,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         // ctrl_1 wins (deterministic order); ctrl_2's claim collides with
         // the in-plan pair and is reported as a conflict naming it.
         assert_eq!(out.planned.len(), 1);
@@ -707,7 +725,7 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let out = validate_pairings(&items, &already);
+        let out = validate_pairings(&items, &already, OptionalDeferPolicy::Reject);
         let info = out
             .errors
             .iter()
@@ -726,7 +744,7 @@ mod tests {
         let ctrl_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         let info = out
             .errors
             .iter()
@@ -754,7 +772,7 @@ mod tests {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps(true);
         let items = vec![item("robot_arm", &arm_instances, &arm_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
     }
 
@@ -764,7 +782,7 @@ mod tests {
             parse_instances(r#"[{ instance_id: "ctrl_1", defer_pairings: ["arm"] }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.planned.is_empty());
     }
@@ -775,7 +793,7 @@ mod tests {
             parse_instances(r#"[{ instance_id: "arm_1", defer_pairings: ["controller"] }]"#);
         let arm_pairing_deps = arm_deps(true); // optional slot: deferring is redundant
         let items = vec![item("robot_arm", &arm_instances, &arm_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(
             out.errors
                 .iter()
@@ -788,7 +806,7 @@ mod tests {
             parse_instances(r#"[{ instance_id: "ctrl_1", defer_pairings: ["ghost"] }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(
             out.errors.iter().any(|e| matches!(
                 e,
@@ -807,13 +825,41 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(
             out.errors.iter().any(|e| matches!(
                 e,
                 ParsingError::PairingDeferInvalid { reason, .. } if reason.contains("also paired")
             )),
             "expected PairingDeferInvalid for paired+deferred slot, got {:?}",
+            out.errors
+        );
+    }
+
+    /// The daemon's `node_run` re-check runs under `Allow`: `stack launch`
+    /// auto-defers the earlier endpoint of every planned pair — optional
+    /// slots included — so a mechanism-generated optional defer must pass.
+    /// Unknown and paired+deferred slots stay invalid regardless of policy.
+    #[test]
+    fn allow_policy_accepts_optional_defers_only() {
+        let arm_instances =
+            parse_instances(r#"[{ instance_id: "arm_1", defer_pairings: ["controller"] }]"#);
+        let arm_pairing_deps = arm_deps(true);
+        let items = vec![item("robot_arm", &arm_instances, &arm_pairing_deps)];
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Allow);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+
+        let ctrl_instances =
+            parse_instances(r#"[{ instance_id: "ctrl_1", defer_pairings: ["ghost"] }]"#);
+        let ctrl_pairing_deps = controller_deps();
+        let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Allow);
+        assert!(
+            out.errors.iter().any(|e| matches!(
+                e,
+                ParsingError::PairingDeferInvalid { link_id, .. } if link_id == "ghost"
+            )),
+            "unknown slot must stay invalid under Allow, got {:?}",
             out.errors
         );
     }
@@ -833,7 +879,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         let info = out
             .errors
             .iter()
@@ -859,7 +905,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
     }
 
@@ -888,7 +934,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("two_arm_commander", &commander_instances, &commander_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 2);
         let left = out
@@ -921,7 +967,7 @@ mod tests {
             preexisting("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate_pairings(&items, &BTreeMap::new(), OptionalDeferPolicy::Reject);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
     }

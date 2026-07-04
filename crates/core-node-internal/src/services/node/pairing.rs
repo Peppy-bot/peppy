@@ -17,7 +17,11 @@
 //! restart rejects stale re-deliveries from the old daemon's queue.
 
 use config::runtime::Name;
-use node_stack::{NodeStack, Pairing, SlotAddr};
+use daemon_config::launcher::{
+    AlreadyPairedSlots, DeploymentInstance, OptionalDeferPolicy, PairingValidationItem,
+    split_pair_target, validate_pairings,
+};
+use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::{PeerUpdateRequest, PeerUpdateResponse};
 use peppylib::messaging::{
@@ -282,145 +286,140 @@ pub struct PlannedPair {
     pub peer: SlotAddr,
 }
 
+/// The new instance's side of a plan-phase pairing check: its identity plus
+/// the `node_run` goal's pairing arguments.
+pub struct PairingRequest<'a> {
+    pub node_name: &'a str,
+    pub node_tag: &'a str,
+    pub instance_id: &'a str,
+    pub pairing_deps: &'a [config::node::PairingDependency],
+    /// `link_id -> "peer_instance[/peer_link]"` from `--pair` / launch.
+    pub requested: &'a std::collections::BTreeMap<String, String>,
+    /// Slots deliberately starting unpaired (`--defer-pair` / launch).
+    pub deferred: &'a [String],
+}
+
 /// The daemon-side re-check of a `node_run` goal's pairing arguments — the
-/// trust-boundary twin of the CLI preflight and the launcher validator. Runs
+/// trust-boundary twin of the CLI preflight and the launcher validator,
+/// sharing their [`validate_pairings`] core so the plan-phase rule set
+/// (declared-slot keys, request/defer overlap, required-slot coverage,
+/// complementary-target resolution, exclusivity) exists exactly once. Runs
 /// BEFORE the instance is spawned so every violation fails loudly with
-/// nothing to unwind:
+/// nothing to unwind. Two daemon-specific differences from the user-facing
+/// surfaces:
 ///
-/// - every requested/deferred link_id must be a declared pairing slot;
-/// - a slot cannot be both requested and deferred;
-/// - every required (non-`optional`) slot must be requested or deferred;
-/// - each requested target `peer_instance[/peer_link]` must resolve to
-///   exactly one unpaired complementary slot on a live instance (ambiguity
-///   names the candidates and the `/<peer_link>` disambiguator);
-/// - two requested slots cannot claim the same peer slot.
+/// - optional-slot defers are accepted ([`OptionalDeferPolicy::Allow`]):
+///   `stack launch` auto-defers the earlier endpoint of every planned pair
+///   — optional slots included — and those mechanism defers ride the same
+///   goal field as user `--defer-pair`s;
+/// - a request targeting the new instance itself is rejected up front: the
+///   instance is not in the stack yet, so the shared resolver would report
+///   a misleading "unknown instance" instead of the real problem.
 ///
-/// `available` is the stack's current candidate pool
-/// ([`NodeStack::unpaired_pairing_slots`]).
+/// `snapshot` and `live_pairs` are the stack's live instances and claimed
+/// slots ([`NodeStack::pairing_node_snapshots`] / [`NodeStack::live_pairs`]);
+/// the new instance is synthesized from `request` and must not appear in
+/// the snapshot. [`NodeStack::pair_slots`] remains the authoritative
+/// re-validation at the reserve commit point; this plan-phase check exists
+/// to fail before anything is spawned.
 pub fn plan_requested_pairs(
-    available: &[(SlotAddr, config::node::PairingDependency)],
-    instance_id: &str,
-    pairing_deps: &[config::node::PairingDependency],
-    requested: &std::collections::BTreeMap<String, String>,
-    deferred: &[String],
+    snapshot: &[PairingNodeSnapshot],
+    live_pairs: &[Pairing],
+    request: &PairingRequest<'_>,
 ) -> std::result::Result<Vec<PlannedPair>, String> {
-    let dep_by_link: std::collections::BTreeMap<&str, &config::node::PairingDependency> =
-        pairing_deps
-            .iter()
-            .map(|d| (d.link_id.as_str(), d))
-            .collect();
-
-    let declared = || {
-        if dep_by_link.is_empty() {
-            "the node declares no pairing slots".to_string()
-        } else {
-            format!(
-                "declared pairing slots: [{}]",
-                dep_by_link.keys().copied().collect::<Vec<_>>().join(", ")
-            )
-        }
-    };
-
-    for link_id in requested
-        .keys()
-        .map(String::as_str)
-        .chain(deferred.iter().map(String::as_str))
-    {
-        if !dep_by_link.contains_key(link_id) {
-            return Err(format!(
-                "pairing slot `{link_id}` is not declared by this node ({})",
-                declared()
-            ));
-        }
-    }
-    if let Some(link_id) = requested.keys().find(|l| deferred.contains(l)) {
-        return Err(format!(
-            "pairing slot `{link_id}` is both paired and deferred; pick one of \
-             `--pair {link_id}@...` or `--defer-pair {link_id}`"
-        ));
-    }
-
-    let uncovered: Vec<&str> = pairing_deps
-        .iter()
-        .filter(|d| {
-            !d.optional
-                && !requested.contains_key(d.link_id.as_str())
-                && !deferred.iter().any(|l| l == &d.link_id)
-        })
-        .map(|d| d.link_id.as_str())
-        .collect();
-    if !uncovered.is_empty() {
-        return Err(format!(
-            "required pairing slot(s) not covered: [{}]. Pass `--pair <link_id>@<peer_instance>` \
-             to pair each at start, or `--defer-pair <link_id>` to explicitly start unpaired",
-            uncovered.join(", ")
-        ));
-    }
-
-    // Claims within this plan are tracked so two slots cannot resolve to the
-    // same peer slot.
-    let mut planned: Vec<PlannedPair> = Vec::new();
-
+    let &PairingRequest {
+        node_name,
+        node_tag,
+        instance_id,
+        pairing_deps,
+        requested,
+        deferred,
+    } = request;
     for (link_id, target) in requested {
-        let own_dep = dep_by_link[link_id.as_str()];
-        let (peer_instance, peer_link) = daemon_config::launcher::split_pair_target(target);
-        if peer_instance == instance_id {
+        if split_pair_target(target).0 == instance_id {
             return Err(format!(
                 "pairing slot `{link_id}` targets its own instance '{instance_id}'; \
                  a pair joins two distinct instances"
             ));
         }
-
-        let candidates: Vec<&SlotAddr> = available
-            .iter()
-            .filter(|(slot, dep)| {
-                slot.instance_id == peer_instance
-                    && dep.name == own_dep.name
-                    && dep.tag == own_dep.tag
-                    && dep.role != own_dep.role
-                    && peer_link.is_none_or(|l| slot.link_id == l)
-                    && !planned.iter().any(|p| &p.peer == slot)
-            })
-            .map(|(slot, _)| slot)
-            .collect();
-
-        let peer_slot = match candidates.as_slice() {
-            [one] => (*one).clone(),
-            [] => {
-                let target_desc = match peer_link {
-                    Some(l) => format!("slot `{l}` of instance '{peer_instance}'"),
-                    None => format!("instance '{peer_instance}'"),
-                };
-                return Err(format!(
-                    "pairing slot `{link_id}`: no unpaired complementary slot found on \
-                     {target_desc} for pairing `{}:{}` (this side's role: `{}`). The peer \
-                     instance may not be running, may not declare a complementary slot, or \
-                     its slot may already be paired",
-                    own_dep.name.as_str(),
-                    own_dep.tag,
-                    own_dep.role,
-                ));
-            }
-            many => {
-                let listed: Vec<String> = many
-                    .iter()
-                    .map(|slot| format!("{target}/{}", slot.link_id))
-                    .collect();
-                return Err(format!(
-                    "pairing slot `{link_id}`: target '{peer_instance}' has multiple \
-                     complementary slots; disambiguate with one of: [{}]",
-                    listed.join(", ")
-                ));
-            }
-        };
-
-        planned.push(PlannedPair {
-            own: SlotAddr::new(instance_id, link_id.as_str()),
-            peer: peer_slot,
-        });
     }
 
-    Ok(planned)
+    let own_instances = vec![DeploymentInstance {
+        pairings: requested.clone(),
+        defer_pairings: deferred.to_vec(),
+        ..DeploymentInstance::empty(
+            Name::new(instance_id)
+                .map_err(|e| format!("invalid instance id `{instance_id}`: {e}"))?,
+        )
+    }];
+    let peer_instances: Vec<Vec<DeploymentInstance>> = snapshot
+        .iter()
+        .map(|node| {
+            node.instance_ids
+                .iter()
+                .map(|id| {
+                    Name::new(id.as_str())
+                        .map(DeploymentInstance::empty)
+                        .map_err(|e| format!("invalid instance id `{id}` in stack: {e}"))
+                })
+                .collect()
+        })
+        .collect::<std::result::Result<_, String>>()?;
+
+    let mut items: Vec<PairingValidationItem<'_>> = snapshot
+        .iter()
+        .zip(&peer_instances)
+        .map(|(node, instances)| PairingValidationItem {
+            node_name: &node.node_name,
+            node_tag: &node.node_tag,
+            instances,
+            pairing_deps: &node.pairing_deps,
+            preexisting: true,
+        })
+        .collect();
+    items.push(PairingValidationItem {
+        node_name,
+        node_tag,
+        instances: &own_instances,
+        pairing_deps,
+        preexisting: false,
+    });
+
+    let already_paired: AlreadyPairedSlots = live_pairs
+        .iter()
+        .flat_map(|p| {
+            [
+                (
+                    (p.a.slot.instance_id.clone(), p.a.slot.link_id.clone()),
+                    p.b.slot.to_string(),
+                ),
+                (
+                    (p.b.slot.instance_id.clone(), p.b.slot.link_id.clone()),
+                    p.a.slot.to_string(),
+                ),
+            ]
+        })
+        .collect();
+
+    let validated = validate_pairings(&items, &already_paired, OptionalDeferPolicy::Allow);
+    if !validated.errors.is_empty() {
+        let errors: Vec<String> = validated.errors.iter().map(|e| e.to_string()).collect();
+        return Err(daemon_config::format_bulleted(&errors));
+    }
+
+    Ok(validated
+        .planned
+        .into_iter()
+        .map(|pair| {
+            // `a` is the declaring side, and the only declaring (non-
+            // preexisting) item here is the new instance.
+            debug_assert_eq!(pair.a.instance_id, instance_id);
+            PlannedPair {
+                own: SlotAddr::new(pair.a.instance_id, pair.a.link_id),
+                peer: SlotAddr::new(pair.b.instance_id, pair.b.link_id),
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -437,11 +436,25 @@ mod tests {
         .expect("valid pairing dependency")
     }
 
-    /// One unpaired complementary slot on the running arm instance.
-    fn arm_pool() -> Vec<(SlotAddr, PairingDependency)> {
-        vec![(
-            SlotAddr::new("arm_1", "controller"),
-            dep("arm", "controller", true),
+    fn snapshot_node(
+        name: &str,
+        instance_ids: &[&str],
+        deps: &[PairingDependency],
+    ) -> PairingNodeSnapshot {
+        PairingNodeSnapshot {
+            node_name: name.to_string(),
+            node_tag: "v1".to_string(),
+            instance_ids: instance_ids.iter().map(|s| s.to_string()).collect(),
+            pairing_deps: deps.to_vec(),
+        }
+    }
+
+    /// One running arm instance with one unpaired complementary slot.
+    fn arm_snapshot() -> Vec<PairingNodeSnapshot> {
+        vec![snapshot_node(
+            "robot_arm",
+            &["arm_1"],
+            &[dep("arm", "controller", true)],
         )]
     }
 
@@ -452,11 +465,33 @@ mod tests {
             .collect()
     }
 
+    /// `plan_requested_pairs` with no live pairs and a fixed new-node label.
+    fn plan(
+        snapshot: &[PairingNodeSnapshot],
+        instance_id: &str,
+        deps: &[PairingDependency],
+        req: &BTreeMap<String, String>,
+        deferred: &[String],
+    ) -> std::result::Result<Vec<PlannedPair>, String> {
+        plan_requested_pairs(
+            snapshot,
+            &[],
+            &PairingRequest {
+                node_name: "new_node",
+                node_tag: "v1",
+                instance_id,
+                pairing_deps: deps,
+                requested: req,
+                deferred,
+            },
+        )
+    }
+
     #[test]
     fn resolves_a_single_complementary_slot() {
         let deps = [dep("controller", "arm", false)];
-        let plan = plan_requested_pairs(
-            &arm_pool(),
+        let planned = plan(
+            &arm_snapshot(),
             "ctrl_1",
             &deps,
             &requested(&[("arm", "arm_1")]),
@@ -464,7 +499,7 @@ mod tests {
         )
         .expect("unambiguous target resolves");
         assert_eq!(
-            plan,
+            planned,
             vec![PlannedPair {
                 own: SlotAddr::new("ctrl_1", "arm"),
                 peer: SlotAddr::new("arm_1", "controller"),
@@ -475,31 +510,31 @@ mod tests {
     #[test]
     fn explicit_peer_link_pin_resolves_and_wrong_pin_fails() {
         let deps = [dep("controller", "arm", false)];
-        let plan = plan_requested_pairs(
-            &arm_pool(),
+        let planned = plan(
+            &arm_snapshot(),
             "ctrl_1",
             &deps,
             &requested(&[("arm", "arm_1/controller")]),
             &[],
         )
         .expect("pinned target resolves");
-        assert_eq!(plan[0].peer, SlotAddr::new("arm_1", "controller"));
+        assert_eq!(planned[0].peer, SlotAddr::new("arm_1", "controller"));
 
-        let err = plan_requested_pairs(
-            &arm_pool(),
+        let err = plan(
+            &arm_snapshot(),
             "ctrl_1",
             &deps,
             &requested(&[("arm", "arm_1/nope")]),
             &[],
         )
         .expect_err("wrong peer_link rejected");
-        assert!(err.contains("no unpaired complementary slot"), "{err}");
+        assert!(err.contains("complementary"), "{err}");
     }
 
     #[test]
     fn uncovered_required_slot_names_the_exact_flags() {
         let deps = [dep("controller", "arm", false)];
-        let err = plan_requested_pairs(&arm_pool(), "ctrl_1", &deps, &BTreeMap::new(), &[])
+        let err = plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &[])
             .expect_err("required slot must be covered");
         assert!(
             err.contains("arm") && err.contains("--pair") && err.contains("--defer-pair"),
@@ -509,13 +544,13 @@ mod tests {
         // Deferring it satisfies coverage; optional slots never need covering.
         let deps_opt = [dep("controller", "arm", true)];
         assert!(
-            plan_requested_pairs(&arm_pool(), "ctrl_1", &deps_opt, &BTreeMap::new(), &[])
+            plan(&arm_snapshot(), "ctrl_1", &deps_opt, &BTreeMap::new(), &[])
                 .expect("optional slot boots unpaired freely")
                 .is_empty()
         );
         assert!(
-            plan_requested_pairs(
-                &arm_pool(),
+            plan(
+                &arm_snapshot(),
                 "ctrl_1",
                 &deps,
                 &BTreeMap::new(),
@@ -526,11 +561,30 @@ mod tests {
         );
     }
 
+    /// The daemon accepts deferring an OPTIONAL slot — `stack launch`
+    /// auto-defers the earlier endpoint of every planned pair, optional
+    /// slots included — where the user-facing surfaces reject it.
+    #[test]
+    fn mechanism_defer_of_optional_slot_is_accepted() {
+        let deps_opt = [dep("controller", "arm", true)];
+        assert!(
+            plan(
+                &arm_snapshot(),
+                "ctrl_1",
+                &deps_opt,
+                &BTreeMap::new(),
+                &["arm".to_string()],
+            )
+            .expect("optional-slot defer must pass the daemon re-check")
+            .is_empty()
+        );
+    }
+
     #[test]
     fn unknown_slot_and_request_defer_overlap_are_rejected() {
         let deps = [dep("controller", "arm", true)];
-        let err = plan_requested_pairs(
-            &arm_pool(),
+        let err = plan(
+            &arm_snapshot(),
             "ctrl_1",
             &deps,
             &requested(&[("ghost", "arm_1")]),
@@ -539,34 +593,32 @@ mod tests {
         .expect_err("unknown link_id rejected");
         assert!(err.contains("ghost") && err.contains("arm"), "{err}");
 
-        let err = plan_requested_pairs(
-            &arm_pool(),
+        let err = plan(
+            &arm_snapshot(),
             "ctrl_1",
             &deps,
             &requested(&[("arm", "arm_1")]),
             &["arm".to_string()],
         )
         .expect_err("request+defer overlap rejected");
-        assert!(err.contains("both paired and deferred"), "{err}");
+        assert!(err.contains("also paired"), "{err}");
     }
 
     #[test]
     fn ambiguous_target_lists_candidates_with_disambiguator() {
         // The peer instance exposes TWO complementary slots of the same
         // pairing (the two-arm-commander shape, seen from the other side).
-        let pool = vec![
-            (
-                SlotAddr::new("cmd_1", "left_arm"),
+        let snapshot = vec![snapshot_node(
+            "arm_commander",
+            &["cmd_1"],
+            &[
                 dep("controller", "left_arm", true),
-            ),
-            (
-                SlotAddr::new("cmd_1", "right_arm"),
                 dep("controller", "right_arm", true),
-            ),
-        ];
+            ],
+        )];
         let deps = [dep("arm", "controller", false)];
-        let err = plan_requested_pairs(
-            &pool,
+        let err = plan(
+            &snapshot,
             "arm_1",
             &deps,
             &requested(&[("controller", "cmd_1")]),
@@ -574,31 +626,34 @@ mod tests {
         )
         .expect_err("two candidates is ambiguous");
         assert!(
-            err.contains("cmd_1/left_arm") && err.contains("cmd_1/right_arm"),
-            "candidates should be listed as ready-to-paste targets: {err}"
+            err.contains("left_arm")
+                && err.contains("right_arm")
+                && err.contains("cmd_1/<peer_link_id>"),
+            "candidates and the disambiguator syntax should be listed: {err}"
         );
     }
 
     #[test]
     fn same_role_and_self_targets_are_rejected() {
         // Same role on both sides: not complementary, no candidates.
-        let pool = vec![(
-            SlotAddr::new("other_1", "arm"),
-            dep("controller", "arm", true),
+        let snapshot = vec![snapshot_node(
+            "other_node",
+            &["other_1"],
+            &[dep("controller", "arm", true)],
         )];
         let deps = [dep("controller", "arm", false)];
-        let err = plan_requested_pairs(
-            &pool,
+        let err = plan(
+            &snapshot,
             "ctrl_1",
             &deps,
             &requested(&[("arm", "other_1")]),
             &[],
         )
         .expect_err("same-role slots must not match");
-        assert!(err.contains("no unpaired complementary slot"), "{err}");
+        assert!(err.contains("complementary"), "{err}");
 
-        let err = plan_requested_pairs(
-            &arm_pool(),
+        let err = plan(
+            &arm_snapshot(),
             "ctrl_1",
             &deps,
             &requested(&[("arm", "ctrl_1")]),
@@ -606,6 +661,44 @@ mod tests {
         )
         .expect_err("self-pairing rejected");
         assert!(err.contains("own instance"), "{err}");
+    }
+
+    /// A slot claimed in the live registry is rejected naming the existing
+    /// peer (the `already_paired` wiring from [`NodeStack::live_pairs`]).
+    #[test]
+    fn already_paired_peer_slot_is_rejected_with_peer_named() {
+        use node_stack::PairEndpoint;
+
+        let live = vec![Pairing {
+            pairing_name: "arm_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            a: PairEndpoint {
+                slot: SlotAddr::new("arm_1", "controller"),
+                role: "arm".to_string(),
+            },
+            b: PairEndpoint {
+                slot: SlotAddr::new("ctrl_0", "arm"),
+                role: "controller".to_string(),
+            },
+        }];
+        let deps = [dep("controller", "arm", false)];
+        let err = plan_requested_pairs(
+            &arm_snapshot(),
+            &live,
+            &PairingRequest {
+                node_name: "new_node",
+                node_tag: "v1",
+                instance_id: "ctrl_1",
+                pairing_deps: &deps,
+                requested: &requested(&[("arm", "arm_1")]),
+                deferred: &[],
+            },
+        )
+        .expect_err("a live-paired slot is exclusive");
+        assert!(
+            err.contains("already paired") && err.contains("ctrl_0"),
+            "the existing peer should be named: {err}"
+        );
     }
 
     #[test]
@@ -667,14 +760,17 @@ mod tests {
             dep("controller", "left", false),
             dep("controller", "right", false),
         ];
-        let err = plan_requested_pairs(
-            &arm_pool(),
+        let err = plan(
+            &arm_snapshot(),
             "cmd_1",
             &deps,
             &requested(&[("left", "arm_1"), ("right", "arm_1")]),
             &[],
         )
         .expect_err("double-claim rejected");
-        assert!(err.contains("no unpaired complementary slot"), "{err}");
+        assert!(
+            err.contains("conflicting pairing declarations") || err.contains("already paired"),
+            "{err}"
+        );
     }
 }

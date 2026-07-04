@@ -1257,6 +1257,60 @@ impl NodeStack {
         let guard = self.shared.read();
         guard.instance_is_live_for_pairing(instance_id)
     }
+
+    /// Snapshot for plan-phase pairing validation: every non-root entity
+    /// with at least one live-for-pairing (non-terminal) instance, in one
+    /// read-locked pass. Nodes without pairing slots are included so a
+    /// request targeting them resolves to the accurate "no complementary
+    /// slot" rejection instead of "unknown instance" (matching the CLI
+    /// preflight's snapshot). Read [`Self::live_pairs`] alongside for the
+    /// currently-claimed slots.
+    pub fn pairing_node_snapshots(&self) -> Vec<PairingNodeSnapshot> {
+        let guard = self.shared.read();
+        guard
+            .graph
+            .node_weights()
+            .filter_map(|handle| {
+                let entity = handle.read();
+                if key_from_entity(&entity) == guard.root_key {
+                    return None;
+                }
+                let instance_ids: Vec<String> = entity
+                    .instances()
+                    .iter()
+                    .filter(|inst| !inst.state().is_terminal())
+                    .map(|inst| inst.instance_id().as_str().to_string())
+                    .collect();
+                if instance_ids.is_empty() {
+                    return None;
+                }
+                Some(PairingNodeSnapshot {
+                    node_name: entity.config().manifest.name.as_str().to_string(),
+                    node_tag: entity.config().manifest.tag.clone(),
+                    instance_ids,
+                    pairing_deps: entity
+                        .config()
+                        .manifest
+                        .depends_on
+                        .as_ref()
+                        .map(|d| d.pairings.clone())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// One node's contribution to the plan-phase pairing snapshot: its live
+/// (non-terminal) instance ids plus its declared pairing slots. Consumed by
+/// the daemon's `node_run` pairing re-check, which feeds it to the
+/// launcher's shared `validate_pairings` core.
+#[derive(Debug, Clone)]
+pub struct PairingNodeSnapshot {
+    pub node_name: String,
+    pub node_tag: String,
+    pub instance_ids: Vec<String>,
+    pub pairing_deps: Vec<config::node::PairingDependency>,
 }
 
 /// The serialized pairing-slot view of one instance: every declared

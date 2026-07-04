@@ -8,8 +8,8 @@ use core_node_api::encoding::{
     NodeRunResult, StackListRequest,
 };
 use daemon_config::launcher::{
-    BindingValidationItem, DeploymentInstance, PairingValidationItem, validate_bindings,
-    validate_pairings,
+    BindingValidationItem, DeploymentInstance, OptionalDeferPolicy, PairingValidationItem,
+    validate_bindings, validate_pairings,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -51,23 +51,6 @@ enum BuildDecision {
     /// finishes instead of trying to start a second build (the daemon
     /// rejects concurrent builds).
     Wait,
-}
-
-/// Build a `DeploymentInstance` that carries only an `instance_id`.
-/// `arguments`, `env_vars`, `framework`, and `bindings` are all left at
-/// their default-empty values. Used by [`validate_binds_against_stack`]
-/// to feed running-stack instances into the launcher's binding validator
-/// without fabricating per-instance data the validator does not consult.
-fn empty_deployment_instance(instance_id: Name) -> DeploymentInstance {
-    DeploymentInstance {
-        instance_id,
-        arguments: BTreeMap::new(),
-        env_vars: BTreeMap::new(),
-        framework: daemon_config::launcher::FrameworkOverrides::default(),
-        bindings: BTreeMap::new(),
-        pairings: BTreeMap::new(),
-        defer_pairings: Vec::new(),
-    }
 }
 
 /// Pure helper: compute the remaining `max_secs` budget given how many
@@ -458,7 +441,7 @@ async fn validate_binds_against_stack(
             .filter_map(|inst| {
                 Name::new(inst.instance_id.clone())
                     .ok()
-                    .map(empty_deployment_instance)
+                    .map(DeploymentInstance::empty)
             })
             .collect();
         snapshot.push(StackNode {
@@ -508,7 +491,7 @@ async fn validate_binds_against_stack(
         bindings: binds.clone(),
         pairings: pairs.clone(),
         defer_pairings: defer_pairs.to_vec(),
-        ..empty_deployment_instance(
+        ..DeploymentInstance::empty(
             Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
         )
     }];
@@ -567,7 +550,8 @@ async fn validate_binds_against_stack(
         pairing_deps: &target_pairing_deps,
         preexisting: false,
     });
-    let validated_pairings = validate_pairings(&pairing_items, &already_paired);
+    let validated_pairings =
+        validate_pairings(&pairing_items, &already_paired, OptionalDeferPolicy::Reject);
     if !validated_pairings.errors.is_empty() {
         let errors: Vec<String> = validated_pairings
             .errors
