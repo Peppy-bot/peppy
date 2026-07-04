@@ -81,13 +81,14 @@ async fn list_default_repos_creates_repositories_file() {
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse created file");
     // Don't pin the count; the shipped defaults grow over time. Just
-    // verify the canonical nodes_hub entry is there.
+    // verify the canonical nodes-hub entry is there.
     let nodes_hub = repos
         .iter()
         .find(|r| {
-            r.get("url").and_then(|v| v.as_str()) == Some("https://github.com/Peppy-bot/nodes_hub")
+            r.get("url").and_then(|v| v.as_str())
+                == Some("https://github.com/Peppy-bot/nodes-hub.git")
         })
-        .expect("default repos should include nodes_hub");
+        .expect("default repos should include nodes-hub");
     assert_eq!(nodes_hub.get("type").unwrap().as_str().unwrap(), "git");
 }
 

@@ -456,7 +456,7 @@ impl ModuleCategory {
             Self::ConsumedServices => "consumed services",
             Self::ExposedActions => "exposed actions",
             Self::ConsumedActions => "consumed actions",
-            Self::Pairings => "pairing",
+            Self::Pairings => "pairings",
         }
     }
 }
