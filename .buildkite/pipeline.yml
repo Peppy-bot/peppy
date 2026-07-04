@@ -6,7 +6,9 @@
 # secret, and agent requirements).
 #
 # Step `if` conditions re-encode the per-workflow gating:
-#   - tests:      pushes to main + PRs into main or dev
+#   - tests:      pushes to main + PRs into main or dev, plus builds started
+#                 manually from the UI (an escape hatch the Actions setup did
+#                 not have — a "New Build" click is deliberate, so run tests)
 #   - latency:    only the release PR that merges dev into main
 #   - docs-drift: only the release PR that merges dev into main
 # For pull-request builds, build.branch is the PR head branch, so
@@ -18,7 +20,11 @@ env:
 steps:
   - label: ":test_tube: tests"
     key: tests
-    if: build.branch == "main" || build.pull_request.base_branch == "main" || build.pull_request.base_branch == "dev"
+    if: >-
+      build.branch == "main" ||
+      build.pull_request.base_branch == "main" ||
+      build.pull_request.base_branch == "dev" ||
+      build.source == "ui"
     command: .buildkite/scripts/tests.sh
     # Target a dedicated queue instead if the peppyos agents are not on the
     # default one:
