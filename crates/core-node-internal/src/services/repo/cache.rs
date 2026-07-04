@@ -1070,7 +1070,7 @@ mod tests {
             mk_launcher_entry(
                 "openarm01_sim_teleop",
                 RepoSourceKind::Git,
-                Some("https://github.com/Peppy-bot/launchers_hub"),
+                Some("https://github.com/Peppy-bot/launchers-hub"),
                 Some("main"),
                 "openarm01_sim_teleop.json5",
                 0,
@@ -1101,7 +1101,7 @@ mod tests {
         assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
         assert_eq!(
             arr[0]["source_uri"],
-            "https://github.com/Peppy-bot/launchers_hub"
+            "https://github.com/Peppy-bot/launchers-hub"
         );
         assert_eq!(arr[0]["resolved_ref"], "main");
         assert_eq!(arr[1]["launcher_name"], "local_demo");

@@ -1703,7 +1703,7 @@ mod tests {
         );
     }
 
-    /// End-to-end coverage of the launchers_hub flow: a git repository
+    /// End-to-end coverage of the launchers-hub flow: a git repository
     /// (cloned via libgit2's local transport) that ships a launcher at
     /// `openarm01/openarm01_teleop.json5` should land in `launchers.json5`
     /// with `launcher_name = "openarm01_teleop"`, the `file://` source
@@ -1714,7 +1714,7 @@ mod tests {
         use crate::services::repo::cache::launchers_repo_cache_path;
 
         // Build a real git repo with one launcher committed at the same
-        // path layout as launchers_hub's openarm01_teleop launcher.
+        // path layout as launchers-hub's openarm01_teleop launcher.
         let src_tmp = tempfile::tempdir().unwrap();
         let src = src_tmp.path();
         let repo = git2::Repository::init(src).expect("init repo");

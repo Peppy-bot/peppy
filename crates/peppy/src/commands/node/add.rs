@@ -356,12 +356,12 @@ mod tests {
     #[test]
     fn parses_git_repo_url_and_repo_path_from_https_url() {
         let (repo_url, repo_path) =
-            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes_hub.git/uvc_camera")
+            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes-hub.git/uvc_camera")
                 .expect("should parse git source");
 
         assert_eq!(
             repo_url.to_bstring().to_string(),
-            "https://github.com/Peppy-bot/nodes_hub.git"
+            "https://github.com/Peppy-bot/nodes-hub.git"
         );
         assert_eq!(repo_path, "uvc_camera");
     }
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn parses_git_source_with_ref() {
         let source = parse_node_source(
-            "https://github.com/Peppy-bot/nodes_hub.git/uvc_camera",
+            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
             Some("v0.1.0".to_string()),
         )
         .expect("should parse git source");
@@ -395,7 +395,7 @@ mod tests {
             } => {
                 assert_eq!(
                     repo_url.to_bstring().to_string(),
-                    "https://github.com/Peppy-bot/nodes_hub.git"
+                    "https://github.com/Peppy-bot/nodes-hub.git"
                 );
                 assert_eq!(repo_path, "uvc_camera");
                 assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn parses_git_source_without_ref() {
         let source = parse_node_source(
-            "https://github.com/Peppy-bot/nodes_hub.git/uvc_camera",
+            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
             None,
         )
         .expect("should parse git source");
