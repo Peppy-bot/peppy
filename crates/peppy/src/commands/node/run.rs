@@ -5,11 +5,11 @@ use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult, StackListRequest,
+    NodeRunResult, PairTarget, StackListRequest,
 };
 use daemon_config::launcher::{
-    BindingValidationItem, DeploymentInstance, OptionalDeferPolicy, PairingValidationItem,
-    validate_bindings, validate_pairings,
+    BindingValidationItem, DeploymentInstance, PairingValidationItem, validate_bindings,
+    validate_pairings,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -269,12 +269,12 @@ fn parse_value(value: &str) -> AnyType {
 /// Collapse a clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`, rejecting
 /// duplicate `KEY`s: a plain `collect()` would silently keep the last VALUE.
 /// `kind`/`flag` splice the surface-specific wording into the error.
-fn entries_to_unique_map(
-    entries: &[(String, String)],
+fn entries_to_unique_map<V: Clone>(
+    entries: &[(String, V)],
     instance_id: &str,
     kind: &str,
     flag: &str,
-) -> Result<BTreeMap<String, String>> {
+) -> Result<BTreeMap<String, V>> {
     let mut map = BTreeMap::new();
     for (key, value) in entries {
         if map.insert(key.clone(), value.clone()).is_some() {
@@ -297,7 +297,10 @@ fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMa
 /// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
 /// most once per invocation, so a repeated LINK_ID is a hard error just
 /// like a duplicate `--bind` key.
-fn pairs_to_map(pairs: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+fn pairs_to_map(
+    pairs: &[(String, PairTarget)],
+    instance_id: &str,
+) -> Result<BTreeMap<String, PairTarget>> {
     entries_to_unique_map(pairs, instance_id, "pairing", "--pair LINK_ID")
 }
 
@@ -333,7 +336,7 @@ async fn validate_binds_against_stack(
     target_tag: &str,
     target_instance_id: &str,
     binds: &BTreeMap<String, String>,
-    pairs: &BTreeMap<String, String>,
+    pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
 ) -> Result<Option<BTreeMap<String, SlotBinding>>> {
     let stack_response = poll_stack_list(
@@ -489,7 +492,13 @@ async fn validate_binds_against_stack(
     // group.
     let synthetic_instances = vec![DeploymentInstance {
         bindings: binds.clone(),
-        pairings: pairs.clone(),
+        // Rendered into the validator's launcher target grammar
+        // (`peer[/peer_link]`); lossless, since instance ids and link_ids
+        // are `/`-free names.
+        pairings: pairs
+            .iter()
+            .map(|(link_id, target)| (link_id.clone(), target.to_string()))
+            .collect(),
         defer_pairings: defer_pairs.to_vec(),
         ..DeploymentInstance::empty(
             Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
@@ -550,8 +559,7 @@ async fn validate_binds_against_stack(
         pairing_deps: &target_pairing_deps,
         preexisting: false,
     });
-    let validated_pairings =
-        validate_pairings(&pairing_items, &already_paired, OptionalDeferPolicy::Reject);
+    let validated_pairings = validate_pairings(&pairing_items, &already_paired);
     if !validated_pairings.errors.is_empty() {
         let errors: Vec<String> = validated_pairings
             .errors
@@ -592,7 +600,7 @@ pub async fn validate_and_run_instance(
     args: &[(String, String)],
     instance_id: Option<String>,
     binds: &[(String, String)],
-    pairs: &[(String, String)],
+    pairs: &[(String, PairTarget)],
     defer_pairs: &[String],
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
@@ -648,7 +656,7 @@ pub async fn run_instance_async(
     args: &[(String, String)],
     instance_id: Option<String>,
     slot_bindings: BTreeMap<String, SlotBinding>,
-    requested_pairs: BTreeMap<String, String>,
+    requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
@@ -736,7 +744,7 @@ pub fn run_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     binds: Vec<(String, String)>,
-    pairs: Vec<(String, String)>,
+    pairs: Vec<(String, PairTarget)>,
     defer_pairs: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
@@ -763,7 +771,7 @@ async fn run_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     binds: Vec<(String, String)>,
-    pairs: Vec<(String, String)>,
+    pairs: Vec<(String, PairTarget)>,
     defer_pairs: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
@@ -910,7 +918,11 @@ mod tests {
             "unexpected error: {msg}"
         );
 
-        let err = pairs_to_map(&entries, "ctrl_1").expect_err("duplicate --pair rejected");
+        let pair_entries = vec![
+            ("arm".to_string(), PairTarget::new("arm_1")),
+            ("arm".to_string(), PairTarget::new("arm_2")),
+        ];
+        let err = pairs_to_map(&pair_entries, "ctrl_1").expect_err("duplicate --pair rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("duplicate pairing key `arm`") && msg.contains("--pair"),
@@ -919,8 +931,8 @@ mod tests {
 
         // Distinct keys pass through untouched.
         let ok = vec![
-            ("left".to_string(), "arm_1".to_string()),
-            ("right".to_string(), "arm_2".to_string()),
+            ("left".to_string(), PairTarget::new("arm_1")),
+            ("right".to_string(), PairTarget::new("arm_2")),
         ];
         assert_eq!(pairs_to_map(&ok, "cmd_1").expect("distinct keys").len(), 2);
     }

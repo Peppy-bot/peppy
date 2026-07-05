@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use core_node_api::encoding::PairTarget;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::context::AppContext;
@@ -114,7 +115,7 @@ async fn emulate_instance_services(
 fn run_command(
     instance_id: &str,
     node: &str,
-    pairs: Vec<(String, String)>,
+    pairs: Vec<(String, PairTarget)>,
     defer: Vec<String>,
 ) -> NodeCommand {
     NodeCommand {
@@ -209,7 +210,7 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     run_command(
         "ctrl_1",
         "arm_controller",
-        vec![("arm".to_string(), "arm_1".to_string())],
+        vec![("arm".to_string(), PairTarget::new("arm_1"))],
         Vec::new(),
     )
     .execute(&ctx)
@@ -249,7 +250,7 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     let err = run_command(
         "ctrl_2",
         "arm_controller",
-        vec![("arm".to_string(), "arm_1".to_string())],
+        vec![("arm".to_string(), PairTarget::new("arm_1"))],
         Vec::new(),
     )
     .execute(&ctx)
@@ -301,7 +302,7 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     let err = run_command(
         "ctrl_2b",
         "arm_controller",
-        vec![("arm".to_string(), "arm_1".to_string())],
+        vec![("arm".to_string(), PairTarget::new("arm_1"))],
         Vec::new(),
     )
     .execute(&ctx)
@@ -324,7 +325,7 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     run_command(
         "ctrl_3",
         "arm_controller",
-        vec![("arm".to_string(), "arm_1".to_string())],
+        vec![("arm".to_string(), PairTarget::new("arm_1"))],
         Vec::new(),
     )
     .execute(&ctx)

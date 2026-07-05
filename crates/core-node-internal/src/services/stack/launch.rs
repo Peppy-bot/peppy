@@ -24,7 +24,7 @@ use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
-    NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource,
+    NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, PairTarget,
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::Deployment;
@@ -496,11 +496,14 @@ async fn start_node_instances(
     // Each planned pair is established by the LATER-started endpoint's
     // `node_run` (instances start strictly sequentially in `ordered`, so at
     // that point the earlier endpoint is already Running and unpaired). The
-    // earlier endpoint's slot rides `deferred_pairs` so its own coverage
-    // re-check passes; the later endpoint carries the fully-disambiguated
-    // `link_id -> "peer_instance/peer_link"` request.
+    // later endpoint carries the fully-pinned pair request; the earlier
+    // endpoint's slot rides `covered_pairs` — naming that future peer — so
+    // its own coverage re-check passes and its feedback states the plan.
+    // Only explicit `defer_pairings:` entries ride `deferred_pairs`.
     let mut start_index: HashMap<&str, usize> = HashMap::new();
-    let mut requested_by_instance: HashMap<&str, std::collections::BTreeMap<String, String>> =
+    let mut requested_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
+        HashMap::new();
+    let mut covered_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
         HashMap::new();
     let mut deferred_by_instance: HashMap<&str, Vec<String>> = HashMap::new();
     for instance in ordered
@@ -530,12 +533,15 @@ async fn start_node_instances(
             .or_default()
             .insert(
                 later.link_id.clone(),
-                format!("{}/{}", earlier.instance_id, earlier.link_id),
+                PairTarget::pinned(earlier.instance_id.clone(), earlier.link_id.clone()),
             );
-        deferred_by_instance
+        covered_by_instance
             .entry(earlier.instance_id.as_str())
             .or_default()
-            .push(earlier.link_id.clone());
+            .insert(
+                earlier.link_id.clone(),
+                PairTarget::pinned(later.instance_id.clone(), later.link_id.clone()),
+            );
     }
 
     // Compute runtime config host/port.
@@ -605,7 +611,8 @@ async fn start_node_instances(
                     .remove(instance_id)
                     .unwrap_or_default(),
             )
-            .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default());
+            .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default())
+            .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default());
 
             // Create log file for this node start
             let log_dir = ctx.peppy_dirs.logs_dir_run();

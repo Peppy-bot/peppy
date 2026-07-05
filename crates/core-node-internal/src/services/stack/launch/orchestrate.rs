@@ -400,7 +400,6 @@ pub(super) async fn validate_and_order_dependencies(
     let validated_pairings = daemon_config::launcher::validate_pairings(
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
-        daemon_config::launcher::OptionalDeferPolicy::Reject,
     );
     if !validated_pairings.errors.is_empty() {
         let errors: Vec<String> = validated_pairings

@@ -17,12 +17,13 @@ Replaces the GitHub Actions workflows in `.github/workflows/` (`tests.yml`,
      - label: ":pipeline:"
        command: buildkite-agent pipeline upload
        agents:
-         queue: self-hosted
+         queue: Self-hosted
    ```
 
    pipeline.yml pins the same queue for every step it uploads (top-level
-   `agents:`). The key must match the cluster queue that the agent's
-   `tags="queue=..."` config points at.
+   `agents:`). The value is the exact, case-sensitive queue key (queue page →
+   Settings), which is also what the agent's `tags="queue=..."` config points
+   at; uploads are rejected if it names a queue the cluster does not have.
 
 2. **GitHub triggers** (Pipeline → Settings → GitHub) — this replaces the
    `on:` blocks of the old workflows:

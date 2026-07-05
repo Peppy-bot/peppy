@@ -15,11 +15,12 @@
 # `build.branch == "dev"` is the old `github.head_ref == 'dev'` guard.
 
 # All steps run on the self-hosted queue — the cluster's default queue is a
-# Buildkite-hosted one (linux-small) that has none of the toolchain. The key
-# must match the queue key shown under Agents → Default cluster → Queues →
-# (your queue) → Settings, which is also the agent's queue tag.
+# Buildkite-hosted one (linux-small) that has none of the toolchain. The value
+# must be the exact, case-sensitive queue key (Agents → Default cluster →
+# Queues → the queue → Settings), which is also the agent's queue tag; uploads
+# are rejected if it names a queue the cluster does not have.
 agents:
-  queue: self-hosted
+  queue: Self-hosted
 
 env:
   CARGO_TERM_COLOR: "always"

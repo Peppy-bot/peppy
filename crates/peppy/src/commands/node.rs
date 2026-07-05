@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
 use config::node::Toolchain;
+use core_node_api::encoding::PairTarget;
 use tracing::info;
 
 use super::Command;
@@ -110,7 +111,7 @@ fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
 /// the same pairing. LINK_ID and PEER_LINK are validated as wire segments
 /// (pairing slot link_ids ride the wire keyexpr); PEER_INSTANCE is left
 /// free-form for the daemon-side validator to resolve against the stack.
-fn parse_pair_kv(raw: &str) -> Result<(String, String), String> {
+fn parse_pair_kv(raw: &str) -> Result<(String, PairTarget), String> {
     let (key, value) = raw.split_once('@').ok_or_else(|| {
         format!("invalid --pair value '{raw}': expected LINK_ID@PEER_INSTANCE[/PEER_LINK]")
     })?;
@@ -127,7 +128,13 @@ fn parse_pair_kv(raw: &str) -> Result<(String, String), String> {
         pmi::Segment::try_from(peer_link)
             .map_err(|e| format!("invalid --pair PEER_LINK '{peer_link}': {e}"))?;
     }
-    Ok((key.to_string(), value.to_string()))
+    Ok((
+        key.to_string(),
+        match peer_link {
+            Some(peer_link) => PairTarget::pinned(peer_instance, peer_link),
+            None => PairTarget::new(peer_instance),
+        },
+    ))
 }
 
 /// Parses a `--defer-pair` argument: a single pairing slot `link_id`,
@@ -233,7 +240,7 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
             requires = "run",
         )]
-        pairs: Vec<(String, String)>,
+        pairs: Vec<(String, PairTarget)>,
         /// Explicitly start with a pairing slot unpaired: `LINK_ID`.
         /// Repeatable. Only valid alongside `--run`.
         #[arg(
@@ -333,7 +340,7 @@ pub enum NodeCommands {
             value_parser = parse_pair_kv,
             action = clap::ArgAction::Append,
         )]
-        pairs: Vec<(String, String)>,
+        pairs: Vec<(String, PairTarget)>,
         /// Explicitly start with a pairing slot unpaired: `LINK_ID`.
         /// Repeatable. The instance boots with the slot silent (no wire
         /// traffic) until a later peer start pairs with it via
@@ -999,12 +1006,16 @@ mod tests {
     fn pair_kv_parses_plain_and_pinned_targets() {
         assert_eq!(
             parse_pair_kv("arm@arm_1").unwrap(),
-            ("arm".to_string(), "arm_1".to_string())
+            ("arm".to_string(), PairTarget::new("arm_1"))
         );
-        // The `/PEER_LINK` pin travels inside the value; the daemon splits it.
+        // The `/PEER_LINK` pin is parsed here; the goal carries it as a
+        // structured field, never as a packed string.
         assert_eq!(
             parse_pair_kv("controller@cmd_1/left_arm").unwrap(),
-            ("controller".to_string(), "cmd_1/left_arm".to_string())
+            (
+                "controller".to_string(),
+                PairTarget::pinned("cmd_1", "left_arm")
+            )
         );
     }
 
@@ -1050,8 +1061,11 @@ mod tests {
                 assert_eq!(
                     pairs,
                     vec![
-                        ("left".to_string(), "arm_1".to_string()),
-                        ("right".to_string(), "arm_2/controller".to_string()),
+                        ("left".to_string(), PairTarget::new("arm_1")),
+                        (
+                            "right".to_string(),
+                            PairTarget::pinned("arm_2", "controller")
+                        ),
                     ]
                 );
                 assert_eq!(defer_pairs, vec!["gripper".to_string()]);

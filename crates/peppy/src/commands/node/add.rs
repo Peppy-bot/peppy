@@ -1,7 +1,7 @@
 use config::node::NodeConfigParser;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeSource,
+    NodeInfoResponse, NodeSource, PairTarget,
 };
 use peppylib::MessengerHandle;
 use std::io::BufRead;
@@ -36,7 +36,7 @@ pub struct RunAfterAddOptions {
     pub binds: Vec<(String, String)>,
     /// `--pair LINK_ID@PEER_INSTANCE[/PEER_LINK]` pairing requests,
     /// validated and established by the same rules as `peppy node run`.
-    pub pairs: Vec<(String, String)>,
+    pub pairs: Vec<(String, PairTarget)>,
     /// `--defer-pair LINK_ID` slots explicitly starting unpaired.
     pub defer_pairs: Vec<String>,
 }

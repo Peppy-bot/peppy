@@ -17,9 +17,9 @@
 //! restart rejects stale re-deliveries from the old daemon's queue.
 
 use config::runtime::Name;
+use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, DeploymentInstance, OptionalDeferPolicy, PairingValidationItem,
-    split_pair_target, validate_pairings,
+    AlreadyPairedSlots, DeploymentInstance, PairingValidationItem, validate_pairings,
 };
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
 use peppylib::MessengerHandle;
@@ -293,10 +293,17 @@ pub struct PairingRequest<'a> {
     pub node_tag: &'a str,
     pub instance_id: &'a str,
     pub pairing_deps: &'a [config::node::PairingDependency],
-    /// `link_id -> "peer_instance[/peer_link]"` from `--pair` / launch.
-    pub requested: &'a std::collections::BTreeMap<String, String>,
-    /// Slots deliberately starting unpaired (`--defer-pair` / launch).
+    /// `link_id -> peer target` from `--pair` / a launch plan.
+    pub requested: &'a std::collections::BTreeMap<String, PairTarget>,
+    /// Slots deliberately starting unpaired (`--defer-pair` / the
+    /// launcher's `defer_pairings:`).
     pub deferred: &'a [String],
+    /// Launch-mechanism markers: slots a later-starting instance of the
+    /// same launch will claim ([`NodeRunGoal::covered_pairs`] — see its doc
+    /// for the covered-vs-deferred distinction).
+    ///
+    /// [`NodeRunGoal::covered_pairs`]: core_node_api::encoding::NodeRunGoal::covered_pairs
+    pub covered: &'a std::collections::BTreeMap<String, PairTarget>,
 }
 
 /// The daemon-side re-check of a `node_run` goal's pairing arguments — the
@@ -305,16 +312,18 @@ pub struct PairingRequest<'a> {
 /// (declared-slot keys, request/defer overlap, required-slot coverage,
 /// complementary-target resolution, exclusivity) exists exactly once. Runs
 /// BEFORE the instance is spawned so every violation fails loudly with
-/// nothing to unwind. Two daemon-specific differences from the user-facing
-/// surfaces:
+/// nothing to unwind. Two daemon-specific wrinkles on top of the shared
+/// core:
 ///
-/// - optional-slot defers are accepted ([`OptionalDeferPolicy::Allow`]):
-///   `stack launch` auto-defers the earlier endpoint of every planned pair
-///   — optional slots included — and those mechanism defers ride the same
-///   goal field as user `--defer-pair`s;
 /// - a request targeting the new instance itself is rejected up front: the
 ///   instance is not in the stack yet, so the shared resolver would report
-///   a misleading "unknown instance" instead of the real problem.
+///   a misleading "unknown instance" instead of the real problem;
+/// - covered slots (the earlier endpoints of launch-planned pairs) satisfy
+///   the coverage rule like defers, but optional covered slots are dropped
+///   before the validator: optional slots pass coverage on their own, and
+///   the validator rightly rejects optional entries in `defer_pairings` as
+///   a user error. A covered key naming an unknown slot is kept so the
+///   validator reports it.
 ///
 /// `snapshot` and `live_pairs` are the stack's live instances and claimed
 /// slots ([`NodeStack::pairing_node_snapshots`] / [`NodeStack::live_pairs`]);
@@ -334,9 +343,10 @@ pub fn plan_requested_pairs(
         pairing_deps,
         requested,
         deferred,
+        covered,
     } = request;
     for (link_id, target) in requested {
-        if split_pair_target(target).0 == instance_id {
+        if target.peer_instance_id == instance_id {
             return Err(format!(
                 "pairing slot `{link_id}` targets its own instance '{instance_id}'; \
                  a pair joins two distinct instances"
@@ -344,9 +354,24 @@ pub fn plan_requested_pairs(
         }
     }
 
+    let defer_like: Vec<String> = deferred
+        .iter()
+        .chain(covered.keys().filter(|link| {
+            !pairing_deps
+                .iter()
+                .any(|d| d.link_id == **link && d.optional)
+        }))
+        .cloned()
+        .collect();
     let own_instances = vec![DeploymentInstance {
-        pairings: requested.clone(),
-        defer_pairings: deferred.to_vec(),
+        // Rendered into the validator's launcher target grammar
+        // (`peer[/peer_link]`); lossless, since instance ids and link_ids
+        // are `/`-free names.
+        pairings: requested
+            .iter()
+            .map(|(link_id, target)| (link_id.clone(), target.to_string()))
+            .collect(),
+        defer_pairings: defer_like,
         ..DeploymentInstance::empty(
             Name::new(instance_id)
                 .map_err(|e| format!("invalid instance id `{instance_id}`: {e}"))?,
@@ -401,7 +426,7 @@ pub fn plan_requested_pairs(
         })
         .collect();
 
-    let validated = validate_pairings(&items, &already_paired, OptionalDeferPolicy::Allow);
+    let validated = validate_pairings(&items, &already_paired);
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(|e| e.to_string()).collect();
         return Err(daemon_config::format_bulleted(&errors));
@@ -458,19 +483,20 @@ mod tests {
         )]
     }
 
-    fn requested(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+    fn requested(entries: &[(&str, PairTarget)]) -> BTreeMap<String, PairTarget> {
         entries
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|(k, v)| (k.to_string(), v.clone()))
             .collect()
     }
 
-    /// `plan_requested_pairs` with no live pairs and a fixed new-node label.
+    /// `plan_requested_pairs` with no live pairs, no covered slots, and a
+    /// fixed new-node label.
     fn plan(
         snapshot: &[PairingNodeSnapshot],
         instance_id: &str,
         deps: &[PairingDependency],
-        req: &BTreeMap<String, String>,
+        req: &BTreeMap<String, PairTarget>,
         deferred: &[String],
     ) -> std::result::Result<Vec<PlannedPair>, String> {
         plan_requested_pairs(
@@ -483,6 +509,7 @@ mod tests {
                 pairing_deps: deps,
                 requested: req,
                 deferred,
+                covered: &BTreeMap::new(),
             },
         )
     }
@@ -494,7 +521,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", "arm_1")]),
+            &requested(&[("arm", PairTarget::new("arm_1"))]),
             &[],
         )
         .expect("unambiguous target resolves");
@@ -514,7 +541,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", "arm_1/controller")]),
+            &requested(&[("arm", PairTarget::pinned("arm_1", "controller"))]),
             &[],
         )
         .expect("pinned target resolves");
@@ -524,7 +551,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", "arm_1/nope")]),
+            &requested(&[("arm", PairTarget::pinned("arm_1", "nope"))]),
             &[],
         )
         .expect_err("wrong peer_link rejected");
@@ -561,23 +588,68 @@ mod tests {
         );
     }
 
-    /// The daemon accepts deferring an OPTIONAL slot — `stack launch`
-    /// auto-defers the earlier endpoint of every planned pair, optional
-    /// slots included — where the user-facing surfaces reject it.
+    /// `plan_requested_pairs` with covered slots (the earlier endpoints of
+    /// launch-planned pairs) and nothing else.
+    fn plan_covered(
+        deps: &[PairingDependency],
+        covered: &BTreeMap<String, PairTarget>,
+    ) -> std::result::Result<Vec<PlannedPair>, String> {
+        plan_requested_pairs(
+            &arm_snapshot(),
+            &[],
+            &PairingRequest {
+                node_name: "new_node",
+                node_tag: "v1",
+                instance_id: "ctrl_1",
+                pairing_deps: deps,
+                requested: &BTreeMap::new(),
+                deferred: &[],
+                covered,
+            },
+        )
+    }
+
+    /// A covered slot — one a later-starting launch peer will claim —
+    /// satisfies the coverage rule whether the slot is required or
+    /// optional, while a covered key naming an unknown slot fails loudly.
     #[test]
-    fn mechanism_defer_of_optional_slot_is_accepted() {
+    fn covered_slots_satisfy_coverage() {
+        let covered = requested(&[("arm", PairTarget::pinned("cmd_9", "left"))]);
+        for optional in [false, true] {
+            let deps = [dep("controller", "arm", optional)];
+            assert!(
+                plan_covered(&deps, &covered)
+                    .expect("a covered slot passes the plan-phase re-check")
+                    .is_empty()
+            );
+        }
+
+        let deps = [dep("controller", "arm", false)];
+        let covered = requested(&[
+            ("arm", PairTarget::pinned("cmd_9", "left")),
+            ("ghost", PairTarget::pinned("cmd_9", "right")),
+        ]);
+        let err = plan_covered(&deps, &covered)
+            .expect_err("a covered key naming an unknown slot is rejected");
+        assert!(err.contains("ghost"), "{err}");
+    }
+
+    /// A user `--defer-pair` on an OPTIONAL slot is now flagged by the
+    /// daemon too: launch-mechanism markers ride `covered_pairs`, so the
+    /// defer list carries only user intent and gets the same strict rule
+    /// as the CLI preflight and the launcher validator.
+    #[test]
+    fn user_defer_of_optional_slot_is_rejected() {
         let deps_opt = [dep("controller", "arm", true)];
-        assert!(
-            plan(
-                &arm_snapshot(),
-                "ctrl_1",
-                &deps_opt,
-                &BTreeMap::new(),
-                &["arm".to_string()],
-            )
-            .expect("optional-slot defer must pass the daemon re-check")
-            .is_empty()
-        );
+        let err = plan(
+            &arm_snapshot(),
+            "ctrl_1",
+            &deps_opt,
+            &BTreeMap::new(),
+            &["arm".to_string()],
+        )
+        .expect_err("optional-slot defer is a user error on every surface");
+        assert!(err.contains("optional"), "{err}");
     }
 
     #[test]
@@ -587,7 +659,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("ghost", "arm_1")]),
+            &requested(&[("ghost", PairTarget::new("arm_1"))]),
             &[],
         )
         .expect_err("unknown link_id rejected");
@@ -597,7 +669,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", "arm_1")]),
+            &requested(&[("arm", PairTarget::new("arm_1"))]),
             &["arm".to_string()],
         )
         .expect_err("request+defer overlap rejected");
@@ -621,7 +693,7 @@ mod tests {
             &snapshot,
             "arm_1",
             &deps,
-            &requested(&[("controller", "cmd_1")]),
+            &requested(&[("controller", PairTarget::new("cmd_1"))]),
             &[],
         )
         .expect_err("two candidates is ambiguous");
@@ -646,7 +718,7 @@ mod tests {
             &snapshot,
             "ctrl_1",
             &deps,
-            &requested(&[("arm", "other_1")]),
+            &requested(&[("arm", PairTarget::new("other_1"))]),
             &[],
         )
         .expect_err("same-role slots must not match");
@@ -656,7 +728,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", "ctrl_1")]),
+            &requested(&[("arm", PairTarget::new("ctrl_1"))]),
             &[],
         )
         .expect_err("self-pairing rejected");
@@ -690,8 +762,9 @@ mod tests {
                 node_tag: "v1",
                 instance_id: "ctrl_1",
                 pairing_deps: &deps,
-                requested: &requested(&[("arm", "arm_1")]),
+                requested: &requested(&[("arm", PairTarget::new("arm_1"))]),
                 deferred: &[],
+                covered: &BTreeMap::new(),
             },
         )
         .expect_err("a live-paired slot is exclusive");
@@ -764,7 +837,10 @@ mod tests {
             &arm_snapshot(),
             "cmd_1",
             &deps,
-            &requested(&[("left", "arm_1"), ("right", "arm_1")]),
+            &requested(&[
+                ("left", PairTarget::new("arm_1")),
+                ("right", PairTarget::new("arm_1")),
+            ]),
             &[],
         )
         .expect_err("double-claim rejected");

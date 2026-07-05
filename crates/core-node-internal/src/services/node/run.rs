@@ -631,6 +631,7 @@ async fn process_node_run(
         env_vars,
         requested_pairs,
         deferred_pairs,
+        covered_pairs,
         ..
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
@@ -722,39 +723,48 @@ async fn process_node_run(
     // Snapshot + claims are read under two short read locks, and only when
     // this run involves pairing at all; the registry re-validates at
     // reserve time, so plan-phase staleness is safe.
-    let planned_pairs =
-        if pairing_deps.is_empty() && requested_pairs.is_empty() && deferred_pairs.is_empty() {
-            Vec::new()
-        } else {
-            let snapshot = ctx.action.node_stack.pairing_node_snapshots();
-            let live_pairs = ctx.action.node_stack.live_pairs();
-            let request = super::pairing::PairingRequest {
-                node_name: &node_name,
-                node_tag: &tag,
-                instance_id: instance_id_str,
-                pairing_deps,
-                requested: &requested_pairs,
-                deferred: &deferred_pairs,
-            };
-            match plan_requested_pairs(&snapshot, &live_pairs, &request) {
-                Ok(p) => p,
-                Err(msg) => {
-                    write_error_to_log(&ctx.log_file, &msg);
-                    return NodeRunResult::failure(msg);
-                }
-            }
+    let planned_pairs = if pairing_deps.is_empty()
+        && requested_pairs.is_empty()
+        && deferred_pairs.is_empty()
+        && covered_pairs.is_empty()
+    {
+        Vec::new()
+    } else {
+        let snapshot = ctx.action.node_stack.pairing_node_snapshots();
+        let live_pairs = ctx.action.node_stack.live_pairs();
+        let request = super::pairing::PairingRequest {
+            node_name: &node_name,
+            node_tag: &tag,
+            instance_id: instance_id_str,
+            pairing_deps,
+            requested: &requested_pairs,
+            deferred: &deferred_pairs,
+            covered: &covered_pairs,
         };
-    // Deferred slots ride the same goal field for a manual `--defer-pair`
-    // and for the earlier endpoint of a launch-planned pair (which the later
-    // endpoint pairs automatically), so the wording must fit both: state the
-    // mechanism, never instruct a manual step.
+        match plan_requested_pairs(&snapshot, &live_pairs, &request) {
+            Ok(p) => p,
+            Err(msg) => {
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeRunResult::failure(msg);
+            }
+        }
+    };
     for link_id in &deferred_pairs {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
             line: format!(
-                "pairing slot `{link_id}` deferred: instance starts unpaired; the pair is \
-                 established automatically when a peer instance starts with \
-                 `{instance_id_str}/{link_id}` as its pair target"
+                "pairing slot `{link_id}` deferred: instance starts unpaired; establish \
+                 the pair later by starting a peer instance with `{instance_id_str}/{link_id}` \
+                 as its pair target"
+            ),
+        });
+    }
+    for (link_id, peer) in &covered_pairs {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: format!(
+                "pairing slot `{link_id}` starts unpaired; it will be paired automatically \
+                 when planned peer instance `{peer}` starts"
             ),
         });
     }
