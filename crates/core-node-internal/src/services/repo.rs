@@ -25,7 +25,7 @@ pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
     LOCK.get_or_init(|| parking_lot::Mutex::new(()))
 }
 
-/// Serializes `process_refresh` + `write_cache` so the user-facing repo_refresh
+/// Serializes `process_refresh` + `write_all_caches` so the user-facing repo_refresh
 /// action and the post-remove refresh in repo_remove cannot race on
 /// nodes.json5. The ActionState single-flight inside repo_refresh rejects
 /// concurrent *user* refreshes with a friendly error; this mutex is the

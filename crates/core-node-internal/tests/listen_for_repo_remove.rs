@@ -2,7 +2,10 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::{launchers_repo_cache_path, nodes_repo_cache_path, repositories_list_path};
+use core_node::{
+    interfaces_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
+    pairings_repo_cache_path, repositories_list_path,
+};
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::core_node::transport::poll_repo_remove;
 use std::time::Duration;
@@ -82,17 +85,21 @@ async fn remove_fs_repo_succeeds() {
         serde_json5::from_str(&content).expect("parse repos as JSON5");
     assert!(repos.is_empty(), "repos should be empty after removal");
 
-    // Cache refresh is triggered for all repo types (including fs)
-    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    assert!(
-        cache_path.exists(),
-        "nodes.json5 cache should exist after fs repo removal"
-    );
-    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
-    assert!(
-        launcher_cache_path.exists(),
-        "launchers.json5 cache should exist after fs repo removal"
-    );
+    // Cache refresh is triggered for all repo types (including fs) and
+    // rewrites all four cache files together — a partial rewrite would
+    // leave the untouched files still listing the removed repo's items.
+    for cache_path in [
+        nodes_repo_cache_path(&started.peppy_dirs),
+        launchers_repo_cache_path(&started.peppy_dirs),
+        interfaces_repo_cache_path(&started.peppy_dirs),
+        pairings_repo_cache_path(&started.peppy_dirs),
+    ] {
+        assert!(
+            cache_path.exists(),
+            "{} should exist after fs repo removal",
+            cache_path.display()
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -3,7 +3,10 @@ use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::repo::cache::{InterfaceCacheEntry, LauncherCacheEntry, PairingCacheEntry};
+use crate::services::repo::cache::{
+    DiscoveredEntry, InterfaceCacheEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
+    RepoCacheEntry, write_repo_cache,
+};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::{normalize_repo_entries, source_identity};
 use config::consts::NODE_CONFIG_FILE;
@@ -11,8 +14,8 @@ use config::fingerprint::fingerprint_for_bytes;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use core_node_api::encoding::{
-    RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
-    RepoSource, RepoSourceKind,
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+    RepoSourceKind,
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::interface::PeppyInterfaceParser;
@@ -149,39 +152,15 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 };
                 match process_refresh(&dirs, &mut emit) {
                     Ok(refreshed) => {
-                        // Cache stores every discovered entry so that
+                        // Caches store every discovered entry so that
                         // `repo list` can display every source and users
                         // can pick a specific `sha256` when they need to.
-                        let unique_nodes = count_unique_by_name_tag(
-                            refreshed
-                                .nodes
-                                .iter()
-                                .map(|n| (n.node_name.as_str(), n.node_tag.as_str())),
-                        );
-                        let unique_launchers = count_unique_by_name(
-                            refreshed.launchers.iter().map(|l| l.launcher_name.as_str()),
-                        );
-                        let unique_interfaces = count_unique_by_name_tag(
-                            refreshed
-                                .interfaces
-                                .iter()
-                                .map(|i| (i.interface_name.as_str(), i.tag.as_str())),
-                        );
-                        let unique_pairings = count_unique_by_name_tag(
-                            refreshed
-                                .pairings
-                                .iter()
-                                .map(|p| (p.pairing_name.as_str(), p.tag.as_str())),
-                        );
-                        write_cache(&dirs, &refreshed.nodes)?;
-                        write_launcher_cache(&dirs, &refreshed.launchers)?;
-                        write_interface_cache(&dirs, &refreshed.interfaces)?;
-                        write_pairing_cache(&dirs, &refreshed.pairings)?;
+                        write_all_caches(&dirs, &refreshed)?;
                         Ok((
-                            unique_nodes,
-                            unique_launchers,
-                            unique_interfaces,
-                            unique_pairings,
+                            count_unique(&refreshed.nodes),
+                            count_unique(&refreshed.launchers),
+                            count_unique(&refreshed.interfaces),
+                            count_unique(&refreshed.pairings),
                             refreshed.excluded,
                         ))
                     }
@@ -222,8 +201,6 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
-pub(crate) use crate::services::repo::cache::NodeCacheEntry;
-
 /// A repository that was skipped during refresh because it appears in the
 /// `excluded_repositories.json5` configuration.
 #[derive(Debug, Clone)]
@@ -241,6 +218,17 @@ pub(crate) struct RefreshedRepos {
     pub(crate) interfaces: Vec<InterfaceCacheEntry>,
     pub(crate) pairings: Vec<PairingCacheEntry>,
     pub(crate) excluded: Vec<ExcludedRepo>,
+}
+
+/// Publishes every cache file from one refresh result. The four caches
+/// must always move together: rewriting only a subset leaves the
+/// untouched files still listing items from repositories that are no
+/// longer configured.
+pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepos) -> Result<()> {
+    write_repo_cache(peppy_dirs, &refreshed.nodes)?;
+    write_repo_cache(peppy_dirs, &refreshed.launchers)?;
+    write_repo_cache(peppy_dirs, &refreshed.interfaces)?;
+    write_repo_cache(peppy_dirs, &refreshed.pairings)
 }
 
 /// Source-and-file context shared by every `.json5` collector. The
@@ -333,7 +321,7 @@ pub(crate) fn process_refresh(
     };
 
     let mut global_seen_nodes: HashSet<(String, String)> = HashSet::new();
-    let mut global_seen_launchers: HashSet<String> = HashSet::new();
+    let mut global_seen_launchers: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_interfaces: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_pairings: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<NodeCacheEntry> = Vec::new();
@@ -407,61 +395,30 @@ pub(crate) fn process_refresh(
             }
         };
 
-        for node in walked.nodes {
-            let key = (node.node_name.clone(), node.node_tag.clone());
-            if global_seen_nodes.insert(key) {
-                on_feedback(RepoRefreshFeedback::Discovered {
-                    kind: RepoItemKind::Node,
-                    item_name: node.node_name.clone(),
-                    item_tag: node.node_tag.clone(),
-                    source_type: node.source_type,
-                    path: node.path.clone(),
-                    sha256: node.sha256.clone(),
-                });
-            }
-            all_nodes.push(node);
-        }
-        for launcher in walked.launchers {
-            if global_seen_launchers.insert(launcher.launcher_name.clone()) {
-                on_feedback(RepoRefreshFeedback::Discovered {
-                    kind: RepoItemKind::Launcher,
-                    item_name: launcher.launcher_name.clone(),
-                    item_tag: String::new(),
-                    source_type: launcher.source_type,
-                    path: launcher.path.clone(),
-                    sha256: launcher.sha256.clone(),
-                });
-            }
-            all_launchers.push(launcher);
-        }
-        for interface in walked.interfaces {
-            let key = (interface.interface_name.clone(), interface.tag.clone());
-            if global_seen_interfaces.insert(key) {
-                on_feedback(RepoRefreshFeedback::Discovered {
-                    kind: RepoItemKind::Interface,
-                    item_name: interface.interface_name.clone(),
-                    item_tag: interface.tag.clone(),
-                    source_type: interface.source_type,
-                    path: interface.path.clone(),
-                    sha256: interface.sha256.clone(),
-                });
-            }
-            all_interfaces.push(interface);
-        }
-        for pairing in walked.pairings {
-            let key = (pairing.pairing_name.clone(), pairing.tag.clone());
-            if global_seen_pairings.insert(key) {
-                on_feedback(RepoRefreshFeedback::Discovered {
-                    kind: RepoItemKind::Pairing,
-                    item_name: pairing.pairing_name.clone(),
-                    item_tag: pairing.tag.clone(),
-                    source_type: pairing.source_type,
-                    path: pairing.path.clone(),
-                    sha256: pairing.sha256.clone(),
-                });
-            }
-            all_pairings.push(pairing);
-        }
+        merge_walked(
+            walked.nodes,
+            &mut global_seen_nodes,
+            &mut all_nodes,
+            on_feedback,
+        );
+        merge_walked(
+            walked.launchers,
+            &mut global_seen_launchers,
+            &mut all_launchers,
+            on_feedback,
+        );
+        merge_walked(
+            walked.interfaces,
+            &mut global_seen_interfaces,
+            &mut all_interfaces,
+            on_feedback,
+        );
+        merge_walked(
+            walked.pairings,
+            &mut global_seen_pairings,
+            &mut all_pairings,
+            on_feedback,
+        );
     }
 
     Ok(RefreshedRepos {
@@ -481,17 +438,37 @@ pub(crate) struct WalkResult {
     pub pairings: Vec<PairingCacheEntry>,
 }
 
-/// Count the number of distinct `(name, tag)` pairs in an iterator.
-/// Used to compute `total_*_found` after process_refresh returns every
-/// entry (including same-`(name, tag)` duplicates from lower-priority
-/// repos).
-fn count_unique_by_name_tag<'a>(it: impl Iterator<Item = (&'a str, &'a str)>) -> u32 {
-    let set: HashSet<(&str, &str)> = it.collect();
-    set.len() as u32
+/// Appends one repository's walked entries to the running cross-repo
+/// collection, emitting a `Discovered` feedback the first time each
+/// `(name, tag)` identity is seen. Every entry is kept (including
+/// same-identity duplicates from lower-priority repos); feedback fires
+/// only for the highest-priority repository, which is walked first.
+fn merge_walked<E: RepoCacheEntry>(
+    walked: Vec<E>,
+    global_seen: &mut HashSet<(String, String)>,
+    all: &mut Vec<E>,
+    on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+) {
+    for entry in walked {
+        if global_seen.insert((entry.name().to_owned(), entry.tag().to_owned())) {
+            on_feedback(RepoRefreshFeedback::Discovered {
+                kind: E::ITEM_KIND,
+                item_name: entry.name().to_owned(),
+                item_tag: entry.tag().to_owned(),
+                source_type: entry.source_type(),
+                path: entry.path().to_owned(),
+                sha256: entry.sha256().to_owned(),
+            });
+        }
+        all.push(entry);
+    }
 }
 
-fn count_unique_by_name<'a>(it: impl Iterator<Item = &'a str>) -> u32 {
-    let set: HashSet<&str> = it.collect();
+/// Count the number of distinct `(name, tag)` identities. Used to
+/// compute `total_*_found` after process_refresh returns every entry
+/// (including same-identity duplicates from lower-priority repos).
+fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
+    let set: HashSet<(&str, &str)> = entries.iter().map(|e| (e.name(), e.tag())).collect();
     set.len() as u32
 }
 
@@ -541,7 +518,7 @@ pub(crate) fn walk_directory(
         .build();
 
     let mut nodes_seen: HashSet<(String, String)> = HashSet::new();
-    let mut launchers_seen: HashSet<String> = HashSet::new();
+    let mut launchers_seen: HashSet<(String, String)> = HashSet::new();
     let mut interfaces_seen: HashSet<(String, String)> = HashSet::new();
     let mut pairings_seen: HashSet<(String, String)> = HashSet::new();
     let mut nodes: Vec<NodeCacheEntry> = Vec::new();
@@ -632,6 +609,71 @@ fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
         .map(|p| p.peppy_schema)
 }
 
+/// Shared body of the four collectors: UTF-8 check, strict parse via
+/// `identity`, intra-repo dedup, then entry construction through
+/// [`RepoCacheEntry::from_discovered`]. The strict parse catches
+/// structural problems (unknown fields, malformed sections) that the
+/// cheap schema peek can't.
+///
+/// `identity` returns the document's `(name, tag)` — `Ok(None)` to skip
+/// the file silently (wrong schema variant, unusable file stem), or
+/// `Err` when the content does not parse as `E`'s document kind at all.
+/// `parse_failure_label` words that last case: a `peppy.json5` failing
+/// the node parse is usually a different document kind rather than a
+/// malformed node, so the node collector logs "non-node".
+///
+/// Returns `false` only on parse failure, so the node collector can
+/// fall back to schema dispatch; intra-repo duplicates return `true`
+/// because the file is a valid document of the kind.
+fn collect_repo_entry<E: RepoCacheEntry>(
+    ctx: &EntryContext<'_>,
+    parse_failure_label: &str,
+    seen: &mut HashSet<(String, String)>,
+    out: &mut Vec<E>,
+    identity: impl FnOnce(&str) -> std::result::Result<Option<(String, String)>, String>,
+) -> bool {
+    let content = match std::str::from_utf8(ctx.bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(
+                "Skipping non-utf8 {} .json5 at {}: {}",
+                E::KIND,
+                ctx.config_path.display(),
+                e
+            );
+            return false;
+        }
+    };
+    let (name, tag) = match identity(content) {
+        Ok(Some(identity)) => identity,
+        Ok(None) => return true,
+        Err(e) => {
+            debug!(
+                "Skipping {} .json5 at {}: {}",
+                parse_failure_label,
+                ctx.config_path.display(),
+                e
+            );
+            return false;
+        }
+    };
+
+    if !seen.insert((name.clone(), tag.clone())) {
+        return true;
+    }
+
+    out.push(E::from_discovered(DiscoveredEntry {
+        name,
+        tag,
+        sha256: fingerprint_for_bytes(ctx.bytes),
+        path: relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type),
+        source_type: ctx.source_type,
+        source_uri: ctx.source_uri.map(str::to_owned),
+        resolved_ref: ctx.resolved_ref.map(str::to_owned),
+    }));
+    true
+}
+
 /// Returns `true` when the file parsed cleanly as a node and was
 /// collected (or skipped because of an intra-repo duplicate). `false`
 /// means parsing failed; the caller can fall back to a different
@@ -641,113 +683,35 @@ fn try_collect_node_entry(
     seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<NodeCacheEntry>,
 ) -> bool {
-    let content = match std::str::from_utf8(ctx.bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Skipping non-utf8 node .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return false;
-        }
-    };
-    let parsed = match NodeConfigParser::from_content(content) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            debug!(
-                "Skipping non-node .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return false;
-        }
-    };
-
-    let name = parsed.manifest.name.as_str().to_string();
-    let tag = parsed.manifest.tag.clone();
-    let key = (name.clone(), tag.clone());
-
-    if !seen.insert(key) {
-        return true;
-    }
-
-    let node_path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
-    let sha256 = fingerprint_for_bytes(ctx.bytes);
-
-    nodes.push(NodeCacheEntry {
-        node_name: name,
-        node_tag: tag,
-        source_type: ctx.source_type,
-        path: node_path,
-        sha256,
-        source_uri: ctx.source_uri.map(|s| s.to_string()),
-        resolved_ref: ctx.resolved_ref.map(|s| s.to_string()),
-        checksum: None,
-        repo_id: 0,
-    });
-    true
+    collect_repo_entry(ctx, "non-node", seen, nodes, |content| {
+        let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
+        Ok(Some((
+            parsed.manifest.name.as_str().to_string(),
+            parsed.manifest.tag.clone(),
+        )))
+    })
 }
 
 fn collect_launcher_entry(
     ctx: &EntryContext<'_>,
-    seen: &mut HashSet<String>,
+    seen: &mut HashSet<(String, String)>,
     launchers: &mut Vec<LauncherCacheEntry>,
 ) {
-    // The schema field already matched LauncherV1; a strict parse
-    // catches structural problems (unknown fields, malformed
-    // deployments) that the cheap peek can't.
-    let content = match std::str::from_utf8(ctx.bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Skipping non-utf8 launcher .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return;
+    collect_repo_entry(ctx, "malformed launcher", seen, launchers, |content| {
+        let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
+        if parsed.peppy_schema != PeppySchema::LauncherV1 {
+            return Ok(None);
         }
-    };
-    let parsed = match PeppyLauncherParser::from_content(content) {
-        Ok(parsed) if parsed.peppy_schema == PeppySchema::LauncherV1 => parsed,
-        Ok(_) => return,
-        Err(e) => {
-            debug!(
-                "Skipping malformed launcher .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return;
-        }
-    };
-    drop(parsed);
-
-    // Launcher name = basename without `.json5`. This matches
-    // `resolve_launcher_path`, which appends `.json5` to a bare name
-    // when looking up a launcher file.
-    let Some(stem) = ctx.config_path.file_stem().and_then(|s| s.to_str()) else {
-        return;
-    };
-    let name = stem.to_string();
-    if name.is_empty() {
-        return;
-    }
-
-    if !seen.insert(name.clone()) {
-        return;
-    }
-
-    let launcher_path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
-    let sha256 = fingerprint_for_bytes(ctx.bytes);
-
-    launchers.push(LauncherCacheEntry {
-        launcher_name: name,
-        source_type: ctx.source_type,
-        source_uri: ctx.source_uri.map(|s| s.to_string()),
-        resolved_ref: ctx.resolved_ref.map(|s| s.to_string()),
-        sha256,
-        path: launcher_path,
-        repo_id: 0,
+        // Launcher name = basename without `.json5` (launcher documents
+        // carry no manifest name). This matches `resolve_launcher_path`,
+        // which appends `.json5` to a bare name when looking up a
+        // launcher file.
+        Ok(ctx
+            .config_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|stem| !stem.is_empty())
+            .map(|stem| (stem.to_string(), String::new())))
     });
 }
 
@@ -756,49 +720,12 @@ fn collect_interface_entry(
     seen: &mut HashSet<(String, String)>,
     interfaces: &mut Vec<InterfaceCacheEntry>,
 ) {
-    let content = match std::str::from_utf8(ctx.bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Skipping non-utf8 interface .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return;
-        }
-    };
-    let parsed = match PeppyInterfaceParser::from_content(content) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            debug!(
-                "Skipping malformed interface .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return;
-        }
-    };
-
-    let name = parsed.manifest.name.as_str().to_string();
-    let tag = parsed.manifest.tag.clone();
-    let key = (name.clone(), tag.clone());
-
-    if !seen.insert(key) {
-        return;
-    }
-
-    let interface_path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
-    let sha256 = fingerprint_for_bytes(ctx.bytes);
-
-    interfaces.push(InterfaceCacheEntry {
-        interface_name: name,
-        tag,
-        sha256,
-        source_type: ctx.source_type,
-        source_uri: ctx.source_uri.map(|s| s.to_string()),
-        resolved_ref: ctx.resolved_ref.map(|s| s.to_string()),
-        path: interface_path,
-        repo_id: 0,
+    collect_repo_entry(ctx, "malformed interface", seen, interfaces, |content| {
+        let parsed = PeppyInterfaceParser::from_content(content).map_err(|e| e.to_string())?;
+        Ok(Some((
+            parsed.manifest.name.as_str().to_string(),
+            parsed.manifest.tag.clone(),
+        )))
     });
 }
 
@@ -807,49 +734,12 @@ fn collect_pairing_entry(
     seen: &mut HashSet<(String, String)>,
     pairings: &mut Vec<PairingCacheEntry>,
 ) {
-    let content = match std::str::from_utf8(ctx.bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Skipping non-utf8 pairing .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return;
-        }
-    };
-    let parsed = match PeppyPairingParser::from_content(content) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            debug!(
-                "Skipping malformed pairing .json5 at {}: {}",
-                ctx.config_path.display(),
-                e
-            );
-            return;
-        }
-    };
-
-    let name = parsed.manifest.name.as_str().to_string();
-    let tag = parsed.manifest.tag.clone();
-    let key = (name.clone(), tag.clone());
-
-    if !seen.insert(key) {
-        return;
-    }
-
-    let pairing_path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
-    let sha256 = fingerprint_for_bytes(ctx.bytes);
-
-    pairings.push(PairingCacheEntry {
-        pairing_name: name,
-        tag,
-        sha256,
-        source_type: ctx.source_type,
-        source_uri: ctx.source_uri.map(|s| s.to_string()),
-        resolved_ref: ctx.resolved_ref.map(|s| s.to_string()),
-        path: pairing_path,
-        repo_id: 0,
+    collect_repo_entry(ctx, "malformed pairing", seen, pairings, |content| {
+        let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
+        Ok(Some((
+            parsed.manifest.name.as_str().to_string(),
+            parsed.manifest.tag.clone(),
+        )))
     });
 }
 
@@ -938,10 +828,6 @@ fn clone_and_walk_git_repo(
         &[],
     ))
 }
-
-pub(crate) use crate::services::repo::cache::{
-    write_cache, write_interface_cache, write_launcher_cache, write_pairing_cache,
-};
 
 #[cfg(test)]
 mod tests {
@@ -1666,7 +1552,7 @@ mod tests {
     /// The launcher cache is written to disk by the refresh handler so
     /// downstream lookups can resolve launchers by name.
     #[test]
-    fn process_refresh_writes_launcher_cache_via_write_launcher_cache() {
+    fn process_refresh_writes_launcher_cache() {
         use crate::services::repo::cache::launchers_repo_cache_path;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -1684,7 +1570,7 @@ mod tests {
         );
 
         let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
-        write_launcher_cache(&peppy_dirs, &launchers).unwrap();
+        write_repo_cache(&peppy_dirs, &launchers).unwrap();
 
         let cache_path = launchers_repo_cache_path(&peppy_dirs);
         assert!(cache_path.exists(), "launcher cache should be written");
@@ -1779,10 +1665,10 @@ mod tests {
             "sha256 should be populated from the manifest file bytes"
         );
 
-        // Round-trip through `write_launcher_cache` so we also lock in
+        // Round-trip through `write_repo_cache` so we also lock in
         // the on-disk shape the user specified: `launcher_name` field
         // present, `entry_type` and `node_name` absent.
-        write_launcher_cache(&peppy_dirs, &launchers).unwrap();
+        write_repo_cache(&peppy_dirs, &launchers).unwrap();
         let raw = std::fs::read_to_string(launchers_repo_cache_path(&peppy_dirs))
             .expect("read launcher cache");
         let parsed: serde_json::Value =
