@@ -1,7 +1,7 @@
 use config::node::NodeConfigParser;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeSource,
+    NodeInfoResponse, NodeSource, PairTarget,
 };
 use peppylib::MessengerHandle;
 use std::io::BufRead;
@@ -34,6 +34,11 @@ pub struct RunAfterAddOptions {
     /// `instance_id`s. Validated by the same launcher rules that gate
     /// `peppy node run` via [`validate_and_run_instance`].
     pub binds: Vec<(String, String)>,
+    /// `--pair LINK_ID@PEER_INSTANCE[/PEER_LINK]` pairing requests,
+    /// validated and established by the same rules as `peppy node run`.
+    pub pairs: Vec<(String, PairTarget)>,
+    /// `--defer-pair LINK_ID` slots explicitly starting unpaired.
+    pub defer_pairs: Vec<String>,
 }
 
 /// Parameters for adding a node.
@@ -232,6 +237,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &run_options.args,
         run_options.instance_id,
         &run_options.binds,
+        &run_options.pairs,
+        &run_options.defer_pairs,
         &timeouts,
     )
     .await?;
@@ -349,12 +356,12 @@ mod tests {
     #[test]
     fn parses_git_repo_url_and_repo_path_from_https_url() {
         let (repo_url, repo_path) =
-            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes_hub.git/uvc_camera")
+            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes-hub.git/uvc_camera")
                 .expect("should parse git source");
 
         assert_eq!(
             repo_url.to_bstring().to_string(),
-            "https://github.com/Peppy-bot/nodes_hub.git"
+            "https://github.com/Peppy-bot/nodes-hub.git"
         );
         assert_eq!(repo_path, "uvc_camera");
     }
@@ -375,7 +382,7 @@ mod tests {
     #[test]
     fn parses_git_source_with_ref() {
         let source = parse_node_source(
-            "https://github.com/Peppy-bot/nodes_hub.git/uvc_camera",
+            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
             Some("v0.1.0".to_string()),
         )
         .expect("should parse git source");
@@ -388,7 +395,7 @@ mod tests {
             } => {
                 assert_eq!(
                     repo_url.to_bstring().to_string(),
-                    "https://github.com/Peppy-bot/nodes_hub.git"
+                    "https://github.com/Peppy-bot/nodes-hub.git"
                 );
                 assert_eq!(repo_path, "uvc_camera");
                 assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
@@ -400,7 +407,7 @@ mod tests {
     #[test]
     fn parses_git_source_without_ref() {
         let source = parse_node_source(
-            "https://github.com/Peppy-bot/nodes_hub.git/uvc_camera",
+            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
             None,
         )
         .expect("should parse git source");

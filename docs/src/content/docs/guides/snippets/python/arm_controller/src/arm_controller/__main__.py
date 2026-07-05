@@ -3,8 +3,13 @@ import sys
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_topics import arm_joint_states
-from peppygen.emitted_topics.joint_command_source.v1 import joint_commands
+from peppygen.pairings.arm import joint_commands, joint_states
+
+# `arm_controller` plays the `controller` role of the `arm_link` pairing.
+# Both directions of its `arm` slot live under `peppygen.pairings.arm`: it
+# emits `joint_commands` to and consumes `joint_states` from the single
+# arm instance currently paired on the slot. If that arm dies, the slot
+# unpairs and the loop simply stops receiving until a new arm is paired.
 
 
 def compute_next_target(current: list[float]) -> list[float]:
@@ -20,12 +25,20 @@ async def control_loop(node_runner: NodeRunner):
         print(f"Failed to declare joint_commands publisher: {e}", file=sys.stderr)
         return
 
-    # Subscribe once; the held subscription buffers state messages in order, so
-    # the loop never misses one published between iterations.
+    # Subscribing while unpaired is legal: the subscription follows the
+    # slot's live pin, silent until an arm is paired.
     try:
-        subscription = await arm_joint_states.subscribe(node_runner)
+        subscription = await joint_states.subscribe(node_runner)
     except Exception as e:
-        print(f"Failed to subscribe to arm_joint_states: {e}", file=sys.stderr)
+        print(f"Failed to subscribe to joint_states: {e}", file=sys.stderr)
+        return
+
+    # Optional: block until an arm is paired and log who it is.
+    try:
+        peer = await joint_states.wait_paired(node_runner)
+        print(f"paired with arm {peer.producer.core_node}/{peer.producer.instance_id}")
+    except Exception as e:
+        print(f"Failed to wait for a paired arm: {e}", file=sys.stderr)
         return
 
     while True:
@@ -42,6 +55,7 @@ async def control_loop(node_runner: NodeRunner):
             break  # subscription closed
         producer, state = received
 
+        # `producer` is always the paired arm's identity.
         print(
             f"state from {producer.core_node}/{producer.instance_id}: "
             f"positions={state.positions}"

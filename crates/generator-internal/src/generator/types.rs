@@ -18,6 +18,8 @@ pub enum InterfaceKind {
     ConsumedTopic,
     ConsumedService,
     ConsumedAction,
+    PeerEmittedTopic,
+    PeerConsumedTopic,
 }
 
 /// The message formats a consumer needs to talk to a producer's action: the goal request, the
@@ -74,6 +76,52 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
         Some(o) => o.scoped_schema_key(local),
         None => local.to_string(),
     }
+}
+
+/// Identifies the pairing slot a peer topic belongs to. "Pairing" names the
+/// mechanism/contract/slot; "peer" names the other end. Both directions of a
+/// pairing live under the slot's module (`pairings/<link_id>/<topic>`), so the
+/// module path is flat `[link_id, topic]` — deliberately NOT reusing
+/// [`InterfaceOrigin`], whose `[name, tag, leaf]` nesting reflects contract
+/// identity rather than slot identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerContext {
+    /// The node's own pairing-slot link_id (`depends_on.pairings[].link_id`).
+    pub link_id: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+}
+
+impl PeerContext {
+    /// Module path for a topic of this slot: `[link_id, topic]`.
+    pub fn module_path_for(&self, topic_name: &str) -> Vec<String> {
+        vec![self.link_id.clone(), topic_name.to_string()]
+    }
+}
+
+/// Backstop for the pairing document's flat topic-name uniqueness rule:
+/// two peer artifacts must never land on the same `pairings/<link_id>/<topic>`
+/// module path. Shared by the Rust and Python generators so the invariant
+/// cannot drift between them.
+pub fn ensure_no_peer_collision(
+    sections: &[InterfaceArtifact],
+    module_path: &[String],
+    peer: &PeerContext,
+    topic: &EmittedTopic,
+) -> Result<()> {
+    let collides = sections.iter().any(|s| {
+        matches!(
+            s.kind,
+            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
+        ) && s.module_path == module_path
+    });
+    if collides {
+        return Err(Error::PeerTopicNameCollision {
+            link_id: peer.link_id.clone(),
+            topic: topic.name.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// What the generator should splice into the consumer's subscribe / poll /
@@ -251,6 +299,18 @@ pub enum InterfaceVariant {
         messages: ConsumedActionMessage,
         dependency: DependencyContext,
     },
+    /// A pairing topic this node's role emits. The `EmittedTopic` shape
+    /// carries the pairing doc's per-topic fields (name, qos,
+    /// message_format); `peer` carries the slot identity.
+    PeerEmittedTopic {
+        topic: EmittedTopic,
+        peer: PeerContext,
+    },
+    /// A pairing topic the counterpart role emits (this node consumes it).
+    PeerConsumedTopic {
+        topic: EmittedTopic,
+        peer: PeerContext,
+    },
 }
 
 /// Maps a deployment interface to the message format required to bind it.
@@ -318,6 +378,16 @@ impl DeploymentInterface {
             messages,
             dependency,
         })
+    }
+
+    /// A pairing topic emitted by this node's role on the given slot.
+    pub fn peer_emitted_topic(topic: EmittedTopic, peer: PeerContext) -> Self {
+        Self::new(InterfaceVariant::PeerEmittedTopic { topic, peer })
+    }
+
+    /// A pairing topic emitted by the counterpart role (consumed here).
+    pub fn peer_consumed_topic(topic: EmittedTopic, peer: PeerContext) -> Self {
+        Self::new(InterfaceVariant::PeerConsumedTopic { topic, peer })
     }
 
     pub fn interface(&self) -> &InterfaceVariant {
@@ -421,6 +491,12 @@ pub trait LanguageGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()>;
+    /// A pairing topic emitted by this node's role: slot-scoped publisher
+    /// (`link_id: Some(peer.link_id)`) under the `pairing` wire target.
+    fn add_peer_emitted_topic(&mut self, topic: &EmittedTopic, peer: &PeerContext) -> Result<()>;
+    /// A pairing topic the counterpart role emits: a `subscribe_peer`-backed
+    /// subscription that follows the slot's live pin.
+    fn add_peer_consumed_topic(&mut self, topic: &EmittedTopic, peer: &PeerContext) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
         self,
@@ -458,6 +534,12 @@ impl DeploymentInterface {
                 messages,
                 dependency,
             } => backend.add_consumed_action(action, messages, dependency),
+            InterfaceVariant::PeerEmittedTopic { topic, peer } => {
+                backend.add_peer_emitted_topic(topic, peer)
+            }
+            InterfaceVariant::PeerConsumedTopic { topic, peer } => {
+                backend.add_peer_consumed_topic(topic, peer)
+            }
         }
     }
 }
@@ -999,16 +1081,19 @@ pub(crate) enum ModuleCategory {
     ConsumedServices,
     ExposedActions,
     ConsumedActions,
+    /// Both directions of every pairing slot: `pairings/<link_id>/<topic>`.
+    Pairings,
 }
 
 impl ModuleCategory {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::EmittedTopics,
         Self::ConsumedTopics,
         Self::ExposedServices,
         Self::ConsumedServices,
         Self::ExposedActions,
         Self::ConsumedActions,
+        Self::Pairings,
     ];
 
     pub fn from_kind(kind: InterfaceKind) -> Self {
@@ -1019,6 +1104,7 @@ impl ModuleCategory {
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
             InterfaceKind::ConsumedAction => Self::ConsumedActions,
+            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => Self::Pairings,
         }
     }
 
@@ -1030,6 +1116,7 @@ impl ModuleCategory {
             Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
             Self::ConsumedActions => "consumed_actions",
+            Self::Pairings => "pairings",
         }
     }
 }

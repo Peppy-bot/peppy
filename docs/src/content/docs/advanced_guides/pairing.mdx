@@ -1,0 +1,272 @@
+---
+title: Pairing
+description: First-class bidirectional communication between two node instances through a named, two-role contract with explicit 1:1 pairing
+sidebar:
+  order: 4
+---
+
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import armLinkPairing from '../guides/snippets/pairings/arm_link/peppy.json5?raw';
+import robotArmPythonConfig from '../guides/snippets/python/robot_arm/peppy.json5?raw';
+import robotArmRustConfig from '../guides/snippets/rust/robot_arm/peppy.json5?raw';
+import armControllerPythonConfig from '../guides/snippets/python/arm_controller/peppy.json5?raw';
+import armControllerRustConfig from '../guides/snippets/rust/arm_controller/peppy.json5?raw';
+import robotArmPython from '../guides/snippets/python/robot_arm/src/robot_arm/__main__.py?raw';
+import robotArmRust from '../guides/snippets/rust/robot_arm/src/main.rs?raw';
+import armControllerPython from '../guides/snippets/python/arm_controller/src/arm_controller/__main__.py?raw';
+import armControllerRust from '../guides/snippets/rust/arm_controller/src/main.rs?raw';
+
+In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
+This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm`, but not the other way around, since a return dependency would make the graph circular.
+
+**Pairing** is PeppyOS's first-class mechanism for the cases where two nodes genuinely talk to each other. A *pairing* is a named, versioned contract with exactly **two roles**; two node **instances** (one per role) are *paired* 1:1 over it, and each side's topics flow only to its paired peer:
+
+- **Explicit**: a pair is established by an operator action (`--pair` on `peppy node run`, or `pairings:` in a launcher), never by discovery.
+- **Exclusive**: a pairing slot holds at most one peer at a time. A second instance trying to pair at a taken slot is rejected.
+- **Pair-before-traffic**: pairs are established when an instance starts. While unpaired, a slot is silent: publishes go nowhere and subscriptions receive nothing.
+- **Unpair on death**: when either instance dies, the pair dissolves automatically. The survivor keeps running with its slot unpaired until a new peer instance is started against it.
+
+A pairing dependency is deliberately **invisible to the node dependency graph**: two nodes paired with each other never form a cycle, and neither requires the other to be present at build time. Pairings are **topics only**; see [Why topics only?](#why-topics-only). For where pairing sits among the other mechanisms, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+
+## Example: robot arm control loop
+
+Consider a robot arm that needs bidirectional communication between two nodes:
+
+- **`arm_controller`**: plans trajectories and sends joint commands.
+- **`robot_arm`**: drives the physical joints and reports their state.
+
+```
+        arm_controller (role: controller)      robot_arm (role: arm)
+              │                                       │
+  slot "arm"  │─ emits joint_commands ───────────────▶│  slot "controller"
+              │                                       │
+              │◀─────────────────── emits joint_states│
+              │                                       │
+              └───────────────  ⇌  ───────────────────┘
+                     one pair over arm_link/v1
+```
+
+One pairing document models both directions. Each topic declares which **role** emits it; the other role consumes it.
+
+## Define the pairing
+
+A pairing is a standalone `pairing/v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). Like an interface, the `message_format` lives here once and both sides inherit it by reference, but unlike an interface, a pairing names *both* directions and the two roles playing them.
+
+<Code code={armLinkPairing} lang="json5" title="pairings/arm_link/peppy.json5" />
+
+The rules:
+
+- `roles` declares **exactly two** distinct roles.
+- `topics` is one flat list; every topic's `emitted_by` must name one of the two roles, and topic names must be unique across the whole list.
+- Pairings declare **topics only**: no services, no actions.
+
+After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag)`.
+
+## Configure the nodes
+
+Each node declares a **pairing slot** under `depends_on.pairings`: the contract, the role this node plays, and a `link_id` naming the slot. The `link_id` is how the node's own code and the pairing commands refer to *the other end*; while paired, exactly one peer instance sits behind it.
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={robotArmPythonConfig} lang="json5" title="robot_arm/peppy.json5" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={robotArmRustConfig} lang="json5" title="robot_arm/peppy.json5" />
+  </TabItem>
+</Tabs>
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={armControllerPythonConfig} lang="json5" title="arm_controller/peppy.json5" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={armControllerRustConfig} lang="json5" title="arm_controller/peppy.json5" />
+  </TabItem>
+</Tabs>
+
+| Node | Role in `arm_link` | Slot (`link_id`) | Emits to the peer | Consumes from the peer |
+|---|---|---|---|---|
+| `robot_arm` | `arm` | `controller` | `joint_states` | `joint_commands` |
+| `arm_controller` | `controller` | `arm` | `joint_commands` | `joint_states` |
+
+A slot is **required** by default: starting the instance without pairing it (or explicitly deferring it) fails loudly. Mark a slot `optional: true` to let the instance boot unpaired with no ceremony.
+
+## Establishing pairs
+
+Pairs are established **when an instance starts**; there is no runtime "pair" command. The instance being started names the peer it pairs with; the peer must already be running (or starting) with a complementary unpaired slot.
+
+```sh
+peppy repo refresh
+peppy node sync ./robot_arm
+peppy node sync ./arm_controller
+
+# The first instance has no peer yet, so its required slot must be
+# explicitly deferred; it boots with the slot silent.
+peppy node run --instance-id arm_1 robot_arm:v1 --defer-pair controller
+
+# The second instance pairs its `arm` slot with arm_1 at start.
+peppy node run --instance-id ctrl_1 arm_controller:v1 --pair arm@arm_1
+```
+
+The `--pair` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. Running a node whose required slot is neither `--pair`ed nor `--defer-pair`ed is a hard error naming the missing slot and both flags:
+
+```sh
+$ peppy node run arm_controller:v1
+Error: required pairing slot(s) not covered: [arm]. Pass `--pair <link_id>@<peer_instance>`
+to pair each at start, or `--defer-pair <link_id>` to explicitly start unpaired
+```
+
+In a launcher, the pair is declared once, on either instance, with `pairings:`; a slot left intentionally unpaired goes in `defer_pairings:`:
+
+```json5 title="peppy_launcher.json5"
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "robot_arm:v1" },
+      instances: [{ instance_id: "arm_1" }],
+    },
+    {
+      source: { name: "arm_controller:v1" },
+      instances: [{
+        instance_id: "ctrl_1",
+        // My `arm` slot pairs with the arm_1 instance. Declaring the same
+        // pair from arm_1's side instead (or as well) is equivalent.
+        pairings: { arm: "arm_1" },
+      }],
+    },
+  ],
+}
+```
+
+`peppy stack launch` validates the whole pair plan up front (coverage, complementary roles, exclusivity, ambiguity) and establishes each pair as its second endpoint comes up.
+
+`peppy stack list` shows every pairing slot, paired or not, with a bidirectional `⇌` arrow:
+
+```
+Instance pairings
+
+NODE                INSTANCE   PAIRINGS
+robot_arm:v1        arm_1      controller ⇌ ctrl_1:arm@core-node-adoring-wiles-7286 (arm_link:v1)
+arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@core-node-adoring-wiles-7286 (arm_link:v1)
+```
+
+## Using the generated API
+
+`peppy node sync` generates a module per slot topic under `peppygen.pairings.<link_id>.<topic>` (Python) / `peppygen::pairings::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={robotArmPython} lang="python" title="src/robot_arm/__main__.py" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={robotArmRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+</Tabs>
+
+On the other side, `arm_controller` emits `joint_commands` and consumes `joint_states` through its `arm` slot:
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={armControllerPython} lang="python" title="src/arm_controller/__main__.py" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={armControllerRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+</Tabs>
+
+The key behavioral guarantees, all handled by the runtime with no application code:
+
+- **Silent while unpaired.** Publishing on an unpaired slot is a legal no-op, and a subscription on an unpaired slot just waits. Nodes never need pairing-state conditionals around their control loops.
+- **Only the paired peer.** A subscription delivers messages from the paired peer instance and nothing else: not from other instances of the same node, not from conforming third parties. The slot *is* the identity; there is no payload-level demultiplexing (`arm_id` fields and the like) to write.
+- **A pairing is a live stream, not a mailbox.** Messages published before the pair was established are never delivered.
+- **Re-pinning is seamless.** When the daemon re-pairs a surviving slot to a new peer, the held subscription switches over internally; no stale messages from the old peer leak through.
+
+## Lifecycle: death, failover, exclusivity
+
+A pair lives exactly as long as both endpoints. When an instance dies (crashes, is stopped with `peppy node stop`, or is torn down by a stack operation), the daemon dissolves its pairs and live-notifies each survivor that its slot is now unpaired. The survivor keeps running; its slot goes silent.
+
+Failover is then just another `--pair` at start:
+
+```sh
+# ctrl_1 died (or was stopped). arm_1 keeps running, slot unpaired.
+peppy node run --instance-id ctrl_2 arm_controller:v1 --pair arm@arm_1
+```
+
+`ctrl_2` pairs with the surviving `arm_1`, whose subscription and publisher switch to the new peer live; the arm's code never restarts and never notices beyond `paired()` reporting a new identity.
+
+Exclusivity is enforced at establishment: while `arm_1`'s slot is paired, a third instance running with `--pair arm@arm_1` is rejected naming the existing pair. To hand an arm to a different controller, stop the old controller first (or run the new one against a different arm).
+
+:::note[Pairs do not survive a daemon restart]
+Pairing state lives in the daemon, alongside the node stack itself. Like the stack, it is in-memory: after a daemon restart, instances are gone and so are their pairs; a fresh launch re-establishes them.
+:::
+
+## Multiple slots: the two-arm commander
+
+Because the slot, not the node, is the unit of pairing, a node can declare several slots of the *same* pairing and hold one peer per slot, each a fully isolated stream:
+
+```json5
+// commander/peppy.json5 (manifest excerpt)
+depends_on: {
+  pairings: [
+    { name: "arm_link", tag: "v1", role: "controller", link_id: "left_arm" },
+    { name: "arm_link", tag: "v1", role: "controller", link_id: "right_arm" },
+  ],
+},
+```
+
+```sh
+peppy node run --instance-id arm_l robot_arm:v1 --defer-pair controller
+peppy node run --instance-id arm_r robot_arm:v1 --defer-pair controller
+peppy node run --instance-id cmd_1 two_arm_commander:v1 \
+  --pair left_arm@arm_l --pair right_arm@arm_r
+```
+
+The generated code addresses each arm through its slot module (`pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands`), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
+
+## Why topics only?
+
+PeppyOS has three communication patterns (topics, services, and actions), but a pairing may declare **topics only**. The reason is the distinction that shapes the rest of the dependency model: a topic dependency is passive, while service and action dependencies are caller-driven.
+
+| | Topics | Services | Actions |
+|---|---|---|---|
+| Pattern | Publish-subscribe | Request-response | Goal-feedback-result |
+| Runtime data flow | One-way: producer → consumer | Two-way: consumer calls provider, provider replies | Multi-step: consumer drives the provider's lifecycle |
+| Consuming means | "I passively receive these messages" | "I actively call this provider" | "I actively orchestrate this provider" |
+| Allowed in a pairing? | Yes | No | No |
+
+A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [interface conformance](/advanced_guides/interface_conformance#caller-driven-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
+
+If two paired nodes also need a bounded request-response exchange, keep the continuous streams in the pairing and model the bounded job as an [action](/advanced_guides/actions) in one direction (the client depends on the server, no cycle).
+
+## Pairing vs. interfaces (`from_any`)
+
+Pairing and [interface conformance](/advanced_guides/interface_conformance) both decouple nodes from each other through a shared contract. They answer different questions:
+
+| | Pairing | Interface (`from_any`) |
+|---|---|---|
+| Cardinality | Exactly 1:1 per slot, exclusive | Any number of conforming producers |
+| Directionality | Both directions in one contract (two roles) | One direction per interface |
+| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Implicit: any conforming producer that publishes is received |
+| Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |
+| Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | Producers come and go freely |
+| Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry fan-in, monitoring, swappable many-to-one sources |
+
+Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **interfaces** when any number of loosely-coupled producers should feed a consumer, like every arm on the floor publishing diagnostics to one observer. The two compose: `robot_arm` can be paired with its controller *and* conform to a one-way `joint_state_source` interface so dashboards can watch it.
+
+## Pairing vs. actions
+
+Pairing and [actions](/advanced_guides/actions/) can both look like "two nodes talking back and forth", but they model different shapes of interaction. The distinction is **lifecycle**: does the exchange have a defined start and end, or does it run continuously for as long as the nodes are up?
+
+|  | Pairing | Actions |
+|---|---|---|
+| Lifecycle | Continuous; runs for as long as the pair is live | Bounded; each goal has an explicit start (goal accepted) and end (result delivered, cancelled, or errored) |
+| Initiator | Either side publishes whenever it has data | Client issues a goal; server responds |
+| Concurrency | Both streams flow in parallel, indefinitely | Concurrent goals allowed; the server's goal handler sets the acceptance policy |
+| Per-exchange feedback | Implicit (each side publishes its own stream) | Explicit feedback channel during the goal |
+| Cancellation | Unpair (stop an endpoint); or just stop publishing | First-class cancel request mid-flight |
+| Natural fit | Inner control loops, continuous state mirroring | Discrete jobs with a clear "done" condition |
+
+A useful test: if you find yourself wanting to say *"the controller asks the arm to do X and waits until it's done"*, that is an action. If you find yourself saying *"the controller streams setpoints at 100 Hz and the arm streams state back at 1 kHz"*, that is a pairing.
+
+Both shapes can coexist on the same pair of nodes. A `robot_arm` might expose a `calibrate` action (run once at startup, has a definite end) **and** exchange `joint_commands` / `joint_states` continuously with its paired controller.

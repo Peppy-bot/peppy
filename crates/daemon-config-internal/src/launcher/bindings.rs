@@ -113,6 +113,15 @@ pub fn validate_bindings(
     for item in items {
         let (declared_pinned, declared_from_any) = collect_declared_slots(item.depends_on);
         let declared_csv = format_declared_keys(&declared_pinned, &declared_from_any);
+        // Pairing slots are never binding slots: `collect_declared_slots`
+        // reads only `depends_on.{nodes,interfaces}`, so a pairing link_id
+        // can never satisfy rule 1 or match a pinned KEY. This set exists
+        // solely to turn a `--bind` on a pairing slot into a targeted
+        // "use --pair" error instead of a generic `BindingDeadKey`.
+        let pairing_link_ids: std::collections::BTreeSet<&str> = item
+            .depends_on
+            .map(|d| d.pairings.iter().map(|p| p.link_id.as_str()).collect())
+            .unwrap_or_default();
 
         for instance in item.instances {
             let mut resolved: BTreeMap<String, SlotBinding> = BTreeMap::new();
@@ -130,6 +139,14 @@ pub fn validate_bindings(
                 // Rule 6 defensive check.
                 if !seen_keys.insert(binding_key.as_str()) {
                     out.errors.push(ParsingError::BindingDuplicateKey {
+                        owner_instance_id: instance.instance_id.to_string(),
+                        binding: binding_key.clone(),
+                    });
+                    continue;
+                }
+
+                if pairing_link_ids.contains(binding_key.as_str()) {
+                    out.errors.push(ParsingError::BindingKeyIsPairingSlot {
                         owner_instance_id: instance.instance_id.to_string(),
                         binding: binding_key.clone(),
                     });
@@ -1362,6 +1379,67 @@ mod tests {
             slot_binding(&out, "cons1", "slot_b"),
             Some(SlotBinding::FromAnyUnbound)
         );
+    }
+
+    /// A `--bind` whose KEY names a pairing slot gets the targeted
+    /// "use --pair" error, not `BindingDeadKey`. Pairing slots are
+    /// established via `--pair`/`pairings:` only.
+    #[test]
+    fn binding_key_naming_a_pairing_slot_says_use_pair() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "ctrl_1",
+                bindings: { arm: "arm_inst" }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]
+            }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "arm_inst" }]"#);
+        let items = vec![
+            item("arm_controller", "v1", &cons_instances, Some(&depends_on)),
+            item("robot_arm", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
+        let ParsingError::BindingKeyIsPairingSlot {
+            owner_instance_id,
+            binding,
+        } = &out.errors[0]
+        else {
+            panic!("expected BindingKeyIsPairingSlot, got {:?}", out.errors[0]);
+        };
+        assert_eq!(owner_instance_id, "ctrl_1");
+        assert_eq!(binding, "arm");
+        assert!(
+            out.errors[0].to_string().contains("--pair"),
+            "message should point at --pair: {}",
+            out.errors[0]
+        );
+    }
+
+    /// Rule 1 must NOT fire for pairing slots: `collect_declared_slots`
+    /// reads only nodes/interfaces, so a required pairing slot with no
+    /// binding produces no `BindingMissingForPinnedDep`.
+    #[test]
+    fn pairing_slots_are_invisible_to_rule1() {
+        let cons_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
+        let depends_on = parse_depends_on(
+            r#"{
+                pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]
+            }"#,
+        );
+        let items = vec![item(
+            "arm_controller",
+            "v1",
+            &cons_instances,
+            Some(&depends_on),
+        )];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert!(out.slot_bindings.is_empty());
     }
 
     /// Stamping: every producer reference the validator emits (pinned

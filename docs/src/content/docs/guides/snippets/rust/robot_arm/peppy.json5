@@ -4,21 +4,11 @@
     name: "robot_arm",
     tag: "v1",
     depends_on: {
-      interfaces: [
-        // Optional, wildcard, opt-in-per-direction: consume joint_commands
-        // from any conforming controller, with no binding required.
-        { name: "joint_command_source", tag: "v1", link_id: "controller", from_any: true },
-      ],
-    },
-  },
-  interfaces: {
-    // Emits joint_states by conforming to the interface (inherited by reference)
-    conforms_to: [
-      { name: "joint_state_source", tag: "v1" },
-    ],
-    topics: {
-      consumes: [
-        { name: "joint_commands", link_id: "controller" },
+      pairings: [
+        // One pairing slot: this node plays the `arm` role of arm_link/v1.
+        // The slot's link_id names the OTHER end from this node's point of
+        // view; while paired, exactly one controller instance sits behind it.
+        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
       ],
     },
   },

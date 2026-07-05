@@ -53,6 +53,8 @@ Nodes communicate through three types of interfaces:
 
 A node can **expose** interfaces (make them available to others) and **consume** interfaces from other nodes.
 
+Two higher-level constructs build on these: [interface conformance](/advanced_guides/interface_conformance/), where the contract lives in a standalone document and any conforming producer can fill the consumer's slot, and [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
+
 ## Node Instance
 
 A **Node Instance** represents a single running execution of a node. Each instance has:

@@ -9,8 +9,21 @@ Replaces the GitHub Actions workflows in `.github/workflows/` (`tests.yml`,
 
 1. **Create the pipeline** in the Buildkite UI: repository
    `git@github.com:Peppy-bot/peppyos.git`, default branch `dev` (the repo's
-   default), and keep the default initial step
-   (`buildkite-agent pipeline upload`), which loads `.buildkite/pipeline.yml`.
+   default). The initial step must target the self-hosted queue, or the
+   upload job runs on a Buildkite-hosted agent (the cluster's default queue):
+
+   ```yaml
+   steps:
+     - label: ":pipeline:"
+       command: buildkite-agent pipeline upload
+       agents:
+         queue: Self-hosted
+   ```
+
+   pipeline.yml pins the same queue for every step it uploads (top-level
+   `agents:`). The value is the exact, case-sensitive queue key (queue page →
+   Settings), which is also what the agent's `tags="queue=..."` config points
+   at; uploads are rejected if it names a queue the cluster does not have.
 
 2. **GitHub triggers** (Pipeline → Settings → GitHub) — this replaces the
    `on:` blocks of the old workflows:

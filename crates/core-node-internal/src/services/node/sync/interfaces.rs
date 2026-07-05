@@ -18,6 +18,34 @@ use std::collections::HashMap;
 /// usually wrap a [`NodeStack`] (see [`stack_resolver`]) but can also chain a
 /// peer map first to resolve sibling nodes that haven't been added to the
 /// stack yet; used by `node sync -a` for batch operations.
+/// The full peppygen interface set for one node, in one call: consumed
+/// interfaces from `depends_on`, `conforms_to` documents, and both
+/// directions of every declared pairing slot (role-validated, sha-pinned,
+/// drift-checked). Used by `node add`, `node sync`, and the launch-time
+/// auto-sync so the "what feeds peppygen" sequence lives in one place.
+/// Error strings name the failing step; callers only add their transport
+/// wrapper.
+pub fn collect_all_deployment_interfaces(
+    manifest: &config::node::Manifest,
+    interfaces_cfg: &config::node::Interfaces,
+    resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
+    peppy_dirs: &PeppyDirs,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<Vec<DeploymentInterface>, String> {
+    let mut interfaces =
+        collect_consumed_interfaces(manifest, interfaces_cfg, resolve, peppy_dirs, on_feedback)
+            .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
+    interfaces.extend(
+        resolve_conforms_to(interfaces_cfg, peppy_dirs, on_feedback)
+            .map_err(|reason| format!("failed to resolve `conforms_to` interfaces: {reason}"))?,
+    );
+    interfaces.extend(
+        super::pairings::collect_pairing_interfaces(manifest, peppy_dirs, on_feedback)
+            .map_err(|reason| format!("failed to resolve `depends_on.pairings`: {reason}"))?,
+    );
+    Ok(interfaces)
+}
+
 pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
@@ -280,48 +308,22 @@ pub(crate) fn resolve_interface_doc(
         .map_err(|e| format!("failed to load interface cache: {e}"))?;
 
     let entry = match sha256_pin {
-        Some(sha) => {
-            repo_cache::lookup_interface_by_sha256(&cache, name, tag, sha).ok_or_else(|| {
-                format!(
-                    "interface `{name}:{tag}` (sha256 `{sha}`) not in interface cache; \
-                     run `peppy repo refresh`"
-                )
-            })?
-        }
-        None => repo_cache::lookup_interface(&cache, name, tag).ok_or_else(|| {
-            format!("interface `{name}:{tag}` not in interface cache; run `peppy repo refresh`")
-        })?,
+        Some(sha) => repo_cache::lookup_interface_by_sha256(&cache, name, tag, sha),
+        None => repo_cache::lookup_interface(&cache, name, tag),
     };
 
-    let resolved_path = repo_cache::resolve_cached_artifact_path(
+    repo_cache::resolve_cached_doc(
         peppy_dirs,
-        entry.source_type,
-        entry.source_uri.as_deref(),
-        entry.resolved_ref.as_deref(),
-        &entry.path,
+        "interface",
+        &format!("{name}:{tag}"),
+        sha256_pin,
+        entry.map(Into::into),
+        |content| {
+            daemon_config::interface::PeppyInterfaceParser::from_content(content)
+                .map_err(|e| e.to_string())
+        },
         on_feedback,
     )
-    .map_err(|e| format!("interface `{name}:{tag}`: {e}"))?;
-
-    let bytes = std::fs::read(&resolved_path).map_err(|e| {
-        format!(
-            "failed to read cached interface `{name}:{tag}` at {}: {e}",
-            resolved_path.display()
-        )
-    })?;
-    let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
-    if actual_sha != entry.sha256 {
-        return Err(format!(
-            "interface `{name}:{tag}` content drifted from cache fingerprint \
-             (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
-            entry.sha256
-        ));
-    }
-
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|e| format!("cached interface `{name}:{tag}` is not UTF-8: {e}"))?;
-    daemon_config::interface::PeppyInterfaceParser::from_content(content)
-        .map_err(|e| format!("failed to parse cached interface `{name}:{tag}`: {e}"))
 }
 
 /// Resolves every `interfaces.conforms_to` entry against the local interface

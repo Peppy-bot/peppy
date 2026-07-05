@@ -1,8 +1,6 @@
 use crate::Result;
 use crate::names;
-use crate::services::repo::refresh::{
-    process_refresh, write_cache, write_interface_cache, write_launcher_cache,
-};
+use crate::services::repo::refresh::{process_refresh, write_all_caches};
 use crate::services::repo::{
     json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
 };
@@ -61,11 +59,7 @@ async fn handle_repo_exclude_request(
         match tokio::task::spawn_blocking(move || {
             let _guard = crate::services::repo::refresh_lock().lock();
             match process_refresh(&dirs, &mut |_| {}) {
-                Ok(refreshed) => {
-                    write_cache(&dirs, &refreshed.nodes)?;
-                    write_launcher_cache(&dirs, &refreshed.launchers)?;
-                    write_interface_cache(&dirs, &refreshed.interfaces)
-                }
+                Ok(refreshed) => write_all_caches(&dirs, &refreshed),
                 Err(e) => Err(e),
             }
         })

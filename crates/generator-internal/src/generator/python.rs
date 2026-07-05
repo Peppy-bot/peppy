@@ -298,6 +298,64 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
+    fn add_peer_emitted_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let schema_info = topic
+            .message_format
+            .as_ref()
+            .map(|fmt| self.register_schema(&schema_key, fmt))
+            .transpose()?;
+
+        let code = topics::build_peer_emitted_topic(topic, schema_info.as_ref(), peer)?;
+        let module_path = peer.module_path_for(&topic.name);
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: InterfaceKind::PeerEmittedTopic,
+            code_output: code,
+        });
+        Ok(())
+    }
+
+    fn add_peer_consumed_topic(
+        &mut self,
+        topic: &EmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let arguments = topic.message_format.clone().ok_or_else(|| {
+            crate::error::Error::PeerTopicMissingMessageFormat {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            }
+        })?;
+        let schema_info = self.register_schema(&schema_key, &arguments)?;
+
+        let code = topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?;
+        let module_path = peer.module_path_for(&topic.name);
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: InterfaceKind::PeerConsumedTopic,
+            code_output: code,
+        });
+        Ok(())
+    }
+
     fn add_consumed_action(
         &mut self,
         action: &ConsumedAction,

@@ -44,6 +44,11 @@ impl From<&NodeEntity> for SerializedNode {
                     state: i.state(),
                     healthy: i.healthy(),
                     slot_bindings: i.slot_bindings().clone(),
+                    // Filled by the graph-level overlay in
+                    // `NodeStackInner::to_serialized_graph` (manifest +
+                    // pairing registry); the entity alone cannot know pair
+                    // state.
+                    pairing_slots: std::collections::BTreeMap::new(),
                 })
                 .collect(),
         }

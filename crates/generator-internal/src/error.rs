@@ -77,4 +77,17 @@ both produce the type name `{type_name}`"
         first_field: String,
         second_field: String,
     },
+    #[error(
+        "pairing topic `{topic}` on slot `{link_id}` has no message_format; a consumed peer topic \
+needs a decodable payload"
+    )]
+    PeerTopicMissingMessageFormat { link_id: String, topic: String },
+    /// Backstop: the parse-time flat topic-name uniqueness check on the
+    /// pairing document is the real gate; this fires only if a duplicate
+    /// slips through and two peer artifacts collide on the same module path.
+    #[error(
+        "peer topic name collision on slot `{link_id}`: `{topic}` generated twice \
+(pairing topic names must be unique across the whole document)"
+    )]
+    PeerTopicNameCollision { link_id: String, topic: String },
 }

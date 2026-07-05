@@ -11,6 +11,53 @@ pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
+/// A minimal two-role pairing document, shared by the pairing e2e tests
+/// (`node_pair`, `repo_refresh`, `node_sync`).
+pub const ARM_LINK_PAIRING: &str = r#"{
+    peppy_schema: "pairing/v1",
+    manifest: { name: "arm_link", tag: "v1" },
+    roles: ["controller", "arm"],
+    topics: [
+        {
+            emitted_by: "controller",
+            name: "joint_commands",
+            qos_profile: "reliable",
+            message_format: { target_positions: { $type: "array", $items: "f64", $length: 3 } }
+        },
+        {
+            emitted_by: "arm",
+            name: "joint_states",
+            qos_profile: "sensor_data",
+            message_format: { positions: { $type: "array", $items: "f64", $length: 3 } }
+        }
+    ]
+}"#;
+
+/// Seeds the daemon's `repositories.json5` with one fs repo containing the
+/// `arm_link` pairing doc and refreshes, so the doc lands in the daemon's
+/// pairing cache.
+pub fn seed_pairing_repo(
+    serve: &ServeCommandEmulation,
+    ctx: &Arc<AppContext>,
+    repo_dir: &std::path::Path,
+) {
+    use peppy::commands::Command;
+    std::fs::write(repo_dir.join("arm_link.json5"), ARM_LINK_PAIRING).expect("write pairing doc");
+    let conf_dir = serve.temp_dir().join("conf");
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
+        { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
+    ]))
+    .expect("serialize repos");
+    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+
+    peppy::commands::repo::RepoCommand {
+        command: peppy::commands::repo::RepoCommands::Refresh,
+    }
+    .execute(ctx)
+    .expect("repo refresh should discover the pairing doc");
+}
+
 pub fn setup() -> (
     tokio::runtime::Runtime,
     ServeCommandEmulation,

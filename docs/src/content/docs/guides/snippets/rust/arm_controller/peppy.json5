@@ -4,21 +4,10 @@
     name: "arm_controller",
     tag: "v1",
     depends_on: {
-      interfaces: [
-        // Optional, wildcard, opt-in-per-direction: consume joint_states
-        // from any conforming arm, with no binding required.
-        { name: "joint_state_source", tag: "v1", link_id: "arm", from_any: true },
-      ],
-    },
-  },
-  interfaces: {
-    // Emits joint_commands by conforming to the interface (inherited by reference)
-    conforms_to: [
-      { name: "joint_command_source", tag: "v1" },
-    ],
-    topics: {
-      consumes: [
-        { name: "joint_states", link_id: "arm" },
+      pairings: [
+        // The complementary slot: this node plays the `controller` role of
+        // the same contract, and its slot points at one arm.
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
       ],
     },
   },
