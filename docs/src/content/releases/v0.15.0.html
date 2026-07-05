@@ -1,0 +1,28 @@
+<entry>
+  <title>v0.15.0</title>
+  <id>https://docs.peppy.bot/releases/v0-15-0/</id>
+  <updated>2026-07-05T00:00:00Z</updated>
+
+  <summary>Nodes can now declare, establish, and dissolve pairings with one another, and serve restarts and shutdowns are more reliable.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.15.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Nodes can now declare, establish, and dissolve pairings with one another, and serve restarts and shutdowns are more reliable.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 5, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Node pairing&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Nodes can now declare, establish, and dissolve pairings (peer links) with one another at runtime.&lt;/li&gt;
+&lt;li&gt;Each paired node exposes a &lt;code&gt;LINK_ID&lt;/code&gt; and a &lt;code&gt;pairings&lt;/code&gt; view in its generated module so node code can identify and work with its active links.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list&lt;/code&gt; now shows an "Instance pairings" section listing the active pairings between running instances.&lt;/li&gt;
+&lt;li&gt;Malformed pairing targets are now rejected, and pairing delivery is protected against a link being dissolved concurrently.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Serve reliability&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy serve&lt;/code&gt; no longer drops shutdown signals or races when restarting, so restarts and shutdowns now behave reliably.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
