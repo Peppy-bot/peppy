@@ -1,4 +1,5 @@
 mod actions;
+mod pairings;
 mod parameters;
 mod services;
 mod topics;

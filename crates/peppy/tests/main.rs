@@ -6,6 +6,7 @@ mod info;
 mod node_add;
 mod node_info;
 mod node_init;
+mod node_pair;
 mod node_remove;
 mod node_run;
 mod node_runtime_config;

@@ -218,6 +218,209 @@ fn build_topic_build_message(
     }
 }
 
+/// Module-level constants + `paired()`/`wait_paired()` helpers shared by both
+/// directions of a peer topic module. Every `pairings/<link_id>/<topic>` module
+/// carries its slot identity as consts and exposes the slot's live pin state.
+pub fn build_peer_module_header(
+    topic_name: &str,
+    peer: &crate::generator::types::PeerContext,
+) -> TokenStream {
+    let topic_literal = Literal::string(topic_name);
+    let link_id_literal = Literal::string(&peer.link_id);
+    let pairing_name_literal = Literal::string(&peer.pairing_name);
+    let pairing_tag_literal = Literal::string(&peer.pairing_tag);
+
+    quote! {
+        pub const TOPIC_NAME: &str = #topic_literal;
+        /// This node's own pairing-slot link_id.
+        pub const LINK_ID: &str = #link_id_literal;
+        pub const PAIRING_NAME: &str = #pairing_name_literal;
+        pub const PAIRING_TAG: &str = #pairing_tag_literal;
+
+        /// The peer currently paired on this slot, or `None` while unpaired.
+        pub fn paired(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<Option<peppylib::messaging::PeerInfo>> {
+            Ok(node_runner.peer(LINK_ID)?.paired())
+        }
+
+        /// Waits until a peer is paired on this slot and returns its
+        /// identity. Returns immediately when already paired.
+        pub async fn wait_paired(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<peppylib::messaging::PeerInfo> {
+            node_runner.peer(LINK_ID)?.wait_paired().await
+        }
+    }
+}
+
+/// Publish side of a peer-emitted topic: `build_message` (same shape as
+/// emitted topics) plus a slot-scoped `declare_publisher` — the wire target
+/// is `SenderTarget::pairing(...)` and the producer-side link_id segment
+/// carries this node's OWN slot link_id, so per-slot streams stay
+/// wire-isolated (the slot IS the identity; no payload demux).
+pub fn build_peer_topic_publisher(
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    qos_profile: &QoSProfile,
+    label: &str,
+) -> TokenStream {
+    let qos_tokens = qos_profile_tokens(qos_profile);
+    let label_literal = Literal::string(label);
+    let build_message = build_topic_build_message(params, encoding, &label_literal);
+
+    quote! {
+        #build_message
+
+        /// Declares the slot-scoped publisher for this pairing topic.
+        /// Publishing while unpaired is a legal no-op (the mesh drops it);
+        /// the paired peer's triple-pinned subscription receives every
+        /// publish made while the pair is live.
+        pub async fn declare_publisher(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<peppylib::TopicPublisher> {
+            let qos = #qos_tokens;
+            let as_instance_id = node_runner.processor().bound_instance_id();
+            let with_core_node = node_runner.processor().bound_core_node();
+            let as_target = peppylib::messaging::SenderTarget::pairing(PAIRING_NAME, PAIRING_TAG)?;
+
+            let publisher = peppylib::TopicMessenger::declare_publisher(
+                node_runner.messenger(),
+                with_core_node,
+                as_instance_id,
+                as_target,
+                Some(LINK_ID),
+                TOPIC_NAME,
+                qos,
+            )
+            .await?;
+            Ok(publisher)
+        }
+    }
+}
+
+/// Consume side of a peer topic: a subscription backed by
+/// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
+/// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
+/// on re-pin). The `from_any` reservation machinery is never involved.
+pub struct PeerTopicSubscriptionSpec<'a> {
+    pub helper_fn_ident: &'a Ident,
+    pub args_struct_ident: &'a Ident,
+    pub params: &'a [FunctionParam],
+    pub artifacts: &'a CapnpSchemaArtifacts,
+    pub encoding: &'a MessageEncodingSpec,
+    pub qos_profile: &'a QoSProfile,
+    pub struct_prefix: &'a str,
+}
+
+pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Result<TokenStream> {
+    let PeerTopicSubscriptionSpec {
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        qos_profile,
+        struct_prefix,
+    } = spec;
+    let qos_tokens = qos_profile_tokens(qos_profile);
+    let helper_fn_tokens = build_topic_deserialize_helper(
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        struct_prefix,
+    )?;
+
+    let subscription_tokens = build_subscription_struct(
+        quote! {
+            /// A held subscription to this pairing topic. Yields nothing while
+            /// the slot is unpaired; while paired, only the paired peer's
+            /// messages surface (triple wire pin + delivery-time identity
+            /// check). A pairing is a live stream, not a mailbox: messages
+            /// published before pairing are never delivered.
+        },
+        quote!(peppylib::runtime::PeerSubscription),
+        quote! {
+            /// Awaits the next message from the currently paired peer.
+            ///
+            /// Returns `Ok(Some((producer, message)))` for each message,
+            /// `Ok(None)` once the runtime shuts down, and `Err(..)` if a
+            /// received payload fails to deserialize. `producer` is always
+            /// the paired peer's identity.
+        },
+        helper_fn_ident,
+        args_struct_ident,
+    );
+
+    Ok(quote! {
+        #subscription_tokens
+
+        /// Subscribes to this pairing topic and returns a held
+        /// `Subscription` that follows the slot's live pin. Legal while
+        /// unpaired: the subscription stays silent until a peer pairs.
+        pub async fn subscribe(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<Subscription> {
+            let qos = #qos_tokens;
+            let inner = peppylib::runtime::subscribe_peer(
+                node_runner,
+                LINK_ID,
+                PAIRING_NAME,
+                PAIRING_TAG,
+                TOPIC_NAME,
+                qos,
+            )
+            .await?;
+            Ok(Subscription { inner })
+        }
+
+        #helper_fn_tokens
+    })
+}
+
+/// The held-`Subscription` struct plus its `next()` impl, shared by the
+/// plain and peer consumer modules: same buffer/decode contract, differing
+/// only in the inner subscription type and the doc text (passed as
+/// `quote!`d `///` blocks so the generated docs stay per-module).
+fn build_subscription_struct(
+    struct_doc: TokenStream,
+    inner_type: TokenStream,
+    next_doc: TokenStream,
+    helper_fn_ident: &Ident,
+    args_struct_ident: &Ident,
+) -> TokenStream {
+    quote! {
+        #struct_doc
+        pub struct Subscription {
+            inner: #inner_type,
+        }
+
+        impl Subscription {
+            #next_doc
+            // An async `next` returning `Result<Option<_>>` is intentionally not
+            // `Iterator::next`; silence clippy's lookalike heuristic.
+            #[allow(clippy::should_implement_trait)]
+            pub async fn next(
+                &mut self,
+            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
+                let Some(message) = self.inner.on_next_message().await else {
+                    return Ok(None);
+                };
+
+                let payload = message.payload();
+                let producer = peppylib::messaging::ProducerRef::new(
+                    message.core_node(),
+                    message.instance_id(),
+                );
+                let message = #helper_fn_ident(payload.as_ref())?;
+                Ok(Some((producer, message)))
+            }
+        }
+    }
+}
+
 /// Returns the `SenderTarget` constructor expression to splice into a
 /// generated emit call. When `origin` is `Some` (the topic is declared via
 /// `interfaces.conforms_to`), emit as `SenderTarget::interface(name, tag)`.
@@ -268,40 +471,27 @@ pub fn build_consumed_topic_subscription(
     let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
     let is_from_any_lit = is_from_any_literal(dependency);
 
-    Ok(quote! {
-        /// A held subscription to this topic. Declared once via `subscribe`; its
-        /// buffer keeps every message in arrival order, so looping on `next` never
-        /// drops a message published between calls. Filter inside the loop on the
-        /// returned producer identity or the message fields.
-        pub struct Subscription {
-            inner: peppylib::messaging::Subscription,
-        }
-
-        impl Subscription {
+    let subscription_tokens = build_subscription_struct(
+        quote! {
+            /// A held subscription to this topic. Declared once via `subscribe`; its
+            /// buffer keeps every message in arrival order, so looping on `next` never
+            /// drops a message published between calls. Filter inside the loop on the
+            /// returned producer identity or the message fields.
+        },
+        quote!(peppylib::messaging::Subscription),
+        quote! {
             /// Awaits the next message on this subscription.
             ///
             /// Returns `Ok(Some((producer, message)))` for each message in arrival
             /// order, `Ok(None)` once the subscription has closed, and `Err(..)` if
             /// a received payload fails to deserialize.
-            // An async `next` returning `Result<Option<_>>` is intentionally not
-            // `Iterator::next`; silence clippy's lookalike heuristic.
-            #[allow(clippy::should_implement_trait)]
-            pub async fn next(
-                &mut self,
-            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
-                let Some(message) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
+        },
+        helper_fn_ident,
+        args_struct_ident,
+    );
 
-                let payload = message.payload();
-                let producer = peppylib::messaging::ProducerRef::new(
-                    message.core_node(),
-                    message.instance_id(),
-                );
-                let message = #helper_fn_ident(payload.as_ref())?;
-                Ok(Some((producer, message)))
-            }
-        }
+    Ok(quote! {
+        #subscription_tokens
 
         /// Subscribes to this topic and returns a held `Subscription`.
         ///

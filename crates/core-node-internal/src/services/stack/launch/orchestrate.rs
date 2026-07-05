@@ -47,6 +47,7 @@ pub(super) async fn add_node_directly(
         bound_core_node: ctx.bound_core_node.clone(),
         core_instance_id: ctx.core_instance_id.clone(),
         peppy_dirs: ctx.peppy_dirs.clone(),
+        pairing: Arc::clone(&ctx.pairing),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -179,6 +180,7 @@ pub(super) async fn start_node_directly(
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
         daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
+        pairing: Arc::clone(&ctx.pairing),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -259,7 +261,14 @@ pub(super) async fn validate_and_order_dependencies(
     ctx: &ProcessLaunchContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
-) -> std::result::Result<(Vec<NodeKey>, ResolvedSlotBindings), LaunchResult> {
+) -> std::result::Result<
+    (
+        Vec<NodeKey>,
+        ResolvedSlotBindings,
+        Vec<daemon_config::launcher::PlannedPairing>,
+    ),
+    LaunchResult,
+> {
     publish_stdout(
         ctx,
         "Validating dependencies",
@@ -330,6 +339,8 @@ pub(super) async fn validate_and_order_dependencies(
             env_vars: Default::default(),
             framework: Default::default(),
             bindings: Default::default(),
+            pairings: Default::default(),
+            defer_pairings: Default::default(),
         })
         .into_iter()
         .collect();
@@ -365,6 +376,43 @@ pub(super) async fn validate_and_order_dependencies(
     }
     let resolved_slot_bindings = validated.slot_bindings;
 
+    // Pairing plan: every `pairings:`/`defer_pairings:` map validated
+    // against the declared slots, coverage of required slots enforced, each
+    // target resolved to one concrete peer slot. A launch replaces the
+    // previous stack (torn down at the clear step), so there are no
+    // preexisting instances or already-claimed slots to fold in.
+    let pairing_items: Vec<daemon_config::launcher::PairingValidationItem<'_>> = planned
+        .iter()
+        .map(|p| daemon_config::launcher::PairingValidationItem {
+            node_name: &p.node_name,
+            node_tag: &p.node_tag,
+            instances: &p.deployment.instances,
+            pairing_deps: p
+                .config
+                .manifest
+                .depends_on
+                .as_ref()
+                .map(|d| d.pairings.as_slice())
+                .unwrap_or_default(),
+            preexisting: false,
+        })
+        .collect();
+    let validated_pairings = daemon_config::launcher::validate_pairings(
+        &pairing_items,
+        &daemon_config::launcher::AlreadyPairedSlots::new(),
+    );
+    if !validated_pairings.errors.is_empty() {
+        let errors: Vec<String> = validated_pairings
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
+        let msg = daemon_config::format_bulleted(&errors);
+        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+    let planned_pairings = validated_pairings.planned;
+
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
     for item in planned {
@@ -396,7 +444,7 @@ pub(super) async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok((ordered, resolved_slot_bindings))
+    Ok((ordered, resolved_slot_bindings, planned_pairings))
 }
 
 /// Perform a stable topological sort.

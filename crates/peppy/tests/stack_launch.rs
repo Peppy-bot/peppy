@@ -130,6 +130,8 @@ async fn node_launch_command_succeed() {
             args: Vec::new(),
             instance_id: None,
             binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -371,6 +373,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
             args: Vec::new(),
             instance_id: None,
             binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1908,5 +1912,220 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
         Some(&config::runtime::SlotBinding::FromAnyUnbound),
         "robot_arm's `{arm_link_id}` interface slot should materialize as \
          FromAnyUnbound when launched with no --bind",
+    );
+}
+
+/// Launcher `pairings:` establish pairs at launch: the earlier-started
+/// endpoint boots deferred, the later one carries the request, and both
+/// running instances receive their `peer_update` pins live. The dummy `sh`
+/// nodes expose ready/health/shutdown/peer_update from the test process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_establishes_launcher_pairings() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // The arm_link pairing doc must be in the daemon's pairing cache for
+    // the launch-time `node add` codegen to resolve `depends_on.pairings`.
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let run_cmd = vec!["sleep".to_string(), "30".to_string()];
+    let arm_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "robot_arm",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
+        ),
+        None,
+    );
+    let ctrl_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "arm_controller",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
+        ),
+        None,
+    );
+
+    // In-process node services for both instances, including the
+    // `peer_update` endpoints whose watches observe the delivered pins.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let mut watches = Vec::new();
+    for (node_name, instance_id, link_id) in [
+        ("robot_arm", "arm_1", "controller"),
+        ("arm_controller", "ctrl_1", "arm"),
+    ] {
+        let _ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let _health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (_shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+        let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerPinState::unpaired());
+        let slots = Arc::new(std::collections::BTreeMap::from([(
+            link_id.to_string(),
+            tx,
+        )]));
+        peppylib::services::peer_update::listen_for_peer_update(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+            slots,
+        )
+        .await
+        .expect("peer_update service should start");
+        watches.push(rx);
+    }
+
+    // The pair is declared once, on the controller instance; the launcher
+    // works out the establishment order.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ local: "{arm_path}" }},
+                    instances: [{{ instance_id: "arm_1" }}]
+                }},
+                {{
+                    source: {{ local: "{ctrl_path}" }},
+                    instances: [{{
+                        instance_id: "ctrl_1",
+                        pairings: {{ arm: "arm_1" }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        arm_path = arm_path.display(),
+        ctrl_path = ctrl_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch with pairings should succeed");
+
+    // Both endpoints are pinned to each other by the time launch returns.
+    let arm_pin = watches[0].borrow().clone();
+    let pin = arm_pin.pin.expect("arm_1's slot should be pinned");
+    assert_eq!(pin.producer.instance_id, "ctrl_1");
+    assert_eq!(pin.peer_link_id, "arm");
+    let ctrl_pin = watches[1].borrow().clone();
+    let pin = ctrl_pin.pin.expect("ctrl_1's slot should be pinned");
+    assert_eq!(pin.producer.instance_id, "arm_1");
+    assert_eq!(pin.peer_link_id, "controller");
+
+    for instance_id in ["ctrl_1", "arm_1"] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+}
+
+/// A required pairing slot with neither a `pairings:` entry (on either
+/// side) nor a `defer_pairings:` opt-out fails the launch at validation,
+/// before anything is added or spawned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_uncovered_pairing_slot() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let run_cmd = vec!["sleep".to_string(), "5".to_string()];
+    let arm_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "robot_arm",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
+        ),
+        None,
+    );
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ local: "{arm_path}" }},
+                    instances: [{{ instance_id: "arm_1" }}]
+                }}
+            ]
+        }}"#,
+        arm_path = arm_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let err = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(60),
+        },
+    }
+    .execute(&ctx)
+    .expect_err("an uncovered required pairing slot must fail the launch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("controller") && (msg.contains("pairings") || msg.contains("defer_pairings")),
+        "the failure should name the uncovered slot and the launcher keys: {msg}"
     );
 }

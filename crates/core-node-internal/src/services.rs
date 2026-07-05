@@ -362,6 +362,16 @@ impl CoreNode {
         // In-memory key/value store shared by the four datastore endpoints
         // (store, get, list, remove).
         let datastore = Arc::new(datastore::Datastore::new());
+        // The daemon's single pairing authority. ONE instance shared by every
+        // establishment hook (node run, stack launch) and clear path (node
+        // stop, node add overwrite, exit watchers): its op lock serializes
+        // all pairing operations daemon-wide.
+        let pairing = Arc::new(node::PairingCoordinator::new(
+            Arc::clone(&self.node_stack),
+            self.messenger.clone(),
+            core_node_name,
+            self.instance_id(),
+        ));
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all of them. They're
         // independent: no listener depends on another being registered first.
@@ -484,6 +494,7 @@ impl CoreNode {
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                 },
+                Arc::clone(&pairing),
             )
             .boxed(),
             stack::listen_for_stack_list(
@@ -518,6 +529,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
+                Arc::clone(&pairing),
             )
             .boxed(),
             node::listen_for_node_build(
@@ -564,6 +576,7 @@ impl CoreNode {
                         self.organization_namespace.clone(),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
+                    pairing: Arc::clone(&pairing),
                 },
             )
             .boxed(),
@@ -573,6 +586,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                Arc::clone(&pairing),
             )
             .boxed(),
             node::listen_for_node_init(

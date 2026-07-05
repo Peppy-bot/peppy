@@ -7,9 +7,9 @@ sidebar:
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 One of PeppyOS's key features is the ability to share nodes with other people.
-As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes_hub.git) in a separate shell.
+As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes-hub.git) in a separate shell.
 
-Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index, so you can add it by `name:tag` without referring to the git URL at all:
+Because `nodes-hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index, so you can add it by `name:tag` without referring to the git URL at all:
 
 ```sh
 peppy node add uvc_camera:v1
@@ -84,6 +84,10 @@ If we look at the logs of the started `fake_video_reconstruction` node:
 We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.
 In the same way, you can share your own nodes by hosting them in a Git repository and connect them to remote nodes.
 A node can also be pulled in the same way if it's in a `.tar.zst` archive.
+
+:::note
+Archive downloads over HTTP tolerate flaky networks: a transient failure (a connection error or a `5xx` response) is retried automatically, up to three attempts with a short backoff. A checksum mismatch or a client (`4xx`) error fails immediately, without retrying.
+:::
 
 :::tip
 When you're iterating on a node that depends on a hub node, and you don't want to `peppy node add` the hub node first just to regenerate peppygen, run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.

@@ -491,3 +491,115 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         logs
     );
 }
+
+/// A node declaring `depends_on.pairings` syncs into `pairings/<link_id>/<topic>`
+/// modules once the pairing doc is in the daemon's pairing cache.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_sync_generates_peer_modules_for_pairing_slots() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let work_dir = tempfile::tempdir().expect("temp work dir");
+    let ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    // The arm side of arm_link/v1: one slot, link_id `controller`.
+    let node_dir = tempfile::tempdir().expect("node dir");
+    std::fs::write(
+        node_dir.path().join("peppy.json5"),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "robot_arm",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
+                    ]
+                }
+            },
+            execution: { language: "rust", run_cmd: ["sleep", "1"] }
+        }"#,
+    )
+    .expect("write node config");
+
+    let sync_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    NodeCommand {
+        command: NodeCommands::Sync {
+            path: None,
+            include_repositories: false,
+        },
+    }
+    .execute(&sync_ctx)
+    .expect("node sync with a cached pairing doc should succeed");
+
+    // Both directions of the slot: the arm emits joint_states and consumes
+    // joint_commands, all under pairings/<link_id>/.
+    let pairings_dir = node_dir
+        .path()
+        .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+        .join("src/pairings/controller");
+    for module in ["joint_states.rs", "joint_commands.rs"] {
+        assert!(
+            pairings_dir.join(module).exists(),
+            "expected generated module at {}",
+            pairings_dir.join(module).display()
+        );
+    }
+}
+
+/// Without `repo refresh`, syncing a node with a pairing slot fails loudly
+/// and points at the fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_sync_pairing_cache_miss_suggests_repo_refresh() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let node_dir = tempfile::tempdir().expect("node dir");
+    std::fs::write(
+        node_dir.path().join("peppy.json5"),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "robot_arm",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
+                    ]
+                }
+            },
+            execution: { language: "rust", run_cmd: ["sleep", "1"] }
+        }"#,
+    )
+    .expect("write node config");
+
+    let sync_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let err = NodeCommand {
+        command: NodeCommands::Sync {
+            path: None,
+            include_repositories: false,
+        },
+    }
+    .execute(&sync_ctx)
+    .expect_err("sync must fail when the pairing doc is not cached");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("arm_link") && msg.contains("repo refresh"),
+        "cache-miss error should name the pairing and suggest `peppy repo refresh`: {msg}"
+    );
+}

@@ -1,13 +1,11 @@
-use peppygen::consumed_topics::arm_joint_states;
-use peppygen::emitted_topics::joint_command_source::v1::joint_commands;
+use peppygen::pairings::arm::{joint_commands, joint_states};
 use peppygen::{NodeBuilder, Parameters, Result};
 
-// `arm_controller` plans trajectories and sends joint commands. It emits
-// `joint_commands` by conforming to `joint_command_source`, and consumes
-// `joint_states` from any conforming arm through a `from_any` interface
-// slot. With no binding required it accepts state from whichever arms are
-// present and tells them apart by the (core_node, instance_id) returned
-// per message.
+// `arm_controller` plays the `controller` role of the `arm_link` pairing.
+// Both directions of its `arm` slot live under `peppygen::pairings::arm`: it
+// emits `joint_commands` to and consumes `joint_states` from the single
+// arm instance currently paired on the slot. If that arm dies, the slot
+// unpairs and the loop simply stops receiving until a new arm is paired.
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
@@ -19,15 +17,28 @@ fn main() -> Result<()> {
                     return;
                 }
             };
-            // Subscribe once; the held subscription buffers state messages in
-            // order, so the loop never misses one published between iterations.
-            let mut subscription = match arm_joint_states::subscribe(&node_runner).await {
+            // Subscribing while unpaired is legal: the subscription follows
+            // the slot's live pin, silent until an arm is paired.
+            let mut subscription = match joint_states::subscribe(&node_runner).await {
                 Ok(subscription) => subscription,
                 Err(e) => {
                     eprintln!("Failed to subscribe to joint_states: {e}");
                     return;
                 }
             };
+
+            // Optional: block until an arm is paired and log who it is.
+            match joint_states::wait_paired(&node_runner).await {
+                Ok(peer) => println!(
+                    "paired with arm {}/{}",
+                    peer.producer.core_node, peer.producer.instance_id
+                ),
+                Err(e) => {
+                    eprintln!("Failed to wait for a paired arm: {e}");
+                    return;
+                }
+            }
+
             loop {
                 let (producer, state) = match subscription.next().await {
                     Ok(Some(received)) => received,
@@ -38,6 +49,7 @@ fn main() -> Result<()> {
                     }
                 };
 
+                // `producer` is always the paired arm's identity.
                 println!(
                     "state from {}/{}: positions={:?}",
                     producer.core_node, producer.instance_id, state.positions

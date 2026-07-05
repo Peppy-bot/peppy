@@ -9,6 +9,7 @@ Services implement a **request-response** communication pattern between nodes.
 A node *exposes* a service to handle incoming requests, and other nodes *consume* that service to send requests and receive responses.
 
 Use services for operations that need a result, such as querying a node's state, toggling a feature, or triggering a one-time computation.
+For long-running work that needs progress feedback or cancellation, use an [action](/advanced_guides/actions/) instead; for the full map of mechanisms, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## Exposing a service
 

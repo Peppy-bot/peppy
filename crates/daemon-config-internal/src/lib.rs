@@ -30,6 +30,7 @@ mod internal {
     pub mod consts;
     pub mod interface;
     pub mod launcher;
+    pub mod pairing;
     pub mod peppy_config;
     pub mod source;
 }
@@ -66,10 +67,11 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
-        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-        FrameworkOverrides, PeppyLauncher, PeppyLauncherParser, ValidatedBindings,
-        validate_bindings,
+        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentGitSource,
+        DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
+        DeploymentUrlSource, FrameworkOverrides, PairingValidationItem, PeppyLauncher,
+        PeppyLauncherParser, PlannedPairEndpoint, PlannedPairing, ValidatedBindings,
+        ValidatedPairings, split_pair_target, validate_bindings, validate_pairings,
     };
 }
 
@@ -78,6 +80,11 @@ pub mod interface {
     pub use crate::internal::interface::{
         Interfaces, Manifest, PeppyInterface, PeppyInterfaceParser,
     };
+}
+
+// -- pairing --
+pub mod pairing {
+    pub use crate::internal::pairing::{PairingTopic, PeppyPairing, PeppyPairingParser};
 }
 
 // -- source --

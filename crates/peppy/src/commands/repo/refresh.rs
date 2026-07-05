@@ -84,8 +84,11 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     }
 
     info!(
-        "Repository refresh complete. {} node(s), {} launcher(s), {} interface(s) found.",
-        result.total_nodes_found, result.total_launchers_found, result.total_interfaces_found
+        "Repository refresh complete. {} node(s), {} launcher(s), {} interface(s), {} pairing(s) found.",
+        result.total_nodes_found,
+        result.total_launchers_found,
+        result.total_interfaces_found,
+        result.total_pairings_found
     );
     Ok(())
 }

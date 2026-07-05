@@ -70,8 +70,17 @@ fn assert_parses_with_matching_schema(path: &Path) {
                 result.unwrap_err()
             );
         }
+        PeppySchema::PairingV1 => {
+            let result = daemon_config::pairing::PeppyPairingParser::from_path(path);
+            assert!(
+                result.is_ok(),
+                "failed to parse pairing {}: {:?}",
+                path.display(),
+                result.unwrap_err()
+            );
+        }
         PeppySchema::LauncherV1 => panic!(
-            "unexpected launcher/v1 among node/interface snippets: {}",
+            "unexpected launcher/v1 among node/interface/pairing snippets: {}",
             path.display()
         ),
     }

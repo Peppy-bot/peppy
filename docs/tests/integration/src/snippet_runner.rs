@@ -192,13 +192,14 @@ pub fn run_snippet_with_deps(
     assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
 }
 
-/// Run a snippet whose `depends_on.interfaces` / `conforms_to` references are
-/// resolved from an interface repository rather than from other nodes in the
-/// stack. `interfaces_root` is a workspace-relative directory of
-/// `interface/v1` documents; it is registered as an fs repo and refreshed,
-/// then the snippet is synced with `-r`, added, built, and launched with NO
-/// `--bind`. This is the launch path for an optional, `from_any` interface
-/// consumer: it must come up with zero producers present.
+/// Run a snippet whose `depends_on` contract references (interface docs,
+/// pairing docs, `conforms_to`) are resolved from a document repository
+/// rather than from other nodes in the stack. `interfaces_root` is a
+/// workspace-relative directory of `interface/v1` / `pairing/v1` documents;
+/// it is registered as an fs repo and refreshed, then the snippet is synced
+/// with `-r`, added, built, and launched with `start_args`. The pairing
+/// snippets launch solo with `--defer-pair <slot>`: a required slot boots
+/// unpaired when explicitly deferred, with no peer present.
 pub fn run_snippet_with_interface_repo(
     snippets_root: &str,
     snippet_name: &str,

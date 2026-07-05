@@ -34,8 +34,8 @@ fn repo_init_creates_file_when_missing() {
     // so don't try to parse it as strict JSON; match on substring instead.
     let content = std::fs::read_to_string(&repos_path).unwrap();
     assert!(
-        content.contains("Peppy-bot/launchers_hub.git"),
-        "default launchers_hub entry should be present in template, got:\n{content}"
+        content.contains("Peppy-bot/launchers-hub.git"),
+        "default launchers-hub entry should be present in template, got:\n{content}"
     );
 }
 
@@ -51,7 +51,7 @@ fn repo_init_appends_missing_defaults_to_existing_file() {
     std::fs::write(
         conf_dir.join("repositories.json5"),
         r#"[
-            { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes_hub", "ref": "main" }
+            { "id": 1000, "type": "git", "url": "https://github.com/Peppy-bot/nodes-hub", "ref": "main" }
         ]"#,
     )
     .unwrap();
@@ -60,12 +60,12 @@ fn repo_init_appends_missing_defaults_to_existing_file() {
 
     let repos = read_repos_json(&peppy_dirs);
     assert!(
-        has_git_url(&repos, "https://github.com/Peppy-bot/nodes_hub"),
-        "pre-existing nodes_hub entry must be preserved"
+        has_git_url(&repos, "https://github.com/Peppy-bot/nodes-hub"),
+        "pre-existing nodes-hub entry must be preserved"
     );
     assert!(
-        has_git_url(&repos, "https://github.com/Peppy-bot/launchers_hub.git"),
-        "missing launchers_hub default must be appended"
+        has_git_url(&repos, "https://github.com/Peppy-bot/launchers-hub.git"),
+        "missing launchers-hub default must be appended"
     );
 }
 

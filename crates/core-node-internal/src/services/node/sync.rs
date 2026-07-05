@@ -1,10 +1,11 @@
 mod codegen;
 mod deps;
 mod interfaces;
+mod pairings;
 
 pub use self::codegen::{AutoSyncParams, auto_sync_if_missing, generate_peppygen_for_node};
 pub(crate) use self::interfaces::resolve_interface_doc;
-pub use self::interfaces::{collect_consumed_interfaces, resolve_conforms_to, stack_resolver};
+pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 
 use self::codegen::remove_previous_peppy_dir;
 use self::deps::materialize_repo_deps;
@@ -239,7 +240,7 @@ async fn handle_node_sync_request_inner(
                 let interface_feedback = |line: &str| {
                     tracing::info!(target: "peppy::interface", "{line}");
                 };
-                let mut interfaces = match collect_consumed_interfaces(
+                let interfaces = match interfaces::collect_all_deployment_interfaces(
                     &node_config.manifest,
                     &node_config.interfaces,
                     resolve_dep,
@@ -248,30 +249,11 @@ async fn handle_node_sync_request_inner(
                 ) {
                     Ok(v) => v,
                     Err(reason) => {
-                        return NodeSyncResponse::failure(format!(
-                            "Failed to resolve consumed interfaces: {}",
-                            reason
-                        ))
-                        .encode()
-                        .map_err(Into::into);
+                        return NodeSyncResponse::failure(reason)
+                            .encode()
+                            .map_err(Into::into);
                     }
                 };
-                let conformed = match resolve_conforms_to(
-                    &node_config.interfaces,
-                    &peppy_dirs,
-                    &interface_feedback,
-                ) {
-                    Ok(v) => v,
-                    Err(reason) => {
-                        return NodeSyncResponse::failure(format!(
-                            "Failed to resolve `conforms_to` interfaces: {}",
-                            reason
-                        ))
-                        .encode()
-                        .map_err(Into::into);
-                    }
-                };
-                interfaces.extend(conformed);
                 let language = node_config.execution.language;
                 let root_manifest = node_config.manifest.clone();
                 (interfaces, language, root_manifest)

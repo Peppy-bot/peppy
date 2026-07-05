@@ -11,6 +11,7 @@ mod git_utils;
 mod info;
 mod init;
 mod logging;
+pub(crate) mod pairing;
 mod remove;
 mod run;
 mod stop;
@@ -26,6 +27,7 @@ pub use add::listen_for_node_add;
 pub use builder::listen_for_node_build;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+pub use pairing::PairingCoordinator;
 pub use remove::listen_for_node_remove;
 pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stop::{

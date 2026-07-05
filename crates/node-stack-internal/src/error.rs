@@ -15,6 +15,51 @@ pub enum Error {
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
 
+    // -- pairing registry errors
+    #[error("instance `{instance_id}` declares no pairing slot `{link_id}` in depends_on.pairings")]
+    PairingSlotNotFound {
+        instance_id: String,
+        link_id: String,
+    },
+    #[error("pairing endpoint instance `{instance_id}` is not running in this stack")]
+    PairingInstanceNotRunning { instance_id: String },
+    #[error(
+        "pairing slot `{slot}` is already paired with `{peer}`; a pairing slot is exclusive until cleared"
+    )]
+    PairingSlotAlreadyPaired { slot: String, peer: String },
+    #[error(
+        "cannot pair `{a}` with `{b}`: both declare role `{role}` of pairing `{name}:{tag}` (roles must be complementary)"
+    )]
+    PairingRolesNotComplementary {
+        a: String,
+        b: String,
+        role: String,
+        name: String,
+        tag: String,
+    },
+    #[error(
+        "cannot pair `{a}` (pairing `{name_a}:{tag_a}`) with `{b}` (pairing `{name_b}:{tag_b}`): both slots must reference the same pairing"
+    )]
+    PairingMismatch {
+        a: String,
+        name_a: String,
+        tag_a: String,
+        b: String,
+        name_b: String,
+        tag_b: String,
+    },
+    #[error(
+        "cannot pair `{a}` with `{b}`: their pinned sha256 for pairing `{name}:{tag}` differ (`{sha_a}` vs `{sha_b}`)"
+    )]
+    PairingShaMismatch {
+        a: String,
+        sha_a: String,
+        b: String,
+        sha_b: String,
+        name: String,
+        tag: String,
+    },
+
     // -- node stack errors
     #[error("Cannot modify the root node (it always has exactly one instance)")]
     CannotModifyRootNode,

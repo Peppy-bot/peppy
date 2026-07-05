@@ -1,9 +1,7 @@
 use crate::Result;
 use crate::names;
 use crate::services::repo::cache::repositories_list_path;
-use crate::services::repo::refresh::{
-    process_refresh, read_or_create_repos, write_cache, write_interface_cache, write_launcher_cache,
-};
+use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_all_caches};
 use crate::services::response::into_service_response;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use daemon_config::consts::PeppyDirs;
@@ -54,11 +52,7 @@ async fn handle_repo_remove_request(
         match tokio::task::spawn_blocking(move || {
             let _guard = crate::services::repo::refresh_lock().lock();
             match process_refresh(&dirs, &mut |_| {}) {
-                Ok(refreshed) => {
-                    write_cache(&dirs, &refreshed.nodes)?;
-                    write_launcher_cache(&dirs, &refreshed.launchers)?;
-                    write_interface_cache(&dirs, &refreshed.interfaces)
-                }
+                Ok(refreshed) => write_all_caches(&dirs, &refreshed),
                 Err(e) => Err(e),
             }
         })

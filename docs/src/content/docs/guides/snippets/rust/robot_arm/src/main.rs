@@ -1,13 +1,12 @@
-use peppygen::consumed_topics::controller_joint_commands;
-use peppygen::emitted_topics::joint_state_source::v1::joint_states;
+use peppygen::pairings::controller::{joint_commands, joint_states};
 use peppygen::{NodeBuilder, Parameters, Result};
 
-// `robot_arm` drives the physical joints and reports their state. It emits
-// `joint_states` by conforming to `joint_state_source`, and consumes
-// `joint_commands` from any conforming controller through a `from_any`
-// interface slot. With no binding required it boots with zero controllers
-// and picks up whichever ones publish, identified per message by the
-// producer's full (core_node, instance_id).
+// `robot_arm` plays the `arm` role of the `arm_link` pairing. Both
+// directions of its `controller` slot live under
+// `peppygen::pairings::controller`: it consumes `joint_commands` from and
+// emits `joint_states` to whichever single controller instance is
+// currently paired on the slot. Unpaired, the subscription stays silent
+// and publishes go nowhere; the code does not change either way.
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
@@ -19,15 +18,29 @@ fn main() -> Result<()> {
                     return;
                 }
             };
-            // Subscribe once; the held subscription buffers commands in order,
-            // so the loop never misses one published between iterations.
-            let mut subscription = match controller_joint_commands::subscribe(&node_runner).await {
+            // Subscribing while unpaired is legal: the held subscription
+            // yields nothing until a controller pairs, then only that
+            // controller's messages.
+            let mut subscription = match joint_commands::subscribe(&node_runner).await {
                 Ok(subscription) => subscription,
                 Err(e) => {
-                    eprintln!("Failed to subscribe to controller_joint_commands: {e}");
+                    eprintln!("Failed to subscribe to joint_commands: {e}");
                     return;
                 }
             };
+
+            // Optional: block until a controller is paired and log who it is.
+            match joint_commands::wait_paired(&node_runner).await {
+                Ok(peer) => println!(
+                    "paired with controller {}/{}",
+                    peer.producer.core_node, peer.producer.instance_id
+                ),
+                Err(e) => {
+                    eprintln!("Failed to wait for a paired controller: {e}");
+                    return;
+                }
+            }
+
             loop {
                 let (producer, command) = match subscription.next().await {
                     Ok(Some(received)) => received,
@@ -38,15 +51,17 @@ fn main() -> Result<()> {
                     }
                 };
 
+                // `producer` is always the paired controller's identity.
                 println!(
-                    "received from {}/{}: target={:?} max_vel={}",
+                    "command from {}/{}: target={:?} max_vel={}",
                     producer.core_node,
                     producer.instance_id,
                     command.target_positions,
                     command.max_velocity
                 );
 
-                // Drive the joints, then report the resulting state.
+                // Drive the joints, then report the resulting state back to
+                // the paired controller.
                 match joint_states::build_message(
                     command.target_positions,
                     [0.0, 0.0, 0.0],

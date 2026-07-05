@@ -1,0 +1,77 @@
+---
+title: Choosing a communication pattern
+description: Pick between topics, services, actions, pairing, interface conformance, and the datastore with a side-by-side decision guide
+sidebar:
+  order: 0
+---
+
+PeppyOS gives nodes five ways to exchange data: [topics](/advanced_guides/topics/), [services](/advanced_guides/services/), [actions](/advanced_guides/actions/), [pairing](/advanced_guides/pairing/), and the [datastore](/advanced_guides/datastore/). On top of the first three, [interface conformance](/advanced_guides/interface_conformance/) changes not *what* flows but *who* can be on the other end. Each mechanism has its own guide; this page is the map for picking the right one before you write a manifest.
+
+The choice comes down to two independent questions:
+
+1. **What shape is the exchange?** A continuous stream, a quick request, a bounded job, a standing two-way conversation, or a value left for later.
+2. **How is the peer chosen?** A producer node named in the manifest, any node conforming to a shared contract, or exactly one paired instance.
+
+## What shape is the exchange?
+
+| | Exchange | Initiated by | Lifecycle | Reach for it when |
+|---|---|---|---|---|
+| [Topics](/advanced_guides/topics/) | One-way stream from a producer to its consumers | The producer, whenever it has data | Continuous while the producer runs | Sensor readings, camera frames, state updates |
+| [Services](/advanced_guides/services/) | One request, one response | The consumer | One bounded exchange per call | Queries, toggles, quick one-shot computations |
+| [Actions](/advanced_guides/actions/) | Goal in, feedback stream out, result on completion | The consumer fires a goal; the producer drives it to an end | A discrete job with an explicit start, end, and cancel | Navigation, arm movements, calibration runs |
+| [Pairing](/advanced_guides/pairing/) | Two independent one-way streams under one two-role contract | Either side, whenever it has data | Continuous while both instances live; dissolves when either dies | Inner control loops between two specific instances |
+| [Datastore](/advanced_guides/datastore/) | Write a small value, read it back later | Writer and reader, at independent times | The value persists on the core node until overwritten or removed | Calibration results, mode flags, last-known values |
+
+The same choices, phrased the way the requirement usually sounds:
+
+- "The camera publishes frames and whoever cares can watch." A **topic**: one producer, any number of consumers, no coordination between them.
+- "Is the gripper open right now?" A **service**: you need an answer, you wait briefly for it, and the exchange is over.
+- "Move the arm to this pose, stream progress, tell me when it is done." An **action**: the job has a defined end, reports feedback along the way, and can be cancelled mid-flight.
+- "The controller streams setpoints at 100 Hz and the arm streams joint states back at 1 kHz." A **pairing**: both directions belong to one continuous conversation between two specific instances.
+- "Leave the calibration result somewhere the planner can pick it up when it starts." The **datastore**: the reader does not have to be running, or subscribed, at the moment the value is produced.
+
+Two boundaries account for most wrong first guesses:
+
+- **Service or action?** Duration and observability, not importance. If the caller only needs a result and the work is quick, a service is enough. The moment you want progress updates or a cancel button, it is an action. A node can drive several goals of the same action concurrently; its goal handler sets the acceptance policy.
+- **Action or pairing?** Whether the exchange ends. "Do this and report when done" is an action. "Keep exchanging state for as long as we are both up" is a pairing. The two coexist happily on the same nodes; see [Pairing vs. actions](/advanced_guides/pairing/#pairing-vs-actions).
+
+## How is the peer chosen?
+
+The shape says nothing about which node sits on the other end. A consumer couples to the other end at one of three levels:
+
+| | Declared under | Who can fill the slot | Instances per slot |
+|---|---|---|---|
+| Direct node dependency | `depends_on.nodes` | Instances of that exact producer node | One (pinned binding) or all matching instances (`from_any: true`) |
+| [Interface dependency](/advanced_guides/interface_conformance/) | `depends_on.interfaces` | Any node whose `conforms_to` names the contract | One (pinned binding) or any number of conforming producers (`from_any: true`) |
+| [Pairing slot](/advanced_guides/pairing/) | `depends_on.pairings` | One instance playing the complementary role of the pairing | Exactly one peer at a time, exclusive, both directions |
+
+:::note
+For topics, a `from_any` slot receives from every matching producer. For services and actions, every call is still answered by exactly one producer: an unbound `from_any` call runs a discover-then-pin probe and delivers the request to a single responder, so a state-changing call never executes on several producers at once. See [Why discover-then-pin?](/advanced_guides/services/#why-discover-then-pin).
+:::
+
+- Use a **direct node dependency** when exactly one implementation exists and substitution is not a goal. It is the simplest wiring and the default.
+- Use an **interface** when several nodes implement the same contract (a hardware driver and its sim twin, several camera vendors) or when any number of producers should feed one slot (telemetry fan-in, monitoring). The consumer names the contract; the launcher picks the producers. See [Pairing vs. interfaces](/advanced_guides/pairing/#pairing-vs-interfaces-from_any) for the boundary on the other side.
+- Use a **pairing** when two specific instances belong together and both directions form one conversation, like a controller and *its* arm. The pair is established explicitly at start, is exclusive while it lasts, and dissolves when either side dies.
+
+The contract's home follows the same ladder: a direct dependency's message formats live on the producer's own manifest, an interface's live in a standalone `interface/v1` document both sides cite, and a pairing's live in a standalone `pairing/v1` document naming the two roles.
+
+## Rules that veto a design
+
+A few system-wide rules reject otherwise-plausible wirings. Check your plan against them early:
+
+- **Only caller-driven cycles are cycles.** Topic subscriptions are passive, so two nodes may consume each other's topics; pairing is built on exactly this property. Mutual service or action relationships deadlock, so the daemon rejects them however they are wired, directly or through interfaces; see [Caller-driven cycles are rejected](/advanced_guides/interface_conformance/#caller-driven-cycles-are-rejected). When two nodes need both directions, make at least one direction a topic (or model both directions as a pairing), or model the bounded direction as an action from client to server.
+- **Pairings carry topics only.** No services or actions inside a pairing contract. Keep the continuous streams in the pairing and expose the bounded jobs as ordinary actions alongside it; the reasoning is in [Why topics only?](/advanced_guides/pairing/#why-topics-only).
+- **Streams are live, not replayed.** A subscriber receives messages from the moment it attaches; earlier messages are not redelivered, and a pairing slot delivers nothing while unpaired. When the reader must see the latest value regardless of timing, put that value in the [datastore](/advanced_guides/datastore/).
+- **The datastore is a blackboard, not a database.** It lives in the core node's memory: it survives node restarts but not a daemon restart, and it holds small values, not history. See [When to use this](/advanced_guides/datastore/#when-to-use-this).
+
+## Worked example: one arm, every mechanism
+
+The mechanisms compose freely on the same nodes. A complete robot arm setup might touch every one of them:
+
+- `robot_arm` and `arm_controller` exchange `joint_commands` and `joint_states` through a **pairing**: continuous, both directions, exactly these two instances, and the arm's slot goes silent if its controller dies.
+- `robot_arm` exposes a `calibrate` **action**: run on demand, streams progress, ends with a result, can be cancelled.
+- `robot_arm` exposes an `enable_motors` **service**: a quick toggle with an immediate answer.
+- `robot_arm` also conforms to a `joint_state_source` **interface**; dashboards consume its state **topic** through a `from_any` slot, so every arm on the floor feeds the same monitor without disturbing any pairing.
+- The calibration result is written to the **datastore**, so a restarted controller reads it back instead of re-running the calibration.
+
+One relationship, one mechanism: the pairing carries the control loop, the action carries the bounded job, the interface carries the fan-in, and the datastore carries the state that outlives any single exchange.

@@ -1,0 +1,71 @@
+# Buildkite pipeline replacing .github/workflows/{tests,latency,docs-drift}.yml.
+#
+# Trigger parity with the old `on:` blocks lives in the pipeline's GitHub
+# settings, not in this file — see .buildkite/README.md for the one-time setup
+# (build filter conditional, Cancel Intermediate Builds, the PEPPY_BOT_TOKEN
+# secret, and agent requirements).
+#
+# Step `if` conditions re-encode the per-workflow gating:
+#   - tests:      pushes to main + PRs into main or dev, plus builds started
+#                 manually from the UI (an escape hatch the Actions setup did
+#                 not have — a "New Build" click is deliberate, so run tests)
+#   - latency:    only the release PR that merges dev into main
+#   - docs-drift: only the release PR that merges dev into main
+# For pull-request builds, build.branch is the PR head branch, so
+# `build.branch == "dev"` is the old `github.head_ref == 'dev'` guard.
+
+# All steps run on the self-hosted queue — the cluster's default queue is a
+# Buildkite-hosted one (linux-small) that has none of the toolchain. The value
+# must be the exact, case-sensitive queue key (Agents → Default cluster →
+# Queues → the queue → Settings), which is also the agent's queue tag; uploads
+# are rejected if it names a queue the cluster does not have.
+agents:
+  queue: Self-hosted
+
+env:
+  CARGO_TERM_COLOR: "always"
+
+steps:
+  - label: ":test_tube: tests"
+    key: tests
+    if: >-
+      build.branch == "main" ||
+      build.pull_request.base_branch == "main" ||
+      build.pull_request.base_branch == "dev" ||
+      build.source == "ui"
+    command: .buildkite/scripts/tests.sh
+    env:
+      # CI does the full cross-platform peppylib build: cross-compile the .so
+      # for every Linux arch. A plain `cargo build` leaves this unset and, like
+      # a Linux build, produces only the host dynamic lib, so local dev builds
+      # stay fast; the release path and CI turn it on. On a warm build cache
+      # this is a no-op (present, fresh artifacts are reused); it only pays the
+      # cross-build cost when the cache is cold. Cross-arch apptainer is
+      # separate, gated by PEPPY_CROSS_ARCH.
+      PEPPY_CROSS_BUILD: "1"
+    notify:
+      - github_commit_status:
+          context: "tests"
+
+  - label: ":stopwatch: latency"
+    key: latency
+    if: build.pull_request.base_branch == "main" && build.branch == "dev"
+    command: .buildkite/scripts/latency.sh
+    # p50 (median) ceilings come from ceiling_ms() in tests/latency/harness.rs
+    # (the single source of truth). If the agent host is slower than a dev box
+    # and trips a ceiling on jitter, loosen per scenario here without a code
+    # change, e.g.:
+    #   env:
+    #     PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "10"
+    #     PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "20"
+    notify:
+      - github_commit_status:
+          context: "latency"
+
+  - label: ":books: docs-drift"
+    key: docs-drift
+    if: build.pull_request.base_branch == "main" && build.branch == "dev"
+    command: .buildkite/scripts/docs-drift.sh
+    notify:
+      - github_commit_status:
+          context: "docs-drift"

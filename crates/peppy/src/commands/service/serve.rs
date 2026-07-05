@@ -219,11 +219,19 @@ impl Serve {
             }
 
             info!("Serve command initialized!");
-            // The coordinator: the SOLE observer of the OS shutdown signal, the
-            // external injection, and the in-process restart channel. On any of
-            // them it records the reason and breaks; tasks observe only the shared
-            // `teardown_token`, which the coordinator cancels below so each runs
-            // its real graceful teardown (no force-abort).
+            // The coordinator: the authoritative observer of the OS shutdown
+            // signal, the external injection, and the in-process restart channel.
+            // On any of them it records the reason and breaks; tasks observe only
+            // the shared `teardown_token`, which the coordinator cancels below so
+            // each runs its real graceful teardown (no force-abort).
+            //
+            // The signal future is created ONCE, outside the loop: signal streams
+            // are edge-triggered, so a listener recreated per iteration loses a
+            // SIGINT that raced a task completion. The other branches are
+            // state-based (JoinSet, cancellation token, watch channel) and safe to
+            // recreate. Never re-polled after completion: its branch always breaks.
+            let shutdown = super::shutdown_signal::shutdown_signal();
+            tokio::pin!(shutdown);
             let reason = loop {
                 tokio::select! {
                     result = join_set.join_next() => {
@@ -244,7 +252,7 @@ impl Serve {
                         info!("External shutdown requested");
                         break ServeOutcome::Stop;
                     }
-                    signal = super::shutdown_signal::shutdown_signal() => {
+                    signal = &mut shutdown => {
                         match signal {
                             Ok(_) => {
                                 info!("Shutdown signal received");
@@ -259,7 +267,15 @@ impl Serve {
                     }
                     _ = async {
                         match &mut restart_rx {
-                            Some(rx) => { let _ = rx.changed().await; }
+                            Some(rx) => {
+                                // Only an explicit `true` is a restart request. A
+                                // closed channel (the federation control task drops
+                                // its sender during a signal-driven teardown) must
+                                // NOT be read as one, or ctrl+C turns into a restart.
+                                if rx.wait_for(|restart| *restart).await.is_err() {
+                                    std::future::pending::<()>().await;
+                                }
+                            }
                             None => std::future::pending::<()>().await,
                         }
                     } => {
@@ -489,6 +505,48 @@ mod tests {
         Serve::new(composite)
             .execute()
             .expect("a dropped optional gate must not fail startup");
+    }
+
+    /// A short-lived task with no readiness gate, so the run ends when it does.
+    struct FakeWork;
+
+    impl ServeAsyncCommand for FakeWork {
+        fn run(self: Box<Self>) -> ServeAsyncHandle {
+            let future: ServeFuture = Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(())
+            });
+            ServeAsyncHandle::new(future, None)
+        }
+    }
+
+    /// Dropping the restart sender (which happens whenever the federation
+    /// control task tears down on a real shutdown signal) must NOT be read as a
+    /// restart request: the run ends with `Stop`, or ctrl+C would restart the
+    /// daemon instead of killing it.
+    #[test]
+    fn dropped_restart_sender_is_not_a_restart() {
+        let (restart_tx, restart_rx) = watch::channel(false);
+        drop(restart_tx);
+        let composite = CompositeCommand::default().add_async_command(Box::new(FakeWork));
+        let outcome = Serve::new(composite)
+            .with_restart_rx(restart_rx)
+            .execute()
+            .expect("serve run failed");
+        assert_eq!(outcome, ServeOutcome::Stop);
+    }
+
+    /// A real `true` on the restart channel still requests a restart.
+    #[test]
+    fn restart_signal_requests_a_restart() {
+        let (restart_tx, restart_rx) = watch::channel(false);
+        let _ = restart_tx.send(true);
+        let composite = CompositeCommand::default().add_async_command(Box::new(FakeWork));
+        let outcome = Serve::new(composite)
+            .with_restart_rx(restart_rx)
+            .execute()
+            .expect("serve run failed");
+        assert_eq!(outcome, ServeOutcome::Restart);
     }
 
     /// A required readiness gate that drops without firing still aborts startup.

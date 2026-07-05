@@ -386,6 +386,14 @@ pub(crate) fn unique_module_name(
     name
 }
 
+/// Schema key for a pairing topic: `peer_<link_id>_<topic>`. Per-slot capnp
+/// duplication is accepted (same policy as consumed topics): two slots of the
+/// same pairing each get their own schema entry so the flattened
+/// `pairings.<link_id>.<topic>` namespace stays unambiguous.
+pub fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
+    format!("peer_{link_id}_{topic_name}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

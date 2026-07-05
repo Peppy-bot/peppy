@@ -55,3 +55,26 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
         result.err()
     );
 }
+
+/// A `pairing/v1` document in an fs repo is discovered by `repo refresh`
+/// and lands in the daemon's pairing cache file.
+#[test]
+fn repo_refresh_discovers_pairing_docs() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(serve.temp_dir());
+    let cache_path = core_node::pairings_repo_cache_path(&peppy_dirs);
+    assert!(
+        cache_path.exists(),
+        "pairing cache should exist at {}",
+        cache_path.display()
+    );
+    let cache = std::fs::read_to_string(&cache_path).expect("pairing cache should read");
+    assert!(
+        cache.contains("arm_link"),
+        "pairing cache should contain the discovered doc:\n{cache}"
+    );
+}

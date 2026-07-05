@@ -1,10 +1,18 @@
-//! Typed loaders for the three repo caches written by `repo_refresh`:
-//! `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, and
-//! `~/.peppy/cache/interfaces.json5`. Each file lists every item of its
-//! kind discovered across every configured repository (FS, Git, or
-//! HTTP). This module gives the rest of the daemon a typed view over
-//! those entries so callers don't have to dig through
-//! `serde_json::Value` every time.
+//! Typed loaders for the four repo caches written by `repo_refresh`:
+//! `~/.peppy/cache/nodes.json5`, `launchers.json5`, `interfaces.json5`,
+//! and `pairings.json5`. Each file lists every item of its kind
+//! discovered across every configured repository (FS, Git, or HTTP).
+//! This module gives the rest of the daemon a typed view over those
+//! entries so callers don't have to dig through `serde_json::Value`
+//! every time.
+//!
+//! The four caches share one pipeline: every cache concern (atomic
+//! write, load-time `repo_id` tagging, malformed-entry filtering,
+//! repo-priority lookup, refresh-side collection) is implemented once,
+//! generic over [`RepoCacheEntry`]. The entry structs stay distinct
+//! types because each cache file has its own on-disk field names
+//! (`node_name`, `launcher_name`, …), which must remain stable for
+//! caches written by other peppy versions.
 //!
 //! Every entry carries a `sha256` of the raw manifest file bytes. Two
 //! entries that share `(name, tag)` across repositories are kept side
@@ -17,7 +25,7 @@
 
 use crate::Result;
 use crate::services::repo::refresh::read_or_create_repos;
-use core_node_api::encoding::{NodeSource, RepoSourceKind};
+use core_node_api::encoding::{NodeSource, RepoItemKind, RepoSourceKind};
 use daemon_config::consts::PeppyDirs;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -124,12 +132,400 @@ pub struct InterfaceCacheEntry {
     pub repo_id: u32,
 }
 
+/// One entry as it appears in `pairings.json5`. Pairings are stand-alone
+/// JSON5 documents (`peppy_schema: "pairing/v1"`) describing a two-role,
+/// topics-only conversation contract. The `sha256` of the manifest bytes
+/// is the primary way to disambiguate entries that share `(name, tag)`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PairingCacheEntry {
+    pub pairing_name: String,
+    pub tag: String,
+    /// SHA-256 of the manifest file bytes.
+    pub sha256: String,
+    pub source_type: RepoSourceKind,
+    /// Git repository URL. `None` for FS entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
+    /// Short ref name (branch/tag) actually checked out during the last
+    /// refresh. `None` for FS entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    /// Absolute path (fs) or repo-relative (git) path to the pairing
+    /// manifest file.
+    pub path: String,
+    /// The id of the repository entry this pairing was discovered under.
+    /// Derived at read time and never serialized back to disk.
+    #[serde(skip)]
+    pub repo_id: u32,
+}
+
+/// Kind-independent fields of a just-discovered cache entry, produced
+/// by the shared collector in `refresh.rs` and turned into a concrete
+/// entry by [`RepoCacheEntry::from_discovered`]. `tag` is empty for
+/// untagged kinds (launchers).
+pub(crate) struct DiscoveredEntry {
+    pub name: String,
+    pub tag: String,
+    pub sha256: String,
+    pub path: String,
+    pub source_type: RepoSourceKind,
+    pub source_uri: Option<String>,
+    pub resolved_ref: Option<String>,
+}
+
+/// Uniform view over the four cache-entry kinds, so the cache plumbing
+/// (write/load/lookup here, collection and cross-repo merging in
+/// `refresh.rs`) exists once instead of once per kind.
+pub(crate) trait RepoCacheEntry:
+    serde::Serialize + serde::de::DeserializeOwned + Clone
+{
+    /// Singular kind label used in error and log messages.
+    const KIND: &'static str;
+    /// Cache filename under the peppy cache dir.
+    const FILE_NAME: &'static str;
+    /// Wire-level kind reported in `repo refresh` discovery feedback.
+    const ITEM_KIND: RepoItemKind;
+
+    fn from_discovered(d: DiscoveredEntry) -> Self;
+
+    fn name(&self) -> &str;
+    /// Empty for untagged kinds (launchers), so `(name, tag)` is the
+    /// identity key for every kind.
+    fn tag(&self) -> &str;
+    fn sha256(&self) -> &str;
+    fn source_type(&self) -> RepoSourceKind;
+    fn source_uri(&self) -> Option<&str>;
+    fn resolved_ref(&self) -> Option<&str>;
+    fn path(&self) -> &str;
+    fn repo_id(&self) -> u32;
+    fn set_repo_id(&mut self, id: u32);
+
+    /// Whether the entry carries every field its kind requires; entries
+    /// failing this (hand-edited or corrupt cache lines) are dropped
+    /// with a warning at load time.
+    fn is_well_formed(&self) -> bool;
+
+    /// `name:tag` label for log messages (bare name for untagged kinds).
+    fn display_id(&self) -> String {
+        if self.tag().is_empty() {
+            self.name().to_owned()
+        } else {
+            format!("{}:{}", self.name(), self.tag())
+        }
+    }
+}
+
+impl RepoCacheEntry for NodeCacheEntry {
+    const KIND: &'static str = "node";
+    const FILE_NAME: &'static str = "nodes.json5";
+    const ITEM_KIND: RepoItemKind = RepoItemKind::Node;
+
+    fn from_discovered(d: DiscoveredEntry) -> Self {
+        Self {
+            node_name: d.name,
+            node_tag: d.tag,
+            source_type: d.source_type,
+            source_uri: d.source_uri,
+            resolved_ref: d.resolved_ref,
+            sha256: d.sha256,
+            checksum: None,
+            path: d.path,
+            repo_id: 0,
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.node_name
+    }
+    fn tag(&self) -> &str {
+        &self.node_tag
+    }
+    fn sha256(&self) -> &str {
+        &self.sha256
+    }
+    fn source_type(&self) -> RepoSourceKind {
+        self.source_type
+    }
+    fn source_uri(&self) -> Option<&str> {
+        self.source_uri.as_deref()
+    }
+    fn resolved_ref(&self) -> Option<&str> {
+        self.resolved_ref.as_deref()
+    }
+    fn path(&self) -> &str {
+        &self.path
+    }
+    fn repo_id(&self) -> u32 {
+        self.repo_id
+    }
+    fn set_repo_id(&mut self, id: u32) {
+        self.repo_id = id;
+    }
+    // No sha256 requirement: node caches written before fingerprinting
+    // existed are still valid (`sha256` deserializes to "" by default).
+    fn is_well_formed(&self) -> bool {
+        !self.node_name.is_empty() && !self.node_tag.is_empty() && !self.path.is_empty()
+    }
+}
+
+impl RepoCacheEntry for LauncherCacheEntry {
+    const KIND: &'static str = "launcher";
+    const FILE_NAME: &'static str = "launchers.json5";
+    const ITEM_KIND: RepoItemKind = RepoItemKind::Launcher;
+
+    fn from_discovered(d: DiscoveredEntry) -> Self {
+        Self {
+            launcher_name: d.name,
+            source_type: d.source_type,
+            source_uri: d.source_uri,
+            resolved_ref: d.resolved_ref,
+            sha256: d.sha256,
+            path: d.path,
+            repo_id: 0,
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.launcher_name
+    }
+    fn tag(&self) -> &str {
+        ""
+    }
+    fn sha256(&self) -> &str {
+        &self.sha256
+    }
+    fn source_type(&self) -> RepoSourceKind {
+        self.source_type
+    }
+    fn source_uri(&self) -> Option<&str> {
+        self.source_uri.as_deref()
+    }
+    fn resolved_ref(&self) -> Option<&str> {
+        self.resolved_ref.as_deref()
+    }
+    fn path(&self) -> &str {
+        &self.path
+    }
+    fn repo_id(&self) -> u32 {
+        self.repo_id
+    }
+    fn set_repo_id(&mut self, id: u32) {
+        self.repo_id = id;
+    }
+    fn is_well_formed(&self) -> bool {
+        !self.launcher_name.is_empty() && !self.path.is_empty()
+    }
+}
+
+impl RepoCacheEntry for InterfaceCacheEntry {
+    const KIND: &'static str = "interface";
+    const FILE_NAME: &'static str = "interfaces.json5";
+    const ITEM_KIND: RepoItemKind = RepoItemKind::Interface;
+
+    fn from_discovered(d: DiscoveredEntry) -> Self {
+        Self {
+            interface_name: d.name,
+            tag: d.tag,
+            sha256: d.sha256,
+            source_type: d.source_type,
+            source_uri: d.source_uri,
+            resolved_ref: d.resolved_ref,
+            path: d.path,
+            repo_id: 0,
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.interface_name
+    }
+    fn tag(&self) -> &str {
+        &self.tag
+    }
+    fn sha256(&self) -> &str {
+        &self.sha256
+    }
+    fn source_type(&self) -> RepoSourceKind {
+        self.source_type
+    }
+    fn source_uri(&self) -> Option<&str> {
+        self.source_uri.as_deref()
+    }
+    fn resolved_ref(&self) -> Option<&str> {
+        self.resolved_ref.as_deref()
+    }
+    fn path(&self) -> &str {
+        &self.path
+    }
+    fn repo_id(&self) -> u32 {
+        self.repo_id
+    }
+    fn set_repo_id(&mut self, id: u32) {
+        self.repo_id = id;
+    }
+    // `sha256` is required: it is the primary way sha-pinned syncs
+    // disambiguate same-`(name, tag)` entries.
+    fn is_well_formed(&self) -> bool {
+        !self.interface_name.is_empty()
+            && !self.tag.is_empty()
+            && !self.path.is_empty()
+            && !self.sha256.is_empty()
+    }
+}
+
+impl RepoCacheEntry for PairingCacheEntry {
+    const KIND: &'static str = "pairing";
+    const FILE_NAME: &'static str = "pairings.json5";
+    const ITEM_KIND: RepoItemKind = RepoItemKind::Pairing;
+
+    fn from_discovered(d: DiscoveredEntry) -> Self {
+        Self {
+            pairing_name: d.name,
+            tag: d.tag,
+            sha256: d.sha256,
+            source_type: d.source_type,
+            source_uri: d.source_uri,
+            resolved_ref: d.resolved_ref,
+            path: d.path,
+            repo_id: 0,
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.pairing_name
+    }
+    fn tag(&self) -> &str {
+        &self.tag
+    }
+    fn sha256(&self) -> &str {
+        &self.sha256
+    }
+    fn source_type(&self) -> RepoSourceKind {
+        self.source_type
+    }
+    fn source_uri(&self) -> Option<&str> {
+        self.source_uri.as_deref()
+    }
+    fn resolved_ref(&self) -> Option<&str> {
+        self.resolved_ref.as_deref()
+    }
+    fn path(&self) -> &str {
+        &self.path
+    }
+    fn repo_id(&self) -> u32 {
+        self.repo_id
+    }
+    fn set_repo_id(&mut self, id: u32) {
+        self.repo_id = id;
+    }
+    fn is_well_formed(&self) -> bool {
+        !self.pairing_name.is_empty()
+            && !self.tag.is_empty()
+            && !self.path.is_empty()
+            && !self.sha256.is_empty()
+    }
+}
+
+/// Path of `E`'s cache file under the peppy cache dir.
+pub(crate) fn repo_cache_path<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> PathBuf {
+    peppy_dirs.cache_dir().join(E::FILE_NAME)
+}
+
+/// Serializes `entries` to `E`'s cache file. Atomic via
+/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers
+/// never observe a partial file.
+pub(crate) fn write_repo_cache<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+) -> Result<()> {
+    let content = json5_pretty::to_string_pretty(entries).map_err(|e| {
+        core_node_api::Error::Encoding(format!("failed to serialize {} cache: {e}", E::KIND))
+    })?;
+    daemon_config::atomic_write::publish_atomic(&repo_cache_path::<E>(peppy_dirs), |tmp| {
+        std::fs::write(tmp, &content)
+    })?;
+    Ok(())
+}
+
+/// Reads `E`'s cache file, tags each entry with the `repo_id` of its
+/// originating repository entry (derived from `repositories.json5` at
+/// read time; never serialized back), and drops malformed entries with
+/// a warning. Missing repository matches default to id 0 (highest
+/// priority) to preserve behavior for hand-written caches. Returns an
+/// empty vec when the file is missing.
+pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Result<Vec<E>> {
+    let path = repo_cache_path::<E>(peppy_dirs);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let raw: Vec<E> = serde_json5::from_str(&content).map_err(|e| {
+        core_node_api::Error::Decoding(format!(
+            "failed to parse {} cache at {}: {e}",
+            E::KIND,
+            path.display()
+        ))
+    })?;
+
+    let repos = read_or_create_repos(peppy_dirs)?;
+    let entries = raw
+        .into_iter()
+        .map(|mut e| {
+            let id = lookup_repo_id(&repos, e.source_type(), e.source_uri(), e.path());
+            e.set_repo_id(id);
+            e
+        })
+        .filter(|e| {
+            let ok = e.is_well_formed();
+            if !ok {
+                warn!(
+                    "Skipping malformed {} entry: {}",
+                    E::FILE_NAME,
+                    e.display_id()
+                );
+            }
+            ok
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// Returns the highest-priority (lowest `repo_id`) entry matching
+/// `(name, tag)`, or `None`. The repo-priority tiebreak lives here so
+/// all four caches resolve cross-repo name collisions identically.
+/// Untagged kinds (launchers) match with `tag = ""`.
+pub(crate) fn lookup_repo_entry<'a, E: RepoCacheEntry>(
+    entries: &'a [E],
+    name: &str,
+    tag: &str,
+) -> Option<&'a E> {
+    entries
+        .iter()
+        .filter(|e| e.name() == name && e.tag() == tag)
+        .min_by_key(|e| e.repo_id())
+}
+
+/// Returns the entry whose `(name, tag, sha256)` triple matches
+/// exactly, bypassing the repo-priority tiebreak. Use when the caller
+/// wants a specific manifest content rather than the
+/// first-in-priority-order pick.
+pub(crate) fn lookup_repo_entry_by_sha256<'a, E: RepoCacheEntry>(
+    entries: &'a [E],
+    name: &str,
+    tag: &str,
+    sha256: &str,
+) -> Option<&'a E> {
+    entries
+        .iter()
+        .find(|e| e.name() == name && e.tag() == tag && e.sha256() == sha256)
+}
+
 /// Reads the cache file plus the `nodes.json5` generation used for
 /// the read.
 pub fn load_with_generation(
     peppy_dirs: &PeppyDirs,
 ) -> Result<(Vec<NodeCacheEntry>, Option<SystemTime>)> {
-    let path = nodes_repo_cache_path(peppy_dirs);
+    let path = repo_cache_path::<NodeCacheEntry>(peppy_dirs);
     let generation = std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok());
@@ -145,39 +541,7 @@ pub fn load_with_generation(
         return Ok(((*cached).clone(), Some(mtime)));
     }
 
-    if !path.exists() {
-        return Ok((Vec::new(), None));
-    }
-
-    let content = std::fs::read_to_string(&path)?;
-    let raw: Vec<NodeCacheEntry> = serde_json5::from_str(&content).map_err(|e| {
-        core_node_api::Error::Decoding(format!(
-            "failed to parse nodes cache at {}: {e}",
-            path.display()
-        ))
-    })?;
-
-    // Build a URL/path → repo_id map so we can tag each node with its
-    // originating repository's id. Missing matches default to 0 (highest
-    // priority) to preserve previous behavior for hand-written caches.
-    let repos = read_or_create_repos(peppy_dirs)?;
-    let mut entries: Vec<NodeCacheEntry> = raw
-        .into_iter()
-        .map(|mut e| {
-            e.repo_id = lookup_repo_id(&repos, e.source_type, e.source_uri.as_deref(), &e.path);
-            e
-        })
-        .collect();
-    entries.retain(|e| {
-        let ok = !e.node_name.is_empty() && !e.node_tag.is_empty() && !e.path.is_empty();
-        if !ok {
-            warn!(
-                "Skipping malformed nodes.json5 entry: {:?}:{:?}",
-                e.node_name, e.node_tag
-            );
-        }
-        ok
-    });
+    let entries = load_repo_cache::<NodeCacheEntry>(peppy_dirs)?;
 
     if let Some(mtime) = generation {
         memo_put(&path, mtime, repos_mtime, entries.clone());
@@ -191,50 +555,6 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
         .ok()
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH)
-}
-
-/// Write cached node information for git/url repositories. Atomic via
-/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
-/// observe a partial file.
-pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[NodeCacheEntry]) -> Result<()> {
-    let content = json5_pretty::to_string_pretty(nodes)
-        .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    daemon_config::atomic_write::publish_atomic(&nodes_repo_cache_path(peppy_dirs), |tmp| {
-        std::fs::write(tmp, &content)
-    })?;
-    Ok(())
-}
-
-/// Write cached launcher information for git/url/fs repositories. Atomic
-/// via [`daemon_config::atomic_write::publish_atomic`] so concurrent readers
-/// never observe a partial file.
-pub(crate) fn write_launcher_cache(
-    peppy_dirs: &PeppyDirs,
-    launchers: &[LauncherCacheEntry],
-) -> Result<()> {
-    let content = json5_pretty::to_string_pretty(launchers).map_err(|e| {
-        core_node_api::Error::Encoding(format!("failed to serialize launcher cache: {e}"))
-    })?;
-    daemon_config::atomic_write::publish_atomic(&launchers_repo_cache_path(peppy_dirs), |tmp| {
-        std::fs::write(tmp, &content)
-    })?;
-    Ok(())
-}
-
-/// Write cached interface information. Atomic via
-/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers never
-/// observe a partial file.
-pub(crate) fn write_interface_cache(
-    peppy_dirs: &PeppyDirs,
-    interfaces: &[InterfaceCacheEntry],
-) -> Result<()> {
-    let content = json5_pretty::to_string_pretty(interfaces).map_err(|e| {
-        core_node_api::Error::Encoding(format!("failed to serialize interface cache: {e}"))
-    })?;
-    daemon_config::atomic_write::publish_atomic(&interfaces_repo_cache_path(peppy_dirs), |tmp| {
-        std::fs::write(tmp, &content)
-    })?;
-    Ok(())
 }
 
 fn lookup_repo_id(
@@ -264,34 +584,14 @@ fn lookup_repo_id(
     0
 }
 
-/// Returns the highest-priority (lowest `repo_id`) entry for
+/// Returns the highest-priority (lowest `repo_id`) node entry for
 /// `(name, tag)`. Returns `None` when no entry matches.
 pub fn lookup<'a>(
     entries: &'a [NodeCacheEntry],
     name: &str,
     tag: &str,
 ) -> Option<&'a NodeCacheEntry> {
-    entries
-        .iter()
-        .filter(|e| e.node_name == name && e.node_tag == tag)
-        .min_by_key(|e| e.repo_id)
-}
-
-/// Returns the entry whose `(name, tag, sha256)` triple matches
-/// exactly. Use this when the caller wants a specific manifest content
-/// rather than the first-in-priority-order pick. Returns `None` when no
-/// entry matches. Test-only: kept to document/verify the content-pinned
-/// lookup, but not yet wired into a production flow.
-#[cfg(test)]
-fn lookup_by_sha256<'a>(
-    entries: &'a [NodeCacheEntry],
-    name: &str,
-    tag: &str,
-    sha256: &str,
-) -> Option<&'a NodeCacheEntry> {
-    entries
-        .iter()
-        .find(|e| e.node_name == name && e.node_tag == tag && e.sha256 == sha256)
+    lookup_repo_entry(entries, name, tag)
 }
 
 /// Returns the highest-priority (lowest `repo_id`) launcher entry
@@ -300,10 +600,7 @@ pub fn lookup_launcher<'a>(
     entries: &'a [LauncherCacheEntry],
     name: &str,
 ) -> Option<&'a LauncherCacheEntry> {
-    entries
-        .iter()
-        .filter(|e| e.launcher_name == name)
-        .min_by_key(|e| e.repo_id)
+    lookup_repo_entry(entries, name, "")
 }
 
 /// Returns the highest-priority (lowest `repo_id`) interface entry
@@ -313,10 +610,7 @@ pub fn lookup_interface<'a>(
     name: &str,
     tag: &str,
 ) -> Option<&'a InterfaceCacheEntry> {
-    entries
-        .iter()
-        .filter(|e| e.interface_name == name && e.tag == tag)
-        .min_by_key(|e| e.repo_id)
+    lookup_repo_entry(entries, name, tag)
 }
 
 /// Returns the interface entry whose `(name, tag, sha256)` triple
@@ -327,104 +621,60 @@ pub fn lookup_interface_by_sha256<'a>(
     tag: &str,
     sha256: &str,
 ) -> Option<&'a InterfaceCacheEntry> {
-    entries
-        .iter()
-        .find(|e| e.interface_name == name && e.tag == tag && e.sha256 == sha256)
+    lookup_repo_entry_by_sha256(entries, name, tag, sha256)
 }
 
-/// Reads `launchers.json5` and tags each entry with the `repo_id` of its
-/// originating repository entry. Skips memoization (launches are rare
-/// events; the cost of re-parsing is negligible compared to a launch).
-fn load_launcher_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<LauncherCacheEntry>> {
-    let path = launchers_repo_cache_path(peppy_dirs);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
+/// Returns the highest-priority (lowest `repo_id`) pairing entry
+/// matching `(name, tag)`. Returns `None` when no entry matches.
+pub fn lookup_pairing<'a>(
+    entries: &'a [PairingCacheEntry],
+    name: &str,
+    tag: &str,
+) -> Option<&'a PairingCacheEntry> {
+    lookup_repo_entry(entries, name, tag)
+}
 
-    let content = std::fs::read_to_string(&path)?;
-    let raw: Vec<LauncherCacheEntry> = serde_json5::from_str(&content).map_err(|e| {
-        core_node_api::Error::Decoding(format!(
-            "failed to parse launcher cache at {}: {e}",
-            path.display()
-        ))
-    })?;
-
-    let repos = read_or_create_repos(peppy_dirs)?;
-    let entries: Vec<LauncherCacheEntry> = raw
-        .into_iter()
-        .map(|mut e| {
-            e.repo_id = lookup_repo_id(&repos, e.source_type, e.source_uri.as_deref(), &e.path);
-            e
-        })
-        .filter(|e| {
-            let ok = !e.launcher_name.is_empty() && !e.path.is_empty();
-            if !ok {
-                warn!(
-                    "Skipping malformed launchers.json5 entry: {:?}",
-                    e.launcher_name
-                );
-            }
-            ok
-        })
-        .collect();
-    Ok(entries)
+/// Returns the pairing entry whose `(name, tag, sha256)` triple matches
+/// exactly. Returns `None` when no entry matches.
+pub fn lookup_pairing_by_sha256<'a>(
+    entries: &'a [PairingCacheEntry],
+    name: &str,
+    tag: &str,
+    sha256: &str,
+) -> Option<&'a PairingCacheEntry> {
+    lookup_repo_entry_by_sha256(entries, name, tag, sha256)
 }
 
 pub fn nodes_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.cache_dir().join("nodes.json5")
+    repo_cache_path::<NodeCacheEntry>(peppy_dirs)
 }
 
 pub fn launchers_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.cache_dir().join("launchers.json5")
+    repo_cache_path::<LauncherCacheEntry>(peppy_dirs)
 }
 
 pub fn interfaces_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    peppy_dirs.cache_dir().join("interfaces.json5")
+    repo_cache_path::<InterfaceCacheEntry>(peppy_dirs)
+}
+
+pub fn pairings_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    repo_cache_path::<PairingCacheEntry>(peppy_dirs)
 }
 
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.conf_dir().join("repositories.json5")
 }
 
-/// Reads `interfaces.json5` and tags each entry with the `repo_id` of
-/// its originating repository entry. Returns an empty vec when the file
-/// is missing.
+/// Reads `interfaces.json5` (no memoization: interface resolution is a
+/// sync-time event, not a hot path).
 pub fn load_interface_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<InterfaceCacheEntry>> {
-    let path = interfaces_repo_cache_path(peppy_dirs);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
+    load_repo_cache(peppy_dirs)
+}
 
-    let content = std::fs::read_to_string(&path)?;
-    let raw: Vec<InterfaceCacheEntry> = serde_json5::from_str(&content).map_err(|e| {
-        core_node_api::Error::Decoding(format!(
-            "failed to parse interfaces cache at {}: {e}",
-            path.display()
-        ))
-    })?;
-
-    let repos = read_or_create_repos(peppy_dirs)?;
-    let entries: Vec<InterfaceCacheEntry> = raw
-        .into_iter()
-        .map(|mut e| {
-            e.repo_id = lookup_repo_id(&repos, e.source_type, e.source_uri.as_deref(), &e.path);
-            e
-        })
-        .filter(|e| {
-            let ok = !e.interface_name.is_empty()
-                && !e.tag.is_empty()
-                && !e.path.is_empty()
-                && !e.sha256.is_empty();
-            if !ok {
-                warn!(
-                    "Skipping malformed interfaces.json5 entry: {:?}:{:?}",
-                    e.interface_name, e.tag
-                );
-            }
-            ok
-        })
-        .collect();
-    Ok(entries)
+/// Reads `pairings.json5` (no memoization: pairing resolution is a
+/// sync-time event, not a hot path).
+pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntry>> {
+    load_repo_cache(peppy_dirs)
 }
 
 /// Looks up `(name, tag)` in the nodes cache and translates the matched
@@ -512,8 +762,8 @@ pub(crate) fn resolve_repo_launcher_path(
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
-    let entries = load_launcher_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load launcher cache: {e}"))?;
+    let entries: Vec<LauncherCacheEntry> =
+        load_repo_cache(peppy_dirs).map_err(|e| format!("failed to load launcher cache: {e}"))?;
 
     let entry = lookup_launcher(&entries, name).ok_or_else(|| {
         format!(
@@ -571,6 +821,81 @@ pub(crate) fn resolve_cached_artifact_path(
         }
         RepoSourceKind::Url => Err("url-sourced cache entry is not yet supported".to_string()),
     }
+}
+
+/// Borrowed view over the entry fields that [`resolve_cached_doc`]
+/// needs, available for every cache-entry kind via [`RepoCacheEntry`].
+pub(crate) struct CachedDocEntryRef<'a> {
+    pub sha256: &'a str,
+    pub source_type: RepoSourceKind,
+    pub source_uri: Option<&'a str>,
+    pub resolved_ref: Option<&'a str>,
+    pub path: &'a str,
+}
+
+impl<'a, E: RepoCacheEntry> From<&'a E> for CachedDocEntryRef<'a> {
+    fn from(e: &'a E) -> Self {
+        Self {
+            sha256: e.sha256(),
+            source_type: e.source_type(),
+            source_uri: e.source_uri(),
+            resolved_ref: e.resolved_ref(),
+            path: e.path(),
+        }
+    }
+}
+
+/// Shared tail of the interface/pairing document resolvers: turns a cache
+/// lookup result into a parsed document — resolves the entry's on-disk
+/// path, reads the bytes, rejects fingerprint drift, and hands the UTF-8
+/// content to `parse`. `kind` labels every error ("interface" /
+/// "pairing") and `id` is the document's `name:tag` label; `entry: None`
+/// produces the cache-miss error (naming the sha pin when one was set).
+pub(crate) fn resolve_cached_doc<T>(
+    peppy_dirs: &PeppyDirs,
+    kind: &str,
+    id: &str,
+    sha256_pin: Option<&str>,
+    entry: Option<CachedDocEntryRef<'_>>,
+    parse: impl FnOnce(&str) -> std::result::Result<T, String>,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<T, String> {
+    let entry = entry.ok_or_else(|| match sha256_pin {
+        Some(sha) => format!(
+            "{kind} `{id}` (sha256 `{sha}`) not in {kind} cache; \
+             run `peppy repo refresh`"
+        ),
+        None => format!("{kind} `{id}` not in {kind} cache; run `peppy repo refresh`"),
+    })?;
+
+    let resolved_path = resolve_cached_artifact_path(
+        peppy_dirs,
+        entry.source_type,
+        entry.source_uri,
+        entry.resolved_ref,
+        entry.path,
+        on_feedback,
+    )
+    .map_err(|e| format!("{kind} `{id}`: {e}"))?;
+
+    let bytes = std::fs::read(&resolved_path).map_err(|e| {
+        format!(
+            "failed to read cached {kind} `{id}` at {}: {e}",
+            resolved_path.display()
+        )
+    })?;
+    let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
+    if actual_sha != entry.sha256 {
+        return Err(format!(
+            "{kind} `{id}` content drifted from cache fingerprint \
+             (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
+            entry.sha256
+        ));
+    }
+
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("cached {kind} `{id}` is not UTF-8: {e}"))?;
+    parse(content).map_err(|e| format!("failed to parse cached {kind} `{id}`: {e}"))
 }
 
 struct MemoEntry {
@@ -738,7 +1063,7 @@ mod tests {
         assert_eq!(hit.repo_id, 3);
     }
 
-    /// `lookup_by_sha256` returns the entry whose content fingerprint
+    /// `lookup_repo_entry_by_sha256` returns the entry whose content fingerprint
     /// matches exactly, bypassing the repo-priority tiebreak.
     #[test]
     fn lookup_by_sha256_returns_exact_match() {
@@ -748,9 +1073,9 @@ mod tests {
         newer.sha256 = "bbbb".to_owned();
         let entries = vec![older, newer];
 
-        let hit = lookup_by_sha256(&entries, "a", "v1", "bbbb").unwrap();
+        let hit = lookup_repo_entry_by_sha256(&entries, "a", "v1", "bbbb").unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(lookup_by_sha256(&entries, "a", "v1", "zzzz").is_none());
+        assert!(lookup_repo_entry_by_sha256(&entries, "a", "v1", "zzzz").is_none());
     }
 
     #[test]
@@ -790,7 +1115,7 @@ mod tests {
                 repo_id: 0,
             },
         ];
-        write_cache(&peppy_dirs, &input).unwrap();
+        write_repo_cache(&peppy_dirs, &input).unwrap();
         let (loaded, generation) = load_with_generation(&peppy_dirs).unwrap();
         assert!(generation.is_some());
         assert_eq!(loaded.len(), 2);
@@ -808,7 +1133,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![mk_fs_entry("mynode", "1.0", "/tmp/mynode/peppy.json5")];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let src = resolve_repo_node_source("mynode", "1.0", &peppy_dirs).unwrap();
         // `entry.path` points at the manifest file; the resolved source
@@ -827,7 +1152,7 @@ mod tests {
             Some("main"),
         );
         entry.path = "nodes/example/peppy.json5".to_owned();
-        write_cache(&peppy_dirs, &[entry]).unwrap();
+        write_repo_cache(&peppy_dirs, &[entry]).unwrap();
 
         let src = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap();
         match src {
@@ -862,7 +1187,7 @@ mod tests {
             Some("https://example.com/archive.tzst"),
             Some("abc123"),
         )];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let src = resolve_repo_node_source("u", "2.0", &peppy_dirs).unwrap();
         match src {
@@ -879,7 +1204,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![mk_git_entry("g", "1.0", None, Some("main"))];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
         assert!(err.contains("no source_uri"), "unexpected error: {err}");
@@ -890,7 +1215,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![mk_git_entry("g", "1.0", Some(""), Some("main"))];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
         assert!(err.contains("invalid git URL"), "unexpected error: {err}",);
@@ -906,7 +1231,7 @@ mod tests {
             Some("https://example.com/repo.git"),
             None,
         )];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
         assert!(err.contains("no resolved_ref"), "unexpected error: {err}");
@@ -917,7 +1242,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![mk_url_entry("u", "1.0", None, None)];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
         assert!(err.contains("no source_uri"), "unexpected error: {err}");
@@ -928,7 +1253,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![mk_url_entry("u", "1.0", Some("not://[invalid"), None)];
-        write_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
         assert!(err.contains("invalid url"), "unexpected error: {err}");
@@ -938,7 +1263,7 @@ mod tests {
     fn resolve_not_found() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_cache(&peppy_dirs, &[]).unwrap();
+        write_repo_cache::<NodeCacheEntry>(&peppy_dirs, &[]).unwrap();
 
         let err = resolve_repo_node_source("missing", "0.0", &peppy_dirs).unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
@@ -946,7 +1271,7 @@ mod tests {
 
     // -- launcher cache tests --
 
-    /// `write_launcher_cache` writes to the path returned by
+    /// `write_repo_cache` writes launcher entries to the path returned by
     /// `launchers_repo_cache_path` with the on-disk launcher schema.
     #[test]
     fn write_launcher_cache_serializes_entries() {
@@ -956,7 +1281,7 @@ mod tests {
             mk_launcher_entry(
                 "openarm01_sim_teleop",
                 RepoSourceKind::Git,
-                Some("https://github.com/Peppy-bot/launchers_hub"),
+                Some("https://github.com/Peppy-bot/launchers-hub"),
                 Some("main"),
                 "openarm01_sim_teleop.json5",
                 0,
@@ -970,7 +1295,7 @@ mod tests {
                 0,
             ),
         ];
-        write_launcher_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let path = launchers_repo_cache_path(&peppy_dirs);
         assert!(
@@ -987,7 +1312,7 @@ mod tests {
         assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
         assert_eq!(
             arr[0]["source_uri"],
-            "https://github.com/Peppy-bot/launchers_hub"
+            "https://github.com/Peppy-bot/launchers-hub"
         );
         assert_eq!(arr[0]["resolved_ref"], "main");
         assert_eq!(arr[1]["launcher_name"], "local_demo");
@@ -1005,7 +1330,7 @@ mod tests {
         let abs = tmp.path().join("demo.json5");
         std::fs::write(&abs, "{}").unwrap();
 
-        write_launcher_cache(
+        write_repo_cache(
             &peppy_dirs,
             &[mk_launcher_entry(
                 "demo",
@@ -1029,7 +1354,7 @@ mod tests {
     fn resolve_launcher_missing_name_includes_cache_path_in_error() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_launcher_cache(&peppy_dirs, &[]).unwrap();
+        write_repo_cache::<LauncherCacheEntry>(&peppy_dirs, &[]).unwrap();
 
         let err = resolve_repo_launcher_path("nope", &peppy_dirs, &|_| {})
             .expect_err("missing launcher should error");
@@ -1042,7 +1367,7 @@ mod tests {
     /// share a name. We test this at the `lookup` boundary directly
     /// because `repo_id` is derived from `repositories.json5` at read
     /// time (`#[serde(skip)]` on the struct), so round-tripping through
-    /// `write_launcher_cache` would erase it.
+    /// `write_repo_cache` would erase it.
     #[test]
     fn lookup_launcher_picks_lowest_repo_id() {
         let entries = vec![
@@ -1075,7 +1400,7 @@ mod tests {
     fn resolve_launcher_url_returns_not_supported_error() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_launcher_cache(
+        write_repo_cache(
             &peppy_dirs,
             &[mk_launcher_entry(
                 "demo",
@@ -1218,7 +1543,7 @@ mod tests {
         let branch = init_repo_with_file(&source_repo_dir, "launchers/demo.json5", "{}");
         let repo_url = source_repo_dir.display().to_string();
 
-        write_launcher_cache(
+        write_repo_cache(
             &peppy_dirs,
             &[mk_launcher_entry(
                 "demo",
@@ -1253,7 +1578,7 @@ mod tests {
     fn write_launcher_cache_does_not_leak_tmp_file() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_launcher_cache(
+        write_repo_cache(
             &peppy_dirs,
             &[mk_launcher_entry(
                 "demo",
@@ -1275,7 +1600,7 @@ mod tests {
 
     // -- interface cache tests --
 
-    /// `write_interface_cache` round-trips an entry through JSON5 with
+    /// `write_repo_cache` round-trips an interface entry through JSON5 with
     /// the documented field names: `interface_name`, `tag`, `sha256`.
     #[test]
     fn write_interface_cache_serializes_entries() {
@@ -1291,7 +1616,7 @@ mod tests {
             "uvc_camera/peppy.json5",
             0,
         )];
-        write_interface_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let path = interfaces_repo_cache_path(&peppy_dirs);
         assert!(path.exists(), "interfaces cache should exist");

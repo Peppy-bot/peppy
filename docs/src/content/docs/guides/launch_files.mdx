@@ -12,17 +12,17 @@ With a single launch file, you or your team can recreate an entire node environm
 
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Start by cloning [this repository](https://github.com/Peppy-bot/launchers_hub):
+Start by cloning [this repository](https://github.com/Peppy-bot/launchers-hub):
 
 <Steps>
 1. Clone the repository:
    ```sh
-   git clone https://github.com/Peppy-bot/launchers_hub
+   git clone https://github.com/Peppy-bot/launchers-hub
    ```
 
 2. Navigate into the directory:
    ```sh
-   cd launchers_hub
+   cd launchers-hub
    ```
 </Steps>
 
@@ -30,19 +30,19 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
 <Tabs>
   <TabItem label="Python">
-[`examples/python_robot.json5`](https://github.com/Peppy-bot/launchers_hub/blob/main/examples/python_robot.json5)
+[`examples/python_robot.json5`](https://github.com/Peppy-bot/launchers-hub/blob/main/examples/python_robot.json5)
   </TabItem>
   <TabItem label="Rust">
-[`examples/rust_robot.json5`](https://github.com/Peppy-bot/launchers_hub/blob/main/examples/rust_robot.json5)
+[`examples/rust_robot.json5`](https://github.com/Peppy-bot/launchers-hub/blob/main/examples/rust_robot.json5)
   </TabItem>
 </Tabs>
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` and `instances` attribute
+ 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `bindings` (pinning `depends_on` slots to producer instances), and, for nodes declaring [pairing](/advanced_guides/pairing) slots, `pairings` (pairing a slot with a peer instance at launch) and `defer_pairings` (explicitly starting a required slot unpaired)
 
 The `source` attribute supports four formats:
- - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes
+ - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
  - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
  - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.

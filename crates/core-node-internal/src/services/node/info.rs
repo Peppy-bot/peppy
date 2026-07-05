@@ -136,12 +136,30 @@ async fn handle_node_info_request_inner(
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
     };
 
+    // Live pairs, read before the entity lock (`live_pairs` filters dead
+    // endpoints without taking the stack write lock).
+    let live_pairs = node_stack.live_pairs();
+    let core_node = node_stack
+        .root()
+        .read()
+        .config()
+        .manifest
+        .name
+        .as_str()
+        .to_owned();
+
     let (node_config, stage, instances, run_log_paths) = {
         let guard = entity.read();
         let stage = guard.stage().to_serialized();
         let node_config = guard.config().clone();
         let tracked = guard.instances();
         let run_log_dir = peppy_dirs.logs_dir_run();
+        let pairing_deps = node_config
+            .manifest
+            .depends_on
+            .as_ref()
+            .map(|d| d.pairings.as_slice())
+            .unwrap_or(&[]);
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
         let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
         for instance in tracked.iter() {
@@ -151,6 +169,12 @@ async fn handle_node_info_request_inner(
                 state: instance.state(),
                 healthy: instance.healthy(),
                 slot_bindings: instance.slot_bindings().clone(),
+                pairing_slots: node_stack::pairing_slot_view(
+                    &core_node,
+                    id,
+                    pairing_deps,
+                    &live_pairs,
+                ),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }

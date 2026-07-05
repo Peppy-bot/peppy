@@ -9,7 +9,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **interface**. An interface is a standalone document with its own `peppy_schema: "interface/v1"` that names a set of topics, services and actions. Producers conform to the interface; consumers depend on the interface. Both sides cite the interface by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
 
-Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot.
+Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how conformance compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## The three pieces
 
@@ -163,7 +163,7 @@ If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, t
 
 A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
 
-A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the recommended shape for optional, [bidirectional communication](/advanced_guides/bidirectional_communication), where each side consumes the other's interface without requiring it to be present.
+A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the natural shape for optional many-to-one fan-in: telemetry, monitoring, any consumer that accepts data from whichever producers happen to exist. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {
@@ -372,7 +372,7 @@ Once the stack is running, these conformance-resolved dependencies surface in th
 
 ## Caller-driven cycles are rejected
 
-An interface dependency is deliberately invisible to the node dependency graph, which is exactly what lets two nodes depend on each other's interfaces without forming a structural cycle (see [Bidirectional communication](/advanced_guides/bidirectional_communication)). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
+An interface dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's interfaces without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
 
 **Services and actions are different.** Consuming a service or action interface means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through interfaces hides that cycle from the static graph, but it does not make the deadlock go away. PeppyOS therefore rebuilds the *caller-driven* edges separately, resolving each interface dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
 
@@ -411,7 +411,7 @@ Two service interfaces, one provided by each node:
 }
 ```
 
-`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the interface it provides and consumes the service it calls through a `link_id`, exactly like the bidirectional-topic pattern, except both consumed links are **services**:
+`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the interface it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
 
 ```json5
 // localizer/peppy.json5
@@ -488,16 +488,16 @@ The same rejection applies however you wire it: directly through `depends_on.nod
 ### Two properties of the check
 
 - **It is conservative (type-level).** The check reasons about node identities and their declared `conforms_to`, not about which producer a specific `--bind` resolves to. If a service or action interface has several conforming providers and only one of them closes a cycle, the configuration is still rejected, because *any* conforming provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the interface so the cyclic capability is not declared on the shared contract.
-- **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [bidirectional communication](/advanced_guides/bidirectional_communication) relies on.
+- **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing) relies on.
 
 ### How to fix it
 
 If the two nodes genuinely need to exchange data, model it without a caller-driven cycle:
 
-- Make at least one direction a **topic** stream rather than a service or action: passive subscriptions never deadlock. This is the [bidirectional communication](/advanced_guides/bidirectional_communication) pattern.
+- Make at least one direction a **topic** stream rather than a service or action: passive subscriptions never deadlock. If the two nodes form an exclusive 1:1 relationship, model both directions as a [pairing](/advanced_guides/pairing).
 - Or model the request/response exchange as an [action](/advanced_guides/actions), which is one-directional by construction (the client depends on the server), so it never needs a back-edge.
 
-See [Why topics only?](/advanced_guides/bidirectional_communication/#why-topics-only) for the full rationale behind the topic/service/action distinction.
+See [Why topics only?](/advanced_guides/pairing/#why-topics-only) for the full rationale behind the topic/service/action distinction.
 
 ## What conformance is not
 

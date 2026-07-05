@@ -54,7 +54,7 @@ mod tests {
                 },
                 {
                     source: {
-                        repo: "https://github.com/Peppy-bot/nodes_hub.git",
+                        repo: "https://github.com/Peppy-bot/nodes-hub.git",
                         path: "fake_openarm01_controller",
                         ref: "0.1.0"
                     },

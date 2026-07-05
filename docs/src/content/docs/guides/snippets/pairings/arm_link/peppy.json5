@@ -1,0 +1,32 @@
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "arm_link",
+    tag: "v1",
+  },
+  // Exactly two roles. Each paired instance plays one of them.
+  roles: ["controller", "arm"],
+  // One flat topic list; `emitted_by` names the role that publishes it,
+  // and the other role consumes it. Pairings are topics-only.
+  topics: [
+    {
+      emitted_by: "controller",
+      name: "joint_commands",
+      qos_profile: "reliable",
+      message_format: {
+        target_positions: { $type: "array", $items: "f64", $length: 3 },
+        max_velocity: "f64",
+      },
+    },
+    {
+      emitted_by: "arm",
+      name: "joint_states",
+      qos_profile: "sensor_data",
+      message_format: {
+        positions: { $type: "array", $items: "f64", $length: 3 },
+        velocities: { $type: "array", $items: "f64", $length: 3 },
+        timestamp: "time",
+      },
+    },
+  ],
+}
