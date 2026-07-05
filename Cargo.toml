@@ -23,7 +23,7 @@ parking_lot = "0.12"
 rstest = "0.26"
 
 # Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
-# `peppyos-shared` virtual workspace) as git dependencies, so `peppyos` holds no
+# `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
 # path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
 # crate follows the repo's default branch (`main`); the resolved revision is
 # recorded in Cargo.lock and moved forward with `cargo update`. `config` and

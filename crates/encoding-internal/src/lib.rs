@@ -3,7 +3,7 @@
 //! This crate compiles a [`config::node::MessageFormat`] into Cap'n Proto
 //! schema artifacts and Rust type mappings, and bundles the `capnp` compiler
 //! binary needed to do so (see `build.rs` and `tools/`). It lives outside
-//! `peppyos-shared` because only `peppyos`'s code generator depends on it.
+//! `peppy-shared` because only `peppy`'s code generator depends on it.
 
 pub mod facade;
 pub mod types;
@@ -12,7 +12,7 @@ pub use types::FunctionParam;
 
 pub(crate) use config::ConfigError as Error;
 /// Crate-wide result type, propagating [`config::ConfigError`] so callers in
-/// `peppyos` keep their existing `ConfigError`-based error handling.
+/// `peppy` keep their existing `ConfigError`-based error handling.
 pub type Result<T> = std::result::Result<T, config::ConfigError>;
 
 use capnp::message::ReaderOptions;

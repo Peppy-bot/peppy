@@ -1,11 +1,11 @@
 ---
 title: Concepts
-description: The different concepts of PeppyOS
+description: The different concepts of Peppy
 ---
 
 ## Node
 
-A **Node** is the fundamental unit of computation in PeppyOS. It represents a runnable application or service that can expose interfaces (topics, services, actions) and consume interfaces from other nodes.
+A **Node** is the fundamental unit of computation in Peppy. It represents a runnable application or service that can expose interfaces (topics, services, actions) and consume interfaces from other nodes.
 
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
@@ -104,11 +104,11 @@ The **Core Node** is a special node that serves as the root of the node stack an
 
 - **Dependency Creation**: When a node consumes an interface, the core node creates a dependency on the node that exposes that interface
 - **Stack Management**: Managing the lifecycle of all other nodes in the system: spawning them, probing their health, and tearing them down so none is left orphaned when the daemon stops or dies
-- **System Coordination**: Acting as the central coordinator for the local PeppyOS runtime
+- **System Coordination**: Acting as the central coordinator for the local Peppy runtime
 
 When the core node shuts down cleanly it stops every spawned node (cooperatively, then force-killing any straggler's process group); if it dies unexpectedly, each node's watchdog notices the missing heartbeat and shuts the node down after a grace period. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention) for details.
 
-Each PeppyOS runtime has exactly one core node that manages its local DAG of nodes. 
+Each Peppy runtime has exactly one core node that manages its local DAG of nodes. 
 In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines. 
 The core nodes operate independently, managing their local node stacks without a centralized controller. 
 Nodes communicate across runtimes through the shared messaging layer, enabling a fully decentralized system where each core node is responsible only for its own set of nodes.

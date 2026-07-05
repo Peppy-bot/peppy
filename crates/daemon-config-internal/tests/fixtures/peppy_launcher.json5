@@ -1,4 +1,4 @@
-// PeppyOS Configuration
+// Peppy Configuration
 // This is the main configuration file that defines the deployments on the current machine.
 {
   peppy_schema: "launcher/v1",

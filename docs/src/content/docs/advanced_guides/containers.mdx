@@ -15,7 +15,7 @@ Use containers when you need:
 - **Reproducibility**: guarantee the same runtime environment every time.
 - **Isolation**: prevent conflicts between nodes that need different versions of the same library.
 
-PeppyOS uses [Apptainer](https://apptainer.org/) as its container runtime.
+Peppy uses [Apptainer](https://apptainer.org/) as its container runtime.
 On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virtual machine; no extra setup is needed.
 
 ## Setup (Linux)
@@ -217,7 +217,7 @@ Each section serves a specific purpose:
 | `%runscript` | Entry point executed when the container starts |
 
 :::note
-The `%files` section copies the entire node directory into the container. PeppyOS automatically copies (rather than symlinks) internal libraries like `peppylib` so that they are fully available inside the image.
+The `%files` section copies the entire node directory into the container. Peppy automatically copies (rather than symlinks) internal libraries like `peppylib` so that they are fully available inside the image.
 :::
 
 ## Adding a container node
@@ -231,10 +231,10 @@ peppy node build my_node:v1
 
 You can also combine both steps with `peppy node add ./my_node --build` (shorthand `-b`). If you've just edited `peppy.json5`, add `--sync`/`-s` as well, e.g. `peppy node add ./my_node -sb` to sync, add, and build in one shot.
 
-Under the hood, PeppyOS runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
+Under the hood, Peppy runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
 This replaces the `build_cmd` step used by process nodes; the entire build happens inside the container according to the `%post` section of the definition file.
 
-The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.
+The resulting `.sif` file is stored in Peppy's internal storage and is ready to be started.
 
 :::note
 Container builds can take longer than regular builds because they install system packages and toolchains from scratch.
@@ -249,7 +249,7 @@ Starting a container node also uses the same command:
 peppy node run my_node
 ```
 
-PeppyOS runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically; you don't need to configure anything beyond what a regular node requires.
+Peppy runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically; you don't need to configure anything beyond what a regular node requires.
 
 The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
 
@@ -288,14 +288,14 @@ Each entry follows the format `host_path:container_path[:options]`:
 | `host_path:container_path` | `"/data/models:/opt/models"` | Mounted at a different path inside the container |
 | `host_path:container_path:options` | `"/data/models:/opt/models:ro"` | Mounted with explicit options (`ro` for read-only, `rw` for read-write) |
 
-PeppyOS creates any missing parent directories on the host automatically before starting the container.
+Peppy creates any missing parent directories on the host automatically before starting the container.
 
 :::note
 Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources. Subdirectories of these paths are fine; for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
 :::
 
 :::note
-On macOS, PeppyOS automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed; paths outside your home directory are handled transparently.
+On macOS, Peppy automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed; paths outside your home directory are handled transparently.
 :::
 
 ### Using parameters in mount paths
@@ -396,7 +396,7 @@ These arguments are passed verbatim; no validation is performed beyond basic str
 
 ## macOS support
 
-On macOS, Apptainer is not natively available. PeppyOS bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
+On macOS, Apptainer is not natively available. Peppy bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
 This is handled transparently; all `peppy node` commands work identically on macOS and Linux. No additional installation or configuration is required.
 
 ## Customizing the definition file

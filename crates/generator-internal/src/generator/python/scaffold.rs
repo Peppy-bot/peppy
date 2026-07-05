@@ -25,12 +25,12 @@ include!(concat!(env!("OUT_DIR"), "/embedded_peppylib_so.rs"));
 /// Pre-built peppylib Python wrappers (`.py`). The compiled native extensions are
 /// embedded separately via [`PEPPYLIB_PLATFORM_SO`].
 ///
-/// `$PEPPYOS_SHARED_DIR` is expanded at compile time by rust-embed
+/// `$PEPPY_SHARED_DIR` is expanded at compile time by rust-embed
 /// (interpolate-folder-path feature); generator's build script sets it to the
-/// peppyos-shared dir located via build-helpers, so the embed works in the
+/// peppy-shared dir located via build-helpers, so the embed works in the
 /// superproject and from a cargo git checkout alike.
 #[derive(Embed)]
-#[folder = "$PEPPYOS_SHARED_DIR/peppylib-py/peppylib/"]
+#[folder = "$PEPPY_SHARED_DIR/peppylib-py/peppylib/"]
 #[include = "*.py"]
 #[exclude = "__pycache__/*"]
 struct EmbeddedPeppylibPy;

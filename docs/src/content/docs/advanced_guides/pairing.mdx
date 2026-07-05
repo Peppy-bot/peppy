@@ -16,10 +16,10 @@ import robotArmRust from '../guides/snippets/rust/robot_arm/src/main.rs?raw';
 import armControllerPython from '../guides/snippets/python/arm_controller/src/arm_controller/__main__.py?raw';
 import armControllerRust from '../guides/snippets/rust/arm_controller/src/main.rs?raw';
 
-In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `link_id`.
+In a standard Peppy setup, a node subscribes to topics from its declared dependencies using `link_id`.
 This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm`, but not the other way around, since a return dependency would make the graph circular.
 
-**Pairing** is PeppyOS's first-class mechanism for the cases where two nodes genuinely talk to each other. A *pairing* is a named, versioned contract with exactly **two roles**; two node **instances** (one per role) are *paired* 1:1 over it, and each side's topics flow only to its paired peer:
+**Pairing** is Peppy's first-class mechanism for the cases where two nodes genuinely talk to each other. A *pairing* is a named, versioned contract with exactly **two roles**; two node **instances** (one per role) are *paired* 1:1 over it, and each side's topics flow only to its paired peer:
 
 - **Explicit**: a pair is established by an operator action (`--pair` on `peppy node run`, or `pairings:` in a launcher), never by discovery.
 - **Exclusive**: a pairing slot holds at most one peer at a time. A second instance trying to pair at a taken slot is rejected.
@@ -226,7 +226,7 @@ The generated code addresses each arm through its slot module (`pairings::left_a
 
 ## Why topics only?
 
-PeppyOS has three communication patterns (topics, services, and actions), but a pairing may declare **topics only**. The reason is the distinction that shapes the rest of the dependency model: a topic dependency is passive, while service and action dependencies are caller-driven.
+Peppy has three communication patterns (topics, services, and actions), but a pairing may declare **topics only**. The reason is the distinction that shapes the rest of the dependency model: a topic dependency is passive, while service and action dependencies are caller-driven.
 
 | | Topics | Services | Actions |
 |---|---|---|---|

@@ -3,8 +3,8 @@
 //!
 //! The snippets are the ground truth shown in the docs, so this test lives here
 //! (rather than in the `config` crate): the docs ship in this repo while `config`
-//! is just a dependency. Keeping it here lets `peppyos-shared` stay self-contained
-//! instead of reaching back into `peppyos/` to find the snippets.
+//! is just a dependency. Keeping it here lets `peppy-shared` stay self-contained
+//! instead of reaching back into `peppy/` to find the snippets.
 //!
 //! If this fails, the config types in `config` have drifted from the documented
 //! snippets; either the code or the snippets need updating.

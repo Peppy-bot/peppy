@@ -17,7 +17,7 @@ use logging::{LogStyle, init_tracing};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
-#[command(about = "The peppyOS cli tool")]
+#[command(about = "The Peppy cli tool")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

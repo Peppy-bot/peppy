@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Set up a new development machine for PeppyOS.
+# Set up a new development machine for Peppy.
 #
 # Installs each of the following with its recommended method, skipping anything
 # that is already on the system:
@@ -121,7 +121,7 @@ ensure_path_line() {
     local file="$1" line="$2"
     [ -f "$file" ] || touch "$file"
     if ! grep -Fqs "$line" "$file"; then
-        printf '\n# Added by PeppyOS setup_machine.sh\n%s\n' "$line" >>"$file"
+        printf '\n# Added by Peppy setup_machine.sh\n%s\n' "$line" >>"$file"
         warn "Added Go to PATH in $file; run 'source $file' or open a new shell to pick it up"
     fi
 }
@@ -201,7 +201,7 @@ install_lima() {
 
 # --- run --------------------------------------------------------------------
 
-log "Setting up a new machine for PeppyOS (${PLATFORM}/${ARCH})"
+log "Setting up a new machine for Peppy (${PLATFORM}/${ARCH})"
 install_qemu
 install_go
 install_pixi

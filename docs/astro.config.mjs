@@ -142,7 +142,7 @@ export default defineConfig({
 					langs: [{ ...apptainerGrammar, name: 'apptainer' }],
 				},
 			},
-			title: 'PeppyOS',
+			title: 'Peppy',
 			favicon: '/favicon.png',
 			customCss: ['./src/styles/custom.css'],
 			components: {

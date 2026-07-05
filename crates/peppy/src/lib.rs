@@ -1,4 +1,4 @@
-//! The peppyOS command-line tool.
+//! The Peppy command-line tool.
 //!
 //! `peppy` is a leaf binary: `main.rs` is the entrypoint and this library half
 //! exists so the integration test crate can construct and execute command
