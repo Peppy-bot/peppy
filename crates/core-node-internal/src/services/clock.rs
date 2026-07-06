@@ -299,22 +299,22 @@ async fn run_heartbeat_publisher(
 /// Minimum interval between successive name-collision alarms: the heartbeat
 /// ticks every few seconds, and one error per minute is enough to be seen
 /// without flooding the log.
-const COLLISION_ALARM_INTERVAL: Duration = Duration::from_secs(60);
+const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// Decides whether a beat observed on the daemon's own heartbeat topic
-/// warrants a collision alarm. The daemon receives its own beats via
+/// warrants a name-collision alarm. The daemon receives its own beats via
 /// same-session loopback, so the per-boot instance id is the discriminator:
 /// a foreign instance id means another daemon publishes under this daemon's
 /// core-node name. Alarms are rate-limited to one per
-/// [`COLLISION_ALARM_INTERVAL`].
-fn collision_alarm_due(
+/// [`NAME_COLLISION_ALARM_COOLDOWN`].
+fn name_collision_alarm_due(
     own_instance_id: &str,
     beat_instance_id: &str,
     last_alarm: Option<Instant>,
     now: Instant,
 ) -> bool {
     beat_instance_id != own_instance_id
-        && last_alarm.is_none_or(|at| now.duration_since(at) >= COLLISION_ALARM_INTERVAL)
+        && last_alarm.is_none_or(|at| now.duration_since(at) >= NAME_COLLISION_ALARM_COOLDOWN)
 }
 
 /// Subscribes to the daemon's **own** `daemon_heartbeat` topic and raises a
@@ -357,7 +357,7 @@ pub async fn watch_for_name_collision(
                 },
             };
             let now = Instant::now();
-            if collision_alarm_due(&own_instance_id, message.instance_id(), last_alarm, now) {
+            if name_collision_alarm_due(&own_instance_id, message.instance_id(), last_alarm, now) {
                 last_alarm = Some(now);
                 error!(
                     "core-node name collision: daemon instance '{}' is publishing heartbeats \
@@ -528,13 +528,13 @@ mod tests {
     #[test]
     fn collision_alarm_fires_on_foreign_beat_only() {
         let now = Instant::now();
-        assert!(collision_alarm_due(
+        assert!(name_collision_alarm_due(
             "own_instance",
             "foreign_instance",
             None,
             now
         ));
-        assert!(!collision_alarm_due(
+        assert!(!name_collision_alarm_due(
             "own_instance",
             "own_instance",
             None,
@@ -545,17 +545,17 @@ mod tests {
     #[test]
     fn collision_alarm_is_rate_limited() {
         let fired_at = Instant::now();
-        assert!(!collision_alarm_due(
+        assert!(!name_collision_alarm_due(
             "own_instance",
             "foreign_instance",
             Some(fired_at),
             fired_at + Duration::from_secs(1),
         ));
-        assert!(collision_alarm_due(
+        assert!(name_collision_alarm_due(
             "own_instance",
             "foreign_instance",
             Some(fired_at),
-            fired_at + COLLISION_ALARM_INTERVAL,
+            fired_at + NAME_COLLISION_ALARM_COOLDOWN,
         ));
     }
 
