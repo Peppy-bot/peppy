@@ -20,7 +20,6 @@ json5-pretty = { workspace = true }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_json5 = "0.2"
 gix-url = "0.36"
 url = "2"
 # https://docs.rs/quote/latest/quote/
@@ -67,6 +66,9 @@ test-support = ["dep:tempfile", "dep:parking_lot", "config/fingerprint_test_help
 
 [dev-dependencies]
 tempfile = "3.8"
+# json5 parsing of on-disk state/config fixtures in the integration tests; the
+# library crate itself no longer reads json5 (that moved to auth and daemon).
+serde_json5 = "0.2"
 # In-process HTTP mock server for the auth integration tests (cli-config, OIDC
 # discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.8"
