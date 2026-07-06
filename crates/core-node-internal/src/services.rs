@@ -4,7 +4,6 @@ mod datastore;
 mod health;
 mod info;
 mod node;
-mod ping;
 pub(crate) mod repo;
 mod response;
 mod stack;
@@ -341,7 +340,7 @@ impl CoreNode {
         self.instance_id.as_str()
     }
 
-    /// Boot-time self-probe: sends reachability probes to the `ping` service
+    /// Boot-time self-probe: sends reachability probes to the `health` service
     /// under this daemon's own core-node name. Runs before this instance's
     /// listeners are registered, so any reply proves a foreign daemon already
     /// claims the name — breaking the name-based routing invariant every
@@ -366,7 +365,7 @@ impl CoreNode {
                 // The wire tag from `names` (`"core"`), not this file's
                 // `CORE_NODE_TAG` git tag.
                 SenderTarget::node(self.node_name(), names::CORE_NODE_TAG)?,
-                names::PING,
+                names::HEALTH,
                 ServiceTarget::Any,
             )
             .await
@@ -451,13 +450,6 @@ impl CoreNode {
         // the slowest single listener, not the sum of all of them. They're
         // independent: no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
-            ping::listen_for_ping(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-            )
-            .boxed(),
             health::listen_for_health(
                 &self.messenger,
                 core_node_name,

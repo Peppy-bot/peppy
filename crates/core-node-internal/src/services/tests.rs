@@ -209,7 +209,7 @@ async fn start_with_ready_rejects_a_second_start() {
     first_task.abort();
 }
 
-/// Boot refuses with `CoreNodeNameTaken` when a `ping` listener already
+/// Boot refuses with `CoreNodeNameTaken` when a `health` listener already
 /// answers under the same core-node name (a foreign daemon claiming it): the
 /// mock adapter auto-answers reachability probes in its dispatch path, so a
 /// registered listener is all "another daemon" takes. The refusal must also
@@ -218,15 +218,16 @@ async fn start_with_ready_rejects_a_second_start() {
 async fn start_refuses_to_boot_when_name_already_claimed() {
     let messenger = create_mock_messenger().await;
 
-    // Simulate the foreign daemon: its ping listener bound under the name.
-    let _foreign_ping = ping::listen_for_ping(
+    // Simulate the foreign daemon: its health listener bound under the name.
+    let _foreign_health = health::listen_for_health(
         &MessengerHandle::from_shared(Arc::clone(&messenger)),
         "collision_node",
         "foreign_instance",
         "collision_node",
+        std::time::Instant::now(),
     )
     .await
-    .expect("foreign ping listener should register");
+    .expect("foreign health listener should register");
 
     let root = tempfile::tempdir().expect("tempdir");
     let peppy_dirs = PeppyDirs::new(root.path());
