@@ -131,7 +131,7 @@ impl ServeCommandBuilder {
                 // backend (the config pull's timeout). `resolve_api_url` is a local
                 // config/env lookup (no I/O), so it's safe to keep on this path; a
                 // `Some` url arms the federation task.
-                let api_url = crate::auth::profile::resolve_api_url(
+                let api_url = auth::profile::resolve_api_url(
                     None,
                     &self.peppy_config.resource_servers,
                 )
@@ -150,7 +150,7 @@ impl ServeCommandBuilder {
                 // task. The router itself is never namespaced (it only forwards),
                 // so the namespace rides only on application sessions.
                 let namespace = config::org::resolve_session_namespace(
-                    crate::auth::router::cached_organization_id_default().as_deref(),
+                    auth::router::cached_organization_id_default().as_deref(),
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 

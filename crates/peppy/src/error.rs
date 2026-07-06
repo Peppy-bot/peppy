@@ -34,12 +34,11 @@ pub enum Error {
     // -- config: daemon-side documents (launcher files, peppy_config.json5)
     DaemonConfig(daemon_config::DaemonConfigError),
 
-    // -- auth: transport/HTTP failures (unreachable backend, unexpected status)
-    Http(String),
-    // -- auth: OAuth / identity failures with a user-actionable message
+    // -- auth: CLI-side OAuth / identity failures with a user-actionable message
     Auth(String),
-    // -- auth: no usable credential and not on an interactive terminal
-    NotAuthenticated,
+    // -- auth: errors surfaced by the `auth` engine crate
+    #[from]
+    AuthEngine(auth::AuthError),
 
     // -- peppylib
     #[from]
@@ -65,12 +64,8 @@ impl Display for Error {
             Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
             Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
             Error::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
-            Error::Http(msg) => write!(fmt, "{msg}"),
             Error::Auth(msg) => write!(fmt, "{msg}"),
-            Error::NotAuthenticated => write!(
-                fmt,
-                "Not authenticated. Run `peppy auth login` or set PEPPY_API_KEY."
-            ),
+            Error::AuthEngine(e) => write!(fmt, "{e}"),
             Error::Peppy(e) => write!(fmt, "{e}"),
         }
     }

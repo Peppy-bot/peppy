@@ -1,8 +1,9 @@
-//! RFC 8628 device-authorization grant: start the flow, show/open the
-//! verification URL, then poll the token endpoint until the user approves in the
-//! browser. The CLI never sees the user's Google/passkey credentials.
+//! RFC 8628 device-authorization grant, protocol only: [`start`] the flow, then
+//! [`poll`] the token endpoint until the user approves in the browser. The CLI
+//! never sees the user's Google/passkey credentials. Showing/opening the
+//! verification URL and any waiting UX are the caller's job (the `peppy auth
+//! login` command).
 
-use std::io::IsTerminal;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -25,22 +26,20 @@ pub struct TokenSet {
     pub scope: String,
 }
 
-/// Knobs for the interactive flow.
-pub struct DeviceFlowOptions {
-    /// Suppress the automatic browser launch (headless / SSH).
-    pub no_browser: bool,
-}
-
-#[derive(Deserialize)]
-struct DeviceAuthResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
+/// A started device-authorization flow: what the caller shows the user
+/// (`user_code`, `verification_uri`) and what [`poll`] exchanges for tokens.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceAuthorization {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
     #[serde(default)]
-    verification_uri_complete: Option<String>,
-    expires_in: i64,
+    pub verification_uri_complete: Option<String>,
+    /// Flow lifetime in seconds; [`poll`] gives up past it.
+    pub expires_in: i64,
+    /// Server-suggested poll interval, seconds.
     #[serde(default = "default_interval")]
-    interval: u64,
+    pub interval: u64,
 }
 
 fn default_interval() -> u64 {
@@ -48,10 +47,10 @@ fn default_interval() -> u64 {
 }
 
 /// The JSON body of a successful token-endpoint response (device or refresh
-/// grant). Shared by [`device::run`] and [`refresh::refresh`] so the parsing and
-/// [`TokenSet`] materialization live in one place.
+/// grant). Shared by [`device::poll`] and [`refresh::refresh`] so the parsing
+/// and [`TokenSet`] materialization live in one place.
 ///
-/// [`device::run`]: super::device::run
+/// [`device::poll`]: super::device::poll
 /// [`refresh::refresh`]: super::refresh::refresh
 #[derive(Deserialize)]
 pub(crate) struct TokenResponse {
@@ -114,14 +113,15 @@ fn classify(error: &str) -> PollOutcome {
     }
 }
 
-/// Runs the full device flow against `endpoints`, requesting `scopes` verbatim.
-pub fn run(
+/// Starts the device flow against `endpoints`, requesting `scopes` verbatim.
+/// The caller shows the returned code/URL to the user, then exchanges the
+/// authorization for tokens with [`poll`].
+pub fn start(
     http: &HttpClient,
     endpoints: &OidcEndpoints,
     client_id: &str,
     scopes: &str,
-    opts: &DeviceFlowOptions,
-) -> Result<TokenSet> {
+) -> Result<DeviceAuthorization> {
     let start = http.post_form(
         &endpoints.device_authorization_endpoint,
         &[("client_id", client_id), ("scope", scopes)],
@@ -133,37 +133,21 @@ pub fn run(
             start.status, start.body
         )));
     }
-    let da: DeviceAuthResponse = start.json("device authorization")?;
-
-    let complete = da
-        .verification_uri_complete
-        .clone()
-        .unwrap_or_else(|| da.verification_uri.clone());
-
-    println!("To sign in, open:\n    {}", da.verification_uri);
-    println!("and enter the code: {}", da.user_code);
-
-    if !opts.no_browser && std::io::stdout().is_terminal() {
-        // Best-effort: a headless box without a browser just keeps the printed URL.
-        if open::that(&complete).is_ok() {
-            println!("(opened your browser…)");
-        }
-    }
-
-    poll_for_token(http, &endpoints.token_endpoint, client_id, &da)
+    start.json("device authorization")
 }
 
-fn poll_for_token(
+/// Polls `token_endpoint` (blocking) until the user approves in the browser,
+/// the flow expires, or the server reports a fatal error.
+pub fn poll(
     http: &HttpClient,
     token_endpoint: &str,
     client_id: &str,
-    da: &DeviceAuthResponse,
+    da: &DeviceAuthorization,
 ) -> Result<TokenSet> {
-    let spinner = crate::terminal::spinner("Waiting for you to approve in the browser…");
     let deadline = now_unix() + da.expires_in;
     let mut interval = da.interval.max(1);
 
-    let result = loop {
+    loop {
         let resp = http.post_form(
             token_endpoint,
             &[
@@ -194,12 +178,7 @@ fn poll_for_token(
             ));
         }
         std::thread::sleep(Duration::from_secs(interval));
-    };
-
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
     }
-    result
 }
 
 #[cfg(test)]

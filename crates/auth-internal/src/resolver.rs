@@ -86,8 +86,10 @@ pub fn pat_from_env() -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Builds a refreshable session [`Credential`] from the cached `pc`.
-pub(crate) fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
+/// Builds a refreshable session [`Credential`] from the cached `pc`. Public
+/// for the one caller outside the resolver: `peppy auth login`, which builds
+/// the credential from tokens it minted seconds ago instead of re-resolving.
+pub fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {
         token: storage::secret(pc.access_token.expose_secret().to_string()),
         kind: CredentialKind::Session(SessionContext {

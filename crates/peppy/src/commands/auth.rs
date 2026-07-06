@@ -1,7 +1,7 @@
 //! The `peppy auth` command group: `login`, `logout`, and `whoami`. Each
 //! variant maps to a handler in this module's directory; the OAuth device flow,
 //! token storage, and credential resolution they share live in the separate
-//! [`crate::auth`] engine.
+//! `auth` engine crate.
 
 pub mod login;
 pub mod logout;
@@ -46,7 +46,7 @@ const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// CLI can confirm the daemon came back under exactly what it just wrote.
 fn current_creds_namespace() -> String {
     config::org::resolve_session_namespace(
-        crate::auth::router::cached_organization_id_default().as_deref(),
+        auth::router::cached_organization_id_default().as_deref(),
     )
     .as_str()
     .to_string()

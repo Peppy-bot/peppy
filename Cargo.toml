@@ -43,6 +43,7 @@ build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 # member references them with `{ workspace = true }` instead of repeating a
 # relative `path`; paths are resolved relative to this workspace root. Per-crate
 # features are still added at the use site with `{ workspace = true, features = [...] }`.
+auth = { path = "crates/auth-internal" }
 containers = { path = "crates/containers-internal" }
 core-node = { path = "crates/core-node-internal" }
 daemon-config = { path = "crates/daemon-config-internal" }

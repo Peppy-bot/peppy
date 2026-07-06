@@ -525,7 +525,7 @@ mod tests {
     /// them) so this assertion never matches its own source text.
     #[test]
     fn legacy_env_var_and_helper_stay_removed() {
-        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/auth/router.rs"));
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/router.rs"));
         let env_needle = concat!("PEPPY_ROUTER_", "CA_CERT");
         let helper_needle = concat!("ca_", "from_env");
         assert!(

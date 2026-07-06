@@ -151,7 +151,7 @@ type NamespaceResolver = Arc<dyn Fn() -> String + Send + Sync>;
 fn real_namespace_resolver() -> NamespaceResolver {
     Arc::new(|| {
         config::org::resolve_session_namespace(
-            crate::auth::router::cached_organization_id_default().as_deref(),
+            auth::router::cached_organization_id_default().as_deref(),
         )
         .as_str()
         .to_string()
@@ -225,7 +225,7 @@ impl RouterFederation {
         teardown_token: CancellationToken,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
-            crate::auth::router::resolve_federation_target(
+            auth::router::resolve_federation_target(
                 &api_url,
                 connect_timeout,
                 &core_node_name,
@@ -571,7 +571,7 @@ async fn poll_and_apply(
         && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
             (&outcome, resolved.as_ref())
     {
-        match crate::auth::client::split_locator(ep).ok() {
+        match auth::client::split_locator(ep).ok() {
             Some((host, port)) => {
                 // Bound the probe by the small dedicated PROBE_TIMEOUT (NOT
                 // connect_timeout) so resolve + bounce + probe stays within the

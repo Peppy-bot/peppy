@@ -269,6 +269,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "auth"
+version = "0.0.1"
+dependencies = [
+ "daemon-config",
+ "httpmock",
+ "json5-pretty",
+ "peppy-config-model",
+ "pmi",
+ "secrecy 0.10.3",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2958,6 +2978,7 @@ dependencies = [
 name = "peppy"
 version = "0.0.1"
 dependencies = [
+ "auth",
  "build-helpers",
  "bytes",
  "clap",
@@ -2995,7 +3016,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
- "ureq",
  "url",
 ]
 

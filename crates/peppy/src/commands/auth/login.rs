@@ -8,10 +8,9 @@ use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
 
-use crate::auth::device::DeviceFlowOptions;
-use crate::auth::{
-    cli_config, client, device, discovery, http::HttpClient, profile, resolver, storage,
-};
+use auth::device::{self, TokenSet};
+use auth::discovery::OidcEndpoints;
+use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -54,15 +53,7 @@ impl Command for LoginCommand {
 
         let cfg = cli_config::fetch(&http, &api_url)?;
         let endpoints = discovery::discover(&http, &cfg.issuer)?;
-        let tokens = device::run(
-            &http,
-            &endpoints,
-            &cfg.client_id,
-            &cfg.scopes,
-            &DeviceFlowOptions {
-                no_browser: self.no_browser,
-            },
-        )?;
+        let tokens = run_device_flow(&http, &endpoints, &cfg.client_id, &cfg.scopes, self.no_browser)?;
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
         // Load-resilient: a malformed / pre-`organization_id` / version-mismatched
@@ -70,8 +61,8 @@ impl Command for LoginCommand {
         // login on it (the stale file self-heals on this save).
         let mut creds = match storage::load(&creds_path) {
             Ok(creds) => creds,
-            Err(Error::Auth(_)) => storage::Credentials::default(),
-            Err(e) => return Err(e),
+            Err(auth::AuthError::Auth(_)) => storage::Credentials::default(),
+            Err(e) => return Err(e.into()),
         };
         let pc = client::creds_from_login(&cfg, &api_url, &tokens);
         creds.session = Some(pc.clone());
@@ -120,4 +111,42 @@ impl Command for LoginCommand {
             super::FederationPokeAction::Login,
         )
     }
+}
+
+/// The interactive shell around the engine's device-flow protocol: print the
+/// verification URL and user code, open the browser on a TTY (best-effort,
+/// suppressed by `no_browser` for headless/SSH use), and show a spinner while
+/// polling the token endpoint for the user's approval.
+fn run_device_flow(
+    http: &HttpClient,
+    endpoints: &OidcEndpoints,
+    client_id: &str,
+    scopes: &str,
+    no_browser: bool,
+) -> Result<TokenSet> {
+    use std::io::IsTerminal;
+
+    let da = device::start(http, endpoints, client_id, scopes)?;
+
+    let complete = da
+        .verification_uri_complete
+        .clone()
+        .unwrap_or_else(|| da.verification_uri.clone());
+
+    println!("To sign in, open:\n    {}", da.verification_uri);
+    println!("and enter the code: {}", da.user_code);
+
+    if !no_browser && std::io::stdout().is_terminal() {
+        // Best-effort: a headless box without a browser just keeps the printed URL.
+        if open::that(&complete).is_ok() {
+            println!("(opened your browser…)");
+        }
+    }
+
+    let spinner = crate::terminal::spinner("Waiting for you to approve in the browser…");
+    let result = device::poll(http, &endpoints.token_endpoint, client_id, &da);
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    Ok(result?)
 }
