@@ -14,7 +14,7 @@
 //! after the bounce) reliably reports the post-apply state.
 //!
 //! The socket path is *derived* from [`PeppyDirs`] (not stored anywhere): both
-//! the daemon ([`crate::federation_control`]) and this client
+//! the daemon (the private `federation_control` module) and this client
 //! resolve it the same way, so no discovery handshake is needed. A connect that
 //! is refused or finds no socket simply means "no daemon running"; the command
 //! succeeds and federation is applied the next time `serve` starts.

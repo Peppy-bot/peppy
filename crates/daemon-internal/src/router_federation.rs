@@ -486,7 +486,17 @@ async fn poll_and_apply(
     // across tenants). The control handler flushes the ack before triggering the
     // restart; the initial (non-poke) poll discards this outcome but, crucially,
     // also does not federate, so it stays fail-closed until the next generation.
-    let current_namespace = namespace_resolver();
+    // Like the resolve above, the namespace re-resolve is blocking (a file-backed
+    // credentials read); keep it off the async worker. No timeout bound: it is a
+    // local read, not a network pull.
+    let namespace_resolver = namespace_resolver.clone();
+    let current_namespace = match tokio::task::spawn_blocking(move || namespace_resolver()).await {
+        Ok(ns) => ns,
+        Err(e) => {
+            warn!(error = %e, "router federation: namespace resolve task panicked; will retry");
+            return FederationOutcome::Failed(format!("namespace resolve task panicked: {e}"));
+        }
+    };
     if current_namespace != startup_namespace {
         info!(
             from = %startup_namespace,

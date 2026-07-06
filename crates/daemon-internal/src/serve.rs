@@ -211,6 +211,15 @@ impl Serve {
                             "Serve handler dropped before signaling readiness".into(),
                         ),
                     };
+                    // Same graceful exit as the coordinator's teardown below:
+                    // unpark the handlers that DID start so they run their real
+                    // teardown (stop_session, stop_router, unlink the control
+                    // socket) instead of being force-dropped when the runtime
+                    // exits with the startup error.
+                    teardown_token.cancel();
+                    while let Some(result) = join_set.join_next().await {
+                        Self::log_task_result(result);
+                    }
                     return Err(err);
                 }
             }
@@ -349,7 +358,7 @@ pub struct ServeOptions {
 /// restarts a clean exit.
 ///
 /// This function may terminate the process directly with
-/// [`RESTART_EXIT_CODE`] (`75`) instead of returning: when restarts flap past
+/// `RESTART_EXIT_CODE` (`75`) instead of returning: when restarts flap past
 /// the in-process cap, or when the messaging port stays bound between
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.

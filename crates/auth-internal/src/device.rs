@@ -183,7 +183,137 @@ pub fn poll(
 
 #[cfg(test)]
 mod tests {
+    use httpmock::prelude::*;
+    use serde_json::json;
+
     use super::*;
+
+    /// A started flow pointing at a mocked token endpoint, with the poll pacing
+    /// (`interval`, `expires_in`) chosen per test.
+    fn device_auth(interval: u64, expires_in: i64) -> DeviceAuthorization {
+        DeviceAuthorization {
+            device_code: "dev-123".into(),
+            user_code: "ABCD-EFGH".into(),
+            verification_uri: "https://issuer.example/device".into(),
+            verification_uri_complete: None,
+            expires_in,
+            interval,
+        }
+    }
+
+    #[test]
+    fn poll_returns_tokens_on_success() {
+        let server = MockServer::start();
+        let token = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(200).json_body(json!({
+                "access_token": "at",
+                "refresh_token": "rt",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+                "scope": "openid",
+            }));
+        });
+
+        let http = HttpClient::new();
+        let set = poll(
+            &http,
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(1, 60),
+        )
+        .expect("approved flow yields tokens");
+        assert_eq!(set.access_token, "at");
+        assert_eq!(set.refresh_token, "rt");
+        assert_eq!(token.calls(), 1, "success on the first poll: no re-poll");
+    }
+
+    /// `authorization_pending` re-polls at the server interval until the flow
+    /// deadline, then fails with the user-actionable timeout error.
+    #[test]
+    fn poll_repolls_while_pending_until_the_deadline() {
+        let server = MockServer::start();
+        let pending = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400)
+                .json_body(json!({ "error": "authorization_pending" }));
+        });
+
+        let http = HttpClient::new();
+        // 1s interval against a 2s flow lifetime: pending at ~t0 and ~t1, then
+        // the deadline check breaks the loop.
+        let err = poll(
+            &http,
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(1, 2),
+        )
+        .expect_err("an unapproved flow times out");
+        assert!(matches!(err, Error::Auth(_)));
+        assert!(err.to_string().contains("login timed out"));
+        assert!(
+            pending.calls() >= 2,
+            "pending must re-poll at the interval, not give up on the first response"
+        );
+    }
+
+    /// `slow_down` backs the interval off (+5s, RFC 8628): with a 1s starting
+    /// interval and a 4s lifetime, an honored backoff re-polls exactly once (at
+    /// ~6s, past the deadline); an ignored one would keep polling every second.
+    #[test]
+    fn poll_slow_down_backs_off_the_interval() {
+        let server = MockServer::start();
+        let slow = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400).json_body(json!({ "error": "slow_down" }));
+        });
+
+        let http = HttpClient::new();
+        let err = poll(
+            &http,
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            &device_auth(1, 4),
+        )
+        .expect_err("times out past the flow lifetime");
+        assert!(err.to_string().contains("login timed out"));
+        assert_eq!(
+            slow.calls(),
+            2,
+            "the +5s backoff allows exactly one re-poll before the 4s deadline"
+        );
+    }
+
+    /// A fatal OAuth code (`expired_token`) fails on the spot: no re-poll and no
+    /// waiting out the interval or the local deadline.
+    #[test]
+    fn poll_expired_token_fails_immediately() {
+        let server = MockServer::start();
+        let expired = server.mock(|when, then| {
+            when.method(POST).path("/token");
+            then.status(400)
+                .json_body(json!({ "error": "expired_token" }));
+        });
+
+        let http = HttpClient::new();
+        let started = std::time::Instant::now();
+        let err = poll(
+            &http,
+            &format!("{}/token", server.base_url()),
+            "cli-client-id",
+            // A generous lifetime proves the error comes from the fatal code,
+            // not the local deadline.
+            &device_auth(1, 60),
+        )
+        .expect_err("expired_token is fatal");
+        assert!(matches!(err, Error::Auth(_)));
+        assert!(err.to_string().contains("login timed out"));
+        assert_eq!(expired.calls(), 1, "fatal: no re-poll");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "fatal errors do not sleep out the interval"
+        );
+    }
 
     #[test]
     fn classify_maps_oauth_codes() {
