@@ -23,9 +23,9 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::control::{ControlResponse, REFEDERATE_VERB};
 use crate::router_federation::{FederationOutcome, RefederateRequest, TriggerSender};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
-use crate::control::{ControlResponse, REFEDERATE_VERB};
 
 /// Bound on reading a request line, so a client that connects but never writes
 /// cannot hold a handler task open.
@@ -275,8 +275,8 @@ mod tests {
     /// constants from drifting back into the pre-probe sizing.
     #[test]
     fn ack_budget_covers_the_verify_probe_and_client_outlasts_daemon() {
-        use crate::router_federation::PROBE_TIMEOUT;
         use crate::control::POKE_READ_SLACK;
+        use crate::router_federation::PROBE_TIMEOUT;
         assert!(
             PROBE_TIMEOUT < APPLY_ACK_SLACK,
             "the daemon ack slack must cover the verify probe (plus the bounce)"

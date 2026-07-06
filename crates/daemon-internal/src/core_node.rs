@@ -1,5 +1,5 @@
-use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use daemon_config::consts::PeppyDirs;
 use pmi::Messenger;

@@ -44,8 +44,8 @@
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
-use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::{Error, Result};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use pmi::{Messenger, MessengerBackend};
 use std::future::Future;
 use std::pin::Pin;
@@ -225,11 +225,7 @@ impl RouterFederation {
         teardown_token: CancellationToken,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
-            auth::router::resolve_federation_target(
-                &api_url,
-                connect_timeout,
-                &core_node_name,
-            )
+            auth::router::resolve_federation_target(&api_url, connect_timeout, &core_node_name)
         });
         Self {
             federator: real_federator(messenger),

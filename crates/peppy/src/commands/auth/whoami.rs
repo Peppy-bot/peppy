@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
 
-use auth::client::Principal;
-use auth::{client, http::HttpClient, profile, resolver, storage};
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use auth::client::Principal;
+use auth::{client, http::HttpClient, profile, resolver, storage};
 
 pub struct WhoamiCommand {
     pub api_url: Option<String>,

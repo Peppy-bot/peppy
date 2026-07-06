@@ -18,10 +18,10 @@ use peppylib::core_node::transport::poll_stack_list;
 
 use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
-use daemon::control::{self as daemon_control, PokeOutcome};
-use daemon::state::DaemonState;
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
+use daemon::control::{self as daemon_control, PokeOutcome};
+use daemon::state::DaemonState;
 
 /// Shown when the daemon's router config is operator-pinned via `ZENOH_CONFIG`,
 /// so the CLI does not auto-manage federation. Used by both login and logout
@@ -434,10 +434,10 @@ impl Command for AuthCommand {
 #[cfg(test)]
 mod tests {
     use super::{report_login, report_logout, stack_has_user_nodes};
-    use daemon::control::PokeOutcome;
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
+    use daemon::control::PokeOutcome;
     use std::collections::BTreeMap;
 
     /// Builds an instance-less node fixed at `stage`. The bindings/instances are

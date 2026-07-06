@@ -3,8 +3,8 @@ use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
-use crate::state::DaemonState;
 use crate::error::{Error, Result};
+use crate::state::DaemonState;
 use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
@@ -132,11 +132,8 @@ impl ServeCommandBuilder {
                 // backend (the config pull's timeout). `resolve_api_url` is a local
                 // config/env lookup (no I/O), so it's safe to keep on this path; a
                 // `Some` url arms the federation task.
-                let api_url = auth::profile::resolve_api_url(
-                    None,
-                    &self.peppy_config.resource_servers,
-                )
-                .ok();
+                let api_url =
+                    auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers).ok();
                 self.federation_api_url = api_url;
                 // Capture the federation timeout here, before `peppy_config` is
                 // moved into the core node in `build`; both the federation task

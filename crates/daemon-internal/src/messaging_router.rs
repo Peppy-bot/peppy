@@ -1,5 +1,5 @@
-use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use pmi::{Messenger, MessengerBackend, RouterHealthChecker};
 use std::sync::Arc;
 use std::time::Duration;

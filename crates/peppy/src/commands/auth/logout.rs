@@ -9,10 +9,10 @@ use secrecy::ExposeSecret;
 
 use daemon_config::consts::PeppyDirs;
 
-use auth::{client, http::HttpClient, profile, storage};
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use auth::{client, http::HttpClient, profile, storage};
 
 pub struct LogoutCommand {
     pub api_url: Option<String>,

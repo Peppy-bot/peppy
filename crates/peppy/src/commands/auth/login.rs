@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
 
-use auth::device::{self, TokenSet};
-use auth::discovery::OidcEndpoints;
-use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use auth::device::{self, TokenSet};
+use auth::discovery::OidcEndpoints;
+use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
 
 pub struct LoginCommand {
     /// Override the backend base URL (else the build's `resource_servers.api` /
@@ -53,7 +53,13 @@ impl Command for LoginCommand {
 
         let cfg = cli_config::fetch(&http, &api_url)?;
         let endpoints = discovery::discover(&http, &cfg.issuer)?;
-        let tokens = run_device_flow(&http, &endpoints, &cfg.client_id, &cfg.scopes, self.no_browser)?;
+        let tokens = run_device_flow(
+            &http,
+            &endpoints,
+            &cfg.client_id,
+            &cfg.scopes,
+            self.no_browser,
+        )?;
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
         // Load-resilient: a malformed / pre-`organization_id` / version-mismatched
