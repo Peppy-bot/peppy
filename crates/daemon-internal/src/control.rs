@@ -14,7 +14,7 @@
 //! after the bounce) reliably reports the post-apply state.
 //!
 //! The socket path is *derived* from [`PeppyDirs`] (not stored anywhere): both
-//! the daemon ([`super::commands::service::federation_control`]) and this client
+//! the daemon (the private `federation_control` module) and this client
 //! resolve it the same way, so no discovery handshake is needed. A connect that
 //! is refused or finds no socket simply means "no daemon running"; the command
 //! succeeds and federation is applied the next time `serve` starts.
@@ -28,13 +28,13 @@ use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 
 /// File name of the daemon's federation control socket under the runtime dir.
-pub(crate) const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
+pub const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
 
 /// The only request the control socket understands: re-resolve the caller's
 /// upstream and (de)federate the local router to match the current credentials.
 /// One verb covers both login (resolves to an upstream) and logout (resolves to
 /// none ⇒ de-federate).
-pub(crate) const REFEDERATE_VERB: &str = "refederate";
+pub const REFEDERATE_VERB: &str = "refederate";
 
 /// Extra time the client waits for the daemon's ack on top of the configured
 /// federation connect timeout. Kept strictly larger than the daemon-side ack
@@ -42,11 +42,11 @@ pub(crate) const REFEDERATE_VERB: &str = "refederate";
 /// so the daemon always replies a definite status (even "timed out applying")
 /// before the client gives up, turning a slow apply into a definite status rather
 /// than a client-side timeout. (The `ack_budget_*` test guards this ordering.)
-pub(crate) const POKE_READ_SLACK: Duration = Duration::from_secs(11);
+pub const POKE_READ_SLACK: Duration = Duration::from_secs(11);
 
 /// Where the daemon binds (and the client connects to) the federation control
 /// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
-pub(crate) fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs
         .runtime_config_dir()
         .join(FEDERATION_CONTROL_SOCK)
@@ -56,7 +56,7 @@ pub(crate) fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf 
 /// the daemon (which writes it) and this client (which parses it).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum ControlResponse {
+pub enum ControlResponse {
     /// Federation is in effect: `Some(ep)` federated to `ep`, `None`
     /// de-federated.
     Ok { applied: Option<String> },
@@ -78,7 +78,7 @@ pub(crate) enum ControlResponse {
 }
 
 impl ControlResponse {
-    pub(crate) fn error(message: impl Into<String>) -> Self {
+    pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
         }
@@ -87,7 +87,7 @@ impl ControlResponse {
 
 /// What [`poke_refederate`] could determine about the daemon's federation state.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PokeOutcome {
+pub enum PokeOutcome {
     /// The daemon acked: `Some(ep)` federated, `None` de-federated.
     Applied(Option<String>),
     /// Operator-pinned `ZENOH_CONFIG` owns the router config (not auto-managed).
@@ -115,7 +115,7 @@ pub(crate) enum PokeOutcome {
 /// Best effort by design: a poke failure must never fail the calling command, so
 /// a missing/refused socket maps to [`PokeOutcome::DaemonNotRunning`] and any
 /// other I/O error to a benign outcome rather than an `Err`.
-pub(crate) fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
+pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
     match poke_inner(socket_path, read_timeout) {
         Ok(outcome) => outcome,
         Err(e) => match e.kind() {

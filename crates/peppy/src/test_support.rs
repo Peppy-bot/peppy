@@ -1,7 +1,7 @@
-use crate::daemon_state::DaemonState;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
+use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;

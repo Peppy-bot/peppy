@@ -9,10 +9,10 @@ use secrecy::ExposeSecret;
 
 use daemon_config::consts::PeppyDirs;
 
-use crate::auth::{client, http::HttpClient, profile, storage};
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use auth::{client, http::HttpClient, profile, storage};
 
 pub struct LogoutCommand {
     pub api_url: Option<String>,
@@ -39,12 +39,12 @@ impl Command for LogoutCommand {
         // default here so logout actually heals it.
         let mut creds = match storage::load(&creds_path) {
             Ok(creds) => creds,
-            Err(Error::Auth(_)) => {
+            Err(auth::AuthError::Auth(_)) => {
                 let cleaned = storage::Credentials::default();
                 storage::save(&creds_path, &cleaned)?;
                 cleaned
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
         let Some(pc) = creds.session.as_ref() else {
             println!("Not logged in ({}).", profile::build_env_name());

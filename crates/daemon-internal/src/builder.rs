@@ -3,8 +3,8 @@ use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
+use crate::state::DaemonState;
 use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
@@ -18,9 +18,6 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-/// The git hash embedded at compile time by build.rs
-const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
-
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
 const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -30,13 +27,16 @@ pub struct ServeCommandBuilder {
     messaging_ready: Option<watch::Receiver<bool>>,
     core_node_requested: bool,
     core_node_name: Option<String>,
-    clock_source: super::ClockSource,
+    clock_source: crate::ClockSource,
     shutdown_token: Option<CancellationToken>,
     /// Sender the core node runner uses to tell the messaging router that
     /// teardown is done. Created alongside the messaging router so the router
     /// holds the receiver; handed to the core node runner in [`Self::build`].
     core_node_done_tx: Option<watch::Sender<bool>>,
     root_dir: PathBuf,
+    /// The binary's compile-time git hash, recorded in the daemon state file.
+    /// Passed in by the embedding binary (this crate reads no build-time env).
+    git_hash: String,
     peppy_config: PeppyConfig,
     /// Backend URL for per-user-router federation, set by
     /// [`with_messaging_router`](Self::with_messaging_router) for the `zenoh`
@@ -70,17 +70,18 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(root_dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn new(root_dir: impl Into<PathBuf>, git_hash: impl Into<String>) -> Result<Self> {
         Ok(Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
             messaging_ready: None,
             core_node_requested: false,
             core_node_name: None,
-            clock_source: super::ClockSource::default(),
+            clock_source: crate::ClockSource::default(),
             shutdown_token: None,
             core_node_done_tx: None,
             root_dir: root_dir.into(),
+            git_hash: git_hash.into(),
             peppy_config: PeppyConfig::default(),
             federation_api_url: None,
             federation_connect_timeout: Duration::from_secs(
@@ -131,11 +132,8 @@ impl ServeCommandBuilder {
                 // backend (the config pull's timeout). `resolve_api_url` is a local
                 // config/env lookup (no I/O), so it's safe to keep on this path; a
                 // `Some` url arms the federation task.
-                let api_url = crate::auth::profile::resolve_api_url(
-                    None,
-                    &self.peppy_config.resource_servers,
-                )
-                .ok();
+                let api_url =
+                    auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers).ok();
                 self.federation_api_url = api_url;
                 // Capture the federation timeout here, before `peppy_config` is
                 // moved into the core node in `build`; both the federation task
@@ -150,7 +148,7 @@ impl ServeCommandBuilder {
                 // task. The router itself is never namespaced (it only forwards),
                 // so the namespace rides only on application sessions.
                 let namespace = config::org::resolve_session_namespace(
-                    crate::auth::router::cached_organization_id_default().as_deref(),
+                    auth::router::cached_organization_id_default().as_deref(),
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
@@ -171,7 +169,7 @@ impl ServeCommandBuilder {
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
-                warn!(target: "peppy::serve", "Unsupported messaging engine '{}', using mock", other);
+                warn!(target: "daemon::serve", "Unsupported messaging engine '{}', using mock", other);
                 MessengerAdapter::Mock(MockAdapter::default())
             }
         };
@@ -202,7 +200,7 @@ impl ServeCommandBuilder {
     pub fn with_core_node(
         mut self,
         core_node_name: Option<String>,
-        clock_source: super::ClockSource,
+        clock_source: crate::ClockSource,
     ) -> Result<Self> {
         self.core_node_requested = true;
         self.core_node_name = core_node_name;
@@ -277,7 +275,7 @@ impl ServeCommandBuilder {
                 let daemon_state = DaemonState::new(
                     &core_node_name,
                     messenger.blocking_lock().messaging_port(),
-                    GIT_HASH,
+                    &self.git_hash,
                     shutdown_grace_secs,
                     &self.organization_namespace,
                 );
@@ -358,7 +356,7 @@ impl ServeCommandBuilder {
 
             // Control socket the CLI pokes. Derived from the same `PeppyDirs` the
             // CLI resolves, so the two agree without a discovery handshake.
-            let socket_path = crate::daemon_control::federation_control_socket_path(
+            let socket_path = crate::control::federation_control_socket_path(
                 &daemon_config::consts::PeppyDirs::default(),
             );
             self.composite_command =
@@ -385,7 +383,7 @@ impl ServeCommandBuilder {
 }
 
 /// Extracts the messaging port from the environment variable, falling back to the default port.
-pub(super) fn extract_messaging_port() -> u16 {
+pub(crate) fn extract_messaging_port() -> u16 {
     std::env::var(daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
         .ok()
         .and_then(|s| s.parse().ok())

@@ -6,11 +6,11 @@
 //!
 //! The supported surface is intentionally small:
 //! - [`commands`]: the [`commands::Command`] trait plus the per-group command
-//!   and subcommand types that `main.rs` dispatches to.
-//! - [`auth`]: the `peppy auth login`/`logout`/`whoami` engine (OAuth device
-//!   flow, token storage, credential resolution, authenticated backend client).
-//!   It is the engine behind the [`commands::auth`] command group, kept separate
-//!   from the CLI plumbing.
+//!   and subcommand types that `main.rs` dispatches to. The OAuth engine behind
+//!   the [`commands::auth`] group (device flow, token storage, credential
+//!   resolution, authenticated backend client) lives in the separate `auth`
+//!   workspace crate; this crate keeps only the interactive residue (browser
+//!   open, spinners, prompts).
 //! - [`context::AppContext`]: the explicit construction seam (`new`,
 //!   `from_current_dir`, `with_daemon_state_file`, `with_messenger`).
 //! - [`error`]: the crate error type, surfaced through `Command::execute`.
@@ -18,15 +18,15 @@
 //!   binary's log formatter.
 //!
 //! `test_support` is test-only scaffolding behind the `test-support` feature.
-//! `daemon_state` and `terminal` are internal and not part of the contract.
+//! `terminal` is internal and not part of the contract. The daemon process
+//! body (the supervised serve loop, router host, core-node runner, and
+//! federation), the daemon-state file, and the control-socket client all live
+//! in the separate `daemon` workspace crate.
 
 #![deny(unsafe_code)]
 
-pub mod auth;
 pub mod commands;
 pub mod context;
-pub(crate) mod daemon_control;
-mod daemon_state;
 pub mod error;
 pub(crate) mod terminal;
 

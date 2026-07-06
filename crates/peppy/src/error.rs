@@ -9,14 +9,12 @@ pub enum Error {
     #[from]
     Io(std::io::Error),
 
-    // -- serve
-    UnsupportedEngine,
-    MissingEngineConfig,
-    MissingMessagingRouter,
+    // -- daemon: errors surfaced by the `daemon` crate (`peppy service serve`)
+    #[from]
+    Daemon(daemon::DaemonError),
 
     // -- commands
     ExecutionFailed(String),
-    Zenohd(String),
     Sync(String),
 
     // -- Node
@@ -34,12 +32,11 @@ pub enum Error {
     // -- config: daemon-side documents (launcher files, peppy_config.json5)
     DaemonConfig(daemon_config::DaemonConfigError),
 
-    // -- auth: transport/HTTP failures (unreachable backend, unexpected status)
-    Http(String),
-    // -- auth: OAuth / identity failures with a user-actionable message
+    // -- auth: CLI-side OAuth / identity failures with a user-actionable message
     Auth(String),
-    // -- auth: no usable credential and not on an interactive terminal
-    NotAuthenticated,
+    // -- auth: errors surfaced by the `auth` engine crate
+    #[from]
+    AuthEngine(auth::AuthError),
 
     // -- peppylib
     #[from]
@@ -50,27 +47,20 @@ impl Display for Error {
     fn fmt(&self, fmt: &mut Formatter) -> core::result::Result<(), core::fmt::Error> {
         match self {
             Error::Io(e) => write!(fmt, "IO error: {e}"),
-            Error::UnsupportedEngine => write!(fmt, "Unsupported engine"),
-            Error::MissingEngineConfig => write!(fmt, "Missing engine config"),
-            Error::MissingMessagingRouter => write!(fmt, "Missing messaging router"),
+            Error::Daemon(e) => write!(fmt, "{e}"),
             Error::ExecutionFailed(msg) => {
                 // Convert escaped newlines to actual newlines for readable output
                 let readable_msg = msg.replace("\\n", "\n");
                 write!(fmt, "{readable_msg}")
             }
-            Error::Zenohd(msg) => write!(fmt, "Zenohd error: {msg}"),
             Error::Sync(msg) => write!(fmt, "Sync error: {msg}"),
             Error::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
             Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
             Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
             Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
             Error::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
-            Error::Http(msg) => write!(fmt, "{msg}"),
             Error::Auth(msg) => write!(fmt, "{msg}"),
-            Error::NotAuthenticated => write!(
-                fmt,
-                "Not authenticated. Run `peppy auth login` or set PEPPY_API_KEY."
-            ),
+            Error::AuthEngine(e) => write!(fmt, "{e}"),
             Error::Peppy(e) => write!(fmt, "{e}"),
         }
     }
@@ -101,19 +91,6 @@ mod tests {
         assert_eq!(
             Error::Io(std::io::Error::other("boom")).to_string(),
             "IO error: boom"
-        );
-        assert_eq!(Error::UnsupportedEngine.to_string(), "Unsupported engine");
-        assert_eq!(
-            Error::MissingEngineConfig.to_string(),
-            "Missing engine config"
-        );
-        assert_eq!(
-            Error::MissingMessagingRouter.to_string(),
-            "Missing messaging router"
-        );
-        assert_eq!(
-            Error::Zenohd("x".to_string()).to_string(),
-            "Zenohd error: x"
         );
         assert_eq!(Error::Sync("x".to_string()).to_string(), "Sync error: x");
         assert_eq!(

@@ -1,5 +1,5 @@
-use crate::daemon_state::DaemonState;
 use crate::error::Error;
+use daemon::state::DaemonState;
 use peppylib::{MessengerHandle, SessionScope};
 use pmi::Messenger;
 use std::path::{Path, PathBuf};

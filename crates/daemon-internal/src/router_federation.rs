@@ -44,8 +44,8 @@
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::{Error, Result};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use pmi::{Messenger, MessengerBackend};
 use std::future::Future;
 use std::pin::Pin;
@@ -151,7 +151,7 @@ type NamespaceResolver = Arc<dyn Fn() -> String + Send + Sync>;
 fn real_namespace_resolver() -> NamespaceResolver {
     Arc::new(|| {
         config::org::resolve_session_namespace(
-            crate::auth::router::cached_organization_id_default().as_deref(),
+            auth::router::cached_organization_id_default().as_deref(),
         )
         .as_str()
         .to_string()
@@ -225,11 +225,7 @@ impl RouterFederation {
         teardown_token: CancellationToken,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
-            crate::auth::router::resolve_federation_target(
-                &api_url,
-                connect_timeout,
-                &core_node_name,
-            )
+            auth::router::resolve_federation_target(&api_url, connect_timeout, &core_node_name)
         });
         Self {
             federator: real_federator(messenger),
@@ -278,7 +274,7 @@ impl ServeAsyncCommand for RouterFederation {
                     connect_timeout, startup_namespace, namespace_resolver, restart_tx,
                     probe_gate_tx,
                 ) => {}
-                _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             Ok(())
         });
@@ -490,7 +486,17 @@ async fn poll_and_apply(
     // across tenants). The control handler flushes the ack before triggering the
     // restart; the initial (non-poke) poll discards this outcome but, crucially,
     // also does not federate, so it stays fail-closed until the next generation.
-    let current_namespace = namespace_resolver();
+    // Like the resolve above, the namespace re-resolve is blocking (a file-backed
+    // credentials read); keep it off the async worker. No timeout bound: it is a
+    // local read, not a network pull.
+    let namespace_resolver = namespace_resolver.clone();
+    let current_namespace = match tokio::task::spawn_blocking(move || namespace_resolver()).await {
+        Ok(ns) => ns,
+        Err(e) => {
+            warn!(error = %e, "router federation: namespace resolve task panicked; will retry");
+            return FederationOutcome::Failed(format!("namespace resolve task panicked: {e}"));
+        }
+    };
     if current_namespace != startup_namespace {
         info!(
             from = %startup_namespace,
@@ -571,7 +577,7 @@ async fn poll_and_apply(
         && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
             (&outcome, resolved.as_ref())
     {
-        match crate::auth::client::split_locator(ep).ok() {
+        match auth::client::split_locator(ep).ok() {
             Some((host, port)) => {
                 // Bound the probe by the small dedicated PROBE_TIMEOUT (NOT
                 // connect_timeout) so resolve + bounce + probe stays within the

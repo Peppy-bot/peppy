@@ -83,7 +83,7 @@ pub fn init_tracing(style: LogStyle) {
         // `zenoh`, and genuine Zenoh warnings/errors still surface. Override with
         // `RUST_LOG=info` to see the full Zenoh output when debugging the router.
         LogStyle::Verbose => default_env_filter("info,zenoh=warn"),
-        LogStyle::Compact => default_env_filter("peppy=info"),
+        LogStyle::Compact => default_env_filter("peppy=info,daemon=info,auth=info"),
     };
 
     match style {
