@@ -16,7 +16,7 @@ use core_node_api::{InstanceState, SerializedNodeGraph};
 use peppylib::MessengerHandle;
 
 use crate::{
-    context::AppContext,
+    context::{AppContext, DaemonConnection},
     error::{Error, Result},
 };
 
@@ -61,6 +61,51 @@ pub trait Command {
 pub(crate) fn parse_stack_graph(graph_json: &str) -> Result<SerializedNodeGraph> {
     serde_json::from_str(graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))
+}
+
+/// Guards the commands whose payload embeds this session's locally resolved
+/// messaging endpoint (see [`resolve_messaging_endpoint`]): the daemon does
+/// not rewrite `RuntimeConfig`'s `messaging_host`/`messaging_port` server-side
+/// (only the macOS container-gateway rewrite), so a runtime config built here
+/// for a remote daemon would hand its node an endpoint that only exists on
+/// this machine. Until the daemon stamps its own endpoint, these commands
+/// refuse a `--core-node` override naming anything but the local daemon.
+pub(crate) fn reject_remote_target_for_local_endpoint(
+    conn: &DaemonConnection<'_>,
+    command: &str,
+) -> Result<()> {
+    if conn.target_core_node != conn.core_node_name {
+        return Err(Error::ExecutionFailed(format!(
+            "`{command}` does not support --core-node: the runtime config it produces embeds \
+             this machine's messaging endpoint, which nodes on daemon '{}' cannot reach. \
+             Run the command on that daemon's machine instead.",
+            conn.target_core_node
+        )));
+    }
+    Ok(())
+}
+
+/// Guards the commands whose request embeds a **caller-local filesystem path**
+/// that the daemon materializes on its own machine (e.g. `node init`'s scaffold
+/// dir, defaulting to the caller's cwd): sent to a remote daemon, the write
+/// would silently land on that machine's filesystem (`create_dir_all` creates
+/// missing parents, so nothing fails loudly) while the CLI reports success with
+/// a local-looking path. Until such requests carry no caller-local paths, these
+/// commands refuse a `--core-node` override naming anything but the local
+/// daemon. Sibling of [`reject_remote_target_for_local_endpoint`].
+pub(crate) fn reject_remote_target_for_local_path(
+    conn: &DaemonConnection<'_>,
+    command: &str,
+) -> Result<()> {
+    if conn.target_core_node != conn.core_node_name {
+        return Err(Error::ExecutionFailed(format!(
+            "`{command}` does not support --core-node: it writes files at a path on this \
+             machine, which would instead be created on daemon '{}''s filesystem. \
+             Run the command on that daemon's machine instead.",
+            conn.target_core_node
+        )));
+    }
+    Ok(())
 }
 
 /// Resolves the messaging host and port a node should connect to, falling back
@@ -125,5 +170,56 @@ mod tests {
         // The no-current-handle branch builds a fresh runtime.
         let value = block_on(async { Ok::<_, crate::error::Error>(7) }).expect("future resolves");
         assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn remote_target_gate_rejects_only_a_differing_target() {
+        use pmi::MessengerBackend as _;
+        block_on(async {
+            let mut instance = pmi::MockAdapter::start_router()
+                .await
+                .expect("mock router should start");
+            instance
+                .messenger()
+                .start_session()
+                .await
+                .expect("mock session should start");
+            let handle = MessengerHandle::from_shared(std::sync::Arc::new(
+                tokio::sync::Mutex::new(instance.take_messenger()),
+            ));
+            let conn = |target: &str| DaemonConnection {
+                messenger: &handle,
+                core_node_name: "local-daemon".to_string(),
+                target_core_node: target.to_string(),
+                git_hash: "test-git-hash".to_string(),
+                shutdown_grace_secs: 5,
+                organization_namespace: "local".to_string(),
+            };
+
+            // Target == local (the no-override shape): allowed.
+            reject_remote_target_for_local_endpoint(&conn("local-daemon"), "peppy node run")
+                .expect("a local target must pass the gate");
+
+            // A differing target is refused with an actionable message.
+            let err = reject_remote_target_for_local_endpoint(&conn("robot-7"), "peppy node run")
+                .expect_err("a remote target must be refused");
+            let msg = err.to_string();
+            assert!(msg.contains("--core-node"), "names the flag: {msg}");
+            assert!(msg.contains("peppy node run"), "names the command: {msg}");
+            assert!(msg.contains("robot-7"), "names the target daemon: {msg}");
+
+            // The local-path sibling gate behaves identically: local target
+            // passes, a remote target is refused naming flag/command/target.
+            reject_remote_target_for_local_path(&conn("local-daemon"), "peppy node init")
+                .expect("a local target must pass the path gate");
+            let err = reject_remote_target_for_local_path(&conn("robot-7"), "peppy node init")
+                .expect_err("a remote target must be refused by the path gate");
+            let msg = err.to_string();
+            assert!(msg.contains("--core-node"), "names the flag: {msg}");
+            assert!(msg.contains("peppy node init"), "names the command: {msg}");
+            assert!(msg.contains("robot-7"), "names the target daemon: {msg}");
+            Ok(())
+        })
+        .expect("gate test future resolves");
     }
 }

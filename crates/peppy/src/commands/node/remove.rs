@@ -5,7 +5,7 @@ use core_node_api::encoding::{NodeRemoveRequest, StackListRequest};
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
-use crate::context::AppContext;
+use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
 use peppylib::core_node::transport::{poll_node_remove, poll_stack_list};
@@ -41,8 +41,7 @@ async fn remove_node_async(
         stop_instances = true;
     }
     if !stop_instances {
-        let instance_ids =
-            fetch_instance_ids(conn.messenger, &conn.core_node_name, &node_name, &tag).await?;
+        let instance_ids = fetch_instance_ids(&conn, &node_name, &tag).await?;
 
         if !instance_ids.is_empty() {
             let confirm = confirm_removal(&node_name, &tag, &instance_ids)?;
@@ -57,7 +56,7 @@ async fn remove_node_async(
 
     info!(
         "Calling node_remove for '{}:{}' on daemon '{}' (stop_instances={})...",
-        node_name, tag, conn.core_node_name, stop_instances
+        node_name, tag, conn.target_core_node, stop_instances
     );
 
     let remove_request =
@@ -67,7 +66,7 @@ async fn remove_node_async(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await
@@ -86,17 +85,16 @@ async fn remove_node_async(
 }
 
 async fn fetch_instance_ids(
-    messenger: &peppylib::MessengerHandle,
-    core_node_name: &str,
+    conn: &DaemonConnection<'_>,
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
     let response = poll_stack_list(
         &StackListRequest::new(false),
-        messenger,
-        core_node_name,
+        conn.messenger,
+        &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await?;

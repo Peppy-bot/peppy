@@ -46,7 +46,7 @@ async fn sync_resolved_node(
     info!(
         "Syncing node from {} via daemon '{}'...",
         node_root_dir.display(),
-        conn.core_node_name
+        conn.target_core_node
     );
 
     let request = NodeSyncRequest::new(
@@ -59,7 +59,7 @@ async fn sync_resolved_node(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await

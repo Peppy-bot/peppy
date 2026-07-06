@@ -114,15 +114,18 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
 /// `POST {api_url}/me/messaging-federation`: fetch the shared router's connection
 /// config (the daemon's discovery point), refreshing the access token once on a 401
 /// for session credentials (the same reactive-refresh contract as [`get_me`]). The
-/// platform runs a single shared router, so this provisions nothing and takes no
-/// body; it stays a POST for the historical shape. The daemon dials the returned
-/// endpoint over mTLS, presenting its client certificate.
+/// body always carries the daemon's core-node name — the backend requires it and
+/// upserts the name into its per-principal core-node registry (its `last_seen_at`
+/// tracks config pulls, not liveness). The daemon dials the returned endpoint
+/// over mTLS, presenting its client certificate.
 pub fn establish_messaging_federation(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
+    core_node_name: &str,
 ) -> Result<ZenohRouterConfig> {
-    authed_post_json(http, api_url, "/me/messaging-federation", "", cred)
+    let body = serde_json::json!({ "core_node_name": core_node_name }).to_string();
+    authed_post_json(http, api_url, "/me/messaging-federation", &body, cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code

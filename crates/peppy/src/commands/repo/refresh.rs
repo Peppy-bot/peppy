@@ -28,7 +28,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        Some(&conn.core_node_name),
+        Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )
     .await

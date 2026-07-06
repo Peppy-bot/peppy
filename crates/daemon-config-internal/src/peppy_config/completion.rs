@@ -20,10 +20,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use super::{
-    API_FIELD_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET, FEDERATION_SECTION_SNIPPET,
-    FEDERATION_TIMEOUT_FIELD_SNIPPET, HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
-    LIFECYCLE_SECTION_SNIPPET, MODE_SECTION_SNIPPET, PEER_SECTION_SNIPPET,
-    RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
+    API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
+    FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
+    HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET, MODE_SECTION_SNIPPET,
+    PEER_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
+    STANDARD_BUFFER_FIELD_SNIPPET,
 };
 
 /// A nested field of a top-level section, with the template snippet to splice
@@ -46,6 +47,15 @@ struct SectionSpec {
 /// (and to the template composition) to be auto-completed into user files;
 /// `template_matches_section_table` pins the two against each other.
 const SECTIONS: &[SectionSpec] = &[
+    // The template materializes this entry as an explicit `core_node_name:
+    // null,`: [`complete_config_content`] counts a null value as present (its
+    // `as_object()` guard then skips field-level completion), so the splice
+    // cannot repeat once the line exists.
+    SectionSpec {
+        key: "core_node_name",
+        snippet: CORE_NODE_NAME_SECTION_SNIPPET,
+        fields: &[],
+    },
     SectionSpec {
         key: "mode",
         snippet: MODE_SECTION_SNIPPET,
@@ -501,6 +511,7 @@ mod tests {
         let completed = complete_config_content("{}").expect("everything is missing");
         assert_eq!(parse(&completed), PeppyConfig::default());
         for key in [
+            "core_node_name:",
             "mode:",
             "peer:",
             "lifecycle:",
@@ -510,6 +521,17 @@ mod tests {
             assert!(completed.contains(key), "expected {key} in:\n{completed}");
         }
         // A completed file needs no further completion.
+        assert_eq!(complete_config_content(&completed), None);
+    }
+
+    #[test]
+    fn explicit_null_core_node_name_counts_as_present() {
+        // The knob's default is spelled as `null`, not omitted; a file that
+        // already carries the null line must not gain a second one.
+        let completed = complete_config_content("{ core_node_name: null }")
+            .expect("every other section missing");
+        assert_eq!(parse(&completed), PeppyConfig::default());
+        assert_eq!(completed.matches("core_node_name:").count(), 1);
         assert_eq!(complete_config_content(&completed), None);
     }
 
@@ -572,7 +594,7 @@ mod tests {
 // trailing remark
 "#;
         let completed = complete_config_content(content)
-            .expect("peer, lifecycle, resource_servers, federation missing");
+            .expect("core_node_name, peer, lifecycle, resource_servers, federation missing");
         parse(&completed);
 
         // Pin the exact splice: the missing sections go in front of the root's
@@ -581,8 +603,9 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
+            super::super::CORE_NODE_NAME_SECTION_SNIPPET,
             super::super::PEER_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
             super::super::RESOURCE_SERVERS_SECTION_SNIPPET,

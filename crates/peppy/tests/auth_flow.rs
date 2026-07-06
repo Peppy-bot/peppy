@@ -416,13 +416,21 @@ fn whoami_runs_against_a_seeded_session() {
     }
 }
 
+/// The core-node name the federation-pull tests identify the daemon with. The
+/// pull mocks *require* it as the POST body (`json_body`), so a pull that
+/// drops or malforms the body gets no mock response and fails its test.
+const CORE_NODE: &str = "core-node-test-1";
+
 #[test]
 fn establish_messaging_federation_parses_the_contract() {
     let server = MockServer::start();
-    // The shared router is static: the daemon just POSTs to discover it (no body;
-    // it no longer identifies itself with a core-node name).
+    // The shared router is static, so the POST provisions nothing — but its body
+    // must always identify the daemon by core-node name (the backend registry
+    // requires it). The matcher rejects any other body.
     let cfg_mock = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST)
+            .path("/me/messaging-federation")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/localhost:7447",
             "protocol": "tls",
@@ -439,8 +447,9 @@ fn establish_messaging_federation_parses_the_contract() {
         token: storage::secret("any-token".to_string()),
         kind: CredentialKind::Pat,
     };
-    let cfg = client::establish_messaging_federation(&http, &server.base_url(), &mut cred)
-        .expect("fetch shared router config");
+    let cfg =
+        client::establish_messaging_federation(&http, &server.base_url(), &mut cred, CORE_NODE)
+            .expect("fetch shared router config");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
     assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
@@ -477,16 +486,20 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
         }));
     });
     // First pull (seeded token) is rejected; the retry (rotated token) succeeds.
+    // Both matchers require the core-node-name body, so the retry provably
+    // re-sends it.
     let pull_rejected = server.mock(|when, then| {
         when.method(POST)
             .path("/me/messaging-federation")
-            .header("Authorization", "Bearer seeded-access");
+            .header("Authorization", "Bearer seeded-access")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(401);
     });
     let pull_ok = server.mock(|when, then| {
         when.method(POST)
             .path("/me/messaging-federation")
-            .header("Authorization", "Bearer refreshed-access");
+            .header("Authorization", "Bearer refreshed-access")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -516,8 +529,9 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
         }),
     };
 
-    let cfg = client::establish_messaging_federation(&http, &server.base_url(), &mut cred)
-        .expect("pull after refresh");
+    let cfg =
+        client::establish_messaging_federation(&http, &server.base_url(), &mut cred, CORE_NODE)
+            .expect("pull after refresh");
     assert_eq!(
         cfg.host_port().unwrap(),
         ("cap.zenoh.localhost".to_string(), 7443)
@@ -565,15 +579,24 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
             // Matches `seeded_creds`'s subject so the identity tag agrees and the
             // fresh cache is reused (a mismatch would force a re-pull).
             subject: "user-123".into(),
+            // Matches the resolve's core-node name for the same reason.
+            core_node_name: CORE_NODE.into(),
         }),
         ..Default::default()
     };
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
-    let endpoint =
-        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, None)
-            .expect("resolve from cache");
+    let endpoint = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        None,
+        None,
+        None,
+        CORE_NODE,
+    )
+    .expect("resolve from cache");
     assert_eq!(endpoint.host, "cached.zenoh.localhost");
     assert_eq!(endpoint.port, 7443);
     assert!(endpoint.tls.verify_name_on_connect);
@@ -587,8 +610,12 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     // plus the connect-side trust. Proves the derivation the `serve` builder and
     // the `RouterFederation` task both rely on.
     let server = MockServer::start();
+    // The body matcher doubles as the C1 wire-contract check: the daemon's
+    // federation pull must always identify itself by core-node name.
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST)
+            .path("/me/messaging-federation")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -617,6 +644,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
         Some(ca),
         Some(client_identity),
         SECS_30,
+        CORE_NODE,
     )
     .expect("logged in ⇒ a federation target");
     assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
@@ -649,8 +677,15 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir); // no creds file written ⇒ no session
-    let target =
-        router::resolve_federation_target_at(&path, &server.base_url(), None, None, None, SECS_30);
+    let target = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        None,
+        None,
+        None,
+        SECS_30,
+        CORE_NODE,
+    );
     assert!(target.is_none(), "not logged in ⇒ no federation target");
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
 }
@@ -681,8 +716,15 @@ fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
     };
     storage::save(&path, &creds).expect("seed creds");
 
-    let target =
-        router::resolve_federation_target_at(&path, &server.base_url(), None, None, None, SECS_30);
+    let target = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        None,
+        None,
+        None,
+        SECS_30,
+        CORE_NODE,
+    );
     assert!(
         target.is_none(),
         "an org id that is not a valid namespace must fail closed (no federation)"
@@ -731,6 +773,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         None,
         None,
         Duration::from_millis(100),
+        CORE_NODE,
     );
     assert!(
         too_slow.is_none(),
@@ -738,8 +781,15 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
     );
 
     // A generous bound against the same delay succeeds.
-    let in_time =
-        router::resolve_federation_target_at(&path, &server.base_url(), None, None, None, SECS_30);
+    let in_time = router::resolve_federation_target_at(
+        &path,
+        &server.base_url(),
+        None,
+        None,
+        None,
+        SECS_30,
+        CORE_NODE,
+    );
     assert!(
         in_time.is_some(),
         "a backend within the timeout ⇒ a federation target"
@@ -753,8 +803,12 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
 #[test]
 fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     let server = MockServer::start();
+    // The stale re-pull must also carry the core-node-name body (the matcher
+    // rejects anything else).
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST)
+            .path("/me/messaging-federation")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/fresh.zenoh.localhost:7443",
             "protocol": "tls",
@@ -774,6 +828,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             repull_after: 1, // long past ⇒ stale ⇒ re-pull
             organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             subject: "user-123".into(),
+            core_node_name: CORE_NODE.into(),
         }),
         ..Default::default()
     };
@@ -788,6 +843,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
         None,
         Some(ca.clone()),
         None,
+        CORE_NODE,
     )
     .expect("re-pull");
     assert_eq!(endpoint.host, "fresh.zenoh.localhost");
@@ -805,6 +861,74 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     let rs = after.router.as_ref().expect("router cached");
     assert_eq!(rs.endpoint, "tls/fresh.zenoh.localhost:7443");
     assert!(rs.repull_after > storage::now_unix(), "deadline pushed out");
+    assert_eq!(
+        rs.core_node_name, CORE_NODE,
+        "the cache is tagged with the name the config was pulled under"
+    );
+}
+
+#[test]
+fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
+    // The collision-fix workflow: the daemon registered under one name, the user
+    // renames it (`core_node_name` in peppy_config.json5) and restarts within the
+    // cache-freshness window. The still-fresh cache was pulled under the OLD name,
+    // so it must NOT be reused: the resolve re-pulls, registering the new name in
+    // the backend registry, and re-tags the cache with it.
+    let server = MockServer::start();
+    let pull = server.mock(|when, then| {
+        when.method(POST)
+            .path("/me/messaging-federation")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
+        then.status(200).json_body(json!({
+            "endpoint": "tls/cap.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+        }));
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    let creds = Credentials {
+        session: Some(seeded_creds(&server, 9_999_999_999)),
+        router: Some(RouterSession {
+            endpoint: "tls/cap.zenoh.localhost:7443".into(),
+            protocol: "tls".into(),
+            // Far in the future ⇒ fresh; only the name tag differs.
+            repull_after: storage::now_unix() + 100_000,
+            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            subject: "user-123".into(),
+            core_node_name: "the-old-name".into(),
+        }),
+        ..Default::default()
+    };
+    storage::save(&path, &creds).expect("seed creds");
+
+    let http = HttpClient::new();
+    let endpoint = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        None,
+        None,
+        None,
+        CORE_NODE,
+    )
+    .expect("resolve re-pulls under the new name");
+    assert_eq!(endpoint.host, "cap.zenoh.localhost");
+    assert_eq!(
+        pull.calls(),
+        1,
+        "a fresh cache pulled under a different core-node name must re-pull \
+         (registering the new name), not be reused"
+    );
+
+    // The cache is re-tagged with the new name, so the next resolve reuses it.
+    let cached = storage::load(&path)
+        .expect("reload")
+        .router
+        .expect("router cached");
+    assert_eq!(cached.core_node_name, CORE_NODE);
 }
 
 #[test]
@@ -849,6 +973,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         Some("the-pat".to_string()),
         None,
         None,
+        CORE_NODE,
     )
     .expect("PAT pull resolves");
     assert_eq!(ep.host, "pat-org.zenoh.localhost");
@@ -871,8 +996,16 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
 
     // With the PAT gone, a session resolve must NOT reuse the PAT's cache: the
     // subjects differ, so it re-pulls rather than leaking the PAT's org.
-    let _ = router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, None)
-        .expect("session resolve");
+    let _ = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        None,
+        None,
+        None,
+        CORE_NODE,
+    )
+    .expect("session resolve");
     assert_eq!(
         pull.calls(),
         2,

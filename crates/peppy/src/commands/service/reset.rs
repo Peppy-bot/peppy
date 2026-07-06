@@ -24,7 +24,7 @@ async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
 
     info!(
         "Resetting node stack on daemon '{}'...",
-        conn.core_node_name
+        conn.target_core_node
     );
 
     let response = poll_node_reset(
@@ -32,7 +32,9 @@ async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        // Route to the (possibly remote) target daemon; the reset request
+        // embeds nothing host-local, so it is remote-capable like node_remove.
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await
@@ -46,6 +48,9 @@ async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
         ));
     }
 
-    info!("Node stack reset successfully");
+    info!(
+        "Node stack on daemon '{}' reset successfully",
+        conn.target_core_node
+    );
     Ok(())
 }

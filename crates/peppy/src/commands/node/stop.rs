@@ -38,7 +38,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
 
     info!(
         "Calling node_stop for instance_id '{}' on daemon '{}'...",
-        instance_id, conn.core_node_name
+        instance_id, conn.target_core_node
     );
 
     // Wait long enough to outlast the daemon's full force-kill deadline (grace +
@@ -46,16 +46,24 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
     // deliberately long grace, or a node that legitimately takes most of that
     // window to exit, would make the CLI give up before the (successful) stop
     // returns.
+    //
+    // Sized from the *local* daemon's `shutdown_grace_secs`: `DaemonState`
+    // only records the local generation, so a `--core-node` stop borrows the
+    // local grace as its estimate of the remote daemon's. (Optional follow-up:
+    // pre-fetch the remote grace via `poll_info`.)
     let request_timeout = stop_request_timeout(conn.shutdown_grace_secs);
 
+    // The service root (`to_target`) and the discovery scope both name the
+    // target core node; only the bound identity stays local.
     let stop_request = NodeStopRequest::new(instance_id.clone());
     let stop_response = poll_node_stop(
         &stop_request,
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        SenderTarget::node(&conn.core_node_name, CORE_NODE_TAG)
+        SenderTarget::node(&conn.target_core_node, CORE_NODE_TAG)
             .map_err(|e| Error::ExecutionFailed(format!("Failed to build sender target: {e}")))?,
+        &conn.target_core_node,
         request_timeout,
     )
     .await

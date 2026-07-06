@@ -36,7 +36,7 @@ pub async fn list_nodes_collecting(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await?;
@@ -44,10 +44,12 @@ pub async fn list_nodes_collecting(
     let graph = crate::commands::parse_stack_graph(&response.graph_json)?;
 
     // Sort nodes by label for consistent output, with the daemon root first.
+    // The root belongs to the *listed* stack, so it bears the target daemon's
+    // name, not necessarily the local one.
     let mut nodes = graph.nodes;
     nodes.sort_by(|a, b| {
-        let a_is_daemon = a.label().starts_with(&conn.core_node_name);
-        let b_is_daemon = b.label().starts_with(&conn.core_node_name);
+        let a_is_daemon = a.label().starts_with(&conn.target_core_node);
+        let b_is_daemon = b.label().starts_with(&conn.target_core_node);
         match (a_is_daemon, b_is_daemon) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,

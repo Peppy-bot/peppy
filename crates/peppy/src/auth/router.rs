@@ -158,7 +158,11 @@ fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Optio
 /// same resolution the auth commands use; `ca_certificate` (the trust anchor, see
 /// [`resolve_router_ca`]) and `client_identity` (the mTLS cert + key, see
 /// [`resolve_router_client_identity`]) are applied fresh to the live TLS at connect
-/// time (never cached on disk).
+/// time (never cached on disk). `core_node_name` is the daemon's core-node name,
+/// carried in the pull's POST body to register the daemon in the backend's
+/// core-node registry (see [`client::establish_messaging_federation`]); it also
+/// tags the cache, so a resolve under a different name (a renamed daemon) always
+/// re-pulls and re-registers rather than reusing a still-fresh cache.
 ///
 /// Only the pull path needs a credential, so a fresh cache is reused without
 /// touching the token at all.
@@ -169,6 +173,7 @@ pub fn resolve_router_endpoint(
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
     client_identity: Option<(PathBuf, PathBuf)>,
+    core_node_name: &str,
 ) -> Result<RouterEndpoint> {
     let now = storage::now_unix();
     // Load once: the cached router config and the active session's subject come
@@ -189,16 +194,24 @@ pub fn resolve_router_endpoint(
     // pull time (see `pull_and_cache`), which the session-derived `active_subject`
     // cannot match on this fast path, and re-pulling is cheap (federation resolves
     // only at startup and on a login/logout poke).
+    //
+    // The cache is additionally bound to the core-node name it was pulled under
+    // (`rs.core_node_name`): the pull's POST is what registers the daemon in the
+    // backend's core-node registry, so a renamed daemon (the `CoreNodeNameTaken`
+    // collision-fix workflow: set `core_node_name`, restart) must re-pull — and
+    // thereby register its new name — instead of reusing a still-fresh cache and
+    // staying absent from the registry until the cache goes stale.
     let reuse_cache = pat.is_none() && !active_subject.is_empty();
     let (endpoint, organization_id) = match creds.router {
         Some(rs)
             if reuse_cache
                 && !rs.is_stale(now, REPULL_SKEW_SECS)
-                && rs.subject == active_subject =>
+                && rs.subject == active_subject
+                && rs.core_node_name == core_node_name =>
         {
             (rs.endpoint, rs.organization_id)
         }
-        _ => pull_and_cache(creds_path, http, api_url, pat, now)?,
+        _ => pull_and_cache(creds_path, http, api_url, pat, now, core_node_name)?,
     };
 
     let (host, port) = client::split_locator(&endpoint)?;
@@ -214,13 +227,16 @@ pub fn resolve_router_endpoint(
 /// the session, and returns the endpoint locator. `now` is threaded in so the
 /// cached `repull_after` uses the same clock reading as the freshness check. The
 /// trust anchor is resolved fresh at connect time (see [`resolve_router_ca`]), so
-/// it is deliberately not part of the cached `RouterSession`.
+/// it is deliberately not part of the cached `RouterSession`. The pull identifies
+/// the daemon by `core_node_name` (the POST body), upserting it into the
+/// backend's core-node registry.
 fn pull_and_cache(
     creds_path: &Path,
     http: &HttpClient,
     api_url: &str,
     pat: Option<String>,
     now: i64,
+    core_node_name: &str,
 ) -> Result<(String, String)> {
     let mut cred = resolver::resolve(creds_path, http, pat)?;
     // The identity this pull is actually authenticated as drives the cache tag
@@ -228,7 +244,7 @@ fn pull_and_cache(
     // session subject; doing so would let the session reuse the PAT's org once the
     // PAT is gone (a cross-identity leak).
     let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
-    let cfg = client::establish_messaging_federation(http, api_url, &mut cred)?;
+    let cfg = client::establish_messaging_federation(http, api_url, &mut cred, core_node_name)?;
 
     // Validate the config *before* it is written to `creds.router`: a malformed
     // endpoint or an unsupported transport must not poison the on-disk
@@ -271,6 +287,9 @@ fn pull_and_cache(
         repull_after: now.saturating_add(saturating_secs_to_i64(cfg.reconnect_after_secs)),
         organization_id: cfg.organization_id.clone(),
         subject,
+        // Tag the cache with the name this pull registered, so a rename forces
+        // a re-pull (and re-registration) even while the cache is still fresh.
+        core_node_name: core_node_name.to_string(),
     });
     storage::save(creds_path, &creds)?;
     Ok((cfg.endpoint, cfg.organization_id))
@@ -289,9 +308,14 @@ fn pull_and_cache(
 /// `connect_timeout` bounds the (blocking) config pull so a slow/unreachable
 /// backend can't stall the caller (federation at startup / on a login-poke)
 /// beyond it; on timeout the pull errors and this returns `None`.
+///
+/// `core_node_name` is the daemon's core-node name, sent in every pull's POST
+/// body so the backend registry records which daemon federated (and when it
+/// last pulled).
 pub fn resolve_federation_target(
     api_url: &str,
     connect_timeout: Duration,
+    core_node_name: &str,
 ) -> Option<(String, pmi::TlsConfig)> {
     resolve_federation_target_at(
         &storage::default_path(),
@@ -300,6 +324,7 @@ pub fn resolve_federation_target(
         resolve_router_ca(),
         resolve_router_client_identity(),
         connect_timeout,
+        core_node_name,
     )
 }
 
@@ -315,6 +340,7 @@ pub fn resolve_federation_target_at(
     ca_certificate: Option<PathBuf>,
     client_identity: Option<(PathBuf, PathBuf)>,
     connect_timeout: Duration,
+    core_node_name: &str,
 ) -> Option<(String, pmi::TlsConfig)> {
     // Skip the network entirely when there is plainly no identity to pull for, so
     // an un-provisioned dev box does not log a spurious auth error every poll. Take
@@ -343,6 +369,7 @@ pub fn resolve_federation_target_at(
         pat,
         ca_certificate,
         client_identity,
+        core_node_name,
     ) {
         // Fail-closed gate, single source: federate only when the resolved org id
         // is a valid namespace. The daemon's session namespace is resolved from

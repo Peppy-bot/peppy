@@ -21,6 +21,12 @@ use logging::{LogStyle, init_tracing};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// Core-node name of the daemon to target (see `peppy info`). Defaults
+    /// to the local daemon. The local daemon must be running either way (its
+    /// router and federation carry the traffic), and a remote daemon must
+    /// belong to the same organization.
+    #[arg(long = "core-node", global = true, value_name = "NAME")]
+    core_node: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -84,7 +90,7 @@ fn main() {
     init_tracing(log_style);
 
     let app_ctx = match AppContext::from_current_dir() {
-        Ok(ctx) => Arc::new(ctx),
+        Ok(ctx) => Arc::new(ctx.with_core_node_override(cli.core_node)),
         Err(e) => {
             error!("Error: {}", e);
             std::process::exit(1);
@@ -106,5 +112,39 @@ fn main() {
     if let Err(e) = result {
         error!("Error: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_node_flag_parses_after_the_subcommand() {
+        // `global = true` is what lets the root flag ride after the
+        // subcommand, the way users type it.
+        let cli = Cli::try_parse_from(["peppy", "stack", "list", "--core-node", "robot-7"])
+            .expect("global --core-node should parse after the subcommand");
+        assert_eq!(cli.core_node.as_deref(), Some("robot-7"));
+        assert!(matches!(
+            cli.command,
+            Commands::Stack {
+                command: stack::StackCommands::List { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn core_node_flag_parses_before_the_subcommand() {
+        let cli = Cli::try_parse_from(["peppy", "--core-node", "robot-7", "info"])
+            .expect("--core-node should parse at the root position too");
+        assert_eq!(cli.core_node.as_deref(), Some("robot-7"));
+        assert!(matches!(cli.command, Commands::Info {}));
+    }
+
+    #[test]
+    fn core_node_flag_defaults_to_none() {
+        let cli = Cli::try_parse_from(["peppy", "stack", "list"]).expect("plain parse");
+        assert_eq!(cli.core_node, None, "absent flag targets the local daemon");
     }
 }

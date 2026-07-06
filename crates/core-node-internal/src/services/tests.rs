@@ -118,6 +118,68 @@ async fn core_node_explicit_name_overrides_machine_uid() {
     );
 }
 
+/// The derived name is a pure function of the host identifier: same id, same
+/// name — including the digit suffix, which comes from the same digest that
+/// seeds the generator.
+#[test]
+fn derived_name_is_deterministic_per_host_id() {
+    assert_eq!(
+        derive_name_from_host_id("host-a"),
+        derive_name_from_host_id("host-a"),
+    );
+    assert_ne!(
+        derive_name_from_host_id("host-a"),
+        derive_name_from_host_id("host-b"),
+    );
+}
+
+/// Shape: `core-node-{adj}-{surname}-{NNNN}-{DDDDDDDDDD}` — the generator's
+/// 4-digit base followed by the 10-digit zero-padded suffix — and the result
+/// passes `Name::new` validation.
+#[test]
+fn derived_name_has_generator_base_and_ten_digit_suffix() {
+    let name = derive_name_from_host_id("some-machine-uid");
+    let name = name.as_str();
+
+    assert!(
+        name.starts_with("core-node-"),
+        "derived name must use the `core-node-` prefix, got `{name}`"
+    );
+    let mut segments = name.rsplit('-');
+    let suffix = segments.next().unwrap();
+    assert_eq!(
+        suffix.len(),
+        10,
+        "suffix must be 10 zero-padded decimal digits, got `{suffix}`"
+    );
+    assert!(suffix.chars().all(|c| c.is_ascii_digit()));
+    let generator_digits = segments.next().unwrap();
+    assert_eq!(
+        generator_digits.len(),
+        4,
+        "the generator's 4-digit block must precede the suffix, got `{generator_digits}`"
+    );
+    assert!(generator_digits.chars().all(|c| c.is_ascii_digit()));
+
+    assert!(Name::new(name.to_string()).is_ok());
+}
+
+/// Distinct host identifiers must yield distinct digit suffixes (the suffix is
+/// the collision-entropy extension; if it collapsed to a constant it would add
+/// nothing over the generator's ~304M combinations).
+#[test]
+fn distinct_host_ids_yield_distinct_suffixes() {
+    let suffix = |host_id: &str| {
+        derive_name_from_host_id(host_id)
+            .as_str()
+            .rsplit('-')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    assert_ne!(suffix("host-a"), suffix("host-b"));
+}
+
 /// A second `start_with_ready` on the same instance is rejected rather than
 /// re-running the destructive setup and double-registering listeners.
 #[tokio::test]
@@ -145,4 +207,72 @@ async fn start_with_ready_rejects_a_second_start() {
     assert!(matches!(err, crate::Error::AlreadyStarted));
 
     first_task.abort();
+}
+
+/// Boot refuses with `CoreNodeNameTaken` when a `ping` listener already
+/// answers under the same core-node name (a foreign daemon claiming it): the
+/// mock adapter auto-answers reachability probes in its dispatch path, so a
+/// registered listener is all "another daemon" takes. The refusal must also
+/// happen before any destructive setup — the instances dir survives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_refuses_to_boot_when_name_already_claimed() {
+    let messenger = create_mock_messenger().await;
+
+    // Simulate the foreign daemon: its ping listener bound under the name.
+    let _foreign_ping = ping::listen_for_ping(
+        &MessengerHandle::from_shared(Arc::clone(&messenger)),
+        "collision_node",
+        "foreign_instance",
+        "collision_node",
+    )
+    .await
+    .expect("foreign ping listener should register");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let peppy_dirs = PeppyDirs::new(root.path());
+    let marker = peppy_dirs.instances_dir().join("stale_instance");
+    std::fs::create_dir_all(&marker).expect("pre-existing instances dir");
+
+    let core_node = CoreNode::new(test_core_node_config(
+        messenger,
+        Some("collision_node"),
+        peppy_dirs,
+    ));
+
+    let err = core_node
+        .start_with_ready(None)
+        .await
+        .expect_err("boot must refuse while the name is claimed");
+    assert!(
+        matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "collision_node"),
+        "expected CoreNodeNameTaken for `collision_node`, got: {err}"
+    );
+    assert!(
+        marker.exists(),
+        "a refused boot must not clear the instances dir"
+    );
+}
+
+/// With no other daemon answering under the name, the self-probe passes and
+/// boot proceeds to the ready signal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_boots_clean_when_name_unclaimed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let core_node = Arc::new(CoreNode::new(test_core_node_config(
+        create_mock_messenger().await,
+        Some("unclaimed_node"),
+        PeppyDirs::new(root.path()),
+    )));
+
+    let boot = Arc::clone(&core_node);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
+
+    // The self-probe alone costs ~2s (4 unanswered probes); leave headroom.
+    tokio::time::timeout(Duration::from_secs(30), ready_rx)
+        .await
+        .expect("boot should reach ready despite the unanswered self-probe")
+        .expect("ready signal should fire");
+
+    boot_task.abort();
 }

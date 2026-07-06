@@ -398,7 +398,6 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -593,7 +592,6 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "askama",
  "git2",
@@ -736,7 +734,6 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -2270,7 +2267,6 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "serde",
  "serde_json",
@@ -3002,7 +2998,6 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "capnp",
  "clap",
@@ -3025,7 +3020,6 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3200,7 +3194,6 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.0.1"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#9d4fc52e24545b8e74727bfacd10c2a929ccdc52"
 dependencies = [
  "build-helpers",
  "bytes",
