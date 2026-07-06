@@ -398,6 +398,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -431,9 +432,9 @@ dependencies = [
 
 [[package]]
 name = "capnp"
-version = "0.26.1"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7436c94a2012ebd7847d2a3b5756f02603ddda4026faae19d01df6a3e37084db"
+checksum = "58ddce707ad9fb2ae92770523cd0e17a0cf34e79b66a9ca4db2dd993535fe718"
 dependencies = [
  "embedded-io",
 ]
@@ -592,6 +593,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "askama",
  "git2",
@@ -734,6 +736,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -2234,11 +2237,11 @@ dependencies = [
 
 [[package]]
 name = "jobserver"
-version = "0.1.34"
+version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
 dependencies = [
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "libc",
 ]
 
@@ -2267,6 +2270,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "serde",
  "serde_json",
@@ -2274,9 +2278,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.46.9"
+version = "0.46.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d865ca7ca04445fcaa1d751fda3dc43b0113ba2fcddc65d5a0fcb474a7c3bba"
+checksum = "f0a699d3e77675e6aa4bfffe3b907c8b5f7ed3241f9965bffb25475ad4b08d05"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2303,9 +2307,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.46.9"
+version = "0.46.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b7fc96cd6677cc81b00607d43477327d719419937ef1c44b3556a40f517d54c"
+checksum = "6dbd1086b01b9349fd4ef9a07433965af64c8ce8159abe633a189e4ff817bd13"
 dependencies = [
  "regex-syntax",
 ]
@@ -2998,6 +3002,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "capnp",
  "clap",
@@ -3020,6 +3025,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3194,6 +3200,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.0.1"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#b723a27d2baa6644d2f025a8d4cd7bc95beea911"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3525,9 +3532,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.46.9"
+version = "0.46.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77954d81b2e1c5e8ab889f9f597a92f852ab073255de9e37ee3fb443efd57051"
+checksum = "0fbf332a2f81899f6836f22c03da73dae8a664c32e3016b84692c23cddadc95d"
 dependencies = [
  "ahash",
  "fluent-uri",
