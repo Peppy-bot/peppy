@@ -5,31 +5,8 @@
 
 use crate::{Error, Result};
 use config::node::PeppygenLanguage;
+use core_node_api::FORBIDDEN_ENV_KEYS;
 use std::sync::OnceLock;
-
-/// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
-/// Used by both the core node (to reject requests) and CLI (to filter before sending).
-pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [
-    // Linux dynamic linker injection
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-    "LD_AUDIT",
-    "LD_DEBUG",
-    // macOS dynamic linker injection
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "DYLD_FRAMEWORK_PATH",
-    // Shell injection vectors
-    "BASH_ENV",
-    "ENV",
-    "CDPATH",
-    "IFS",
-    "SHELLOPTS",
-    "BASHOPTS",
-    "PS4",
-    "PROMPT_COMMAND",
-    "GLOBIGNORE",
-];
 
 pub(crate) const PEPPY_APPTAINER_BIN_ENV_VAR: &str = "PEPPY_APPTAINER_BIN";
 pub(crate) const PEPPY_NODE_NAME_ENV_VAR: &str = "PEPPY_NODE_NAME";

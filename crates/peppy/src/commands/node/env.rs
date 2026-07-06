@@ -1,4 +1,4 @@
-use core_node::FORBIDDEN_ENV_KEYS;
+use core_node_api::FORBIDDEN_ENV_KEYS;
 
 /// Env vars that are meaningless or misleading when forwarded to a spawned node
 /// because the node runs in a different working directory (the instance dir).
