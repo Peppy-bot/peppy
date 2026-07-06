@@ -118,6 +118,13 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     let conn = ctx.connect_to_daemon().await?;
 
+    // A local filesystem source is a caller-local path the daemon snapshots
+    // on its own machine; a remote target would resolve it on the wrong
+    // machine's filesystem.
+    if matches!(node_source, NodeSource::Fs(_)) {
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy node add")?;
+    }
+
     // A chained run spawns an instance whose runtime config embeds this
     // machine's messaging endpoint; that is only valid on the local daemon.
     if run_options.is_some() {

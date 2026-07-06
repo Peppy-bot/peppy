@@ -25,8 +25,25 @@ struct Cli {
     /// to the local daemon. The local daemon must be running either way (its
     /// router and federation carry the traffic), and a remote daemon must
     /// belong to the same organization.
-    #[arg(long = "core-node", global = true, value_name = "NAME")]
+    #[arg(long = "core-node", global = true, value_name = "NAME", value_parser = parse_core_node_target)]
     core_node: Option<String>,
+}
+
+/// Validates a `--core-node` value at the CLI boundary with the same `Name`
+/// rules (and length cap) `service serve` applies to `--core-node-name`, so a
+/// malformed target fails here with a clap error instead of becoming an
+/// unreachable `target_core_node` deep in a request.
+fn parse_core_node_target(value: &str) -> Result<String, String> {
+    if config::runtime::Name::new(value).is_err()
+        || value.len() > daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN
+    {
+        return Err(format!(
+            "must be non-empty, at most {} characters, and use only characters from \"{}\"",
+            daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN,
+            config::consts::ALLOWED_CONFIG_CHARS
+        ));
+    }
+    Ok(value.to_string())
 }
 
 #[derive(Subcommand)]
@@ -146,5 +163,19 @@ mod tests {
     fn core_node_flag_defaults_to_none() {
         let cli = Cli::try_parse_from(["peppy", "stack", "list"]).expect("plain parse");
         assert_eq!(cli.core_node, None, "absent flag targets the local daemon");
+    }
+
+    /// A malformed `--core-node` must be rejected at parse time — the same
+    /// `Name` rules `service serve --core-node-name` enforces — rather than
+    /// silently becoming an unreachable request target.
+    #[test]
+    fn core_node_flag_rejects_invalid_names() {
+        let long = "x".repeat(daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN + 1);
+        for bad in ["", "   ", "has space", "robot/7", long.as_str()] {
+            assert!(
+                Cli::try_parse_from(["peppy", "stack", "list", "--core-node", bad]).is_err(),
+                "--core-node {bad:?} should be rejected"
+            );
+        }
     }
 }

@@ -63,6 +63,25 @@ pub(crate) fn parse_stack_graph(graph_json: &str) -> Result<SerializedNodeGraph>
         .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))
 }
 
+/// Shared core of the remote-target gates below: refuses a `--core-node`
+/// override naming anything but the local daemon. `reason` explains, in terms
+/// of the failing command, why its request cannot cross machines; it is built
+/// lazily so the happy path allocates nothing.
+fn reject_remote_target(
+    conn: &DaemonConnection<'_>,
+    command: &str,
+    reason: impl FnOnce(&str) -> String,
+) -> Result<()> {
+    if conn.target_core_node != conn.core_node_name {
+        return Err(Error::ExecutionFailed(format!(
+            "`{command}` does not support --core-node: {} \
+             Run the command on that daemon's machine instead.",
+            reason(&conn.target_core_node)
+        )));
+    }
+    Ok(())
+}
+
 /// Guards the commands whose payload embeds this session's locally resolved
 /// messaging endpoint (see [`resolve_messaging_endpoint`]): the daemon does
 /// not rewrite `RuntimeConfig`'s `messaging_host`/`messaging_port` server-side
@@ -74,38 +93,32 @@ pub(crate) fn reject_remote_target_for_local_endpoint(
     conn: &DaemonConnection<'_>,
     command: &str,
 ) -> Result<()> {
-    if conn.target_core_node != conn.core_node_name {
-        return Err(Error::ExecutionFailed(format!(
-            "`{command}` does not support --core-node: the runtime config it produces embeds \
-             this machine's messaging endpoint, which nodes on daemon '{}' cannot reach. \
-             Run the command on that daemon's machine instead.",
-            conn.target_core_node
-        )));
-    }
-    Ok(())
+    reject_remote_target(conn, command, |target| {
+        format!(
+            "the runtime config it produces embeds this machine's messaging endpoint, \
+             which nodes on daemon '{target}' cannot reach."
+        )
+    })
 }
 
 /// Guards the commands whose request embeds a **caller-local filesystem path**
-/// that the daemon materializes on its own machine (e.g. `node init`'s scaffold
-/// dir, defaulting to the caller's cwd): sent to a remote daemon, the write
-/// would silently land on that machine's filesystem (`create_dir_all` creates
-/// missing parents, so nothing fails loudly) while the CLI reports success with
-/// a local-looking path. Until such requests carry no caller-local paths, these
-/// commands refuse a `--core-node` override naming anything but the local
-/// daemon. Sibling of [`reject_remote_target_for_local_endpoint`].
+/// that the daemon resolves on its own machine (e.g. `node init`'s scaffold
+/// dir, defaulting to the caller's cwd): sent to a remote daemon, the path
+/// would silently be read or created on that machine's filesystem while the
+/// CLI reports success with a local-looking path. Until such requests carry no
+/// caller-local paths, these commands refuse a `--core-node` override naming
+/// anything but the local daemon. Sibling of
+/// [`reject_remote_target_for_local_endpoint`].
 pub(crate) fn reject_remote_target_for_local_path(
     conn: &DaemonConnection<'_>,
     command: &str,
 ) -> Result<()> {
-    if conn.target_core_node != conn.core_node_name {
-        return Err(Error::ExecutionFailed(format!(
-            "`{command}` does not support --core-node: it writes files at a path on this \
-             machine, which would instead be created on daemon '{}''s filesystem. \
-             Run the command on that daemon's machine instead.",
-            conn.target_core_node
-        )));
-    }
-    Ok(())
+    reject_remote_target(conn, command, |target| {
+        format!(
+            "it operates on a filesystem path from this machine, which would instead \
+             be resolved on daemon '{target}''s filesystem."
+        )
+    })
 }
 
 /// Resolves the messaging host and port a node should connect to, falling back

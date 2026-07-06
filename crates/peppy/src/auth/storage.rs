@@ -88,9 +88,8 @@ pub struct RouterSession {
     /// name is not reused, so a renamed daemon (e.g. after a
     /// `CoreNodeNameTaken` collision fix) re-pulls — and re-registers — on its
     /// next resolve instead of staying absent from the registry until the
-    /// cache goes stale. `#[serde(default)]`: a pre-existing file without the
-    /// field deserializes to empty, mismatches, and simply re-pulls once.
-    #[serde(default)]
+    /// cache goes stale. Required for the same clean-break reason as
+    /// `organization_id`.
     pub core_node_name: String,
 }
 
@@ -350,11 +349,11 @@ mod tests {
         assert_eq!(rs.core_node_name, "core-node-alice-1");
     }
 
-    /// A pre-existing cached router session written before the name tag existed
-    /// must still load (defaulting to an empty name, which mismatches any real
-    /// name and forces one re-pull) rather than failing the whole file.
+    /// A cached router session missing the `core_node_name` tag is rejected
+    /// outright (no back-compat default), the same clean break as
+    /// `organization_id`: `auth login`/`logout` start fresh.
     #[test]
-    fn router_session_without_a_core_node_name_defaults_to_empty() {
+    fn rejects_a_router_session_missing_the_core_node_name() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
@@ -369,9 +368,11 @@ mod tests {
         )
         .expect("write pre-name-tag file");
 
-        let loaded = load(&path).expect("load");
-        let rs = loaded.router.as_ref().expect("router session");
-        assert_eq!(rs.core_node_name, "", "absent field defaults to empty");
+        let err = load(&path).expect_err("missing name tag must be rejected");
+        assert!(
+            err.to_string().contains("failed to parse"),
+            "rejection should surface as a parse error: {err}"
+        );
     }
 
     #[test]
