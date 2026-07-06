@@ -26,7 +26,7 @@ async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await

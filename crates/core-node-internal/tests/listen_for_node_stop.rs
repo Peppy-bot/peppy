@@ -124,6 +124,7 @@ async fn listen_for_node_stop_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
+        &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
     .await
@@ -269,6 +270,7 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
+        &started_core_node.core_node_name,
         deadline + Duration::from_secs(5),
     )
     .await
@@ -303,6 +305,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
+        &started_core_node.core_node_name,
         Duration::from_secs(5),
     )
     .await
@@ -387,6 +390,7 @@ async fn node_stop_force_kills_whole_process_group() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
         stop_timeout,
     )
     .await
@@ -539,6 +543,7 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
         stop_timeout,
     )
     .await
@@ -579,7 +584,8 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
 /// root encodes only name + tag, so an unscoped discovery could be won by the
 /// foreign core node's listener, which would answer "unknown instance" while
 /// the right reply is dropped. `poll_node_stop` scopes its discovery to the
-/// caller's bound core node, so the foreign listener must never answer.
+/// `scope_core_node` it is given (here the caller's own core node), so the
+/// foreign listener must never answer.
 ///
 /// Before the scoping fix, each iteration was a discovery race the foreign
 /// listener (registered first, to bias the race against us) could win.
@@ -662,6 +668,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
             LOCAL_CORE_NODE,
             CALLER_INSTANCE_ID,
             common::test_node_target(NODE_NAME),
+            LOCAL_CORE_NODE,
             Duration::from_secs(5),
         )
         .await
@@ -798,6 +805,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
         Duration::from_secs(30),
     )
     .await

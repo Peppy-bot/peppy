@@ -82,6 +82,15 @@ pub struct RouterSession {
     /// reused under the wrong org. Empty for a PAT pull (no session). Required
     /// for the same clean-break reason as `organization_id`.
     pub subject: String,
+    /// The core-node name the config was pulled under (the pull's POST body,
+    /// which registers the daemon in the backend's core-node registry). Tags
+    /// the cache like `subject` does: a fresh cache pulled under a *different*
+    /// name is not reused, so a renamed daemon (e.g. after a
+    /// `CoreNodeNameTaken` collision fix) re-pulls — and re-registers — on its
+    /// next resolve instead of staying absent from the registry until the
+    /// cache goes stale. Required for the same clean-break reason as
+    /// `organization_id`.
+    pub core_node_name: String,
 }
 
 impl RouterSession {
@@ -324,6 +333,7 @@ mod tests {
                 repull_after: 1_700_000_000,
                 organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
                 subject: "auth0|alice".into(),
+                core_node_name: "core-node-alice-1".into(),
             }),
             ..Default::default()
         };
@@ -336,6 +346,33 @@ mod tests {
         assert_eq!(rs.repull_after, 1_700_000_000);
         assert_eq!(rs.organization_id, "550e8400-e29b-41d4-a716-446655440000");
         assert_eq!(rs.subject, "auth0|alice");
+        assert_eq!(rs.core_node_name, "core-node-alice-1");
+    }
+
+    /// A cached router session missing the `core_node_name` tag is rejected
+    /// outright (no back-compat default), the same clean break as
+    /// `organization_id`: `auth login`/`logout` start fresh.
+    #[test]
+    fn rejects_a_router_session_missing_the_core_node_name() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{ version: {CREDENTIALS_VERSION}, router: {{
+                    endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
+                    organization_id: "550e8400-e29b-41d4-a716-446655440000",
+                    subject: "auth0|alice" }} }}"#
+            ),
+        )
+        .expect("write pre-name-tag file");
+
+        let err = load(&path).expect_err("missing name tag must be rejected");
+        assert!(
+            err.to_string().contains("failed to parse"),
+            "rejection should surface as a parse error: {err}"
+        );
     }
 
     #[test]
@@ -373,6 +410,7 @@ mod tests {
             repull_after: 1_000,
             organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             subject: "auth0|alice".into(),
+            core_node_name: "core-node-alice-1".into(),
         };
         assert!(!rs.is_stale(900, 30));
         assert!(rs.is_stale(980, 30)); // 980 + 30 >= 1000

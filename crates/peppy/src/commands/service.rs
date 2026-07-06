@@ -42,7 +42,9 @@ pub enum ServiceCommands {
         /// Messaging engine to use (zenoh by default)
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
-        /// Optional name for the core node
+        /// Optional name for the core node. Overrides `core_node_name` in
+        /// ~/.peppy/conf/peppy_config.json5; when both are absent a
+        /// machine-specific default is derived.
         #[arg(long)]
         core_node_name: Option<String>,
         /// Daemon-wide clock source. Per-instance `framework.use_sim_time`

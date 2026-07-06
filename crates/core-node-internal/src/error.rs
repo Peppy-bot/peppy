@@ -52,4 +52,12 @@ pub enum Error {
 
     #[error("core node already started")]
     AlreadyStarted,
+
+    #[error(
+        "core node name '{name}' is already in use by another daemon reachable over this \
+         router/federation; refusing to start. Set `core_node_name` in \
+         `~/.peppy/conf/peppy_config.json5` (or run `peppy service serve --core-node-name`) \
+         to give this daemon a unique name, then restart it"
+    )]
+    CoreNodeNameTaken { name: String },
 }

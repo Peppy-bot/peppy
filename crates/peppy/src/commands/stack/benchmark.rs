@@ -80,7 +80,7 @@ async fn benchmark_async(
 
     info!(
         "Benchmarking stack on daemon '{}' ({} samples, {} warmup per interface)",
-        conn.core_node_name, effective_samples, warmup
+        conn.target_core_node, effective_samples, warmup
     );
 
     let mut action_handle = send_stack_benchmark(
@@ -88,7 +88,7 @@ async fn benchmark_async(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        None,
+        Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )
     .await

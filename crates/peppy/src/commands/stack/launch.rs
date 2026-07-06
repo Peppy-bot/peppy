@@ -225,12 +225,12 @@ async fn launch_async(
     match &launcher_origin {
         LauncherOrigin::Fs(path) => info!(
             "Calling launcher on daemon '{}' with config={}",
-            conn.core_node_name,
+            conn.target_core_node,
             path.display()
         ),
         LauncherOrigin::Repository { name } => info!(
             "Calling launcher on daemon '{}' with repository launcher `{}`",
-            conn.core_node_name, name
+            conn.target_core_node, name
         ),
     }
 
@@ -263,7 +263,7 @@ async fn launch_async(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        None,
+        Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )
     .await

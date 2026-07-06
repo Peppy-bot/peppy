@@ -43,10 +43,15 @@ async fn sync_resolved_node(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
+    // The request embeds `node_root_dir`, a caller-local path the daemon
+    // resolves on its own machine: a remote target would sync (or fail on)
+    // the wrong machine's filesystem.
+    crate::commands::reject_remote_target_for_local_path(&conn, "peppy node sync")?;
+
     info!(
         "Syncing node from {} via daemon '{}'...",
         node_root_dir.display(),
-        conn.core_node_name
+        conn.target_core_node
     );
 
     let request = NodeSyncRequest::new(
@@ -59,7 +64,7 @@ async fn sync_resolved_node(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await

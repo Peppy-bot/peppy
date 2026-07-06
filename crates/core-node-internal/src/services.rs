@@ -4,7 +4,6 @@ mod datastore;
 mod health;
 mod info;
 mod node;
-mod ping;
 pub(crate) mod repo;
 mod response;
 mod stack;
@@ -15,6 +14,7 @@ pub use node::FORBIDDEN_ENV_KEYS;
 pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
 
 use crate::Result;
+use crate::names;
 use config::{
     DefaultValue, ParameterSpec,
     node::{Execution, Manifest, NodeConfig, PeppygenLanguage, TypeToken},
@@ -25,8 +25,10 @@ use daemon_config::consts::PeppyDirs;
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
-use peppylib::MessengerHandle;
+use peppylib::messaging::{SenderTarget, ServiceTarget};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use pmi::Messenger;
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rng;
 use rand::rngs::StdRng;
@@ -45,6 +47,11 @@ const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
     Some(tag) => tag,
     None => "dev",
 };
+
+/// Boot-time self-probes sent before concluding the core-node name is
+/// unclaimed. Each unanswered probe costs peppylib's probe timeout (500ms),
+/// so a clean boot pays ~2s; a claimed name is refused on the first reply.
+const SELF_PROBE_ATTEMPTS: u32 = 4;
 
 #[cfg(test)]
 mod tests;
@@ -192,23 +199,39 @@ fn derive_core_node_name() -> Name {
             })
         });
 
-    let generated = match seed_source {
-        Some(src) => {
-            // Hash so the published name does not reveal the UID/hostname.
-            let digest = Sha256::digest(src.as_bytes());
-            let seed: [u8; 32] = digest.into();
-            let mut seeded = StdRng::from_seed(seed);
-            get_random(&mut seeded)
-        }
+    match seed_source {
+        Some(src) => derive_name_from_host_id(&src),
         None => {
             tracing::warn!(
                 "machine UID and hostname unavailable; falling back to non-deterministic core node name"
             );
-            get_random(&mut rng())
+            let mut random = rng();
+            let generated = get_random(&mut random);
+            let suffix = random.next_u32();
+            format_core_node_name(&generated, suffix)
         }
-    };
+    }
+}
 
-    Name::new(format!("core-node-{generated}")).unwrap()
+/// Deterministic branch of [`derive_core_node_name`], split out so tests can
+/// drive it with explicit host identifiers. The SHA256 digest both seeds the
+/// generator and yields the digit suffix, so the whole name is a pure
+/// function of the host identifier.
+fn derive_name_from_host_id(host_id: &str) -> Name {
+    // Hash so the published name does not reveal the UID/hostname.
+    let digest = Sha256::digest(host_id.as_bytes());
+    let seed: [u8; 32] = digest.into();
+    let suffix = u32::from_be_bytes(seed[..4].try_into().expect("sha256 digest >= 4 bytes"));
+    let mut seeded = StdRng::from_seed(seed);
+    format_core_node_name(&get_random(&mut seeded), suffix)
+}
+
+/// Assembles `core-node-{adj}-{surname}-{NNNN}-{DDDDDDDDDD}`: the generator's
+/// human-readable base plus 10 zero-padded decimal digits. The 32 extra bits
+/// keep fleet-wide birthday-collision odds negligible at 10k nodes (the
+/// generator alone has only ~304M combinations).
+fn format_core_node_name(generated: &str, suffix: u32) -> Name {
+    Name::new(format!("core-node-{generated}-{suffix:010}")).unwrap()
 }
 
 impl CoreNode {
@@ -317,12 +340,59 @@ impl CoreNode {
         self.instance_id.as_str()
     }
 
+    /// Boot-time self-probe: sends reachability probes to the `health` service
+    /// under this daemon's own core-node name. Runs before this instance's
+    /// listeners are registered, so any reply proves a foreign daemon already
+    /// claims the name — breaking the name-based routing invariant every
+    /// core-node API call rests on — and boot is refused with
+    /// [`crate::Error::CoreNodeNameTaken`].
+    ///
+    /// Probe infrastructure errors fail open with a warning: only positive
+    /// reachability refuses boot. Limitation: the probe sees only what the
+    /// local router reaches when it runs. The serve runner therefore delays
+    /// `start_with_ready` until the initial router federation has settled
+    /// (bounded by the federation connect timeout), so the probe covers the
+    /// federated mesh too; a daemon whose federation lands only later (slow
+    /// backend past the bound, or a peer that federates in afterwards) is
+    /// caught by the runtime alarm instead (see
+    /// [`clock::watch_for_name_collision`]).
+    async fn ensure_name_unclaimed(&self) -> Result<()> {
+        for attempt in 1..=SELF_PROBE_ATTEMPTS {
+            match ServiceMessenger::is_reachable(
+                &self.messenger,
+                self.node_name(),
+                self.instance_id(),
+                // The wire tag from `names` (`"core"`), not this file's
+                // `CORE_NODE_TAG` git tag.
+                SenderTarget::node(self.node_name(), names::CORE_NODE_TAG)?,
+                names::HEALTH,
+                ServiceTarget::Any,
+            )
+            .await
+            {
+                Ok(true) => {
+                    return Err(crate::Error::CoreNodeNameTaken {
+                        name: self.node_name().to_string(),
+                    });
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!(
+                    "core-node name self-probe {attempt}/{SELF_PROBE_ATTEMPTS} failed: {e}; \
+                     continuing boot (only a positive reply refuses)"
+                ),
+            }
+        }
+        Ok(())
+    }
+
     /// Boots the core node: registers every service listener and runs until the
     /// messaging session is torn down. The optional `ready` sender fires once
     /// all listeners are registered (used by tests and the serve runner to
     /// gate dependent startup).
     ///
     /// Side effects performed up front, before listeners are registered:
+    /// - **Probes its own core-node name** and refuses to boot if a foreign
+    ///   daemon already answers under it; see [`Self::ensure_name_unclaimed`].
     /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
     ///   clear stale state from a previous run; see [`clear_instances_dir`].
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
@@ -333,6 +403,10 @@ impl CoreNode {
         if self.started.swap(true, Ordering::SeqCst) {
             return Err(crate::Error::AlreadyStarted);
         }
+
+        // Refuse a collision before any destructive setup: a refused boot must
+        // leave the running daemon's on-disk state (instances dir) untouched.
+        self.ensure_name_unclaimed().await?;
 
         clear_instances_dir(&self.peppy_dirs);
 
@@ -376,13 +450,6 @@ impl CoreNode {
         // the slowest single listener, not the sum of all of them. They're
         // independent: no listener depends on another being registered first.
         let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
-            ping::listen_for_ping(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-            )
-            .boxed(),
             health::listen_for_health(
                 &self.messenger,
                 core_node_name,
@@ -429,6 +496,17 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.heartbeat_interval,
+                self.shutdown_token.clone(),
+            )
+            .boxed(),
+            // Runtime complement to the boot-time self-probe: alarm if a
+            // foreign daemon instance beats under this daemon's name (e.g.
+            // one that federated in after boot, which the probe cannot see).
+            clock::watch_for_name_collision(
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
                 self.shutdown_token.clone(),
             )
             .boxed(),

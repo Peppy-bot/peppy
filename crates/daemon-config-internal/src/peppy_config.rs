@@ -23,10 +23,12 @@ mod completion;
 use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
 use crate::error::{Error, ParsingError, Result};
+use config::consts::ALLOWED_CONFIG_CHARS;
 use config::peppy_config::{
     DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
     DEFAULT_STANDARD_BUFFER_SIZE, PeerConfig,
 };
+use config::runtime::Name;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -76,6 +78,13 @@ pub const DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 30;
 /// also mean "no timeout" to the HTTP client, the opposite of the intent).
 pub const MIN_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 1;
 
+/// Maximum accepted `core_node_name` length, in characters. The name is
+/// embedded in every zenoh key expression that addresses this daemon
+/// (`service/node/{name}/core/…`), so the familiar DNS-label cap keeps those
+/// keys bounded without constraining any realistic name (derived defaults stay
+/// well under it).
+pub const MAX_CORE_NODE_NAME_LEN: usize = 63;
+
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) so the template
 // lives next to the completion logic that splices it and the crate needs no
@@ -91,6 +100,25 @@ pub const MIN_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 1;
 const TEMPLATE_HEADER: &str = r#"// Read once when the peppy daemon starts, so any edit below (mode or buffer
 // sizes) takes effect only after you restart the daemon.
 "#;
+
+/// The `core_node_name` entry with its explanatory comment. Spelled out as an
+/// explicit `null` (parsed as `None` → derive the default) rather than
+/// omitting the key: completion treats a `null` entry as present, so splicing
+/// this snippet into an older file is idempotent.
+const CORE_NODE_NAME_SECTION_SNIPPET: &str = const_format::concatcp!(
+    r#"  // Fixed name for this daemon's core node, or null to derive a
+  // machine-specific default (core-node-...). Names must be unique across all
+  // daemons reachable over the same router/federation: a daemon whose name is
+  // already in use refuses to boot. At most "#,
+    MAX_CORE_NODE_NAME_LEN,
+    r#" characters from
+  // ""#,
+    ALLOWED_CONFIG_CHARS,
+    r#"".
+  // `peppy service serve --core-node-name` overrides this for one run.
+  core_node_name: null,
+"#
+);
 
 /// The `mode` entry with its explanatory comment.
 const MODE_SECTION_SNIPPET: &str = r#"  //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
@@ -205,6 +233,8 @@ const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
 const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     TEMPLATE_HEADER,
     "{\n",
+    CORE_NODE_NAME_SECTION_SNIPPET,
+    "\n",
     MODE_SECTION_SNIPPET,
     "\n",
     PEER_SECTION_SNIPPET,
@@ -321,6 +351,14 @@ impl Default for FederationConfig {
 /// lost `Copy` costs nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PeppyConfig {
+    /// Fixed core-node name for this daemon; `None` (the template's explicit
+    /// `null`) derives the machine-specific default. Checked by [`validate`]
+    /// (`Name` charset + [`MAX_CORE_NODE_NAME_LEN`]) so an invalid name fails
+    /// at load time instead of panicking when the core node boots.
+    ///
+    /// [`validate`]: PeppyConfig::validate
+    #[serde(default)]
+    pub core_node_name: Option<String>,
     #[serde(default)]
     pub mode: Mode,
     #[serde(default)]
@@ -334,13 +372,26 @@ pub struct PeppyConfig {
 }
 
 impl PeppyConfig {
-    /// Rejects user-tunable numeric fields that serde cannot constrain.
+    /// Rejects user-tunable fields that serde cannot constrain.
     ///
     /// Buffer sizes feed bounded channel constructors downstream: a 0 capacity
     /// panics `tokio::sync::mpsc::channel` and degrades `flume::bounded` into a
     /// rendezvous channel that stalls every send. A hand-edited 0 must fail loud
     /// at load time rather than crash or wedge a running mesh.
     fn validate(&self) -> Result<()> {
+        // An explicit core-node name ends up in `Name::new(...)` when the core
+        // node boots, so a value serde accepted as a plain string must be
+        // checked here to fail at load time instead of at boot.
+        if let Some(name) = &self.core_node_name
+            && (Name::new(name.as_str()).is_err() || name.len() > MAX_CORE_NODE_NAME_LEN)
+        {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "{PEPPY_CONFIG_FILE}: invalid core_node_name {name:?}: must be \
+                 non-empty, at most {MAX_CORE_NODE_NAME_LEN} characters, and use \
+                 only characters from \"{ALLOWED_CONFIG_CHARS}\""
+            ))));
+        }
+
         let buffer_sizes = [
             ("standard_buffer_size", self.peer.standard_buffer_size),
             (
@@ -498,6 +549,7 @@ mod tests {
     #[test]
     fn default_mode_is_peer_and_buffers_match_constants() {
         let cfg = PeppyConfig::default();
+        assert_eq!(cfg.core_node_name, None);
         assert_eq!(cfg.mode, Mode::Peer);
         assert!(cfg.mode.is_peer());
         assert!(cfg.mode.gossip());
@@ -544,6 +596,86 @@ mod tests {
             dirs_with_config(r#"{ federation: { connect_timeout_secs: 5 } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.federation.connect_timeout_secs, 5);
+    }
+
+    #[test]
+    fn core_node_name_completes_to_explicit_null_idempotently() {
+        // An older file without the knob gains the explicit `null` line
+        // (null = derive the default), and a second load parses to the same
+        // config without rewriting the file again.
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.core_node_name, None);
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("core_node_name: null,"));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+
+        // A file that already spells the knob as `null` parses to `None` and
+        // does not gain a second line.
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.core_node_name, None);
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(completed.matches("core_node_name:").count(), 1);
+    }
+
+    #[test]
+    fn explicit_core_node_name_round_trips_to_some() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: "robot-7" }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.core_node_name.as_deref(), Some("robot-7"));
+
+        // Completion appends the other knobs but never touches the user's
+        // value, and a second load is idempotent.
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains(r#"core_node_name: "robot-7""#));
+        assert!(!completed.contains("core_node_name: null"));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+    }
+
+    #[test]
+    fn invalid_core_node_name_fails_loud_and_leaves_file_untouched() {
+        for bad in [
+            r#"{ core_node_name: "" }"#,
+            r#"{ core_node_name: "has space" }"#,
+            r#"{ core_node_name: "robot/7" }"#,
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(bad);
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m))
+                    if m.contains("core_node_name")
+                        && m.contains(PEPPY_CONFIG_FILE)
+                        && m.contains(ALLOWED_CONFIG_CHARS)),
+                "expected a core-node-name validation error for {bad}, got: {err:?}"
+            );
+            // Invalid names fail BEFORE completion: the file keeps omitting
+            // knobs and is not rewritten, same as the malformed case.
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), bad);
+        }
+    }
+
+    #[test]
+    fn core_node_name_length_cap_is_enforced() {
+        // Exactly at the cap is accepted...
+        let max = "x".repeat(MAX_CORE_NODE_NAME_LEN);
+        let (_tmp, peppy_dirs, _) = dirs_with_config(&format!(r#"{{ core_node_name: "{max}" }}"#));
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.core_node_name.as_deref(), Some(max.as_str()));
+
+        // ...one past it fails loud with the file untouched.
+        let over = "x".repeat(MAX_CORE_NODE_NAME_LEN + 1);
+        let content = format!(r#"{{ core_node_name: "{over}" }}"#);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m))
+                if m.contains("core_node_name")),
+            "expected a core-node-name validation error, got: {err:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
     }
 
     #[test]
@@ -706,6 +838,7 @@ mod tests {
     #[test]
     fn round_trips_custom_config() {
         let custom = PeppyConfig {
+            core_node_name: Some("lab-bench-1".to_string()),
             mode: Mode::Router,
             peer: PeerConfig {
                 standard_buffer_size: 64,

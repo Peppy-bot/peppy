@@ -123,6 +123,9 @@ pub(crate) fn confirm_restart(
 fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
     let probe = async {
         let conn = ctx.connect_to_daemon().await?;
+        // Deliberately targets the *local* daemon (not `conn.target_core_node`):
+        // this probe backs the "login/logout restarts the local daemon" warning,
+        // so a global `--core-node` override must not redirect it.
         let response = poll_stack_list(
             &StackListRequest::new(false),
             conn.messenger,
