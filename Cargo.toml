@@ -46,6 +46,7 @@ build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 auth = { path = "crates/auth-internal" }
 containers = { path = "crates/containers-internal" }
 core-node = { path = "crates/core-node-internal" }
+daemon = { path = "crates/daemon-internal" }
 daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
 generator = { path = "crates/generator-internal" }

@@ -18,14 +18,15 @@
 //!   binary's log formatter.
 //!
 //! `test_support` is test-only scaffolding behind the `test-support` feature.
-//! `daemon_state` and `terminal` are internal and not part of the contract.
+//! `terminal` is internal and not part of the contract. The daemon process
+//! body (the supervised serve loop, router host, core-node runner, and
+//! federation), the daemon-state file, and the control-socket client all live
+//! in the separate `daemon` workspace crate.
 
 #![deny(unsafe_code)]
 
 pub mod commands;
 pub mod context;
-pub(crate) mod daemon_control;
-mod daemon_state;
 pub mod error;
 pub(crate) mod terminal;
 

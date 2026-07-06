@@ -1,10 +1,3 @@
-mod builder;
-mod core_node;
-mod federation_control;
-mod messaging_router;
-mod router_federation;
-mod shutdown_signal;
-
 pub mod install;
 pub mod reset;
 pub mod serve;
@@ -31,6 +24,15 @@ impl ClockSource {
     /// Convenience: `true` when the daemon should treat sim as the default.
     pub fn use_sim_time(self) -> bool {
         matches!(self, ClockSource::Sim)
+    }
+}
+
+impl From<ClockSource> for daemon::ClockSource {
+    fn from(source: ClockSource) -> Self {
+        match source {
+            ClockSource::Wall => daemon::ClockSource::Wall,
+            ClockSource::Sim => daemon::ClockSource::Sim,
+        }
     }
 }
 

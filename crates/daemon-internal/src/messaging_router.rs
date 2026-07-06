@@ -1,4 +1,4 @@
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use pmi::{Messenger, MessengerBackend, RouterHealthChecker};
 use std::sync::Arc;
@@ -119,11 +119,11 @@ impl ServeAsyncCommand for MessagingRouter {
                         // practice only shutdown (a real signal or an in-process
                         // restart via the shared token) resolves this select.
                         _ = run_router_watchdog(&messenger, &checker) => {}
-                        _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                        _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
                     }
                 }
                 None => {
-                    super::shutdown_signal::shutdown_or_token(&teardown_token).await;
+                    crate::shutdown_signal::shutdown_or_token(&teardown_token).await;
                 }
             }
 

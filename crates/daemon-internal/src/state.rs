@@ -14,7 +14,7 @@ const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";
 /// environment variable, or defaults to `~/.peppy/$DAEMON_STATE_FILENAME` in production
 /// and a temp directory in development.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DaemonState {
+pub struct DaemonState {
     /// The name of the node currently acting as the core node.
     pub core_node_name: String,
     pub daemon_pid: Option<u32>,
@@ -72,7 +72,7 @@ fn now_epoch_ms() -> u64 {
 }
 
 impl DaemonState {
-    pub(crate) fn new(
+    pub fn new(
         core_node_name: impl Into<String>,
         messaging_port: u16,
         git_hash: impl Into<String>,
@@ -99,18 +99,17 @@ impl DaemonState {
     }
 
     /// Returns the path where the daemon state file would be stored in the given directory.
-    #[cfg(feature = "test-support")]
-    pub(crate) fn state_file_in(dir: impl AsRef<Path>) -> PathBuf {
+    pub fn state_file_in(dir: impl AsRef<Path>) -> PathBuf {
         dir.as_ref().join(DAEMON_STATE_FILENAME)
     }
 
-    pub(crate) fn write(&self) -> Result<PathBuf, io::Error> {
+    pub fn write(&self) -> Result<PathBuf, io::Error> {
         let path = Self::state_file_path();
         Self::write_to(&path, self)?;
         Ok(path)
     }
 
-    pub(crate) fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
+    pub fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -119,7 +118,7 @@ impl DaemonState {
         fs::write(path, content)
     }
 
-    pub(crate) fn read() -> Result<Self, io::Error> {
+    pub fn read() -> Result<Self, io::Error> {
         if let Some(path) = Self::env_state_file_path() {
             return Self::read_from(&path);
         }
@@ -148,7 +147,7 @@ impl DaemonState {
         }
     }
 
-    pub(crate) fn read_from(path: &Path) -> Result<Self, io::Error> {
+    pub fn read_from(path: &Path) -> Result<Self, io::Error> {
         let content = fs::read_to_string(path)?;
         serde_json5::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
     }
@@ -194,7 +193,7 @@ impl DaemonState {
     /// probing its recorded pid. A state file outlives a crashed daemon (it is
     /// left on disk), so a successful [`read`](Self::read) is not by itself proof
     /// of liveness; a caller that needs "is a daemon actually up" must check this.
-    pub(crate) fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.daemon_pid.is_some_and(Self::pid_looks_alive)
     }
 

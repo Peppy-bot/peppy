@@ -44,7 +44,7 @@
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::{Error, Result};
 use pmi::{Messenger, MessengerBackend};
 use std::future::Future;
@@ -278,7 +278,7 @@ impl ServeAsyncCommand for RouterFederation {
                     connect_timeout, startup_namespace, namespace_resolver, restart_tx,
                     probe_gate_tx,
                 ) => {}
-                _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             Ok(())
         });

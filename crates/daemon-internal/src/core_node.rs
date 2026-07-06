@@ -1,4 +1,4 @@
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use daemon_config::consts::PeppyDirs;
@@ -68,7 +68,7 @@ impl CoreNodeRunner {
         root_dir: PathBuf,
         messaging_ready: Option<watch::Receiver<bool>>,
         federation_settled: Option<watch::Receiver<bool>>,
-        clock_source: super::ClockSource,
+        clock_source: crate::ClockSource,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
         organization_namespace: String,
         serve_teardown_token: CancellationToken,
@@ -133,7 +133,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let future = Box::pin(async move {
             // Tear down on a real OS shutdown signal OR an in-process restart
             // (the shared serve coordinator token).
-            let teardown = super::shutdown_signal::shutdown_or_token(&serve_teardown_token);
+            let teardown = crate::shutdown_signal::shutdown_or_token(&serve_teardown_token);
             tokio::pin!(teardown);
 
             if let Some(mut ready_rx) = messaging_ready.take() {

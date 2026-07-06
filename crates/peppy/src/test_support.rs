@@ -1,4 +1,4 @@
-use crate::daemon_state::DaemonState;
+use daemon::state::DaemonState;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};

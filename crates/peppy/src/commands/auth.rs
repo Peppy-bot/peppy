@@ -18,8 +18,8 @@ use peppylib::core_node::transport::poll_stack_list;
 
 use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
-use crate::daemon_control::{self, PokeOutcome};
-use crate::daemon_state::DaemonState;
+use daemon::control::{self as daemon_control, PokeOutcome};
+use daemon::state::DaemonState;
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
 
@@ -434,7 +434,7 @@ impl Command for AuthCommand {
 #[cfg(test)]
 mod tests {
     use super::{report_login, report_logout, stack_has_user_nodes};
-    use crate::daemon_control::PokeOutcome;
+    use daemon::control::PokeOutcome;
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
