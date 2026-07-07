@@ -9,7 +9,7 @@
 //! The data model holds a single session (`Credentials::session` is one
 //! `Option`), so logging in against a different backend overwrites it rather
 //! than adding a second entry. `issuer`/`client_id` are cached alongside the
-//! tokens so a refresh does not need to re-hit `/cli-config`.
+//! tokens so a refresh does not need to re-hit `/cli/auth-config`.
 
 use std::path::{Path, PathBuf};
 
@@ -36,8 +36,8 @@ pub struct Credentials {
     pub version: u32,
     #[serde(default)]
     pub session: Option<ProfileCreds>,
-    /// Cached per-user zenoh-router connection (from `POST /me/messaging-federation`), or
-    /// `None` until first fetched. Bound to `session`: cleared on login/logout so
+    /// Cached per-user zenoh-router connection (from
+    /// `POST /me/cli/federation`), or `None` until first fetched. Bound to `session`: cleared on login/logout so
     /// it can never outlive its identity.
     #[serde(default)]
     pub router: Option<RouterSession>,

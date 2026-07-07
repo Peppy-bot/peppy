@@ -4,7 +4,7 @@
 //! `peppy` is a public OAuth client of the project's Zitadel instance and a
 //! caller of the `platform-backend` resource server. The login flow is:
 //!
-//! 1. [`cli_config::fetch`]: `GET {api_url}/cli-config` (public) → `issuer`,
+//! 1. [`cli_config::fetch`]: `GET {api_url}/cli/auth-config` (public) → `issuer`,
 //!    `client_id`, `scopes` (sent to Zitadel verbatim).
 //! 2. [`discovery::discover`]: OIDC discovery against the `issuer` to learn the
 //!    `device_authorization` and `token` endpoints.

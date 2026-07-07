@@ -1,5 +1,5 @@
 //! Command-level auth tests (`peppy auth login` / `logout` / `whoami`) with
-//! every HTTP endpoint mocked (`httpmock`): the public `/cli-config`, OIDC
+//! every HTTP endpoint mocked (`httpmock`): the public `/cli/auth-config`, OIDC
 //! discovery, the Zitadel device/token endpoints, and the backend `/me` +
 //! `/logout`. All auth state is isolated per test via the `peppy_dirs` seam
 //! pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run in parallel);
@@ -22,14 +22,14 @@ use peppy::commands::auth::logout::LogoutCommand;
 use peppy::commands::auth::whoami::WhoamiCommand;
 use peppy::context::AppContext;
 
-/// Builds the cli-config + OIDC discovery + device-authorization + token mocks
+/// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
 /// for a server whose issuer is its own base URL, with the device grant
 /// succeeding immediately. Returns nothing; the mocks live on the server.
 fn mock_login_endpoints(server: &MockServer, access_token: &str) {
     let base = server.base_url();
 
     server.mock(|when, then| {
-        when.method(GET).path("/cli-config");
+        when.method(GET).path("/cli/auth-config");
         then.status(200).json_body(json!({
             "issuer": base,
             "client_id": "cli-client-id",

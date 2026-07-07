@@ -1,6 +1,6 @@
 //! Authenticated calls to the `platform-backend` resource server: `GET /me`,
-//! `POST /logout`, and `POST /me/messaging-federation` (fetch the shared
-//! router's connection config). On a `401` with a refreshable session credential the
+//! `POST /logout`, and `POST /me/cli/federation` (fetch the
+//! shared router's connection config). On a `401` with a refreshable session credential the
 //! request is retried once after refreshing (and persisting) the token; a `401`
 //! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
 //! distinct messages so an ops problem isn't mistaken for a bad token.
@@ -111,21 +111,22 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-/// `POST {api_url}/me/messaging-federation`: fetch the shared router's connection
-/// config (the daemon's discovery point), refreshing the access token once on a 401
-/// for session credentials (the same reactive-refresh contract as [`get_me`]). The
+/// `POST {api_url}/me/cli/federation`: fetch the shared router's
+/// connection config (the daemon's discovery point), refreshing the access token
+/// once on a 401 for session credentials (the same reactive-refresh contract as
+/// [`get_me`]). The
 /// body always carries the daemon's core-node name — the backend requires it and
 /// upserts the name into its per-principal core-node registry (its `last_seen_at`
 /// tracks config pulls, not liveness). The daemon dials the returned endpoint
 /// over mTLS, presenting its client certificate.
-pub fn establish_messaging_federation(
+pub fn establish_federation(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
     core_node_name: &str,
 ) -> Result<ZenohRouterConfig> {
     let body = serde_json::json!({ "core_node_name": core_node_name }).to_string();
-    authed_post_json(http, api_url, "/me/messaging-federation", &body, cred)
+    authed_post_json(http, api_url, "/me/cli/federation", &body, cred)
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code
