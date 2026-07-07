@@ -1,7 +1,7 @@
 //! Global daemon configuration read from `~/.peppy/conf/peppy_config.json5`.
 //!
 //! This is the single user-facing switch for the messaging topology. The daemon
-//! reads it ONCE at startup (see `peppy serve`), creating the file from the
+//! reads it ONCE at startup (see `peppy service serve`), creating the file from the
 //! bundled default template if it is missing, and applies the result to its own
 //! core-node session and to every node it spawns. Editing the file takes effect
 //! after a daemon restart.

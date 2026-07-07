@@ -8,7 +8,7 @@ sidebar:
 The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, controls the messaging topology of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
 
 :::note
-The daemon reads its settings (`core_node_name`, `mode`, `peer`, `lifecycle`, `federation`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
+The daemon reads its settings (`core_node_name`, `mode`, `peer`, `lifecycle`, `federation`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
 :::
 
 ## How the file is managed
