@@ -23,7 +23,7 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await

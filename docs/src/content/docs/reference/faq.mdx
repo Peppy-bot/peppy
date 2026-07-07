@@ -1,48 +1,48 @@
 ---
 title: FAQ
-description: Frequently asked questions about PeppyOS
+description: Frequently asked questions about Peppy
 ---
 
 <details>
-<summary>Will PeppyOS be open source?</summary>
+<summary>Will Peppy be open source?</summary>
 
-Yes! PeppyOS will be fully open source under a BSL license before the end of this year. Once the software is mature, everyone will be able to contribute and participate in its development.
-
-</details>
-
-<details>
-<summary>What languages will PeppyOS support?</summary>
-
-Since PeppyOS is built in Rust, Rust will be the first supported language, followed by Python and C.
+Yes! Peppy will be fully open source under a BSL license before the end of this year. Once the software is mature, everyone will be able to contribute and participate in its development.
 
 </details>
 
 <details>
-<summary>Will PeppyOS support embedded/`no_std` nodes?</summary>
+<summary>What languages will Peppy support?</summary>
 
-Yes! While not available yet, embedded support is on the roadmap. The goal is to enable nodes running on microcontrollers like the ESP32 to be fully integrated with PeppyOS.
+Since Peppy is built in Rust, Rust will be the first supported language, followed by Python and C.
+
+</details>
+
+<details>
+<summary>Will Peppy support embedded/`no_std` nodes?</summary>
+
+Yes! While not available yet, embedded support is on the roadmap. The goal is to enable nodes running on microcontrollers like the ESP32 to be fully integrated with Peppy.
 
 </details>
 
 <details>
 <summary>What tech are you using under the hoods?</summary>
 
-PeppyOS is written in [Rust](https://rust-lang.org/) and uses [Zenoh](https://zenoh.io/) for node communication.
+Peppy is written in [Rust](https://rust-lang.org/) and uses [Zenoh](https://zenoh.io/) for node communication.
 
 </details>
 
 <details>
-<summary>Can PeppyOS instances on different machines communicate with each other?</summary>
+<summary>Can Peppy instances on different machines communicate with each other?</summary>
 
-Yes! PeppyOS is designed to be highly modular. 
+Yes! Peppy is designed to be highly modular. 
 You'll be able to connect core nodes from different locations into a unified network, where each core node manages a single robot and its components. 
 This feature is on the roadmap for an upcoming release.
 </details>
 
 <details>
-<summary>Will PeppyOS maintain backward compatibility?</summary>
+<summary>Will Peppy maintain backward compatibility?</summary>
 
-Not until version 1.0. Since PeppyOS is still in alpha/beta, maintaining backward compatibility would introduce additional complexity and divert effort away from core development.
+Not until version 1.0. Since Peppy is still in alpha/beta, maintaining backward compatibility would introduce additional complexity and divert effort away from core development.
 
 </details>
 
@@ -57,24 +57,24 @@ Here are the upcoming priorities (in no particular order):
 4. Dataset recording with LeRobot format support
 5. Action replay via "PeppyBag" for recorded robot actions
 6. Embedded chip support, starting with ESP32
-7. Full [OpenArm](https://openarm.dev/) humanoid support, enabling users to connect the robot or launch a simulation and start working within an hour. PeppyOS serves as the abstraction layer, allowing seamless switching between real hardware and simulation.
+7. Full [OpenArm](https://openarm.dev/) humanoid support, enabling users to connect the robot or launch a simulation and start working within an hour. Peppy serves as the abstraction layer, allowing seamless switching between real hardware and simulation.
 
 </details>
 
 <details>
-<summary>Any plans to make PeppyOS compatible with Windows?</summary>
+<summary>Any plans to make Peppy compatible with Windows?</summary>
 
-Windows support is not currently planned. Our focus remains on improving PeppyOS core functionality, with official support limited to Linux (x86/ARM) and macOS (Apple Silicon).
+Windows support is not currently planned. Our focus remains on improving Peppy core functionality, with official support limited to Linux (x86/ARM) and macOS (Apple Silicon).
 </details>
 
 <details>
 <summary>How will you make money?</summary>
 
-PeppyOS will always be free, including for commercial use; our goal is to make it as widely accessible as possible.
-We are currently building a SaaS platform that will provide centralized monitoring and management of nodes through a web dashboard. This is why PeppyOS is not yet open source.
+Peppy will always be free, including for commercial use; our goal is to make it as widely accessible as possible.
+We are currently building a SaaS platform that will provide centralized monitoring and management of nodes through a web dashboard. This is why Peppy is not yet open source.
 The SaaS will be entirely optional and include a free tier for hobbyists. Paid plans will only become relevant when scaling to hundreds or thousands of nodes, which typically applies to business use cases.
 
-Once the SaaS is ready, PeppyOS will become fully open source under a BSL 1.0 license, which only restricts creating a competing hosted service from the source code for a limited period.
+Once the SaaS is ready, Peppy will become fully open source under a BSL 1.0 license, which only restricts creating a competing hosted service from the source code for a limited period.
 </details>
 
 <details>

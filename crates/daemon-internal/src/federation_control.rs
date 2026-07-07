@@ -2,8 +2,8 @@
 //! *immediate* router (de)federation.
 //!
 //! A [`ServeAsyncCommand`] that binds the per-user Unix-domain socket
-//! ([`crate::daemon_control::federation_control_socket_path`]) and, for each
-//! connection, forwards a [`REFEDERATE_VERB`](crate::daemon_control::REFEDERATE_VERB)
+//! ([`crate::control::federation_control_socket_path`]) and, for each
+//! connection, forwards a [`REFEDERATE_VERB`](crate::control::REFEDERATE_VERB)
 //! request to the [`RouterFederation`](super::router_federation) loop as a
 //! [`RefederateRequest`]. It waits for that poll to apply and writes the
 //! resulting [`ControlResponse`] back, so the CLI learns federation is in place
@@ -23,9 +23,9 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::router_federation::{FederationOutcome, RefederateRequest, TriggerSender};
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
-use crate::daemon_control::{ControlResponse, REFEDERATE_VERB};
+use crate::control::{ControlResponse, REFEDERATE_VERB};
+use crate::router_federation::{FederationOutcome, RefederateRequest, TriggerSender};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// Bound on reading a request line, so a client that connects but never writes
 /// cannot hold a handler task open.
@@ -35,7 +35,7 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// configured connect timeout (which bounds the resolve). It must cover the
 /// post-resolve work of a *verifying* login poke: the zenohd bounce plus the TLS
 /// reachability probe ([`super::router_federation::PROBE_TIMEOUT`]). Kept smaller
-/// than the client's read slack ([`crate::daemon_control::POKE_READ_SLACK`]) so
+/// than the client's read slack ([`crate::control::POKE_READ_SLACK`]) so
 /// the daemon always replies a definite outcome before the client gives up (the
 /// `ack_budget_*` test guards both relationships).
 const APPLY_ACK_SLACK: Duration = Duration::from_secs(8);
@@ -101,7 +101,7 @@ impl ServeAsyncCommand for FederationControl {
             // loop is otherwise infinite).
             tokio::select! {
                 _ = serve_control(&socket_path, trigger_tx, connect_timeout, restart_tx) => {}
-                _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             // Best-effort cleanup so a stale socket does not linger (the next start
             // unlinks unconditionally anyway).
@@ -266,7 +266,7 @@ async fn write_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon_control::{FEDERATION_CONTROL_SOCK, PokeOutcome, poke_refederate};
+    use crate::control::{FEDERATION_CONTROL_SOCK, PokeOutcome, poke_refederate};
     use tokio::sync::mpsc;
 
     /// The daemon ack budget must cover the verifying poke's post-resolve work
@@ -275,8 +275,8 @@ mod tests {
     /// constants from drifting back into the pre-probe sizing.
     #[test]
     fn ack_budget_covers_the_verify_probe_and_client_outlasts_daemon() {
-        use super::super::router_federation::PROBE_TIMEOUT;
-        use crate::daemon_control::POKE_READ_SLACK;
+        use crate::control::POKE_READ_SLACK;
+        use crate::router_federation::PROBE_TIMEOUT;
         assert!(
             PROBE_TIMEOUT < APPLY_ACK_SLACK,
             "the daemon ack slack must cover the verify probe (plus the bounce)"
@@ -304,7 +304,7 @@ mod tests {
 
     /// A poke from the (sync) CLI client crosses the real control socket, reaches
     /// the trigger channel, and the federation loop's ack comes back to the
-    /// client: the end-to-end glue between [`crate::daemon_control`] and the
+    /// client: the end-to-end glue between [`crate::control`] and the
     /// federation loop.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn poke_crosses_the_socket_and_acks() {

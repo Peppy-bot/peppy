@@ -1,5 +1,5 @@
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use daemon_config::consts::PeppyDirs;
 use pmi::Messenger;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot, watch};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Cadence of the per-node health monitor (see
 /// `core_node::services::node::run::spawn_health_monitor`). The monitor probes
@@ -33,6 +33,16 @@ pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
 pub struct CoreNodeRunner {
     core_node: CoreNode,
     messaging_ready: Option<watch::Receiver<bool>>,
+    /// Goes `true` once the [`RouterFederation`](super::router_federation) task's
+    /// *initial* poll has settled (federation applied, or the connect timeout
+    /// elapsed and the daemon proceeds standalone). The runner waits on it —
+    /// after `messaging_ready`, before `start_with_ready` — so the boot-time
+    /// name-collision self-probe (`ensure_name_unclaimed`) sees the federated
+    /// mesh, not the always-standalone just-started router. Bounded by the
+    /// federation task's own `connect_timeout` and fail-open: a dropped sender
+    /// (federation task torn down) lets the core node proceed. `None` when no
+    /// federation task is armed (mock engine / no backend configured).
+    federation_settled: Option<watch::Receiver<bool>>,
     /// Cancelled at the start of shutdown to stop the core node's clock +
     /// heartbeat publishers before the messaging session is closed. This is the
     /// core node's OWN internal token (publisher-stop), distinct from the shared
@@ -57,7 +67,8 @@ impl CoreNodeRunner {
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
         messaging_ready: Option<watch::Receiver<bool>>,
-        clock_source: super::ClockSource,
+        federation_settled: Option<watch::Receiver<bool>>,
+        clock_source: crate::ClockSource,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
         organization_namespace: String,
         serve_teardown_token: CancellationToken,
@@ -98,6 +109,7 @@ impl CoreNodeRunner {
         Self {
             core_node,
             messaging_ready,
+            federation_settled,
             shutdown_token,
             serve_teardown_token,
             core_node_done,
@@ -114,13 +126,14 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let (ready_tx, ready_rx) = oneshot::channel();
         let core_node = self.core_node;
         let mut messaging_ready = self.messaging_ready;
+        let mut federation_settled = self.federation_settled;
         let shutdown_token = self.shutdown_token;
         let serve_teardown_token = self.serve_teardown_token;
         let core_node_done = self.core_node_done;
         let future = Box::pin(async move {
             // Tear down on a real OS shutdown signal OR an in-process restart
             // (the shared serve coordinator token).
-            let teardown = super::shutdown_signal::shutdown_or_token(&serve_teardown_token);
+            let teardown = crate::shutdown_signal::shutdown_or_token(&serve_teardown_token);
             tokio::pin!(teardown);
 
             if let Some(mut ready_rx) = messaging_ready.take() {
@@ -133,6 +146,32 @@ impl ServeAsyncCommand for CoreNodeRunner {
                     })?;
                 }
                 info!("Messaging session ready. Starting core node...");
+            }
+
+            // Wait for the router federation's initial poll to settle before
+            // starting (and thus before `start_with_ready`'s boot name
+            // self-probe runs), so the probe sees the federated mesh: a
+            // same-name daemon reachable only through the per-user cloud
+            // router must refuse boot, not slip past a probe that raced the
+            // federation apply. The gate is fired by the federation task
+            // within its `connect_timeout` even when the backend is slow or
+            // unreachable, so this cannot stall boot past that bound; a
+            // closed channel (the federation task tore down first) fails
+            // open to a standalone start.
+            if let Some(mut settled_rx) = federation_settled.take()
+                && !*settled_rx.borrow()
+            {
+                info!(
+                    "Waiting for the initial router federation to settle before \
+                     the core-node name self-probe..."
+                );
+                if settled_rx.wait_for(|settled| *settled).await.is_err() {
+                    warn!(
+                        "Router federation task exited before its initial poll \
+                         settled; starting the core node against the standalone \
+                         router"
+                    );
+                }
             }
 
             let core_node_future = core_node.start_with_ready(Some(ready_tx));

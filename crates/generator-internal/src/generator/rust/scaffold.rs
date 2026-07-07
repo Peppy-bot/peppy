@@ -173,7 +173,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             package.remove("authors");
         }
 
-        // The crate is named `peppylib-rs` in the peppyos-shared workspace, but it
+        // The crate is named `peppylib-rs` in the peppy-shared workspace, but it
         // is vendored into `.peppy/libs/peppylib` (lib name already `peppylib`).
         // Rename the package back to `peppylib` so every generated node's
         // `peppylib = { path = ".peppy/libs/peppylib" }` resolves unchanged.
@@ -192,7 +192,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
 /// A `path` dependency whose final component is one of these is rewritten to
 /// `../<crate>` so it resolves in the flat cache regardless of whether the source
 /// manifest used a flat path (`../peppy-config-model`) or a reverse path into another
-/// submodule (`../../../peppyos/crates/config`, as `peppylib-rs` does).
+/// submodule (`../../../peppy/crates/config`, as `peppylib-rs` does).
 const VENDORED_SIBLING_CRATES: &[&str] = &[
     "peppylib",
     "peppy-messaging-interface",
@@ -214,7 +214,7 @@ fn flatten_vendored_path(current: &str) -> Option<String> {
 /// deployed flat-cache layout resolves even when the source manifest pointed across
 /// submodule boundaries. Registry deps and non-vendored path deps are left alone;
 /// `features` and other keys on the dependency are preserved. Idempotent on the
-/// already-flat crates that have not been moved out of the peppyos workspace.
+/// already-flat crates that have not been moved out of the peppy workspace.
 fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
     for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
         let Some(deps) = doc.get_mut(table_name).and_then(|t| t.as_table_mut()) else {

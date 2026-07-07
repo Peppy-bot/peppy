@@ -12,7 +12,12 @@
 //!   first poll completes, so `serve` only reports ready *after* federation is in
 //!   place, bounded by `connect_timeout` so a slow/unreachable backend can't
 //!   stall startup past it (the daemon then proceeds standalone and keeps
-//!   retrying in the background).
+//!   retrying in the background). At the same moments it fires the core node's
+//!   *probe gate* (`probe_gate_tx`): the core node delays its boot-time
+//!   name-collision self-probe until the initial federation has settled, so the
+//!   probe sees the federated mesh (a same-name daemon reachable only through
+//!   the cloud router refuses boot) rather than the always-standalone
+//!   just-started local router.
 //! * **Immediate (re)federation on login/logout.** `peppy auth login`/`logout`
 //!   poke the daemon over the control socket
 //!   ([`FederationControl`](super::federation_control)); the poke is delivered
@@ -28,13 +33,19 @@
 //!   service over the federated link and tears the cloud router down when the
 //!   daemon stops answering. The config pull on startup/login tells the backend
 //!   this daemon's `core_node` name so it knows which `/health` service to probe.
+//! * **Registration cadence.** Every config pull's POST carries this daemon's
+//!   core-node name, upserting it into the backend's per-principal core-node
+//!   registry. The POST fires on cache-stale pulls and on login/logout pokes —
+//!   login clears the router cache, so every login re-registers — never on a
+//!   timer. The backend's `last_seen_at` for a core node therefore means "last
+//!   federation config pull", not liveness.
 //! * **Live (re)federation.** When the resolved upstream changes (the user logs
 //!   in, logs out, or the endpoint moves) the local router's zenohd config is
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
-use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::{Error, Result};
+use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use pmi::{Messenger, MessengerBackend};
 use std::future::Future;
 use std::pin::Pin;
@@ -140,7 +151,7 @@ type NamespaceResolver = Arc<dyn Fn() -> String + Send + Sync>;
 fn real_namespace_resolver() -> NamespaceResolver {
     Arc::new(|| {
         config::org::resolve_session_namespace(
-            crate::auth::router::cached_organization_id_default().as_deref(),
+            auth::router::cached_organization_id_default().as_deref(),
         )
         .as_str()
         .to_string()
@@ -187,6 +198,13 @@ pub(crate) struct RouterFederation {
     /// un-federated. The steady-state poke path instead acks `Restart` and the
     /// control handler raises this same signal after flushing the ack.
     restart_tx: watch::Sender<bool>,
+    /// Fired (`true`) at the same moments as the startup readiness gate: once
+    /// the *initial* federation poll has settled (or the bound elapsed / the
+    /// router never came up). The core node waits on it before running its
+    /// boot-time name-collision self-probe, so the probe sees the federated
+    /// mesh instead of the always-standalone just-started router. `None` when
+    /// no core node was built (nothing to probe).
+    probe_gate_tx: Option<watch::Sender<bool>>,
     /// Shared coordinator token: the task tears down when it is cancelled (an
     /// in-process restart) or on a real OS shutdown signal.
     teardown_token: CancellationToken,
@@ -197,15 +215,17 @@ impl RouterFederation {
     pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         api_url: String,
+        core_node_name: String,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
         connect_timeout: Duration,
         startup_namespace: String,
         restart_tx: watch::Sender<bool>,
+        probe_gate_tx: Option<watch::Sender<bool>>,
         teardown_token: CancellationToken,
     ) -> Self {
         let resolver: Resolver = Arc::new(move || {
-            crate::auth::router::resolve_federation_target(&api_url, connect_timeout)
+            auth::router::resolve_federation_target(&api_url, connect_timeout, &core_node_name)
         });
         Self {
             federator: real_federator(messenger),
@@ -217,6 +237,7 @@ impl RouterFederation {
             startup_namespace,
             namespace_resolver: real_namespace_resolver(),
             restart_tx,
+            probe_gate_tx,
             teardown_token,
         }
     }
@@ -234,6 +255,7 @@ impl ServeAsyncCommand for RouterFederation {
             startup_namespace,
             namespace_resolver,
             restart_tx,
+            probe_gate_tx,
             teardown_token,
         } = *self;
         // Readiness gate: fired by `manage_federation` once the first federation
@@ -250,8 +272,9 @@ impl ServeAsyncCommand for RouterFederation {
                 _ = manage_federation(
                     federator, resolver, prober, messaging_ready, trigger_rx, ready_tx,
                     connect_timeout, startup_namespace, namespace_resolver, restart_tx,
+                    probe_gate_tx,
                 ) => {}
-                _ = super::shutdown_signal::shutdown_or_token(&teardown_token) => {}
+                _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             Ok(())
         });
@@ -259,11 +282,18 @@ impl ServeAsyncCommand for RouterFederation {
     }
 }
 
-/// Fires the startup readiness gate exactly once. Idempotent: the `Option` is
-/// `take`n, so later calls (or a drop) are no-ops.
-fn fire_gate(gate: &mut Option<oneshot::Sender<()>>) {
+/// Fires the startup readiness gate exactly once (idempotent: the `Option` is
+/// `take`n, so later calls or a drop are no-ops) and, in lockstep, the core
+/// node's probe gate (a `watch`, so re-sends are harmless). The two fire at the
+/// same moments so the core node's boot self-probe is delayed exactly as long
+/// as `serve`'s own readiness: until the initial federation settled, bounded by
+/// `connect_timeout`, and fail-open (a dropped sender ⇒ the waiter proceeds).
+fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, probe_gate: &Option<watch::Sender<bool>>) {
     if let Some(tx) = gate.take() {
         let _ = tx.send(());
+    }
+    if let Some(tx) = probe_gate {
+        let _ = tx.send(true);
     }
 }
 
@@ -302,6 +332,7 @@ async fn manage_federation(
     startup_namespace: String,
     namespace_resolver: NamespaceResolver,
     restart_tx: watch::Sender<bool>,
+    probe_gate_tx: Option<watch::Sender<bool>>,
 ) {
     let mut ready_tx = Some(ready_tx);
 
@@ -319,14 +350,14 @@ async fn manage_federation(
             // `messaging_ready` closed before going true: the router task never
             // started or already exited, so there is nothing to federate. Unblock
             // startup and stop.
-            fire_gate(&mut ready_tx);
+            fire_gate(&mut ready_tx, &probe_gate_tx);
             return;
         }
         Err(_elapsed) => {
             // The router isn't up within the bound: unblock startup now (the
             // daemon proceeds standalone), then keep waiting (unbounded) so the
             // local router still federates once it does come up.
-            fire_gate(&mut ready_tx);
+            fire_gate(&mut ready_tx, &probe_gate_tx);
             if messaging_ready.wait_for(|r| *r).await.is_err() {
                 return;
             }
@@ -351,7 +382,7 @@ async fn manage_federation(
         &namespace_resolver,
     )
     .await;
-    fire_gate(&mut ready_tx);
+    fire_gate(&mut ready_tx, &probe_gate_tx);
 
     // The initial poll re-pulled the federation config, so the credentials now
     // reflect the current org. If that resolves to a *different* namespace than
@@ -455,7 +486,17 @@ async fn poll_and_apply(
     // across tenants). The control handler flushes the ack before triggering the
     // restart; the initial (non-poke) poll discards this outcome but, crucially,
     // also does not federate, so it stays fail-closed until the next generation.
-    let current_namespace = namespace_resolver();
+    // Like the resolve above, the namespace re-resolve is blocking (a file-backed
+    // credentials read); keep it off the async worker. No timeout bound: it is a
+    // local read, not a network pull.
+    let namespace_resolver = namespace_resolver.clone();
+    let current_namespace = match tokio::task::spawn_blocking(move || namespace_resolver()).await {
+        Ok(ns) => ns,
+        Err(e) => {
+            warn!(error = %e, "router federation: namespace resolve task panicked; will retry");
+            return FederationOutcome::Failed(format!("namespace resolve task panicked: {e}"));
+        }
+    };
     if current_namespace != startup_namespace {
         info!(
             from = %startup_namespace,
@@ -536,7 +577,7 @@ async fn poll_and_apply(
         && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
             (&outcome, resolved.as_ref())
     {
-        match crate::auth::client::split_locator(ep).ok() {
+        match auth::client::split_locator(ep).ok() {
             Some((host, port)) => {
                 // Bound the probe by the small dedicated PROBE_TIMEOUT (NOT
                 // connect_timeout) so resolve + bounce + probe stays within the
@@ -732,6 +773,7 @@ mod tests {
             "local".to_string(),
             local_ns_resolver(),
             watch::channel(false).0,
+            None,
         ));
 
         // Startup gate fires after the first (initial) poll; that poll resolved
@@ -806,6 +848,7 @@ mod tests {
             "local".to_string(),
             local_ns_resolver(),
             watch::channel(false).0,
+            None,
         ));
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
@@ -855,6 +898,7 @@ mod tests {
             "local".to_string(),
             local_ns_resolver(),
             watch::channel(false).0,
+            None,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -911,6 +955,7 @@ mod tests {
             "local".to_string(),
             local_ns_resolver(),
             watch::channel(false).0,
+            None,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -945,7 +990,9 @@ mod tests {
 
     /// The startup gate fires within the timeout even when the backend is slow
     /// enough to blow the bound, so a hung backend can never stall `serve` past
-    /// `connect_timeout`. The federation loop then keeps retrying.
+    /// `connect_timeout`. The federation loop then keeps retrying. The core
+    /// node's probe gate fires in the same breath, so a slow backend cannot
+    /// stall the boot self-probe (and thus listener binding) either.
     #[tokio::test]
     async fn startup_gate_fires_within_timeout_when_resolve_is_slow() {
         // Resolver sleeps past the (short) connect timeout, so the bounded resolve
@@ -959,6 +1006,7 @@ mod tests {
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (_trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
+        let (probe_gate_tx, mut probe_gate_rx) = watch::channel(false);
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
@@ -971,12 +1019,68 @@ mod tests {
             "local".to_string(),
             local_ns_resolver(),
             watch::channel(false).0,
+            Some(probe_gate_tx),
         ));
 
         // Gate fires close to the 100ms bound, well before the 400ms resolve.
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
             .expect("gate fires within the timeout despite a slow backend")
+            .expect("gate sender not dropped");
+        // The probe gate fires in lockstep, so the core node boots (standalone)
+        // rather than waiting on the hung backend.
+        tokio::time::timeout(Duration::from_secs(1), probe_gate_rx.wait_for(|g| *g))
+            .await
+            .expect("probe gate fires within the timeout despite a slow backend")
+            .expect("probe gate sender not dropped");
+
+        drop(messaging_tx);
+        task.abort();
+    }
+
+    /// The core node's probe gate opens only after the *initial* federation poll
+    /// has settled (in lockstep with the startup gate), so the boot name
+    /// self-probe runs against the federated mesh rather than the
+    /// always-standalone just-started router.
+    #[tokio::test]
+    async fn probe_gate_fires_once_the_initial_federation_settled() {
+        let (resolver, calls) = counting_resolver(upstream());
+        let (prober, _) = counting_prober(Ok(()));
+        let (messaging_tx, messaging_rx) = watch::channel(true);
+        let (_trigger_tx, trigger_rx) = mpsc::channel(8);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (probe_gate_tx, mut probe_gate_rx) = watch::channel(false);
+
+        let task = tokio::spawn(manage_federation(
+            applying_federator(),
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+            ready_tx,
+            Duration::from_secs(5),
+            "local".to_string(),
+            local_ns_resolver(),
+            watch::channel(false).0,
+            Some(probe_gate_tx),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), probe_gate_rx.wait_for(|g| *g))
+            .await
+            .expect("probe gate fires promptly")
+            .expect("probe gate sender not dropped");
+        // The generous timeout means the gate fired via the initial-poll path,
+        // so the federation had already been resolved (and applied) when the
+        // gate opened.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the initial federation poll settled before the probe gate opened"
+        );
+        // The startup gate fired in the same breath.
+        tokio::time::timeout(Duration::from_secs(1), ready_rx)
+            .await
+            .expect("startup gate fires with the probe gate")
             .expect("gate sender not dropped");
 
         drop(messaging_tx);
@@ -1004,6 +1108,7 @@ mod tests {
             "local".to_string(),
             local_ns_resolver(),
             watch::channel(false).0,
+            None,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -1050,6 +1155,7 @@ mod tests {
             "local".to_string(),
             ns_resolver,
             restart_tx,
+            None,
         ));
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -1115,6 +1221,7 @@ mod tests {
             "local".to_string(),
             ns_resolver,
             restart_tx,
+            None,
         ));
 
         // Startup still unblocks `serve` (the gate fires) ...

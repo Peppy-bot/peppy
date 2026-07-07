@@ -28,9 +28,10 @@ async fn build_node_async_with_connect(
     params: BuildNodeParams,
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
-    build_node_async(
+    build_node_on(
         conn.messenger,
         &conn.core_node_name,
+        &conn.target_core_node,
         &params.node_name,
         &params.node_tag,
         &params.timeouts,
@@ -39,11 +40,38 @@ async fn build_node_async_with_connect(
     .await
 }
 
-/// Sends a `node_build` goal and polls it to completion. Used by both the
-/// CLI `node build` command and `node add --build` chaining.
+/// Sends a `node_build` goal and polls it to completion, addressed to the
+/// caller's own core node. Kept on the single-name signature for callers that
+/// build where they are bound (integration tests included); anything honoring
+/// a `--core-node` override goes through [`build_node_on`].
 pub async fn build_node_async(
     messenger: &MessengerHandle,
     core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    timeouts: &TimeoutConfig,
+    force: bool,
+) -> Result<()> {
+    build_node_on(
+        messenger,
+        core_node_name,
+        core_node_name,
+        node_name,
+        node_tag,
+        timeouts,
+        force,
+    )
+    .await
+}
+
+/// Like [`build_node_async`] but with the caller identity and the build's
+/// host split: `bound_core_node` is the local daemon (the sender address the
+/// goal rides under), `target_core_node` the daemon that runs the build. They
+/// coincide without a `--core-node` override.
+pub(crate) async fn build_node_on(
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    target_core_node: &str,
     node_name: &str,
     node_tag: &str,
     timeouts: &TimeoutConfig,
@@ -60,9 +88,9 @@ pub async fn build_node_async(
     let mut action_handle = send_node_build(
         &goal,
         messenger,
-        core_node_name,
+        bound_core_node,
         CALLER_INSTANCE_ID,
-        Some(core_node_name),
+        Some(target_core_node),
         GOAL_TIMEOUT,
     )
     .await

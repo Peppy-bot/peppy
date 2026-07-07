@@ -13,6 +13,6 @@ pub use services::repo::cache::{
 };
 pub use services::repo::{InitOutcome, ensure_default_repos};
 pub use services::{
-    CoreNode, CoreNodeArguments, CoreNodeConfig, FORBIDDEN_ENV_KEYS, TEARDOWN_REAP_BUDGET,
-    check_runtime_prerequisites, force_kill_deadline, teardown_all_instances,
+    CoreNode, CoreNodeArguments, CoreNodeConfig, TEARDOWN_REAP_BUDGET, check_runtime_prerequisites,
+    force_kill_deadline, teardown_all_instances,
 };

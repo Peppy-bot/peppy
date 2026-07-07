@@ -53,13 +53,19 @@ async fn print_runtime_config_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
+    // The printed config embeds this session's messaging endpoint and the
+    // local daemon's identity — exactly what a locally spawned node receives.
+    // For a remote target it would describe an instance no node there could
+    // run, so the override is refused (mirrors `peppy node run`).
+    crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node runtime-config")?;
+
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
     let response = poll_stack_list(
         &StackListRequest::new(false),
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await?;

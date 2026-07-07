@@ -1,6 +1,6 @@
 ---
 title: Creating Your First Node
-description: Learn how to create and run your first PeppyOS node
+description: Learn how to create and run your first Peppy node
 sidebar:
   order: 3
 ---
@@ -13,7 +13,7 @@ import helloWorldPythonConfig from './snippets/python/hello_world/peppy.json5?ra
 import helloWorldRust from './snippets/rust/hello_world/src/main.rs?raw';
 import helloWorldRustConfig from './snippets/rust/hello_world/peppy.json5?raw';
 
-Now that you have PeppyOS installed, let's create your first node. A node is the fundamental unit of computation in PeppyOS - it represents a runnable application or service.
+Now that you have Peppy installed, let's create your first node. A node is the fundamental unit of computation in Peppy - it represents a runnable application or service.
 In this guide, we'll explore how nodes work and how they communicate with each other.
 
 You can think of nodes as compute units that are each responsible for a single job. For example, a node can:
@@ -41,9 +41,9 @@ Run:
        ```
     </Steps>
     :::note
-    [`uv`](https://docs.astral.sh/uv/) is the default Python toolchain in PeppyOS, but you can use any toolchain you prefer ([`pixi`](https://prefix.dev/), [`poetry`](https://python-poetry.org/), [`pip`](https://pip.pypa.io/en/stable), etc.). 
+    [`uv`](https://docs.astral.sh/uv/) is the default Python toolchain in Peppy, but you can use any toolchain you prefer ([`pixi`](https://prefix.dev/), [`poetry`](https://python-poetry.org/), [`pip`](https://pip.pypa.io/en/stable), etc.). 
     To do so, first initialize the node with `peppy node init --toolchain uv`, then add `peppygen = { path = ".peppy/libs/peppygen" }` and `peppylib = { path = ".peppy/libs/peppylib" }` as dependencies in your toolchain's configuration, 
-    and update `build_cmd` and `run_cmd` in `peppy.json5` to match your toolchain's commands. PeppyOS is designed to work with whichever tools you prefer.
+    and update `build_cmd` and `run_cmd` in `peppy.json5` to match your toolchain's commands. Peppy is designed to work with whichever tools you prefer.
     :::
   </TabItem>
   <TabItem label="Rust">
@@ -59,9 +59,9 @@ Run:
        ```
     </Steps>
     :::note
-    [`cargo`](https://doc.rust-lang.org/cargo/) is the default Rust toolchain in PeppyOS, but you can use any build system you prefer.
+    [`cargo`](https://doc.rust-lang.org/cargo/) is the default Rust toolchain in Peppy, but you can use any build system you prefer.
     To do so, first initialize the node with `peppy node init --toolchain cargo`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your build configuration,
-    and update `build_cmd` and `run_cmd` in `peppy.json5` to match your build system's commands. PeppyOS is designed to work with whichever tools you prefer.
+    and update `build_cmd` and `run_cmd` in `peppy.json5` to match your build system's commands. Peppy is designed to work with whichever tools you prefer.
     :::
   </TabItem>
 </Tabs>
@@ -179,7 +179,7 @@ This command will generate the interfaces to use in our source code. If you'd ra
   </TabItem>
 </Tabs>
 
-As you can see, the topic interface has already been generated. We didn't need to implement serialization, encoding, or communication layers; PeppyOS handles all of that automatically.
+As you can see, the topic interface has already been generated. We didn't need to implement serialization, encoding, or communication layers; Peppy handles all of that automatically.
 
 Additionally, the tag and name assigned to your node provide contract isolation. When the node's interfaces change in a way that breaks consumers, you publish under a new tag (e.g. `v2`); dependent nodes that pin the old tag keep working until they are explicitly migrated.
 

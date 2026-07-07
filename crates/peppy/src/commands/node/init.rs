@@ -58,11 +58,16 @@ impl NodeInitBuilder {
     async fn build_async(self) -> Result<()> {
         let conn = self.ctx.connect_to_daemon().await?;
 
+        // The request embeds `to_dir` (defaulting to the caller's cwd), which
+        // the daemon joins and creates on ITS OWN filesystem: a remote target
+        // would silently scaffold the node on the wrong machine.
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy node init")?;
+
         info!(
             "Creating node '{}' in {} and core node '{}'",
             self.node_name,
             self.to_dir.display(),
-            &conn.core_node_name
+            &conn.target_core_node
         );
 
         let request = NodeInitRequest::new(
@@ -78,7 +83,7 @@ impl NodeInitBuilder {
             conn.messenger,
             &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &conn.core_node_name,
+            &conn.target_core_node,
             self.timeout,
         )
         .await

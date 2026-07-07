@@ -60,7 +60,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await

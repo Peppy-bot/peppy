@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
 
-use crate::auth::client::Principal;
-use crate::auth::{client, http::HttpClient, profile, resolver, storage};
 use crate::commands::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use auth::client::Principal;
+use auth::{client, http::HttpClient, profile, resolver, storage};
 
 pub struct WhoamiCommand {
     pub api_url: Option<String>,
@@ -44,7 +44,7 @@ impl Command for WhoamiCommand {
                 }
                 Ok(())
             }
-            Err(Error::NotAuthenticated) => {
+            Err(auth::AuthError::NotAuthenticated) => {
                 if self.json {
                     let doc = serde_json::json!({
                         "authenticated": false,
@@ -60,7 +60,7 @@ impl Command for WhoamiCommand {
                 }
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }
 }

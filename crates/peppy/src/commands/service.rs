@@ -1,10 +1,3 @@
-mod builder;
-mod core_node;
-mod federation_control;
-mod messaging_router;
-mod router_federation;
-mod shutdown_signal;
-
 pub mod install;
 pub mod reset;
 pub mod serve;
@@ -34,6 +27,15 @@ impl ClockSource {
     }
 }
 
+impl From<ClockSource> for daemon::ClockSource {
+    fn from(source: ClockSource) -> Self {
+        match source {
+            ClockSource::Wall => daemon::ClockSource::Wall,
+            ClockSource::Sim => daemon::ClockSource::Sim,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum ServiceCommands {
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
@@ -42,7 +44,9 @@ pub enum ServiceCommands {
         /// Messaging engine to use (zenoh by default)
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
-        /// Optional name for the core node
+        /// Optional name for the core node. Overrides `core_node_name` in
+        /// ~/.peppy/conf/peppy_config.json5; when both are absent a
+        /// machine-specific default is derived.
         #[arg(long)]
         core_node_name: Option<String>,
         /// Daemon-wide clock source. Per-instance `framework.use_sim_time`

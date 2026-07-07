@@ -3,7 +3,6 @@ use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource, PairTarget,
 };
-use peppylib::MessengerHandle;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
@@ -15,7 +14,7 @@ use super::env::caller_env_overrides;
 use super::run::validate_and_run_instance;
 use super::source::parse_node_source;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
-use crate::context::AppContext;
+use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
 use peppylib::core_node::transport::{poll_node_info, send_node_add};
@@ -119,9 +118,22 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     let conn = ctx.connect_to_daemon().await?;
 
+    // A local filesystem source is a caller-local path the daemon snapshots
+    // on its own machine; a remote target would resolve it on the wrong
+    // machine's filesystem.
+    if matches!(node_source, NodeSource::Fs(_)) {
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy node add")?;
+    }
+
+    // A chained run spawns an instance whose runtime config embeds this
+    // machine's messaging endpoint; that is only valid on the local daemon.
+    if run_options.is_some() {
+        crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node add --run")?;
+    }
+
     info!(
         "Adding node '{}' on daemon '{}'...",
-        source, conn.core_node_name
+        source, conn.target_core_node
     );
 
     // Preflight conflict check: if we can cheaply determine the root
@@ -140,8 +152,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         let active_instances = match &node_source {
             NodeSource::Fs(path) => {
                 fetch_active_instances_for_local_source(
-                    conn.messenger,
-                    &conn.core_node_name,
+                    &conn,
                     path,
                     Duration::from_secs(timeouts.max_secs),
                 )
@@ -149,8 +160,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
             }
             NodeSource::RepoNode { name, tag } => {
                 fetch_active_instances_for_name_tag(
-                    conn.messenger,
-                    &conn.core_node_name,
+                    &conn,
                     name.clone(),
                     tag.clone(),
                     Duration::from_secs(timeouts.max_secs),
@@ -181,7 +191,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        Some(&conn.core_node_name),
+        Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )
     .await
@@ -215,9 +225,10 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         )
     })?;
 
-    crate::commands::node::builder::build_node_async(
+    crate::commands::node::builder::build_node_on(
         conn.messenger,
         &conn.core_node_name,
+        &conn.target_core_node,
         node_name,
         node_tag,
         &timeouts,
@@ -264,8 +275,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 /// - The node is in the stack but has no active instances (the add action
 ///   can safely overwrite it without prompting).
 async fn fetch_active_instances_for_local_source(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
+    conn: &DaemonConnection<'_>,
     source_path: &Path,
     timeout: Duration,
 ) -> Result<Option<(String, String, Vec<String>)>> {
@@ -275,8 +285,7 @@ async fn fetch_active_instances_for_local_source(
     };
     let node_name = parsed.manifest.name.as_str().to_owned();
     let node_tag = parsed.manifest.tag.clone();
-    fetch_active_instances_for_name_tag(messenger, core_node_name, node_name, node_tag, timeout)
-        .await
+    fetch_active_instances_for_name_tag(conn, node_name, node_tag, timeout).await
 }
 
 /// Queries the daemon for the `(name, tag)` entity in the stack and returns
@@ -284,18 +293,17 @@ async fn fetch_active_instances_for_local_source(
 /// `RepoNode` preflight, which already has `(name, tag)` in hand, and by
 /// the `Fs` wrapper above after it reads them from `peppy.json5`.
 async fn fetch_active_instances_for_name_tag(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
+    conn: &DaemonConnection<'_>,
     node_name: String,
     node_tag: String,
     timeout: Duration,
 ) -> Result<Option<(String, String, Vec<String>)>> {
     let response = poll_node_info(
         &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
-        messenger,
-        core_node_name,
+        conn.messenger,
+        &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_name,
+        &conn.target_core_node,
         timeout,
     )
     .await

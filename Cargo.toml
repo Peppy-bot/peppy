@@ -23,7 +23,7 @@ parking_lot = "0.12"
 rstest = "0.26"
 
 # Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
-# `peppyos-shared` virtual workspace) as git dependencies, so `peppyos` holds no
+# `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
 # path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
 # crate follows the repo's default branch (`main`); the resolved revision is
 # recorded in Cargo.lock and moved forward with `cargo update`. `config` and
@@ -43,8 +43,10 @@ build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 # member references them with `{ workspace = true }` instead of repeating a
 # relative `path`; paths are resolved relative to this workspace root. Per-crate
 # features are still added at the use site with `{ workspace = true, features = [...] }`.
+auth = { path = "crates/auth-internal" }
 containers = { path = "crates/containers-internal" }
 core-node = { path = "crates/core-node-internal" }
+daemon = { path = "crates/daemon-internal" }
 daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
 generator = { path = "crates/generator-internal" }

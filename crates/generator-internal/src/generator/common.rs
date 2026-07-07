@@ -139,15 +139,15 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 // ---------------------------------------------------------------------------
 // Embedded crate sources for Rust dependency vendoring
 //
-// The `$PEPPYOS_SHARED_DIR` in each `#[folder]` is expanded at compile time by
+// The `$PEPPY_SHARED_DIR` in each `#[folder]` is expanded at compile time by
 // rust-embed (the `interpolate-folder-path` feature). generator's build script
-// sets it to the `peppyos-shared` directory located via build-helpers, so these
-// resolve to the real source trees whether peppyos builds in the superproject or
+// sets it to the `peppy-shared` directory located via build-helpers, so these
+// resolve to the real source trees whether peppy builds in the superproject or
 // from a cargo git checkout of public-peppy-libs; no `../../../` reach required.
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]
-#[folder = "$PEPPYOS_SHARED_DIR/peppylib-rs/"]
+#[folder = "$PEPPY_SHARED_DIR/peppylib-rs/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -158,7 +158,7 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 pub(crate) struct EmbeddedPeppylib;
 
 #[derive(Embed)]
-#[folder = "$PEPPYOS_SHARED_DIR/peppy-messaging-interface/"]
+#[folder = "$PEPPY_SHARED_DIR/peppy-messaging-interface/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -169,7 +169,7 @@ pub(crate) struct EmbeddedPeppylib;
 pub(crate) struct EmbeddedPeppyMessagingInterface;
 
 #[derive(Embed)]
-#[folder = "$PEPPYOS_SHARED_DIR/peppy-config-model/"]
+#[folder = "$PEPPY_SHARED_DIR/peppy-config-model/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]
@@ -181,14 +181,14 @@ pub(crate) struct EmbeddedPeppyMessagingInterface;
 pub(crate) struct EmbeddedConfig;
 
 #[derive(Embed)]
-#[folder = "$PEPPYOS_SHARED_DIR/build-helpers/"]
+#[folder = "$PEPPY_SHARED_DIR/build-helpers/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[exclude = "target/*"]
 pub(crate) struct EmbeddedBuildHelpers;
 
 #[derive(Embed)]
-#[folder = "$PEPPYOS_SHARED_DIR/core-node-api/"]
+#[folder = "$PEPPY_SHARED_DIR/core-node-api/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[include = "*.capnp"]

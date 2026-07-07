@@ -506,11 +506,11 @@ mod peppylib_build {
     /// Dependency crates compiled into the `.so`, paired with whether the crate
     /// is config (which embeds extra `tools/capnp_*` helpers). This list
     /// MUST stay in sync with peppylib-py's path dependencies in
-    /// `public-peppy-libs/peppyos-shared/peppylib-py/Cargo.toml`; a crate
+    /// `public-peppy-libs/peppy-shared/peppylib-py/Cargo.toml`; a crate
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
-        // Resolved against `peppyos-shared` (located via build-helpers); all are
+        // Resolved against `peppy-shared` (located via build-helpers); all are
         // siblings of peppylib-py in that shared workspace.
         ("peppylib-rs", false),
         ("peppy-config-model", true),
@@ -519,10 +519,10 @@ mod peppylib_build {
     ];
 
     /// Every source file of the `.so` dependency crates. Resolved against
-    /// `peppyos-shared`, located via build-helpers so it works in the superproject
+    /// `peppy-shared`, located via build-helpers so it works in the superproject
     /// and from a cargo git checkout of public-peppy-libs alike.
     fn dep_crate_source_files() -> Vec<PathBuf> {
-        let crates_root = build_helpers::peppyos_shared_dir();
+        let crates_root = build_helpers::peppy_shared_dir();
         let mut files = Vec::new();
         for (crate_name, is_config) in SO_DEP_CRATES {
             files.extend(super::collect_crate_source_files(
@@ -561,14 +561,14 @@ mod peppylib_build {
     /// The build script's source is folded in first so a change to the build logic
     /// invalidates the cached `.so` (see [`BUILD_SCRIPT_SOURCE`]).
     ///
-    /// Keys are relative to `peppyos-shared` (where every input, the dependency
+    /// Keys are relative to `peppy-shared` (where every input, the dependency
     /// crates and peppylib-py itself, lives). The marker files are per-checkout and
     /// gitignored, so keys only need to be stable and collision-free within a
     /// single checkout.
     fn hash_files(files: &[PathBuf]) -> String {
         use sha2::{Digest, Sha256};
 
-        let crates_root = build_helpers::peppyos_shared_dir();
+        let crates_root = build_helpers::peppy_shared_dir();
         let mut hasher = Sha256::new();
         hasher.update(BUILD_SCRIPT_SOURCE.as_bytes());
         for file in files {
@@ -765,7 +765,7 @@ mod peppylib_build {
                 "prebuilt peppylib .so {name} in {so_dir:?} was built from stale \
                  sources (recorded {recorded:?}, current {current_hash}); rebuild \
                  the host artifacts before cross-building. If a rebuild does not \
-                 fix this, the host and VM copies of peppyos-shared differ for \
+                 fix this, the host and VM copies of peppy-shared differ for \
                  the same pinned revision: run `git status` in the cargo checkout \
                  of public-peppy-libs on both sides to find local modifications"
             );
@@ -774,12 +774,12 @@ mod peppylib_build {
 
     pub fn run() {
         // peppylib-py and its `.so` dependency crates live in the shared
-        // workspace (peppyos-shared), located via build-helpers so every path
+        // workspace (peppy-shared), located via build-helpers so every path
         // resolves in the superproject and from a cargo git checkout of
         // public-peppy-libs alike. Only the Python wrappers are read from here;
         // the compiled `.so` are produced into a peppy-owned cache dir, never
         // written back into the immutable, cross-run cargo checkout.
-        let peppylib_py_dir = build_helpers::peppyos_shared_dir().join("peppylib-py");
+        let peppylib_py_dir = build_helpers::peppy_shared_dir().join("peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
 
         register_rerun_triggers(&peppylib_py_dir);
@@ -973,12 +973,12 @@ fn embed_ruff_binary() {
 
 fn main() {
     // Single source of truth for the shared crate sources generator embeds: the
-    // `peppyos-shared` dir located via build-helpers (works in-tree or from a
-    // cargo git checkout). The rust-embed `#[folder = "$PEPPYOS_SHARED_DIR/…"]`
+    // `peppy-shared` dir located via build-helpers (works in-tree or from a
+    // cargo git checkout). The rust-embed `#[folder = "$PEPPY_SHARED_DIR/…"]`
     // attributes in src/ expand this at compile time.
     println!(
-        "cargo:rustc-env=PEPPYOS_SHARED_DIR={}",
-        build_helpers::peppyos_shared_dir().display()
+        "cargo:rustc-env=PEPPY_SHARED_DIR={}",
+        build_helpers::peppy_shared_dir().display()
     );
 
     ruff_build::run();

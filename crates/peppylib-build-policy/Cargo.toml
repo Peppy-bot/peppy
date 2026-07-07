@@ -5,9 +5,9 @@ authors.workspace = true
 edition.workspace = true
 
 # Pure decision logic for rebuilding peppylib's embedded native extensions,
-# used only by `generator`'s build script. It lives here in the `peppyos`
+# used only by `generator`'s build script. It lives here in the `peppy`
 # workspace (next to its single consumer) rather than in the shared
-# `build-helpers` crate, which must not carry peppyos-specific policy.
+# `build-helpers` crate, which must not carry peppy-specific policy.
 [dependencies]
 
 [dev-dependencies]

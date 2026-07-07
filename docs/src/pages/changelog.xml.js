@@ -11,7 +11,7 @@ export async function GET(context) {
 
   const releases = await getCollection('releases');
   const sortedReleases = releases.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
-  const authorName = 'PeppyOS';
+  const authorName = 'Peppy';
   const feedUpdated =
     sortedReleases.length === 0
       ? new Date()
@@ -39,8 +39,8 @@ export async function GET(context) {
   const atomXml = [
     '<?xml version="1.0" encoding="utf-8"?>',
     '<feed xmlns="http://www.w3.org/2005/Atom">',
-    '<title>PeppyOS Changelog</title>',
-    '<subtitle>Release notes and version history for PeppyOS</subtitle>',
+    '<title>Peppy Changelog</title>',
+    '<subtitle>Release notes and version history for Peppy</subtitle>',
     `<author><name>${encodeXML(authorName)}</name></author>`,
     `<id>${encodeXML(feedUrl.toString())}</id>`,
     `<link rel="self" type="application/atom+xml" href="${encodeXML(feedUrl.toString())}" />`,

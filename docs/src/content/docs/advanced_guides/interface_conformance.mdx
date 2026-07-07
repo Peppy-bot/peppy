@@ -374,7 +374,7 @@ Once the stack is running, these conformance-resolved dependencies surface in th
 
 An interface dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's interfaces without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
 
-**Services and actions are different.** Consuming a service or action interface means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through interfaces hides that cycle from the static graph, but it does not make the deadlock go away. PeppyOS therefore rebuilds the *caller-driven* edges separately, resolving each interface dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
+**Services and actions are different.** Consuming a service or action interface means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through interfaces hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each interface dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
 
 ### An example that is rejected
 

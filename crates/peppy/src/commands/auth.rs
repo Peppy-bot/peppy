@@ -1,7 +1,7 @@
 //! The `peppy auth` command group: `login`, `logout`, and `whoami`. Each
 //! variant maps to a handler in this module's directory; the OAuth device flow,
 //! token storage, and credential resolution they share live in the separate
-//! [`crate::auth`] engine.
+//! `auth` engine crate.
 
 pub mod login;
 pub mod logout;
@@ -18,10 +18,10 @@ use peppylib::core_node::transport::poll_stack_list;
 
 use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
-use crate::daemon_control::{self, PokeOutcome};
-use crate::daemon_state::DaemonState;
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
+use daemon::control::{self as daemon_control, PokeOutcome};
+use daemon::state::DaemonState;
 
 /// Shown when the daemon's router config is operator-pinned via `ZENOH_CONFIG`,
 /// so the CLI does not auto-manage federation. Used by both login and logout
@@ -46,7 +46,7 @@ const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// CLI can confirm the daemon came back under exactly what it just wrote.
 fn current_creds_namespace() -> String {
     config::org::resolve_session_namespace(
-        crate::auth::router::cached_organization_id_default().as_deref(),
+        auth::router::cached_organization_id_default().as_deref(),
     )
     .as_str()
     .to_string()
@@ -123,6 +123,9 @@ pub(crate) fn confirm_restart(
 fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
     let probe = async {
         let conn = ctx.connect_to_daemon().await?;
+        // Deliberately targets the *local* daemon (not `conn.target_core_node`):
+        // this probe backs the "login/logout restarts the local daemon" warning,
+        // so a global `--core-node` override must not redirect it.
         let response = poll_stack_list(
             &StackListRequest::new(false),
             conn.messenger,
@@ -431,10 +434,10 @@ impl Command for AuthCommand {
 #[cfg(test)]
 mod tests {
     use super::{report_login, report_logout, stack_has_user_nodes};
-    use crate::daemon_control::PokeOutcome;
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
+    use daemon::control::PokeOutcome;
     use std::collections::BTreeMap;
 
     /// Builds an instance-less node fixed at `stage`. The bindings/instances are

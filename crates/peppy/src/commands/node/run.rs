@@ -647,6 +647,13 @@ pub async fn validate_and_run_instance(
 /// have validated `binds` via [`validate_and_run_instance`] first; invoking
 /// this directly bypasses every binding rule and exists only as the lower
 /// half of the validate-then-spawn split.
+///
+/// `core_node_name` plays both roles (caller identity and goal target)
+/// because this path is local-only: the `RuntimeConfig` built below embeds
+/// this session's messaging endpoint and `core_node_name` as the instance's
+/// bound core node, and the daemon rewrites neither server-side (it also
+/// rejects a `bound_core_node` that isn't its own). The command entry points
+/// enforce this via `reject_remote_target_for_local_endpoint`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
@@ -777,6 +784,11 @@ async fn run_node_async(
     build: bool,
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
+
+    // The spawned instance's runtime config embeds this machine's messaging
+    // endpoint (see `run_instance_async`), which only the local daemon's
+    // nodes can dial; the whole run path is therefore local-only in v1.
+    crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node run")?;
 
     // Single end-to-end budget: every subsequent blocking stage (build, wait,
     // run) derives its `max_secs` from what's left of this budget, so the sum

@@ -34,6 +34,13 @@ async fn add_repo_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
+    // A local filesystem repo source is a caller-local path the daemon
+    // resolves on its own machine; a remote target would register a repo
+    // from the wrong machine's filesystem (or a path that only exists here).
+    if matches!(repo_source, RepoSource::Fs(_)) {
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy repo add")?;
+    }
+
     let request = RepoAddRequest {
         source: repo_source,
         top,
@@ -43,7 +50,7 @@ async fn add_repo_async(
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
-        &conn.core_node_name,
+        &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await

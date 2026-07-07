@@ -3,8 +3,8 @@ use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
+use crate::state::DaemonState;
 use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
@@ -18,9 +18,6 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-/// The git hash embedded at compile time by build.rs
-const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
-
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
 const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -30,13 +27,16 @@ pub struct ServeCommandBuilder {
     messaging_ready: Option<watch::Receiver<bool>>,
     core_node_requested: bool,
     core_node_name: Option<String>,
-    clock_source: super::ClockSource,
+    clock_source: crate::ClockSource,
     shutdown_token: Option<CancellationToken>,
     /// Sender the core node runner uses to tell the messaging router that
     /// teardown is done. Created alongside the messaging router so the router
     /// holds the receiver; handed to the core node runner in [`Self::build`].
     core_node_done_tx: Option<watch::Sender<bool>>,
     root_dir: PathBuf,
+    /// The binary's compile-time git hash, recorded in the daemon state file.
+    /// Passed in by the embedding binary (this crate reads no build-time env).
+    git_hash: String,
     peppy_config: PeppyConfig,
     /// Backend URL for per-user-router federation, set by
     /// [`with_messaging_router`](Self::with_messaging_router) for the `zenoh`
@@ -44,7 +44,10 @@ pub struct ServeCommandBuilder {
     /// task that federates the local router to the cloud router (and keeps it
     /// federated across login/logout). The local router is always started
     /// *standalone*; the task applies the federation off the startup path so a
-    /// slow/unreachable backend can never stall daemon startup.
+    /// slow/unreachable backend can never stall daemon startup beyond the
+    /// federation connect timeout (the core node's boot self-probe waits — that
+    /// bounded long at most — for the initial federation to settle, so name
+    /// collisions across the federated mesh refuse boot; see `build`).
     federation_api_url: Option<String>,
     /// Bound on the federation backend round-trip (the startup gate and each
     /// resolve). Read from `peppy_config.federation` in
@@ -67,17 +70,18 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(root_dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn new(root_dir: impl Into<PathBuf>, git_hash: impl Into<String>) -> Result<Self> {
         Ok(Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
             messaging_ready: None,
             core_node_requested: false,
             core_node_name: None,
-            clock_source: super::ClockSource::default(),
+            clock_source: crate::ClockSource::default(),
             shutdown_token: None,
             core_node_done_tx: None,
             root_dir: root_dir.into(),
+            git_hash: git_hash.into(),
             peppy_config: PeppyConfig::default(),
             federation_api_url: None,
             federation_connect_timeout: Duration::from_secs(
@@ -128,11 +132,8 @@ impl ServeCommandBuilder {
                 // backend (the config pull's timeout). `resolve_api_url` is a local
                 // config/env lookup (no I/O), so it's safe to keep on this path; a
                 // `Some` url arms the federation task.
-                let api_url = crate::auth::profile::resolve_api_url(
-                    None,
-                    &self.peppy_config.resource_servers,
-                )
-                .ok();
+                let api_url =
+                    auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers).ok();
                 self.federation_api_url = api_url;
                 // Capture the federation timeout here, before `peppy_config` is
                 // moved into the core node in `build`; both the federation task
@@ -147,7 +148,7 @@ impl ServeCommandBuilder {
                 // task. The router itself is never namespaced (it only forwards),
                 // so the namespace rides only on application sessions.
                 let namespace = config::org::resolve_session_namespace(
-                    crate::auth::router::cached_organization_id_default().as_deref(),
+                    auth::router::cached_organization_id_default().as_deref(),
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
@@ -168,7 +169,7 @@ impl ServeCommandBuilder {
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
-                warn!(target: "peppy::serve", "Unsupported messaging engine '{}', using mock", other);
+                warn!(target: "daemon::serve", "Unsupported messaging engine '{}', using mock", other);
                 MessengerAdapter::Mock(MockAdapter::default())
             }
         };
@@ -199,7 +200,7 @@ impl ServeCommandBuilder {
     pub fn with_core_node(
         mut self,
         core_node_name: Option<String>,
-        clock_source: super::ClockSource,
+        clock_source: crate::ClockSource,
     ) -> Result<Self> {
         self.core_node_requested = true;
         self.core_node_name = core_node_name;
@@ -208,8 +209,39 @@ impl ServeCommandBuilder {
     }
 
     pub fn build(mut self) -> Result<Serve> {
+        // The core-node name this generation materialized (explicit or derived),
+        // captured out of the core-node block for the federation task below: the
+        // federation POST registers this daemon under it in the backend's
+        // core-node registry. `None` only when no core node was requested, in
+        // which case there is nothing to register and federation stays unarmed.
+        let mut federation_core_node_name: Option<String> = None;
+        // Boot-probe ordering gate: when a federation task will be armed below,
+        // the core node delays its boot-time name-collision self-probe until the
+        // *initial* federation poll has settled, so the probe sees the federated
+        // mesh rather than the always-standalone just-started local router (a
+        // same-name daemon reachable only through the per-user cloud router must
+        // refuse boot). RouterFederation fires the sender in lockstep with its
+        // startup readiness gate, so the wait is bounded by
+        // `federation_connect_timeout` and fail-open (dropped sender ⇒ the core
+        // node proceeds standalone).
+        let (federation_settled_tx, federation_settled_rx) =
+            if self.core_node_requested && self.federation_api_url.is_some() {
+                let (tx, rx) = watch::channel(false);
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
         if self.core_node_requested {
             if let Some(messenger) = &self.messenger {
+                // Precedence: `--core-node-name` beats the config's
+                // `core_node_name`; both absent ⇒ `None`, and the core node
+                // derives its machine-specific default. Resolved (and an explicit
+                // name validated) here, before `peppy_config` is moved into the
+                // runner.
+                let resolved_core_node_name = resolve_core_node_name(
+                    self.core_node_name.clone(),
+                    self.peppy_config.core_node_name.clone(),
+                )?;
                 // Capture the shutdown grace before `peppy_config` is moved into
                 // the runner, so the daemon state file can advertise it to clients.
                 let shutdown_grace_secs = self.peppy_config.lifecycle.shutdown_grace_secs;
@@ -222,11 +254,12 @@ impl ServeCommandBuilder {
                     .expect("core_node_done channel created in with_messaging_router");
                 let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
-                    self.core_node_name.clone(),
+                    resolved_core_node_name,
                     DEFAULT_NODE_STARTUP_TIMEOUT,
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
                     self.messaging_ready.clone(),
+                    federation_settled_rx,
                     self.clock_source,
                     self.peppy_config,
                     self.organization_namespace.clone(),
@@ -242,7 +275,7 @@ impl ServeCommandBuilder {
                 let daemon_state = DaemonState::new(
                     &core_node_name,
                     messenger.blocking_lock().messaging_port(),
-                    GIT_HASH,
+                    &self.git_hash,
                     shutdown_grace_secs,
                     &self.organization_namespace,
                 );
@@ -254,6 +287,7 @@ impl ServeCommandBuilder {
                     state_path.display(),
                     core_node_name
                 );
+                federation_core_node_name = Some(core_node_name);
 
                 self.composite_command = self
                     .composite_command
@@ -274,9 +308,16 @@ impl ServeCommandBuilder {
         // In-process restart channel. `None` for the mock engine (no federation
         // control), so a mock daemon never restarts; armed for the zenoh engine.
         let mut restart_rx: Option<watch::Receiver<bool>> = None;
+        if self.federation_api_url.is_some() && federation_core_node_name.is_none() {
+            // Only reachable when a zenoh router was built without a core node
+            // (never the serve path): the federation POST must carry a core-node
+            // name, so with none materialized there is nothing to register.
+            warn!("Router federation requires a core node; staying standalone");
+        }
         if let Some(api_url) = self.federation_api_url.take()
             && let Some(messenger) = self.messenger.clone()
             && let Some(messaging_ready) = self.messaging_ready.clone()
+            && let Some(core_node_name) = federation_core_node_name
         {
             let connect_timeout = self.federation_connect_timeout;
             // Poke channel: `auth login`/`logout` reach the federation loop through
@@ -292,6 +333,10 @@ impl ServeCommandBuilder {
                     .add_async_command(Box::new(RouterFederation::new(
                         messenger,
                         api_url,
+                        // This generation's core-node name, carried in every
+                        // federation POST so the backend registry knows which
+                        // daemon pulled the config.
+                        core_node_name,
                         messaging_ready,
                         trigger_rx,
                         connect_timeout,
@@ -303,12 +348,15 @@ impl ServeCommandBuilder {
                         // that differs from this generation's (the steady-state
                         // poke path leaves the restart to the control handler).
                         restart_tx.clone(),
+                        // Opens the core node's boot-probe gate once the initial
+                        // federation poll settles (see above).
+                        federation_settled_tx,
                         self.teardown_token.clone(),
                     )));
 
             // Control socket the CLI pokes. Derived from the same `PeppyDirs` the
             // CLI resolves, so the two agree without a discovery handshake.
-            let socket_path = crate::daemon_control::federation_control_socket_path(
+            let socket_path = crate::control::federation_control_socket_path(
                 &daemon_config::consts::PeppyDirs::default(),
             );
             self.composite_command =
@@ -335,9 +383,104 @@ impl ServeCommandBuilder {
 }
 
 /// Extracts the messaging port from the environment variable, falling back to the default port.
-pub(super) fn extract_messaging_port() -> u16 {
+pub(crate) fn extract_messaging_port() -> u16 {
     std::env::var(daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(config::consts::DEFAULT_MESSAGING_PORT)
+}
+
+/// Resolves the core-node name for one daemon generation: the
+/// `--core-node-name` flag wins, else `core_node_name` from
+/// `peppy_config.json5`, else `None` (the core node derives its
+/// machine-specific default). An explicit name is validated with the same
+/// `Name` rules (and length cap) the daemon applies, so a bad flag value fails
+/// here with an actionable error instead of panicking inside `CoreNode::new`.
+fn resolve_core_node_name(flag: Option<String>, config: Option<String>) -> Result<Option<String>> {
+    let (name, source) = match (flag, config) {
+        (Some(name), _) => (name, "--core-node-name"),
+        (None, Some(name)) => (name, "core_node_name in peppy_config.json5"),
+        (None, None) => return Ok(None),
+    };
+    if config::runtime::Name::new(name.as_str()).is_err()
+        || name.len() > daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN
+    {
+        return Err(Error::ExecutionFailed(format!(
+            "invalid core node name {name:?} (from {source}): must be non-empty, at most {} \
+             characters, and use only characters from \"{}\"",
+            daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN,
+            config::consts::ALLOWED_CONFIG_CHARS
+        )));
+    }
+    Ok(Some(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn some(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn flag_beats_config() {
+        let resolved = resolve_core_node_name(some("from-flag"), some("from-config"))
+            .expect("both names valid");
+        assert_eq!(resolved.as_deref(), Some("from-flag"));
+    }
+
+    #[test]
+    fn config_beats_derivation() {
+        let resolved = resolve_core_node_name(None, some("from-config")).expect("valid name");
+        assert_eq!(resolved.as_deref(), Some("from-config"));
+    }
+
+    #[test]
+    fn absent_everywhere_passes_none_through_to_derivation() {
+        let resolved = resolve_core_node_name(None, None).expect("nothing to validate");
+        assert_eq!(resolved, None);
+    }
+
+    /// An invalid `--core-node-name` must come back as an actionable
+    /// `ExecutionFailed`, not reach `CoreNode::new`'s `Name::new(...).unwrap()`
+    /// panic path.
+    #[test]
+    fn invalid_explicit_name_errors_instead_of_panicking() {
+        for bad in ["", "has space", "robot/7"] {
+            let err = resolve_core_node_name(some(bad), None)
+                .expect_err("an invalid explicit name must be rejected");
+            let msg = err.to_string();
+            assert!(
+                matches!(err, Error::ExecutionFailed(_)),
+                "expected ExecutionFailed for {bad:?}, got: {msg}"
+            );
+            assert!(
+                msg.contains("--core-node-name"),
+                "the error names the flag the bad value came from: {msg}"
+            );
+        }
+    }
+
+    /// The flag enforces the same length cap the config file does, so the two
+    /// sources cannot diverge on what a valid name is.
+    #[test]
+    fn explicit_name_length_cap_matches_the_config_cap() {
+        let max = "n".repeat(daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN);
+        assert_eq!(
+            resolve_core_node_name(some(&max), None)
+                .expect("boundary length accepted")
+                .as_deref(),
+            Some(max.as_str())
+        );
+
+        let over = "n".repeat(daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN + 1);
+        let err = resolve_core_node_name(None, some(&over))
+            .expect_err("an over-long name must be rejected");
+        assert!(
+            err.to_string()
+                .contains("core_node_name in peppy_config.json5"),
+            "the error names the config source: {err}"
+        );
+    }
 }

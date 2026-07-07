@@ -42,7 +42,7 @@ peppy auth login --no-browser
 
 ### How it works
 
-1. The CLI fetches the public `GET {api_url}/cli-config`, which returns the
+1. The CLI fetches the public `GET {api_url}/cli/config`, which returns the
    `issuer`, the `client_id`, and the exact `scopes` to request.
 2. It runs OIDC discovery against the `issuer`
    (`{issuer}/.well-known/openid-configuration`) to find the device and token
