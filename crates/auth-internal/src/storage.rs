@@ -37,7 +37,7 @@ pub struct Credentials {
     #[serde(default)]
     pub session: Option<ProfileCreds>,
     /// Cached per-user zenoh-router connection (from
-    /// `POST /me/cli/messaging-federation`), or `None` until first fetched. Bound to `session`: cleared on login/logout so
+    /// `POST /me/cli/federation`), or `None` until first fetched. Bound to `session`: cleared on login/logout so
     /// it can never outlive its identity.
     #[serde(default)]
     pub router: Option<RouterSession>,

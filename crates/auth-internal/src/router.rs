@@ -2,8 +2,8 @@
 //! session.
 //!
 //! The flow mirrors the OAuth resolver: reuse the cached router config while it
-//! is fresh, otherwise fetch a new one from `POST /me/cli/messaging-federation`
-//! (refreshing the access token on a `401` via [`client::establish_messaging_federation`])
+//! is fresh, otherwise fetch a new one from `POST /me/cli/federation`
+//! (refreshing the access token on a `401` via [`client::establish_federation`])
 //! and cache it beside the session. The CA the router is validated against is
 //! resolved CLI-side at connect time (see [`resolve_router_ca`]), **not** taken
 //! from the server's response: a debug build trusts the committed dev CA embedded
@@ -160,7 +160,7 @@ fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Optio
 /// [`resolve_router_client_identity`]) are applied fresh to the live TLS at connect
 /// time (never cached on disk). `core_node_name` is the daemon's core-node name,
 /// carried in the pull's POST body to register the daemon in the backend's
-/// core-node registry (see [`client::establish_messaging_federation`]); it also
+/// core-node registry (see [`client::establish_federation`]); it also
 /// tags the cache, so a resolve under a different name (a renamed daemon) always
 /// re-pulls and re-registers rather than reusing a still-fresh cache.
 ///
@@ -244,7 +244,7 @@ fn pull_and_cache(
     // session subject; doing so would let the session reuse the PAT's org once the
     // PAT is gone (a cross-identity leak).
     let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
-    let cfg = client::establish_messaging_federation(http, api_url, &mut cred, core_node_name)?;
+    let cfg = client::establish_federation(http, api_url, &mut cred, core_node_name)?;
 
     // Validate the config *before* it is written to `creds.router`: a malformed
     // endpoint or an unsupported transport must not poison the on-disk
