@@ -302,7 +302,7 @@ impl Default for LifecycleConfig {
 }
 
 /// The backend resource server the CLI auth commands talk to. The endpoint
-/// paths (`/cli-config`, `/me`, `/logout`) are appended by the caller; `api`
+/// paths (`/cli/auth-config`, `/me`, `/logout`) are appended by the caller; `api`
 /// holds only the base URL. A single URL, baked in per build: there is no
 /// dev/prod selection at runtime, so the file stores exactly the build's
 /// backend ([`DEFAULT_API_URL`]).

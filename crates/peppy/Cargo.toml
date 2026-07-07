@@ -69,7 +69,7 @@ tempfile = "3.8"
 # json5 parsing of on-disk state/config fixtures in the integration tests; the
 # library crate itself no longer reads json5 (that moved to auth and daemon).
 serde_json5 = "0.2"
-# In-process HTTP mock server for the auth integration tests (cli-config, OIDC
+# In-process HTTP mock server for the auth integration tests (cli/config, OIDC
 # discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.8"
 # Self-reference so `cargo test` builds this crate with the test-only helpers

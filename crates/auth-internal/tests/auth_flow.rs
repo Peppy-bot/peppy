@@ -1,6 +1,6 @@
 //! Engine-level auth tests with every HTTP endpoint mocked (`httpmock`): OIDC
 //! discovery, the Zitadel token endpoint, and the backend `/me` +
-//! `/me/messaging-federation`. All auth state is isolated per test via an
+//! `/me/cli/messaging-federation`. All auth state is isolated per test via an
 //! explicit credentials path under a tempdir (no `PEPPY_HOME` mutation, so
 //! tests run in parallel). The command-level flows (`peppy auth login` /
 //! `logout` / `whoami`) are covered by the `peppy` crate's own auth tests.
@@ -134,7 +134,7 @@ fn establish_messaging_federation_parses_the_contract() {
     // requires it). The matcher rejects any other body.
     let cfg_mock = server.mock(|when, then| {
         when.method(POST)
-            .path("/me/messaging-federation")
+            .path("/me/cli/messaging-federation")
             .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/localhost:7447",
@@ -195,14 +195,14 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
     // re-sends it.
     let pull_rejected = server.mock(|when, then| {
         when.method(POST)
-            .path("/me/messaging-federation")
+            .path("/me/cli/messaging-federation")
             .header("Authorization", "Bearer seeded-access")
             .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(401);
     });
     let pull_ok = server.mock(|when, then| {
         when.method(POST)
-            .path("/me/messaging-federation")
+            .path("/me/cli/messaging-federation")
             .header("Authorization", "Bearer refreshed-access")
             .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
@@ -266,7 +266,7 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     // returned host matching the cached value, not this mock's response; the
     // bogus body only makes an accidental pull obvious.
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST).path("/me/cli/messaging-federation");
         then.status(200)
             .json_body(json!({ "endpoint": "tls/should-not-be-used:1" }));
     });
@@ -319,7 +319,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     // federation pull must always identify itself by core-node name.
     let pull = server.mock(|when, then| {
         when.method(POST)
-            .path("/me/messaging-federation")
+            .path("/me/cli/messaging-federation")
             .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
@@ -375,7 +375,7 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
     // un-provisioned dev box).
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST).path("/me/cli/messaging-federation");
         then.status(200)
             .json_body(json!({ "endpoint": "tls/should-not-be-pulled:1" }));
     });
@@ -404,7 +404,7 @@ fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
     // that cannot federate also cannot carry a federating namespace.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST).path("/me/cli/messaging-federation");
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -451,7 +451,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
     // it's the timeout, not the mock, that fails the short case.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST).path("/me/cli/messaging-federation");
         then.status(200)
             .delay(Duration::from_millis(500))
             .json_body(json!({
@@ -512,7 +512,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     // rejects anything else).
     let pull = server.mock(|when, then| {
         when.method(POST)
-            .path("/me/messaging-federation")
+            .path("/me/cli/messaging-federation")
             .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/fresh.zenoh.localhost:7443",
@@ -582,7 +582,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
         when.method(POST)
-            .path("/me/messaging-federation")
+            .path("/me/cli/messaging-federation")
             .json_body(json!({ "core_node_name": CORE_NODE }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
@@ -644,7 +644,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
     // (cross-tenant) leak.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
-        when.method(POST).path("/me/messaging-federation");
+        when.method(POST).path("/me/cli/messaging-federation");
         then.status(200).json_body(json!({
             "endpoint": "tls/pat-org.zenoh.localhost:7443",
             "protocol": "tls",

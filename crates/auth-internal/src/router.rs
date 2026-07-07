@@ -2,7 +2,7 @@
 //! session.
 //!
 //! The flow mirrors the OAuth resolver: reuse the cached router config while it
-//! is fresh, otherwise fetch a new one from `POST /me/messaging-federation`
+//! is fresh, otherwise fetch a new one from `POST /me/cli/messaging-federation`
 //! (refreshing the access token on a `401` via [`client::establish_messaging_federation`])
 //! and cache it beside the session. The CA the router is validated against is
 //! resolved CLI-side at connect time (see [`resolve_router_ca`]), **not** taken
