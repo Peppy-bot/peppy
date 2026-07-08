@@ -1,7 +1,8 @@
 use crate::Result;
-use crate::names;
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
+use core_node_api::names;
+use core_node_api::{ServiceId, TopicId};
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext, Subscription, TopicPublisher};
 use peppylib::types::Payload;
@@ -74,7 +75,7 @@ pub async fn listen_for_clock(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::CLOCK,
+        ServiceId::Clock.name(),
     )
     .await?;
 
@@ -166,7 +167,7 @@ pub async fn publish_clock(
         core_node_name,
         instance_id,
         node_name,
-        names::CLOCK,
+        TopicId::Clock.name(),
     )
     .await?;
     Ok(tokio::spawn(run_clock_publisher(
@@ -262,7 +263,7 @@ pub async fn publish_daemon_heartbeat(
         core_node_name,
         instance_id,
         node_name,
-        names::DAEMON_HEARTBEAT,
+        TopicId::DaemonHeartbeat.name(),
     )
     .await?;
     Ok(tokio::spawn(run_heartbeat_publisher(
@@ -337,7 +338,7 @@ pub async fn watch_for_name_collision(
         instance_id,
         Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
         false,
-        names::DAEMON_HEARTBEAT,
+        TopicId::DaemonHeartbeat.name(),
         &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
@@ -399,7 +400,7 @@ pub async fn subscribe_external_clock(
         instance_id,
         Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
         false,
-        names::CLOCK,
+        TopicId::Clock.name(),
         &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )

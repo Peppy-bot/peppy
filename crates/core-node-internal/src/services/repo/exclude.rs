@@ -1,11 +1,12 @@
 use crate::Result;
-use crate::names;
 use crate::services::repo::refresh::{process_refresh, write_all_caches};
 use crate::services::repo::{
     json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
 };
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -29,7 +30,7 @@ pub async fn listen_for_repo_exclude(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::REPO_EXCLUDE,
+        ServiceId::RepoExclude.name(),
     )
     .await?;
 

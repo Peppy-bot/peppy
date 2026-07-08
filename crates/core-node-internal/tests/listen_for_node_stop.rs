@@ -10,8 +10,8 @@ use common::{
 };
 use config::runtime::Name;
 use core_node::force_kill_deadline;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
-use core_node_api::names;
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::services::health::listen_for_node_health;
@@ -614,7 +614,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
             FOREIGN_CORE_NODE,
             FOREIGN_LISTENER_INSTANCE_ID,
             common::test_node_target(NODE_NAME),
-            names::NODE_STOP,
+            ServiceId::NodeStop.name(),
         )
         .await
         .expect("foreign node_stop listener should start");
@@ -642,7 +642,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
             LOCAL_CORE_NODE,
             LOCAL_LISTENER_INSTANCE_ID,
             common::test_node_target(NODE_NAME),
-            names::NODE_STOP,
+            ServiceId::NodeStop.name(),
         )
         .await
         .expect("local node_stop listener should start");

@@ -9,7 +9,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, core_node_target, start_core_node_with_mock_messenger};
 use config::node::QoSProfile;
-use core_node::names;
+use core_node_api::TopicId;
 use core_node_api::encoding::ClockTick;
 use peppylib::messaging::{ConsumerFilter, TopicMessenger};
 use std::time::Duration;
@@ -24,7 +24,7 @@ async fn daemon_publishes_liveness_heartbeats() {
         CALLER_INSTANCE_ID,
         Some(core_node_target(&started.core_node_name)),
         false,
-        names::DAEMON_HEARTBEAT,
+        TopicId::DaemonHeartbeat.name(),
         &ConsumerFilter::Any,
         QoSProfile::SensorData,
     )

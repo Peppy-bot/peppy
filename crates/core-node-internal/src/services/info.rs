@@ -1,7 +1,8 @@
 use crate::Result;
-use crate::names;
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
+use core_node_api::names;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -27,7 +28,7 @@ pub async fn listen_for_info(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::INFO,
+        ServiceId::Info.name(),
     )
     .await?;
 

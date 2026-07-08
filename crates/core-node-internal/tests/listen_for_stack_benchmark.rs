@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use common::{CALLER_INSTANCE_ID, core_node_target, start_core_node_with_mock_messenger};
 use config::node::{NodeConfigParser, QoSProfile};
-use core_node::names;
+use core_node_api::ActionId;
 use core_node_api::encoding::{InterfaceKind, MeasurementKind};
 use core_node_api::encoding::{
     StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
@@ -25,7 +25,7 @@ async fn run_benchmark_goal(
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
-        names::STACK_BENCHMARK_ACTION,
+        ActionId::StackBenchmark.name(),
         None,
         goal_payload,
         QoSProfile::default(),

@@ -6,8 +6,8 @@ use common::{
 };
 use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
-use core_node::names;
 use core_node::nodes_repo_cache_path;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
@@ -92,7 +92,7 @@ async fn send_refresh_inner(
         caller_core_node,
         caller_instance_id,
         common::core_node_target(&started.core_node_name),
-        names::REPO_REFRESH_ACTION,
+        ActionId::RepoRefresh.name(),
         None,
         goal_payload,
         QoSProfile::default(),

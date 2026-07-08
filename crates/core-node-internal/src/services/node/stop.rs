@@ -1,8 +1,9 @@
 use crate::Result;
-use crate::names;
 use crate::services::response::into_service_response;
 use config::runtime::Name;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
+use core_node_api::names;
 use node_stack::{EntityHandle, NodeStack, TrackedNodeInstance};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
@@ -43,7 +44,7 @@ pub async fn listen_for_node_stop(
         &core_node_node,
         &core_instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_STOP,
+        ServiceId::NodeStop.name(),
     )
     .await?;
 

@@ -10,7 +10,6 @@ use self::orchestrate::{
 };
 use self::resolve::{parse_launcher_config, resolve_deployments, resolve_framework};
 use crate::Result;
-use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -22,10 +21,12 @@ use chrono::Local;
 use config::apply_parameter_defaults;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
     NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, PairTarget,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::Deployment;
 use futures::FutureExt;
@@ -94,7 +95,7 @@ pub async fn listen_for_stack_launch(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::STACK_LAUNCH_ACTION,
+        ActionId::StackLaunch.name(),
         true,
     )
     .await?;

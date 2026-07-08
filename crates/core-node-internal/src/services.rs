@@ -13,13 +13,14 @@ use clock::{ClockSource, SimClockSource, WallClockSource};
 pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
 
 use crate::Result;
-use crate::names;
 use config::{
     DefaultValue, ParameterSpec,
     node::{Execution, Manifest, NodeConfig, PeppygenLanguage, TypeToken},
     runtime::Name,
     schema::PeppySchema,
 };
+use core_node_api::names;
+use core_node_api::{ActionId, ServiceId, TopicId};
 use daemon_config::consts::PeppyDirs;
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
@@ -233,6 +234,43 @@ fn format_core_node_name(generated: &str, suffix: u32) -> Name {
     Name::new(format!("core-node-{generated}-{suffix:010}")).unwrap()
 }
 
+/// A pending listener registration, as collected by
+/// [`CoreNode::start_with_ready`]: resolves once the listener is bound,
+/// yielding the spawned handler's join handle.
+type ListenerSetup<'a> = BoxFuture<'a, Result<JoinHandle<Result<()>>>>;
+
+/// Shared per-boot resources the per-method listener constructors need
+/// beyond `&self`. Built once in [`CoreNode::start_with_ready`], before
+/// registration.
+struct ListenerCtx<'a> {
+    /// The core node binds to itself: this is `CoreNode::node_name`, passed
+    /// as the bound core-node identity of every listener.
+    core_node_name: &'a str,
+    /// Latest externally-observed clock tick; shared between the sim clock
+    /// source serving the `clock` service and the `clock`-topic subscriber
+    /// feeding it (sim mode only, but allocated unconditionally).
+    clock_cache: Arc<AtomicU64>,
+    /// Single time authority behind both the `clock` service handler and the
+    /// `clock` topic publisher.
+    clock_source: Arc<dyn ClockSource>,
+    /// In-memory key/value store shared by the four datastore endpoints
+    /// (store, get, list, remove).
+    datastore: Arc<datastore::Datastore>,
+    /// The daemon's single pairing authority. ONE instance shared by every
+    /// establishment hook (node run, stack launch) and clear path (node
+    /// stop, node add overwrite, exit watchers): its op lock serializes all
+    /// pairing operations daemon-wide.
+    pairing: Arc<node::PairingCoordinator>,
+}
+
+/// Why a daemon-side registration for a registry method deliberately does
+/// not exist. Every variant is a documented decision surfaced by the
+/// exhaustive match in [`CoreNode::service_task`] — not a silent gap.
+enum NotHostedHere {
+    /// Hosted by spawned nodes; the daemon is the caller (`clock_offset`).
+    SpawnedNode,
+}
+
 impl CoreNode {
     pub fn new(config: CoreNodeConfig) -> Self {
         let CoreNodeConfig {
@@ -364,7 +402,7 @@ impl CoreNode {
                 // The wire tag from `names` (`"core"`), not this file's
                 // `CORE_NODE_TAG` git tag.
                 SenderTarget::node(self.node_name(), names::CORE_NODE_TAG)?,
-                names::HEALTH,
+                ServiceId::Health.name(),
                 ServiceTarget::Any,
             )
             .await
@@ -382,6 +420,308 @@ impl CoreNode {
             }
         }
         Ok(())
+    }
+
+    /// The daemon-side registration for one registry **service**, or the
+    /// documented reason it does not exist here.
+    ///
+    /// EXHAUSTIVE on purpose — no wildcard arm: a new [`ServiceId`] variant
+    /// fails compilation here until the daemon decides how (or explicitly
+    /// why not) to host it.
+    fn service_task<'a>(
+        &'a self,
+        id: ServiceId,
+        ctx: &ListenerCtx<'a>,
+    ) -> std::result::Result<ListenerSetup<'a>, NotHostedHere> {
+        Ok(match id {
+            ServiceId::Clock => clock::listen_for_clock(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&ctx.clock_source),
+            )
+            .boxed(),
+            ServiceId::Info => info::listen_for_info(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.start_time,
+            )
+            .boxed(),
+            ServiceId::Health => health::listen_for_health(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.start_time,
+            )
+            .boxed(),
+            ServiceId::DatastoreStore => datastore::listen_for_datastore_store(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&ctx.datastore),
+            )
+            .boxed(),
+            ServiceId::DatastoreGet => datastore::listen_for_datastore_get(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&ctx.datastore),
+            )
+            .boxed(),
+            ServiceId::DatastoreList => datastore::listen_for_datastore_list(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&ctx.datastore),
+            )
+            .boxed(),
+            ServiceId::DatastoreRemove => datastore::listen_for_datastore_remove(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&ctx.datastore),
+            )
+            .boxed(),
+            ServiceId::StackReset => stack::listen_for_stack_reset(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+            )
+            .boxed(),
+            ServiceId::StackList => stack::listen_for_stack_list(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+            )
+            .boxed(),
+            ServiceId::NodeInit => node::listen_for_node_init(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ServiceId::NodeRemove => node::listen_for_node_remove(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+            )
+            .boxed(),
+            ServiceId::NodeSync => node::listen_for_node_sync(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ServiceId::NodeInfo => node::listen_for_node_info(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+                self.node_startup_timeout,
+            )
+            .boxed(),
+            ServiceId::NodeStop => node::listen_for_node_stop(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                Arc::clone(&ctx.pairing),
+            )
+            .boxed(),
+            ServiceId::RepoAdd => repo::listen_for_repo_add(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ServiceId::RepoExclude => repo::listen_for_repo_exclude(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ServiceId::RepoList => repo::listen_for_repo_list(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ServiceId::RepoRemove => repo::listen_for_repo_remove(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ServiceId::ClockOffset => return Err(NotHostedHere::SpawnedNode),
+        })
+    }
+
+    /// The daemon-side registration for one registry **action**. All actions
+    /// are daemon-hosted, so unlike [`Self::service_task`] there is no
+    /// not-hosted-here escape. EXHAUSTIVE — no wildcard arm.
+    fn action_task<'a>(&'a self, id: ActionId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
+        match id {
+            ActionId::StackLaunch => stack::listen_for_stack_launch(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+                stack::StackLaunchDefaults {
+                    timeouts: stack::StackLaunchTimeouts {
+                        node_startup: self.node_startup_timeout,
+                        node_start_health: self.node_start_health_timeout,
+                        health_monitor_interval: self.health_monitor_interval,
+                        health_monitor_timeout: self.health_monitor_timeout,
+                    },
+                    use_sim_time: self.daemon_use_sim_time,
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
+                        &self.peppy_config,
+                        self.organization_namespace.clone(),
+                    ),
+                    shutdown_token: self.shutdown_token.clone(),
+                },
+                Arc::clone(&ctx.pairing),
+            )
+            .boxed(),
+            ActionId::StackBenchmark => stack::listen_for_stack_benchmark(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ActionId::NodeAdd => node::listen_for_node_add(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+                Arc::clone(&ctx.pairing),
+            )
+            .boxed(),
+            ActionId::NodeBuild => node::listen_for_node_build(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+            ActionId::NodeRun => node::listen_for_node_run(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                node::NodeRunServiceConfig {
+                    node_startup_timeout: self.node_startup_timeout,
+                    node_start_health_timeout: self.node_start_health_timeout,
+                    peppy_dirs: self.peppy_dirs.clone(),
+                    health_monitor_interval: self.health_monitor_interval,
+                    health_monitor_timeout: self.health_monitor_timeout,
+                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
+                        &self.peppy_config,
+                        self.organization_namespace.clone(),
+                    ),
+                    shutdown_token: self.shutdown_token.clone(),
+                    pairing: Arc::clone(&ctx.pairing),
+                },
+            )
+            .boxed(),
+            ActionId::RepoRefresh => repo::listen_for_repo_refresh(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .boxed(),
+        }
+    }
+
+    /// The daemon-side task fulfilling one registry **topic**. All topics are
+    /// daemon-hosted. EXHAUSTIVE — no wildcard arm.
+    fn topic_task<'a>(&'a self, id: TopicId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
+        match id {
+            // How the daemon fulfils the `clock` topic is a mode decision:
+            // in wall mode it publishes the tick stream itself; in sim mode
+            // an external simulator publishes, and the daemon instead
+            // subscribes, mirroring the latest tick into the shared cache
+            // the `clock` service answers from.
+            TopicId::Clock => {
+                if self.daemon_use_sim_time {
+                    clock::subscribe_external_clock(
+                        self.messenger.clone(),
+                        ctx.core_node_name,
+                        self.instance_id(),
+                        self.node_name(),
+                        Arc::clone(&ctx.clock_cache),
+                        self.shutdown_token.clone(),
+                    )
+                    .boxed()
+                } else {
+                    clock::publish_clock(
+                        self.messenger.clone(),
+                        ctx.core_node_name,
+                        self.instance_id(),
+                        self.node_name(),
+                        self.clock_publish_interval,
+                        Arc::clone(&ctx.clock_source),
+                        self.shutdown_token.clone(),
+                    )
+                    .boxed()
+                }
+            }
+            // Liveness beacon for spawned nodes' watchdogs. Unconditional
+            // (both wall and sim mode), unlike the clock above which is
+            // published in wall mode only.
+            TopicId::DaemonHeartbeat => clock::publish_daemon_heartbeat(
+                self.messenger.clone(),
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.heartbeat_interval,
+                self.shutdown_token.clone(),
+            )
+            .boxed(),
+        }
     }
 
     /// Boots the core node: registers every service listener and runs until the
@@ -425,82 +765,53 @@ impl CoreNode {
         // Build the clock source up front so the service handler and the
         // tick feeder share a single cache in sim mode. The cache is unused
         // (and the WallClockSource ignores it) in wall mode, but allocating
-        // it unconditionally keeps the branch below readable.
+        // it unconditionally keeps topic_task's clock arm readable.
         let clock_cache = Arc::new(AtomicU64::new(0));
         let clock_source: Arc<dyn ClockSource> = if self.daemon_use_sim_time {
             Arc::new(SimClockSource::new(Arc::clone(&clock_cache)))
         } else {
             Arc::new(WallClockSource)
         };
-        // In-memory key/value store shared by the four datastore endpoints
-        // (store, get, list, remove).
-        let datastore = Arc::new(datastore::Datastore::new());
-        // The daemon's single pairing authority. ONE instance shared by every
-        // establishment hook (node run, stack launch) and clear path (node
-        // stop, node add overwrite, exit watchers): its op lock serializes
-        // all pairing operations daemon-wide.
-        let pairing = Arc::new(node::PairingCoordinator::new(
-            Arc::clone(&self.node_stack),
-            self.messenger.clone(),
+        let ctx = ListenerCtx {
             core_node_name,
-            self.instance_id(),
-        ));
-        // Set up all listeners concurrently so startup latency is bounded by
-        // the slowest single listener, not the sum of all of them. They're
-        // independent: no listener depends on another being registered first.
-        let setup: Vec<BoxFuture<'_, Result<JoinHandle<Result<()>>>>> = vec![
-            health::listen_for_health(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.start_time,
-            )
-            .boxed(),
-            clock::listen_for_clock(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&clock_source),
-            )
-            .boxed(),
-            if self.daemon_use_sim_time {
-                clock::subscribe_external_clock(
-                    self.messenger.clone(),
-                    core_node_name,
-                    self.instance_id(),
-                    self.node_name(),
-                    Arc::clone(&clock_cache),
-                    self.shutdown_token.clone(),
-                )
-                .boxed()
-            } else {
-                clock::publish_clock(
-                    self.messenger.clone(),
-                    core_node_name,
-                    self.instance_id(),
-                    self.node_name(),
-                    self.clock_publish_interval,
-                    Arc::clone(&clock_source),
-                    self.shutdown_token.clone(),
-                )
-                .boxed()
-            },
-            // Liveness beacon for spawned nodes' watchdogs. Unconditional (both
-            // wall and sim mode), unlike the clock above which is wall-only.
-            clock::publish_daemon_heartbeat(
+            clock_cache,
+            clock_source,
+            datastore: Arc::new(datastore::Datastore::new()),
+            pairing: Arc::new(node::PairingCoordinator::new(
+                Arc::clone(&self.node_stack),
                 self.messenger.clone(),
                 core_node_name,
                 self.instance_id(),
-                self.node_name(),
-                self.heartbeat_interval,
-                self.shutdown_token.clone(),
-            )
-            .boxed(),
-            // Runtime complement to the boot-time self-probe: alarm if a
-            // foreign daemon instance beats under this daemon's name (e.g.
-            // one that federated in after boot, which the probe cannot see).
+            )),
+        };
+        // Set up all listeners concurrently so startup latency is bounded by
+        // the slowest single listener, not the sum of all of them. They're
+        // independent: no listener depends on another being registered first.
+        //
+        // Registration is driven by the registry id enums, so it is
+        // exhaustive by construction: a method added to `core-node-api` does
+        // not compile here until `service_task` / `action_task` /
+        // `topic_task` decides how (or explicitly why not) to host it.
+        let mut setup: Vec<ListenerSetup<'_>> = Vec::new();
+        for &id in ServiceId::ALL {
+            match self.service_task(id, &ctx) {
+                Ok(task) => setup.push(task),
+                // Documented, deliberate non-registration.
+                Err(NotHostedHere::SpawnedNode) => {}
+            }
+        }
+        for &id in ActionId::ALL {
+            setup.push(self.action_task(id, &ctx));
+        }
+        for &id in TopicId::ALL {
+            setup.push(self.topic_task(id, &ctx));
+        }
+        // Background tasks that are not registry methods (nothing a client
+        // calls) stay outside the enum-driven loops. Runtime complement to
+        // the boot-time self-probe: alarm if a foreign daemon instance beats
+        // under this daemon's name (e.g. one that federated in after boot,
+        // which the probe cannot see).
+        setup.push(
             clock::watch_for_name_collision(
                 self.messenger.clone(),
                 core_node_name,
@@ -509,221 +820,7 @@ impl CoreNode {
                 self.shutdown_token.clone(),
             )
             .boxed(),
-            info::listen_for_info(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.start_time,
-            )
-            .boxed(),
-            datastore::listen_for_datastore_store(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&datastore),
-            )
-            .boxed(),
-            datastore::listen_for_datastore_get(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&datastore),
-            )
-            .boxed(),
-            datastore::listen_for_datastore_list(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&datastore),
-            )
-            .boxed(),
-            datastore::listen_for_datastore_remove(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&datastore),
-            )
-            .boxed(),
-            stack::listen_for_stack_launch(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-                stack::StackLaunchDefaults {
-                    timeouts: stack::StackLaunchTimeouts {
-                        node_startup: self.node_startup_timeout,
-                        node_start_health: self.node_start_health_timeout,
-                        health_monitor_interval: self.health_monitor_interval,
-                        health_monitor_timeout: self.health_monitor_timeout,
-                    },
-                    use_sim_time: self.daemon_use_sim_time,
-                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
-                        &self.peppy_config,
-                        self.organization_namespace.clone(),
-                    ),
-                    shutdown_token: self.shutdown_token.clone(),
-                },
-                Arc::clone(&pairing),
-            )
-            .boxed(),
-            stack::listen_for_stack_list(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-            )
-            .boxed(),
-            stack::listen_for_stack_benchmark(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            stack::listen_for_stack_reset(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-            )
-            .boxed(),
-            node::listen_for_node_add(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-                Arc::clone(&pairing),
-            )
-            .boxed(),
-            node::listen_for_node_build(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            node::listen_for_node_info(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-                self.node_startup_timeout,
-            )
-            .boxed(),
-            node::listen_for_node_remove(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-            )
-            .boxed(),
-            node::listen_for_node_run(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                node::NodeRunServiceConfig {
-                    node_startup_timeout: self.node_startup_timeout,
-                    node_start_health_timeout: self.node_start_health_timeout,
-                    peppy_dirs: self.peppy_dirs.clone(),
-                    health_monitor_interval: self.health_monitor_interval,
-                    health_monitor_timeout: self.health_monitor_timeout,
-                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
-                        &self.peppy_config,
-                        self.organization_namespace.clone(),
-                    ),
-                    shutdown_token: self.shutdown_token.clone(),
-                    pairing: Arc::clone(&pairing),
-                },
-            )
-            .boxed(),
-            node::listen_for_node_stop(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                Arc::clone(&pairing),
-            )
-            .boxed(),
-            node::listen_for_node_init(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            node::listen_for_node_sync(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            repo::listen_for_repo_add(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            repo::listen_for_repo_refresh(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            repo::listen_for_repo_list(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            repo::listen_for_repo_remove(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-            repo::listen_for_repo_exclude(
-                &self.messenger,
-                core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                self.peppy_dirs.clone(),
-            )
-            .boxed(),
-        ];
+        );
 
         let handles = try_join_all(setup).await?;
 

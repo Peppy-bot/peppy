@@ -1,11 +1,12 @@
 use crate::Result;
-use crate::names;
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreListEntry, DatastoreListRequest,
     DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse, DatastoreStoreRequest,
     DatastoreStoreResponse,
 };
+use core_node_api::names;
 use parking_lot::RwLock;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -129,7 +130,7 @@ pub async fn listen_for_datastore_store(
         core_node_name,
         instance_id,
         node_name,
-        names::DATASTORE_STORE,
+        ServiceId::DatastoreStore.name(),
         store,
         handle_store_request,
     )
@@ -148,7 +149,7 @@ pub async fn listen_for_datastore_get(
         core_node_name,
         instance_id,
         node_name,
-        names::DATASTORE_GET,
+        ServiceId::DatastoreGet.name(),
         store,
         handle_get_request,
     )
@@ -167,7 +168,7 @@ pub async fn listen_for_datastore_list(
         core_node_name,
         instance_id,
         node_name,
-        names::DATASTORE_LIST,
+        ServiceId::DatastoreList.name(),
         store,
         handle_list_request,
     )
@@ -186,7 +187,7 @@ pub async fn listen_for_datastore_remove(
         core_node_name,
         instance_id,
         node_name,
-        names::DATASTORE_REMOVE,
+        ServiceId::DatastoreRemove.name(),
         store,
         handle_remove_request,
     )

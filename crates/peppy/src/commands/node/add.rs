@@ -1,4 +1,5 @@
 use config::node::NodeConfigParser;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource, PairTarget,
@@ -201,7 +202,12 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         NodeAddGoalResponse,
         NodeAddFeedback,
         NodeAddResult,
-    >(conn.messenger, &mut action_handle, &timeouts, "node_add")
+    >(
+        conn.messenger,
+        &mut action_handle,
+        &timeouts,
+        ActionId::NodeAdd.name(),
+    )
     .await?;
 
     if let (Some(name), Some(tag)) = (&add_result.node_name, &add_result.node_tag) {

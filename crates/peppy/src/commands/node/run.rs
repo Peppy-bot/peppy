@@ -2,11 +2,11 @@ use config::AnyType;
 use config::node::ConformsToItem;
 use config::runtime::PairingSlotBinding;
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
-use core_node_api::NodeStage;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, PairTarget, StackListRequest,
 };
+use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, PairingValidationItem, validate_bindings,
     validate_pairings,
@@ -732,7 +732,12 @@ pub async fn run_instance_async(
         NodeRunGoalResponse,
         NodeRunFeedback,
         NodeRunResult,
-    >(messenger_handle, &mut action_handle, timeouts, "node_run")
+    >(
+        messenger_handle,
+        &mut action_handle,
+        timeouts,
+        ActionId::NodeRun.name(),
+    )
     .await?;
 
     if let Some(pid) = start_result.pid {

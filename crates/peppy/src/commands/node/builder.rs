@@ -1,3 +1,4 @@
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
@@ -100,7 +101,12 @@ pub(crate) async fn build_node_on(
         NodeBuildGoalResponse,
         NodeBuildFeedback,
         NodeBuildResult,
-    >(messenger, &mut action_handle, timeouts, "node_build")
+    >(
+        messenger,
+        &mut action_handle,
+        timeouts,
+        ActionId::NodeBuild.name(),
+    )
     .await?;
 
     info!(
