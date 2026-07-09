@@ -3,12 +3,12 @@
 use super::daemon::StartedCoreNode;
 use super::{CALLER_INSTANCE_ID, core_node_target};
 use config::node::QoSProfile;
-use core_node::names;
 use core_node_api::encoding::{
     ClockRequest, ClockResponse, ClockTick, DatastoreGetRequest, DatastoreGetResponse,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse,
 };
+use core_node_api::{ServiceId, TopicId};
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{ServiceTarget, TopicMessenger};
 use peppylib::{Message, Payload, ServiceMessenger};
@@ -41,7 +41,7 @@ pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8],
         .expect("test key should be a valid datastore key")
         .encode()
         .expect("encode store request should succeed");
-    let response = poll_datastore(started, names::DATASTORE_STORE, payload).await;
+    let response = poll_datastore(started, ServiceId::DatastoreStore.name(), payload).await;
     DatastoreStoreResponse::decode(&response.payload()).expect("decode store response");
 }
 
@@ -52,7 +52,7 @@ pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGet
         .expect("test key should be a valid datastore key")
         .encode()
         .expect("encode get request should succeed");
-    let response = poll_datastore(started, names::DATASTORE_GET, payload).await;
+    let response = poll_datastore(started, ServiceId::DatastoreGet.name(), payload).await;
     DatastoreGetResponse::decode(&response.payload()).expect("decode get response")
 }
 
@@ -62,7 +62,7 @@ pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse 
     let payload = DatastoreListRequest::new()
         .encode()
         .expect("encode list request should succeed");
-    let response = poll_datastore(started, names::DATASTORE_LIST, payload).await;
+    let response = poll_datastore(started, ServiceId::DatastoreList.name(), payload).await;
     DatastoreListResponse::decode(&response.payload()).expect("decode list response")
 }
 
@@ -73,7 +73,7 @@ pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
         .expect("test key should be a valid datastore key")
         .encode()
         .expect("encode remove request should succeed");
-    let response = poll_datastore(started, names::DATASTORE_REMOVE, payload).await;
+    let response = poll_datastore(started, ServiceId::DatastoreRemove.name(), payload).await;
     DatastoreRemoveResponse::decode(&response.payload())
         .expect("decode remove response")
         .removed
@@ -118,7 +118,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
-        names::CLOCK,
+        ServiceId::Clock.name(),
         ServiceTarget::Any, // discover the daemon's random per-boot service instance
         request_payload,
         Duration::from_secs(5),
@@ -162,7 +162,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
         caller_instance_id,
         Some(core_node_target(&started.core_node_name)),
         false,
-        names::CLOCK,
+        TopicId::Clock.name(),
         &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )

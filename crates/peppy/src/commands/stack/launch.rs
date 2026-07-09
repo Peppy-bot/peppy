@@ -17,7 +17,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
-use peppylib::core_node::transport::send_launch;
+use peppylib::core_node::transport::send_goal;
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
 // safety net never fires before the daemon's own per-phase timeout, so users see a precise
 // daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI
@@ -258,7 +258,7 @@ async fn launch_async(
     )
     .saturating_add(DAEMON_RESPONSE_GRACE);
 
-    let mut action_handle = send_launch(
+    let mut action_handle = send_goal(
         &goal,
         conn.messenger,
         &conn.core_node_name,

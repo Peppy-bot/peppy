@@ -8,7 +8,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::{poll_node_remove, poll_stack_list};
+use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn remove_node(
@@ -61,7 +61,7 @@ async fn remove_node_async(
 
     let remove_request =
         NodeRemoveRequest::new(&node_name, &tag).with_stop_instances(stop_instances);
-    let remove_response = poll_node_remove(
+    let remove_response = poll(
         &remove_request,
         conn.messenger,
         &conn.core_node_name,
@@ -89,7 +89,7 @@ async fn fetch_instance_ids(
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         conn.messenger,
         &conn.core_node_name,

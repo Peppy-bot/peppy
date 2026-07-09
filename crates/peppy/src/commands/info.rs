@@ -6,7 +6,7 @@ use core_node_api::encoding::InfoRequest;
 use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use peppylib::core_node::transport::poll_info;
+use peppylib::core_node::transport::poll;
 
 #[cfg(target_os = "linux")]
 fn print_container_setup_status() {
@@ -55,7 +55,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = InfoRequest::new();
-    match poll_info(
+    match poll(
         &request,
         conn.messenger,
         &conn.core_node_name,

@@ -8,7 +8,7 @@ use common::{
 use config::runtime::Name;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
-use peppylib::core_node::transport::poll_node_info as transport_poll_node_info;
+use peppylib::core_node::transport::poll as transport_poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -24,7 +24,7 @@ async fn poll_node_info_raw(
     request: &NodeInfoRequest,
     timeout: Duration,
 ) -> peppylib::PeppyResult<NodeInfoResponse> {
-    transport_poll_node_info(
+    transport_poll(
         request,
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,

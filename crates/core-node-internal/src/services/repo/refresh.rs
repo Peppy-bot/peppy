@@ -1,5 +1,4 @@
 use crate::Result;
-use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -13,10 +12,12 @@ use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
     RepoSourceKind,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::interface::PeppyInterfaceParser;
 use daemon_config::launcher::PeppyLauncherParser;
@@ -55,7 +56,7 @@ pub async fn listen_for_repo_refresh(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::REPO_REFRESH_ACTION,
+        ActionId::RepoRefresh.name(),
         true,
     )
     .await?;
@@ -80,7 +81,7 @@ fn encode_refresh_accepted() -> PeppyResult<Payload> {
     RepoRefreshGoalResponse::accepted()
         .encode()
         .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: "repo_refresh".to_string(),
+            identifier: ActionId::RepoRefresh.name().to_string(),
             reason: e.to_string(),
         })
 }
@@ -89,7 +90,7 @@ fn encode_refresh_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
     RepoRefreshGoalResponse::rejected(reason)
         .encode()
         .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: "repo_refresh".to_string(),
+            identifier: ActionId::RepoRefresh.name().to_string(),
             reason: e.to_string(),
         })
 }

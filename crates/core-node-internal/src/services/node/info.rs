@@ -2,14 +2,15 @@ use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::names;
 use crate::services::repo::cache as repo_cache;
 use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{NodeConfig, NodeConfigParser};
+use core_node_api::ServiceId;
 use core_node_api::encoding::{
     NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
@@ -36,7 +37,7 @@ pub async fn listen_for_node_info(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_INFO,
+        ServiceId::NodeInfo.name(),
     )
     .await?;
 
@@ -99,12 +100,12 @@ async fn handle_node_info_request(
         }),
         Ok(Err(InfoError::Internal(reason))) => Err(PeppyError::ServiceError {
             instance_id: Some(sender_instance_id),
-            service_name: names::NODE_INFO.to_string(),
+            service_name: ServiceId::NodeInfo.name().to_string(),
             reason,
         }),
         Err(_) => Err(PeppyError::ServiceTimeout {
             instance_id: None,
-            service_name: names::NODE_INFO.to_string(),
+            service_name: ServiceId::NodeInfo.name().to_string(),
         }),
     }
 }

@@ -11,14 +11,15 @@ use super::{
     resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
-use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::validate_dependency_specs;
 use config::node::{NodeConfig, NodeConfigParser};
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
@@ -56,7 +57,7 @@ pub async fn listen_for_node_add(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_ADD_ACTION,
+        ActionId::NodeAdd.name(),
         true,
     )
     .await?;

@@ -18,7 +18,6 @@
 //!   traffic and never publish onto a real topic key.
 
 use crate::Result;
-use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_interface_doc;
@@ -31,13 +30,14 @@ use core_node_api::encoding::{
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
     StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
+use core_node_api::names;
+use core_node_api::{ActionId, ServiceId};
 use daemon_config::consts::PeppyDirs;
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
-    CLOCK_OFFSET_SERVICE, ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal,
-    SenderTarget, ServiceTarget,
+    ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{
@@ -81,7 +81,7 @@ pub async fn listen_for_stack_benchmark(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::STACK_BENCHMARK_ACTION,
+        ActionId::StackBenchmark.name(),
         true,
     )
     .await?;
@@ -122,7 +122,7 @@ fn encode_accepted() -> PeppyResult<Payload> {
     StackBenchmarkGoalResponse::accepted()
         .encode()
         .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: "stack_benchmark".to_string(),
+            identifier: ActionId::StackBenchmark.name().to_string(),
             reason: e.to_string(),
         })
 }
@@ -131,7 +131,7 @@ fn encode_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
     StackBenchmarkGoalResponse::rejected(reason)
         .encode()
         .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: "stack_benchmark".to_string(),
+            identifier: ActionId::StackBenchmark.name().to_string(),
             reason: e.to_string(),
         })
 }
@@ -927,7 +927,7 @@ async fn poll_producer_offset(
             &ctx.bound_core_node,
             &ctx.core_instance_id,
             target.clone(),
-            CLOCK_OFFSET_SERVICE,
+            ServiceId::ClockOffset.name(),
             ServiceTarget::Any, // the node's clock_offset endpoint lives on this daemon
             request,
             timeout,

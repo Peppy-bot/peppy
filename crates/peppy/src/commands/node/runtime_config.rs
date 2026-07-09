@@ -15,7 +15,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 use super::run::args_to_node_arguments;
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -60,7 +60,7 @@ async fn print_runtime_config_async(
     crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node runtime-config")?;
 
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         conn.messenger,
         &conn.core_node_name,

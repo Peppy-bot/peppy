@@ -3,11 +3,12 @@ use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use super::write_error_to_log;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::Result;
-use crate::names;
 use chrono::Local;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::{BuildContext, NodeStack};
@@ -38,7 +39,7 @@ pub async fn listen_for_node_build(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_BUILD_ACTION,
+        ActionId::NodeBuild.name(),
         true,
     )
     .await?;

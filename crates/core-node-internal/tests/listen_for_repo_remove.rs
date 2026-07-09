@@ -7,14 +7,14 @@ use core_node::{
     pairings_repo_cache_path, repositories_list_path,
 };
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
-use peppylib::core_node::transport::poll_repo_remove;
+use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
 async fn send_repo_remove(
     started: &StartedCoreNode,
     request: &RepoRemoveRequest,
 ) -> RepoRemoveResponse {
-    poll_repo_remove(
+    poll(
         request,
         &started.caller_handle,
         &started.core_node_name,

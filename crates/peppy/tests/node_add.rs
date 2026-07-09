@@ -16,7 +16,7 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 
 use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -124,7 +124,7 @@ fn node_add_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -273,7 +273,7 @@ fn node_add_command_with_run_arg_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -450,7 +450,7 @@ fn node_add_after_failed_sync_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -594,7 +594,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -647,7 +647,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     // Verify the instance was stopped and node was re-added with 0 instances
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -781,7 +781,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -867,7 +867,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
     // Step 5: Verify the existing instance was stopped and node was re-added
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -1032,7 +1032,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,

@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
-use core_node::names;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{HealthRequest, HealthResponse};
 use peppylib::ServiceMessenger;
 use peppylib::messaging::ServiceTarget;
@@ -20,7 +20,7 @@ async fn listen_for_health_reports_healthy() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        names::HEALTH,
+        ServiceId::Health.name(),
         ServiceTarget::Any,
         request_payload,
         Duration::from_secs(5),

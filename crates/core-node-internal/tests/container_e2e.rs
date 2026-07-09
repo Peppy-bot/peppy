@@ -13,7 +13,7 @@ mod container_e2e_tests {
     use core_node_api::encoding::NodeInitRequest;
     use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
     use node_stack::{NodeStack, NodeStage};
-    use peppylib::core_node::transport::poll_node_init;
+    use peppylib::core_node::transport::poll;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -37,7 +37,7 @@ mod container_e2e_tests {
         // Step 1: Init the node with container support
         let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-        let init_response = poll_node_init(
+        let init_response = poll(
             &NodeInitRequest::new(
                 nodes_root.path(),
                 NODE_NAME,
@@ -203,7 +203,7 @@ mod container_e2e_tests {
         // Step 1: Init the node with container support
         let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-        let init_response = poll_node_init(
+        let init_response = poll(
             &NodeInitRequest::new(
                 nodes_root.path(),
                 NODE_NAME,

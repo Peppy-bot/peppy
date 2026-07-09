@@ -22,7 +22,7 @@ use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::test_node_target;
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(
@@ -159,7 +159,7 @@ async fn node_launch_command_succeed() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -237,7 +237,7 @@ async fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -286,7 +286,7 @@ async fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("node stop command should succeed");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -387,7 +387,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -441,7 +441,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         "launch command should fail because the launched node never becomes healthy"
     );
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -1064,7 +1064,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,

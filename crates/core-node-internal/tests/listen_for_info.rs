@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::DEFAULT_MESSAGING_PORT;
-use core_node::names;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{InfoRequest, InfoResponse};
 use peppylib::ServiceMessenger;
 use peppylib::messaging::ServiceTarget;
@@ -21,7 +21,7 @@ async fn listen_for_info_success() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        names::INFO,
+        ServiceId::Info.name(),
         ServiceTarget::Any,
         request_payload,
         Duration::from_secs(5),

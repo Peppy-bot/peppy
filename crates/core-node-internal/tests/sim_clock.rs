@@ -10,8 +10,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_sim_clock};
 use config::node::QoSProfile;
-use core_node::names;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
+use core_node_api::{ServiceId, TopicId};
 use peppylib::messaging::ServiceTarget;
 use peppylib::{ServiceMessenger, TopicMessenger};
 use std::time::{Duration, Instant};
@@ -26,7 +26,7 @@ async fn sim_clock_service_returns_not_ready_until_first_tick() {
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
-        names::CLOCK,
+        ServiceId::Clock.name(),
         ServiceTarget::Any,
         request_payload,
         Duration::from_secs(2),
@@ -51,7 +51,7 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         None,
-        names::CLOCK,
+        TopicId::Clock.name(),
         QoSProfile::SensorData,
     )
     .await
@@ -81,7 +81,7 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
             &started.core_node_name,
             CALLER_INSTANCE_ID,
             common::core_node_target(&started.core_node_name),
-            names::CLOCK,
+            ServiceId::Clock.name(),
             ServiceTarget::Any,
             request_payload,
             attempt_timeout,

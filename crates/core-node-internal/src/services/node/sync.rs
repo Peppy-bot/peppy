@@ -10,11 +10,12 @@ pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 use self::codegen::remove_previous_peppy_dir;
 use self::deps::materialize_repo_deps;
 use crate::Result;
-use crate::names;
 use crate::services::response::into_service_response;
 use config::ParsingError;
 use config::node::{NodeConfigParser, validate_dependency_specs};
+use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse};
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
@@ -39,7 +40,7 @@ pub async fn listen_for_node_sync(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_SYNC,
+        ServiceId::NodeSync.name(),
     )
     .await?;
 

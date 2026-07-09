@@ -6,7 +6,7 @@ use common::{
 };
 use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
-use peppylib::core_node::transport::poll_node_remove;
+use peppylib::core_node::transport::poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
@@ -65,7 +65,7 @@ async fn listen_for_node_remove_success() {
         "node should have no instances"
     );
 
-    let response = poll_node_remove(
+    let response = poll(
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -103,7 +103,7 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     let node_stack = started_core_node.node_stack.clone();
     let before_len = node_stack.len();
 
-    let response = poll_node_remove(
+    let response = poll(
         &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -202,7 +202,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let response = poll_node_remove(
+    let response = poll(
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -305,7 +305,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // Without `stop_instances`, the tracked terminal instance still gates the remove.
-    let gated = poll_node_remove(
+    let gated = poll(
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -325,7 +325,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // With `stop_instances`, the terminal instance is cleared and the node removed.
-    let response = poll_node_remove(
+    let response = poll(
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -418,7 +418,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let before_len = node_stack.len();
 
-    let response = poll_node_remove(
+    let response = poll(
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,

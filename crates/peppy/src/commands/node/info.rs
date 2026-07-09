@@ -8,7 +8,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::poll_node_info;
+use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
@@ -18,7 +18,7 @@ pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> 
 async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = poll_node_info(
+    let response = poll(
         &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
         conn.messenger,
         &conn.core_node_name,

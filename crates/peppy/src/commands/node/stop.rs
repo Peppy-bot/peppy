@@ -50,7 +50,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
     // Sized from the *local* daemon's `shutdown_grace_secs`: `DaemonState`
     // only records the local generation, so a `--core-node` stop borrows the
     // local grace as its estimate of the remote daemon's. (Optional follow-up:
-    // pre-fetch the remote grace via `poll_info`.)
+    // pre-fetch the remote grace via the `info` service.)
     let request_timeout = stop_request_timeout(conn.shutdown_grace_secs);
 
     // The service root (`to_target`) and the discovery scope both name the

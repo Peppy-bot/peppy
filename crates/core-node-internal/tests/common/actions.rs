@@ -5,7 +5,7 @@ use super::fixtures::write_peppy_json5;
 use super::poll::AbortOnDrop;
 use super::{CALLER_INSTANCE_ID, TEST_GIT_HASH, core_node_target, test_node_target};
 use config::node::QoSProfile;
-use core_node::names;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
     NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
@@ -149,7 +149,7 @@ async fn send_node_run_goal(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
-        names::NODE_RUN_ACTION,
+        ActionId::NodeRun.name(),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -450,7 +450,7 @@ async fn send_node_add_and_wait_internal<'a>(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
-        names::NODE_ADD_ACTION,
+        ActionId::NodeAdd.name(),
         None,
         goal_payload,
         QoSProfile::default(),
@@ -594,7 +594,7 @@ async fn send_node_build_and_wait_internal(
         core_node_name,
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
-        names::NODE_BUILD_ACTION,
+        ActionId::NodeBuild.name(),
         None,
         goal_payload,
         QoSProfile::default(),

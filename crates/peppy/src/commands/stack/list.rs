@@ -9,7 +9,7 @@ use config::runtime::{PairingSlotBinding, ProducerRef, SlotBinding};
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
@@ -31,7 +31,7 @@ pub async fn list_nodes_collecting(
 ) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(dot_graph_path.is_some()),
         conn.messenger,
         &conn.core_node_name,

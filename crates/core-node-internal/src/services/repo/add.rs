@@ -1,10 +1,11 @@
 use crate::Result;
-use crate::names;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{json_entry_identity, repo_source_to_json, source_identity};
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -25,7 +26,7 @@ pub async fn listen_for_repo_add(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::REPO_ADD,
+        ServiceId::RepoAdd.name(),
     )
     .await?;
 

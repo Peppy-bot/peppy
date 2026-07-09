@@ -6,7 +6,7 @@ use common::{
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use core_node_api::encoding::{NodeSyncRequest, RepoSourceKind};
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
-use peppylib::core_node::transport::poll_node_sync;
+use peppylib::core_node::transport::poll;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -50,7 +50,7 @@ async fn listen_for_node_sync_success() {
     );
 
     let expected_git_hash = "deadbeef";
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), expected_git_hash, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -116,7 +116,7 @@ async fn listen_for_node_sync_success() {
 async fn listen_for_node_sync_missing_node_root_dir_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new("", common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -147,7 +147,7 @@ async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -176,7 +176,7 @@ async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(file_path, common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -205,7 +205,7 @@ async fn listen_for_node_sync_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -246,7 +246,7 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -326,7 +326,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -389,7 +389,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -493,7 +493,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response = poll_node_sync(
+    let uvc_camera_response = poll(
         &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -577,7 +577,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = poll_node_sync(
+    let brain_response = poll(
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -692,7 +692,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let uvc_camera_response = poll_node_sync(
+    let uvc_camera_response = poll(
         &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -773,7 +773,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let brain_response = poll_node_sync(
+    let brain_response = poll(
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -852,7 +852,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let uvc_camera_response = poll_node_sync(
+    let uvc_camera_response = poll(
         &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -933,7 +933,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let brain_response = poll_node_sync(
+    let brain_response = poll(
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1018,7 +1018,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let action_server_response = poll_node_sync(
+    let action_server_response = poll(
         &NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1099,7 +1099,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let controller_response = poll_node_sync(
+    let controller_response = poll(
         &NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1170,7 +1170,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1266,7 +1266,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1300,7 +1300,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1386,7 +1386,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1505,7 +1505,7 @@ async fn sync_with_flag(
     node_root: &Path,
     include_repositories: bool,
 ) -> core_node_api::encoding::NodeSyncResponse {
-    poll_node_sync(
+    poll(
         &NodeSyncRequest::new(node_root, common::TEST_GIT_HASH, include_repositories),
         &started.caller_handle,
         &started.core_node_name,

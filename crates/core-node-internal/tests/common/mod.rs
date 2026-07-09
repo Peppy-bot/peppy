@@ -19,7 +19,7 @@ pub use poll::*;
 #[allow(unused_imports)]
 pub use services::*;
 
-use core_node::names;
+use core_node_api::names;
 use peppylib::messaging::SenderTarget;
 
 /// Default tag used by tests when building a [`SenderTarget`]. Matches the

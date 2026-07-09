@@ -7,7 +7,7 @@ use tracing::info;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use peppylib::core_node::transport::poll_repo_remove;
+use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -21,7 +21,7 @@ async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = RepoRemoveRequest::new(id);
-    let response = poll_repo_remove(
+    let response = poll(
         &request,
         conn.messenger,
         &conn.core_node_name,
