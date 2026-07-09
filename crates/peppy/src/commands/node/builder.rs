@@ -11,7 +11,7 @@ use super::env::caller_env_overrides;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use peppylib::core_node::transport::send_node_build;
+use peppylib::core_node::transport::send_goal;
 
 pub struct BuildNodeParams {
     pub node_name: String,
@@ -86,7 +86,7 @@ pub(crate) async fn build_node_on(
         goal = goal.with_force(true);
     }
 
-    let mut action_handle = send_node_build(
+    let mut action_handle = send_goal(
         &goal,
         messenger,
         bound_core_node,

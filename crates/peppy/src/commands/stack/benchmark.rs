@@ -27,7 +27,7 @@ use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
 use latency_report::format::{fmt_delta, fmt_duration};
 use peppylib::ActionMessenger;
-use peppylib::core_node::transport::send_stack_benchmark;
+use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
@@ -83,7 +83,7 @@ async fn benchmark_async(
         conn.target_core_node, effective_samples, warmup
     );
 
-    let mut action_handle = send_stack_benchmark(
+    let mut action_handle = send_goal(
         &goal,
         conn.messenger,
         &conn.core_node_name,

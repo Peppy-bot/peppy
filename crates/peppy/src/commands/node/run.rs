@@ -27,7 +27,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-use peppylib::core_node::transport::{poll_node_info, poll_stack_list, send_node_run};
+use peppylib::core_node::transport::{poll, send_goal};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout; this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -122,7 +122,7 @@ async fn wait_for_build_to_finish(
     let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
 
     loop {
-        let response = poll_node_info(
+        let response = poll(
             &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
             messenger,
             core_node_name,
@@ -339,7 +339,7 @@ async fn validate_binds_against_stack(
     pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
 ) -> Result<Option<BTreeMap<String, SlotBinding>>> {
-    let stack_response = poll_stack_list(
+    let stack_response = poll(
         &StackListRequest::new(false),
         messenger,
         core_node_name,
@@ -371,7 +371,7 @@ async fn validate_binds_against_stack(
         .collect();
 
     let info_futures = stack_nodes.iter().map(|node| async move {
-        let info = poll_node_info(
+        let info = poll(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,
             core_node_name,
@@ -466,7 +466,7 @@ async fn validate_binds_against_stack(
     // `node_info` lookup so the validator can still resolve dead-key /
     // missing-binding rules against the target's declared manifest.
     if !target_seen_in_stack {
-        let info_response = poll_node_info(
+        let info_response = poll(
             &NodeInfoRequest::new(target_name.to_owned(), target_tag.to_owned()),
             messenger,
             core_node_name,
@@ -717,7 +717,7 @@ pub async fn run_instance_async(
     .with_env_vars(caller_env_overrides())
     .with_requested_pairs(requested_pairs)
     .with_deferred_pairs(deferred_pairs);
-    let mut action_handle = send_node_run(
+    let mut action_handle = send_goal(
         &start_goal,
         messenger_handle,
         core_node_name,
@@ -807,7 +807,7 @@ async fn run_node_async(
         // Look up the node's current lifecycle stage so we only trigger a
         // build when the node is not yet built. The same `NodeInfoRequest`
         // is used by the `node add` preflight (see add.rs).
-        let response = poll_node_info(
+        let response = poll(
             &NodeInfoRequest::new(node_name.clone(), tag.clone()),
             conn.messenger,
             &conn.core_node_name,

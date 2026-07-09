@@ -13,7 +13,7 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 
 use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -130,7 +130,7 @@ async fn node_stop_command_succeeds() {
     .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -181,7 +181,7 @@ async fn node_stop_command_succeeds() {
     .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -259,7 +259,7 @@ async fn node_stop_command_succeeds() {
         .expect("kill task should not panic");
 
     // Verify the node now has 0 instances again
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,

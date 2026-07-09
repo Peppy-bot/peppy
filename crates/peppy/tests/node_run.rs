@@ -12,7 +12,7 @@ use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 
-use peppylib::core_node::transport::{poll_node_info, poll_stack_list};
+use peppylib::core_node::transport::poll;
 
 use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -99,7 +99,7 @@ async fn node_run_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -177,7 +177,7 @@ async fn node_run_command_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -326,7 +326,7 @@ async fn node_run_command_with_args_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -415,7 +415,7 @@ async fn node_run_command_with_args_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -528,7 +528,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -612,7 +612,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -717,7 +717,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
 
     // Pre-state: the node is in the stack and is in the `Added` stage
     // (not yet built).
-    let info_response = poll_node_info(
+    let info_response = poll(
         &NodeInfoRequest::new(node_name, "v1"),
         messenger_handle,
         &core_node_name,
@@ -797,7 +797,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         logs
     );
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -891,7 +891,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         .expect("messenger handle should be available");
 
     // Sanity check: node is in `Ready` stage before we run `-b`.
-    let info_response = poll_node_info(
+    let info_response = poll(
         &NodeInfoRequest::new(node_name, "v1"),
         messenger_handle,
         &core_node_name,
@@ -966,7 +966,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         logs
     );
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,

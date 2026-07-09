@@ -18,7 +18,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::{poll_node_info, send_node_add};
+use peppylib::core_node::transport::{poll, send_goal};
 /// Options that only apply when `peppy node add` chains a run after the add
 /// (`--run` / `-r`). Grouping them into an `Option<RunAfterAddOptions>` on
 /// [`AddNodeParams`] makes the invariant explicit in the type: positional
@@ -187,7 +187,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     let add_goal = NodeAddGoal::from_source(node_source, conn.git_hash, timeouts.max_secs)
         .with_env_vars(caller_env_overrides())
         .with_force(force);
-    let mut action_handle = send_node_add(
+    let mut action_handle = send_goal(
         &add_goal,
         conn.messenger,
         &conn.core_node_name,
@@ -304,7 +304,7 @@ async fn fetch_active_instances_for_name_tag(
     node_tag: String,
     timeout: Duration,
 ) -> Result<Option<(String, String, Vec<String>)>> {
-    let response = poll_node_info(
+    let response = poll(
         &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
         conn.messenger,
         &conn.core_node_name,
