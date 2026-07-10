@@ -50,7 +50,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
         for deployment in &raw.deployments {
             for instance in &deployment.instances {
-                for (binding, target) in &instance.bindings {
+                for (binding, targets) in &instance.bindings {
                     if binding == DEFAULT_LINK_ID_SENTINEL {
                         let err = StructuredError::BindingSentinelKey {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -58,13 +58,15 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                         };
                         return Err(de::Error::custom(err.json5_message()));
                     }
-                    if !known_ids.contains(target.as_str()) {
-                        let err = StructuredError::UnknownInstanceId {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding.clone(),
-                            instance_id: target.clone(),
-                        };
-                        return Err(de::Error::custom(err.json5_message()));
+                    for target in targets {
+                        if !known_ids.contains(target.as_str()) {
+                            let err = StructuredError::UnknownInstanceId {
+                                owner_instance_id: instance.instance_id.to_string(),
+                                binding: binding.clone(),
+                                instance_id: target.clone(),
+                            };
+                            return Err(de::Error::custom(err.json5_message()));
+                        }
                     }
                 }
                 for (key, target) in &instance.pairings {
@@ -146,7 +148,7 @@ pub struct DeploymentInstance {
         deserialize_with = "deserialize_bindings",
         skip_serializing_if = "BTreeMap::is_empty"
     )]
-    pub bindings: BTreeMap<String, String>,
+    pub bindings: BTreeMap<String, Vec<String>>,
     /// Pairing declarations: own pairing-slot `link_id` → peer instance
     /// (`"<instance_id>"` or `"<instance_id>/<peer_link_id>"` when the peer
     /// has more than one complementary slot). Declaring the pair on ONE side
@@ -166,24 +168,64 @@ pub struct DeploymentInstance {
 }
 
 /// Each key is a `link_id` literal declared by the deployed node's
-/// `depends_on.{nodes,interfaces}` and each value points at the producer
-/// `instance_id` defined elsewhere in the launcher. Keys and values are
-/// validated for non-emptiness and intra-collection duplicates via
-/// [`validate_named_items`]; the reserved producer-default sentinel
+/// `depends_on.{nodes,interfaces}` and each value names one producer
+/// `instance_id` defined elsewhere in the launcher, or an array of them
+/// (a multi-producer slot). Keys are validated for non-emptiness and
+/// intra-collection duplicates via [`validate_named_items`]; targets must
+/// be non-empty, an array must list at least one target (bind nothing by
+/// removing the line instead), and a target repeated within one slot's
+/// array is rejected as a typo. The reserved producer-default sentinel
 /// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
-/// launcher cannot redundantly "bind" to the default. The value's
+/// launcher cannot redundantly "bind" to the default. Each target's
 /// existence as an `instance_id` is checked later at the
 /// [`PeppyLauncher`] level once all deployments have been parsed; the
 /// key's existence in the deployed node's `depends_on` and the producer
-/// identity are checked at launch time, when both the launcher and the
+/// identities are checked at launch time, when both the launcher and the
 /// node manifests are loaded.
-fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(deserialize_kv_entries(deserializer, "binding")?
-        .into_iter()
-        .collect())
+    /// One binding value: a single producer `instance_id` or an array of
+    /// them. Untagged so `slot: "producer"` and `slot: ["a", "b"]` both
+    /// parse.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BindingTargets {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor::<BindingTargets>::new())?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "binding")
+        .map_err(de::Error::custom)?;
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        let targets = match value {
+            BindingTargets::One(target) => vec![target],
+            BindingTargets::Many(targets) => targets,
+        };
+        if targets.is_empty() {
+            return Err(de::Error::custom(format!(
+                "binding `{key}` lists no producer; remove the line to leave the slot unbound"
+            )));
+        }
+        let mut seen = HashSet::with_capacity(targets.len());
+        for target in &targets {
+            if target.trim().is_empty() {
+                return Err(de::Error::custom(format!(
+                    "binding target for key `{key}` cannot be empty"
+                )));
+            }
+            if !seen.insert(target.as_str()) {
+                return Err(de::Error::custom(format!(
+                    "binding `{key}` lists producer `{target}` more than once"
+                )));
+            }
+        }
+        out.insert(key, targets);
+    }
+    Ok(out)
 }
 
 /// Mirror of [`deserialize_bindings`] for the per-instance `pairings` map:
@@ -212,14 +254,14 @@ where
     Ok(entries.into_iter().collect())
 }
 
-/// Shared scaffold of [`deserialize_bindings`] / [`deserialize_pairings`]:
-/// duplicate-key and empty-key/value checks over a `link_id -> target` map,
-/// with `kind` labeling the errors. Entries are captured as a Vec because a
-/// direct `BTreeMap::deserialize` would silently overwrite duplicate keys,
-/// hiding them from `validate_named_items`. Duplicate VALUES are
-/// intentionally permitted: one producer/peer may serve multiple `link_id`
-/// slots. Sentinel-key checks live in `PeppyLauncher::deserialize` where
-/// the owning `instance_id` is in scope for the structured error.
+/// Scaffold of [`deserialize_pairings`]: duplicate-key and empty-key/value
+/// checks over a `link_id -> target` map, with `kind` labeling the errors.
+/// Entries are captured as a Vec because a direct `BTreeMap::deserialize`
+/// would silently overwrite duplicate keys, hiding them from
+/// `validate_named_items`. Duplicate VALUES are intentionally permitted:
+/// one producer/peer may serve multiple `link_id` slots. Sentinel-key
+/// checks live in `PeppyLauncher::deserialize` where the owning
+/// `instance_id` is in scope for the structured error.
 fn deserialize_kv_entries<'de, D>(
     deserializer: D,
     kind: &'static str,
@@ -227,7 +269,7 @@ fn deserialize_kv_entries<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor::<String>::new())?;
     validate_named_items(entries.iter().map(|(k, _)| k.as_str()), kind)
         .map_err(de::Error::custom)?;
     for (key, value) in &entries {
@@ -250,13 +292,27 @@ pub fn split_pair_target(value: &str) -> (&str, Option<&str>) {
     }
 }
 
-struct BindingEntriesVisitor;
+/// Map visitor shared by the binding and pairing deserializers, generic
+/// over the value shape (a single target string for pairings, one-or-many
+/// targets for bindings). Collects into a Vec so duplicate keys survive to
+/// `validate_named_items` instead of being collapsed by a map insert.
+struct BindingEntriesVisitor<V> {
+    _value: std::marker::PhantomData<V>,
+}
 
-impl<'de> Visitor<'de> for BindingEntriesVisitor {
-    type Value = Vec<(String, String)>;
+impl<V> BindingEntriesVisitor<V> {
+    fn new() -> Self {
+        Self {
+            _value: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'de, V: Deserialize<'de>> Visitor<'de> for BindingEntriesVisitor<V> {
+    type Value = Vec<(String, V)>;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a map of binding link_id -> instance_id strings")
+        f.write_str("a map of link_id -> producer instance_id target(s)")
     }
 
     fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
@@ -264,7 +320,7 @@ impl<'de> Visitor<'de> for BindingEntriesVisitor {
         A: MapAccess<'de>,
     {
         let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
-        while let Some((key, value)) = access.next_entry::<String, String>()? {
+        while let Some((key, value)) = access.next_entry::<String, V>()? {
             entries.push((key, value));
         }
         Ok(entries)
@@ -406,9 +462,107 @@ mod tests {
         assert_eq!(backbone.instance_id, "backbone");
         assert_eq!(backbone.bindings.len(), 3);
         assert_eq!(
-            backbone.bindings.get("torso_camera").map(String::as_str),
-            Some("cam_torso")
+            backbone.bindings.get("torso_camera").map(Vec::as_slice),
+            Some(["cam_torso".to_string()].as_slice())
         );
+    }
+
+    /// An array value binds several producers to one slot, order
+    /// preserved. This is the launcher's multi-producer form
+    /// (`arm_states: ["left_arm_inst", "right_arm_inst"]`).
+    #[test]
+    fn bindings_accept_producer_arrays() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { local: "./left" },
+                    instances: [{ instance_id: "left_arm_inst" }]
+                },
+                {
+                    source: { local: "./right" },
+                    instances: [{ instance_id: "right_arm_inst" }]
+                },
+                {
+                    source: { local: "./panel" },
+                    instances: [{
+                        instance_id: "commander",
+                        bindings: {
+                            arm_states: ["left_arm_inst", "right_arm_inst"]
+                        }
+                    }]
+                }
+            ]
+        }"#;
+        let launcher: PeppyLauncher = serde_json5::from_str(json5).expect("launcher should parse");
+        let commander = &launcher.deployments[2].instances[0];
+        assert_eq!(
+            commander.bindings.get("arm_states").map(Vec::as_slice),
+            Some(["left_arm_inst".to_string(), "right_arm_inst".to_string()].as_slice())
+        );
+    }
+
+    /// An empty array binds nothing and is rejected: leave the slot
+    /// unbound by removing the line instead.
+    #[test]
+    fn bindings_reject_empty_producer_array() {
+        let json5 = r#"{
+            instance_id: "commander",
+            bindings: { arm_states: [] }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("empty binding array must be rejected");
+        assert!(
+            err.to_string().contains("no producer"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The same producer repeated inside one slot's array is a typo, not a
+    /// fan-in: it is rejected at parse time.
+    #[test]
+    fn bindings_reject_duplicate_producer_within_one_slot() {
+        let json5 = r#"{
+            instance_id: "commander",
+            bindings: { arm_states: ["left_arm_inst", "left_arm_inst"] }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("duplicate producer within one slot must be rejected");
+        assert!(
+            err.to_string().contains("more than once"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A binding array whose target names an unknown instance surfaces the
+    /// same structured error as the single-target form.
+    #[test]
+    fn binding_arrays_reject_unknown_instance_id() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { local: "./left" },
+                    instances: [{ instance_id: "left_arm_inst" }]
+                },
+                {
+                    source: { local: "./panel" },
+                    instances: [{
+                        instance_id: "commander",
+                        bindings: {
+                            arm_states: ["left_arm_inst", "ghost_arm"]
+                        }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("unknown instance_id inside an array must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::UnknownInstanceId { instance_id, .. } = parsing_err else {
+            panic!("expected UnknownInstanceId, got {parsing_err:?}");
+        };
+        assert_eq!(instance_id, "ghost_arm");
     }
 
     #[test]
@@ -492,12 +646,12 @@ mod tests {
         let instance: DeploymentInstance =
             serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
         assert_eq!(
-            instance.bindings.get("a").map(String::as_str),
-            Some("cam_torso")
+            instance.bindings.get("a").map(Vec::as_slice),
+            Some(["cam_torso".to_string()].as_slice())
         );
         assert_eq!(
-            instance.bindings.get("b").map(String::as_str),
-            Some("cam_torso")
+            instance.bindings.get("b").map(Vec::as_slice),
+            Some(["cam_torso".to_string()].as_slice())
         );
     }
 

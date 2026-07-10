@@ -128,15 +128,14 @@ pub(crate) enum DependencyKind {
     Interface,
 }
 
-/// Resolved `(name, tag, link_id, from_any, kind)` for a single dependency
-/// referenced by a consumer's `interfaces.topics.consumes`,
+/// Resolved `(name, tag, kind)` for a single dependency referenced by a
+/// consumer's `interfaces.topics.consumes`,
 /// `interfaces.services.consumes`, or `interfaces.actions.consumes`.
 #[derive(Debug, Clone)]
 pub(crate) struct DependencyLookupEntry {
     pub name: String,
     pub tag: String,
     pub sha256: Option<String>,
-    pub from_any: bool,
     pub kind: DependencyKind,
 }
 
@@ -158,7 +157,6 @@ pub(super) fn build_dependency_lookup(
                 name: node.name.as_str().to_string(),
                 tag: node.tag.clone(),
                 sha256: None,
-                from_any: node.from_any,
                 kind: DependencyKind::Node,
             },
         );
@@ -170,7 +168,6 @@ pub(super) fn build_dependency_lookup(
                 name: iface.name.as_str().to_string(),
                 tag: iface.tag.clone(),
                 sha256: iface.sha256.clone(),
-                from_any: iface.from_any,
                 kind: DependencyKind::Interface,
             },
         );
@@ -187,13 +184,11 @@ pub(super) fn build_dependency_context_for_node(
     dep_tag: &str,
     origin: Option<generator::InterfaceOrigin>,
     link_id: &str,
-    from_any: bool,
 ) -> generator::DependencyContext {
-    let ctx = match origin {
-        Some(o) => generator::DependencyContext::conformed(dep_name, dep_tag, o),
-        None => generator::DependencyContext::native(dep_name, dep_tag),
-    };
-    ctx.with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
+    match origin {
+        Some(o) => generator::DependencyContext::conformed(dep_name, dep_tag, o, link_id),
+        None => generator::DependencyContext::native(dep_name, dep_tag, link_id),
+    }
 }
 
 /// Builds a [`generator::DependencyContext`] for a
@@ -204,10 +199,8 @@ pub(super) fn build_dependency_context_for_interface(
     iface_name: &str,
     iface_tag: &str,
     link_id: &str,
-    from_any: bool,
 ) -> generator::DependencyContext {
-    generator::DependencyContext::interface(iface_name, iface_tag)
-        .with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
+    generator::DependencyContext::interface(iface_name, iface_tag, link_id)
 }
 
 /// What a single dependency can provide to consumers: its native

@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::runtime::{PairingSlotBinding, ProducerRef, SlotBinding};
+use config::runtime::{PairingSlotBinding, ProducerRef};
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
 
@@ -367,24 +367,20 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
         .collect()
 }
 
-/// Right-hand side of a `link_id -> …` binding line: the producer the slot
-/// resolves to, rendered as `instance_id@core_node` (the full wire address
-/// every binding now carries). A `from_any` slot with explicit producers
-/// lists them comma-separated; a `from_any` slot left bindless (and the
-/// degenerate "bound to nothing" case) render as `(any)`.
-fn format_slot_binding(binding: &SlotBinding) -> String {
-    let render =
-        |producer: &ProducerRef| format!("{}@{}", producer.instance_id, producer.core_node);
-    match binding {
-        SlotBinding::Pinned { producer } => render(producer),
-        SlotBinding::FromAnyBound { producers } if !producers.is_empty() => {
-            producers.iter().map(render).collect::<Vec<_>>().join(", ")
-        }
-        // `FromAnyBound` with no producers and `FromAnyUnbound` are both "no
-        // pinned producer"; collapse them so the line never trails as
-        // `link_id -> ` with an empty right-hand side.
-        SlotBinding::FromAnyBound { .. } | SlotBinding::FromAnyUnbound => "(any)".to_string(),
+/// Right-hand side of a `link_id -> …` binding line: the producers the
+/// slot is bound to, rendered as `instance_id@core_node` (the full wire
+/// address every binding carries), comma-separated for multi-producer
+/// slots. An unbound slot renders as `(unbound)` so the line never trails
+/// as `link_id -> ` with an empty right-hand side.
+fn format_slot_binding(producers: &[ProducerRef]) -> String {
+    if producers.is_empty() {
+        return "(unbound)".to_string();
     }
+    producers
+        .iter()
+        .map(|producer| format!("{}@{}", producer.instance_id, producer.core_node))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -505,7 +501,7 @@ mod tests {
     }
 
     /// `(instance_id, state, [(slot, binding)])` rows fed to [`binding_node`].
-    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, SlotBinding)>);
+    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, Vec<ProducerRef>)>);
 
     /// Like [`node`] but lets each instance carry slot bindings, for
     /// exercising the bindings table. Always `Ready`/`v1`.
@@ -739,12 +735,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![(
-                    "arm",
-                    SlotBinding::Pinned {
-                        producer: ProducerRef::new("core_a", "arm-1"),
-                    },
-                )],
+                vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
         let out = format_stack_list(&nodes, &[], false);
@@ -774,18 +765,8 @@ mod tests {
                     "br-1",
                     InstanceState::Running,
                     vec![
-                        (
-                            "camera",
-                            SlotBinding::Pinned {
-                                producer: ProducerRef::new("core_a", "cam-1"),
-                            },
-                        ),
-                        (
-                            "controller",
-                            SlotBinding::Pinned {
-                                producer: ProducerRef::new("core_a", "ctl-1"),
-                            },
-                        ),
+                        ("camera", vec![ProducerRef::new("core_a", "cam-1")]),
+                        ("controller", vec![ProducerRef::new("core_a", "ctl-1")]),
                     ],
                 )],
             ),
@@ -869,18 +850,8 @@ mod tests {
                 // Inserted out of sorted order so the assertion below fails if
                 // the BTreeMap link-id sort is ever dropped.
                 vec![
-                    (
-                        "clock",
-                        SlotBinding::Pinned {
-                            producer: ProducerRef::new("core_a", "clk-1"),
-                        },
-                    ),
-                    (
-                        "backbone",
-                        SlotBinding::Pinned {
-                            producer: ProducerRef::new("core_a", "bb-1"),
-                        },
-                    ),
+                    ("clock", vec![ProducerRef::new("core_a", "clk-1")]),
+                    ("backbone", vec![ProducerRef::new("core_a", "bb-1")]),
                 ],
             )],
         )];
@@ -925,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn bindings_table_renders_from_any_variants() {
+    fn bindings_table_renders_multi_producer_and_unbound_slots() {
         let nodes = vec![binding_node(
             "nav",
             vec![(
@@ -934,14 +905,12 @@ mod tests {
                 vec![
                     (
                         "sensors",
-                        SlotBinding::FromAnyBound {
-                            producers: vec![
-                                ProducerRef::new("core_a", "cam-1"),
-                                ProducerRef::new("core_a", "cam-2"),
-                            ],
-                        },
+                        vec![
+                            ProducerRef::new("core_a", "cam-1"),
+                            ProducerRef::new("core_a", "cam-2"),
+                        ],
                     ),
-                    ("extra", SlotBinding::FromAnyUnbound),
+                    ("extra", Vec::new()),
                 ],
             )],
         )];
@@ -950,10 +919,10 @@ mod tests {
 
         let sensors_at = section
             .find("sensors → cam-1@core_a, cam-2@core_a")
-            .expect("from_any bound producers should be comma-joined");
+            .expect("multi-producer slots should be comma-joined");
         let extra_at = section
-            .find("extra → (any)")
-            .expect("from_any unbound should render (any)");
+            .find("extra → (unbound)")
+            .expect("an unbound slot should render (unbound)");
         // Sorted by link id regardless of insertion order: "extra" < "sensors".
         assert!(
             extra_at < sensors_at,
@@ -1062,24 +1031,19 @@ mod tests {
     }
 
     #[test]
-    fn bindings_table_renders_any_for_from_any_bound_without_producers() {
-        // Defensive: a `FromAnyBound` carrying no producers (only reachable via
-        // a hand-crafted / corrupt payload) must not render a dangling
-        // `slot -> ` with an empty right-hand side.
+    fn bindings_table_renders_unbound_for_empty_producer_list() {
+        // An unbound slot must not render a dangling `slot -> ` with an
+        // empty right-hand side.
         let nodes = vec![binding_node(
             "nav",
-            vec![(
-                "nav-1",
-                InstanceState::Running,
-                vec![("sensors", SlotBinding::FromAnyBound { producers: vec![] })],
-            )],
+            vec![("nav-1", InstanceState::Running, vec![("sensors", vec![])])],
         )];
         let out = format_stack_list(&nodes, &[], false);
         let section = bindings_section(&out);
 
         assert!(
-            section.contains("sensors → (any)"),
-            "empty from_any bound should collapse to (any):\n{out}"
+            section.contains("sensors → (unbound)"),
+            "an unbound slot should render (unbound):\n{out}"
         );
         assert!(
             !section.contains("sensors → \n") && !section.contains("sensors →  "),
@@ -1096,12 +1060,7 @@ mod tests {
                     (
                         "alpha-1",
                         InstanceState::Running,
-                        vec![(
-                            "dep",
-                            SlotBinding::Pinned {
-                                producer: ProducerRef::new("core_a", "beta-1"),
-                            },
-                        )],
+                        vec![("dep", vec![ProducerRef::new("core_a", "beta-1")])],
                     ),
                     // Second instance, no bindings: stays inside alpha's group
                     // with no separator before it.
@@ -1155,12 +1114,7 @@ mod tests {
             vec![(
                 "实例-uno",
                 InstanceState::Running,
-                vec![(
-                    "传感器",
-                    SlotBinding::Pinned {
-                        producer: ProducerRef::new("core_a", "相机-1"),
-                    },
-                )],
+                vec![("传感器", vec![ProducerRef::new("core_a", "相机-1")])],
             )],
         )];
         // A pairing row mixes the `⇌` separator with CJK link and peer ids,
@@ -1246,12 +1200,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![(
-                    "arm",
-                    SlotBinding::Pinned {
-                        producer: ProducerRef::new("core_a", "arm-1"),
-                    },
-                )],
+                vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
         let from = node("brain", "v1", NodeStage::Ready, vec![]);

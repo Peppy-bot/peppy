@@ -87,7 +87,7 @@ A single node can conform to multiple interfaces (e.g. `[{depth_camera, v1}, {uv
 
 ### 3. A consumer that depends on the interface
 
-A consumer references an interface through `manifest.depends_on.interfaces` rather than `depends_on.nodes`. Every interface dep carries a `link_id` and optionally a `from_any` flag (exactly like a node dep), but its `(name, tag)` names the interface contract instead of a concrete producer:
+A consumer references an interface through `manifest.depends_on.interfaces` rather than `depends_on.nodes`. Every interface dep carries a `link_id` (exactly like a node dep), but its `(name, tag)` names the interface contract instead of a concrete producer:
 
 ```json5
 // video_reconstruction/peppy.json5
@@ -126,9 +126,9 @@ The consumer never names a producer node. It names the interface, and the launch
 
 The matching predicate at binding time is: *a producer satisfies an interface slot if its `interfaces.conforms_to` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that `conforms_to: [{ depth_camera, v1 }]` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that conforms.
 
-### Pinned interface bindings
+### Binding an interface slot
 
-A pinned interface dep (`from_any: false`, the default) requires an explicit `--bind link_id@producer_instance_id` whose value points at an instance whose node conforms to the requested interface:
+An interface slot is bound with `--bind link_id@producer_instance_id` (or a launcher `bindings:` entry) whose value points at an instance whose node conforms to the requested interface:
 
 ```json5
 // peppy_launcher.json5
@@ -159,11 +159,9 @@ peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 vide
 
 If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, the launcher rejects the binding with a `BindingInterfaceNotConformed` error citing the expected interface and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `conforms_to: [{ depth_camera, v1 }]` is treated like any other non-conforming node.
 
-### From-any interface bindings
+### Multi-producer interface bindings
 
-A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
-
-A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the natural shape for optional many-to-one fan-in: telemetry, monitoring, any consumer that accepts data from whichever producers happen to exist. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+A topic slot can be bound to several conforming producers at once with the launcher's array form (`extras: ["cam_a", "cam_b"]`), and a slot left unbound is legal: the node still boots, but the slot stays silent until a launch binds it. That makes interface slots the natural shape for many-to-one fan-in whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {
@@ -171,19 +169,19 @@ manifest: {
     interfaces: [
       { name: "depth_camera", tag: "v1", link_id: "left_cam" },
       { name: "depth_camera", tag: "v1", link_id: "right_cam" },
-      { name: "depth_camera", tag: "v1", link_id: "extras", from_any: true },
+      { name: "depth_camera", tag: "v1", link_id: "extras" },
     ],
   },
 }
 ```
 
-The launcher routes each `--bind` whose value names a conforming producer to the first matching slot in `link_id` order (alphabetical). Pinned slots claim their producers first; the remaining bindings fall into the from_any slot. The same per-message routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for the wildcard-vs-explicit semantics.
+Each binding key names its slot's `link_id` directly, and every bound producer must conform. The same per-message routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
 
 #### Multiple producer instances under the same node identity
 
-A common case is several instances of the same conforming node (say, three `realsense_d405:v1` cameras plugged into the same robot) all feeding the same `from_any` slot.
+A common case is several instances of the same conforming node (say, three `realsense_d405:v1` cameras plugged into the same robot) all feeding the same slot.
 
-First, the consumer declares a single `from_any: true` interface dep and consumes the topic through that slot's `link_id`:
+First, the consumer declares a single interface dep and consumes the topic through that slot's `link_id`:
 
 ```json5
 // video_reconstruction/peppy.json5
@@ -194,7 +192,7 @@ First, the consumer declares a single `from_any: true` interface dep and consume
     tag: "v1",
     depends_on: {
       interfaces: [
-        { name: "depth_camera", tag: "v1", link_id: "extras", from_any: true },
+        { name: "depth_camera", tag: "v1", link_id: "extras" },
       ],
     },
   },
@@ -237,9 +235,7 @@ Then the launcher accepts one `--bind` per producer instance, each under a disti
         {
           instance_id: "recon_1",
           bindings: {
-            front_cam: "rs_front",
-            back_left_cam: "rs_back_left",
-            back_right_cam: "rs_back_right",
+            extras: ["rs_front", "rs_back_left", "rs_back_right"],
           },
         },
       ],
@@ -248,9 +244,9 @@ Then the launcher accepts one `--bind` per producer instance, each under a disti
 }
 ```
 
-None of the binding keys (`front_cam`, `back_left_cam`, `back_right_cam`) match a declared `link_id`, so each one falls into the `extras` from_any slot. All three producer instances accumulate under that single slot, and the consumer receives messages from all of them through the generated `extras_video_stream` module. The free-form key is just a label; it does not surface in the consumer's generated code.
+The array binds all three producer instances to the single `extras` slot, and the consumer receives messages from all of them through the generated `extras_video_stream` module. A fourth camera launched without being added to the array would reach no slot at all: only bound producers feed a slot.
 
-Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.). New producer instances added in a future launcher show up automatically.
+Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.). Producer instances added to the binding array in a future launcher show up automatically, with no consumer code change.
 
 <Tabs>
   <TabItem label="Python">
@@ -287,7 +283,7 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
   </TabItem>
 </Tabs>
 
-The same applies when the producers are a mix of node identities, as long as each conforms to `depth_camera:v1`: a launcher can bind two `realsense_d405:v1` instances and one `zed_2i:v1` instance into the same `from_any` slot, since the matching predicate is conformance, not node identity. The `(core_node, instance_id)` identity returned with each message still pinpoints the exact producer, regardless of which node implementation it came from.
+The same applies when the producers are a mix of node identities, as long as each conforms to `depth_camera:v1`: a launcher can bind two `realsense_d405:v1` instances and one `zed_2i:v1` instance into the same slot, since the matching predicate is conformance, not node identity. The `(core_node, instance_id)` identity returned with each message still pinpoints the exact producer, regardless of which node implementation it came from.
 
 ## sha256 pinning
 
@@ -324,7 +320,7 @@ video_reconstruction:v1 (consumer)
    depends_on.interfaces: [
      { depth_camera, v1, link_id: left_cam },
      { depth_camera, v1, link_id: right_cam },
-     { depth_camera, v1, link_id: backup_cams, from_any: true },
+     { depth_camera, v1, link_id: backup_cams },
    ]
 ```
 
@@ -355,7 +351,7 @@ A launcher can wire the three slots to any mix of conforming producers:
           bindings: {
             left_cam: "rs_left",
             right_cam: "rs_right",
-            any_label: "zed_overhead",
+            backup_cams: "zed_overhead",
           },
         },
       ],
@@ -364,7 +360,7 @@ A launcher can wire the three slots to any mix of conforming producers:
 }
 ```
 
-`left_cam` and `right_cam` are pinned interface bindings: the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `any_label` is a free-form binding key; the launcher attaches it to the `backup_cams` from_any slot because `zed_overhead`'s node `(zed_2i:v1)` conforms to `depth_camera:v1`.
+Every binding key names its slot's `link_id`, and the launcher checks each target conforms to `depth_camera:v1`: `rs_left` and `rs_right` do via the `realsense_d405:v1` producer node, and `zed_overhead` does via `zed_2i:v1`. Node identity never matters, only conformance.
 
 Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same interface and the binding works unchanged.
 

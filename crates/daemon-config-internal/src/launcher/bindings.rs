@@ -3,27 +3,23 @@
 //! cross-reference each consumer's `depends_on` against the running
 //! stack snapshot's `instance_id → (name, tag)` lookup.
 //!
-//! In the binding-driven dispatch model, every `(KEY, VALUE)` binding
-//! resolves to one of the consumer's declared slots:
+//! Every binding entry maps a declared slot to its producers: the KEY
+//! must equal a `depends_on.{nodes,interfaces}` `link_id` and each
+//! target must deploy the slot's node (node slots) or conform to the
+//! slot's interface (interface slots). A declared slot with no binding
+//! entry stays unbound — the consumer's subscription for it is silent;
+//! there is no wildcard fallback and no free-form key.
 //!
-//! - If `KEY` matches a declared pinned `link_id`, the binding pins
-//!   that slot to producer `VALUE`.
-//! - Else, if a `from_any: true` slot exists for `VALUE`'s `(name,
-//!   tag)`, the binding attaches `VALUE` to that slot under the
-//!   free-form label `KEY`. Multiple bindings on the same from_any
-//!   slot accumulate.
-//! - Else, the binding is dead (rejected).
-//!
-//! The validator emits both errors and the resolved per-slot
-//! `SlotBinding` map per consumer instance, which the caller
-//! serializes into [`config::runtime::NodeInstanceConfig::slot_bindings`].
+//! The validator emits both errors and the resolved per-slot producer
+//! lists per consumer instance, which the caller serializes into
+//! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
-    BindingDeadKey, BindingInterfaceNotConformed, BindingMissingForPinnedDep,
-    BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
+    BindingInterfaceNotConformed, BindingTargetMismatch, BindingUnknownSlot,
+    DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use config::node::{ConformsToItem, DependsOn};
-use config::runtime::{ProducerRef, SlotBinding};
+use config::runtime::ProducerRef;
 use std::collections::BTreeMap;
 
 use super::types::DeploymentInstance;
@@ -45,8 +41,9 @@ pub struct BindingValidationItem<'a> {
 }
 
 /// Per-slot metadata extracted from `depends_on` during validation.
-/// Carrying `kind` inline lets both pinned and from_any paths branch
-/// without re-scanning `depends_on` per binding.
+/// Carrying `kind` inline lets the target-matching path pick the right
+/// error (node mismatch vs interface not conformed) without re-scanning
+/// `depends_on` per binding.
 #[derive(Clone, Copy)]
 struct SlotMeta<'a> {
     name: &'a str,
@@ -61,8 +58,9 @@ struct SlotMeta<'a> {
 #[derive(Debug, Default)]
 pub struct ValidatedBindings {
     pub errors: Vec<ParsingError>,
-    /// `consumer_instance_id → link_id → SlotBinding`.
-    pub slot_bindings: BTreeMap<String, BTreeMap<String, SlotBinding>>,
+    /// `consumer_instance_id → link_id → bound producers`. Every declared
+    /// slot of an instance appears, an unbound slot with an empty list.
+    pub slot_bindings: BTreeMap<String, BTreeMap<String, Vec<ProducerRef>>>,
 }
 
 /// Run all binding validator rules over the snapshot. Returns
@@ -79,27 +77,28 @@ pub struct ValidatedBindings {
 /// cross-daemon stacks ever land, the launcher knows each instance's
 /// target daemon and the stamp generalizes to a per-instance input.
 ///
-/// Rules enforced (numbered to match `BINDING_ROUTING.md`):
-/// 1. Every pinned `depends_on` entry has a matching `--bind` whose
-///    `KEY` equals the slot's `link_id`. Otherwise
-///    [`ParsingError::BindingMissingForPinnedDep`].
-/// 3. Free-form `--bind KEY@VALUE` where `KEY` doesn't match a pinned
-///    `link_id` is accepted if a `from_any: true` slot exists for
-///    VALUE's `(name, tag)`. Multiple bindings on the same from_any
-///    slot accumulate.
-/// 4. A `--bind` whose `KEY` matches neither a pinned `link_id` nor a
-///    `from_any` slot for VALUE's `(name, tag)` is
-///    [`ParsingError::BindingDeadKey`].
-/// 5. A pinned binding whose target instance deploys the wrong node
-///    is [`ParsingError::BindingTargetMismatch`].
-/// 6. `--bind KEY` uniqueness within one invocation is enforced by the
+/// Rules enforced:
+/// 1. Every binding `KEY` equals a declared `depends_on.{nodes,
+///    interfaces}` `link_id`. A key naming a pairing slot gets the
+///    targeted [`ParsingError::BindingKeyIsPairingSlot`]; any other
+///    unknown key is [`ParsingError::BindingUnknownSlot`].
+/// 2. Every target exists in the snapshot
+///    ([`ParsingError::UnknownInstanceId`] otherwise) and satisfies the
+///    slot: node slots match the target's `(name, tag)` identity
+///    ([`ParsingError::BindingTargetMismatch`] otherwise), interface
+///    slots match the target's `conforms_to`
+///    ([`ParsingError::BindingInterfaceNotConformed`] otherwise).
+/// 3. `--bind KEY` uniqueness within one invocation is enforced by the
 ///    CLI parser and the deserializer; this validator surfaces any
-///    residual duplicates as
-///    [`ParsingError::BindingDuplicateKey`] (defensive; should not
-///    fire in practice).
-/// 7. Stack-wide `instance_id` uniqueness across every entry in
+///    residual duplicates as [`ParsingError::BindingDuplicateKey`]
+///    (defensive; should not fire in practice).
+/// 4. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
+///
+/// A declared slot with no binding entry is legal: it resolves to an
+/// empty producer list and the consumer's subscription for it stays
+/// silent.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
     producer_core_node: &str,
@@ -111,32 +110,24 @@ pub fn validate_bindings(
     let instance_to_item = build_instance_lookup(items);
 
     for item in items {
-        let (declared_pinned, declared_from_any) = collect_declared_slots(item.depends_on);
-        let declared_csv = format_declared_keys(&declared_pinned, &declared_from_any);
+        let declared_slots = collect_declared_slots(item.depends_on);
+        let declared_csv = format_declared_keys(&declared_slots);
         // Pairing slots are never binding slots: `collect_declared_slots`
         // reads only `depends_on.{nodes,interfaces}`, so a pairing link_id
-        // can never satisfy rule 1 or match a pinned KEY. This set exists
-        // solely to turn a `--bind` on a pairing slot into a targeted
-        // "use --pair" error instead of a generic `BindingDeadKey`.
+        // can never match a binding key. This set exists solely to turn a
+        // `--bind` on a pairing slot into a targeted "use --pair" error
+        // instead of a generic `BindingUnknownSlot`.
         let pairing_link_ids: std::collections::BTreeSet<&str> = item
             .depends_on
             .map(|d| d.pairings.iter().map(|p| p.link_id.as_str()).collect())
             .unwrap_or_default();
 
         for instance in item.instances {
-            let mut resolved: BTreeMap<String, SlotBinding> = BTreeMap::new();
-            let mut from_any_explicit: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            let mut resolved: BTreeMap<String, Vec<ProducerRef>> = BTreeMap::new();
             let mut seen_keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-            // Pinned link_ids whose KEY appeared in the binding map
-            // (even if the resolution errored). Used to skip rule 1's
-            // pinned-unbound report so we don't double-emit on top of a
-            // BindingTargetMismatch / UnknownInstanceId for the same
-            // slot.
-            let mut pinned_keys_seen: std::collections::BTreeSet<&str> =
-                std::collections::BTreeSet::new();
 
-            for (binding_key, target_id) in &instance.bindings {
-                // Rule 6 defensive check.
+            for (binding_key, target_ids) in &instance.bindings {
+                // Rule 3 defensive check.
                 if !seen_keys.insert(binding_key.as_str()) {
                     out.errors.push(ParsingError::BindingDuplicateKey {
                         owner_instance_id: instance.instance_id.to_string(),
@@ -153,15 +144,29 @@ pub fn validate_bindings(
                     continue;
                 }
 
-                if let Some(slot) = declared_pinned.get(binding_key.as_str()).copied() {
-                    // Rule 2: KEY matches a declared pinned link_id.
-                    pinned_keys_seen.insert(binding_key.as_str());
+                // Rule 1: KEY must name a declared slot.
+                let Some(slot) = declared_slots.get(binding_key.as_str()).copied() else {
+                    out.errors.push(ParsingError::BindingUnknownSlot(Box::new(
+                        BindingUnknownSlot {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding_key.clone(),
+                            declared_link_ids: declared_csv.clone(),
+                        },
+                    )));
+                    continue;
+                };
+
+                // Rule 2: every target exists and satisfies the slot.
+                let mut producers = Vec::with_capacity(target_ids.len());
+                let mut target_errors = false;
+                for target_id in target_ids {
                     let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
                         out.errors.push(ParsingError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
                             binding: binding_key.clone(),
                             instance_id: target_id.clone(),
                         });
+                        target_errors = true;
                         continue;
                     };
                     if !slot_matches_producer(&slot, target_item) {
@@ -189,97 +194,22 @@ pub fn validate_bindings(
                                 }),
                             ),
                         });
+                        target_errors = true;
                         continue;
                     }
-                    resolved.insert(
-                        binding_key.clone(),
-                        SlotBinding::Pinned {
-                            producer: ProducerRef::new(producer_core_node, target_id.clone()),
-                        },
-                    );
-                    continue;
+                    producers.push(ProducerRef::new(producer_core_node, target_id.clone()));
                 }
-
-                // KEY does not match a pinned link_id. Try to attach to a
-                // from_any slot. Node slots match by `(name, tag)`;
-                // interface slots match against the producer's
-                // `conforms_to` claim.
-                let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
-                    out.errors.push(ParsingError::UnknownInstanceId {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        binding: binding_key.clone(),
-                        instance_id: target_id.clone(),
-                    });
-                    continue;
-                };
-                let mut attached = false;
-                for (slot_link_id, slot) in &declared_from_any {
-                    if slot_matches_producer(slot, target_item) {
-                        from_any_explicit
-                            .entry((*slot_link_id).to_string())
-                            .or_default()
-                            .push(target_id.clone());
-                        attached = true;
-                        break;
-                    }
-                }
-                if !attached {
-                    out.errors
-                        .push(ParsingError::BindingDeadKey(Box::new(BindingDeadKey {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding_key.clone(),
-                            target_instance_id: target_id.clone(),
-                            producer_name: target_item.node_name.to_string(),
-                            producer_tag: target_item.node_tag.to_string(),
-                            declared_link_ids: declared_csv.clone(),
-                        })));
+                if !target_errors {
+                    resolved.insert(binding_key.clone(), producers);
                 }
             }
 
-            // After processing all bindings, materialize from_any slots.
-            for slot_link_id in declared_from_any.keys() {
-                let producers = from_any_explicit.remove(*slot_link_id);
-                let slot = match producers {
-                    Some(ids) => {
-                        // Distinct `--bind KEY@id` entries may name the same
-                        // target; collapse duplicates (preserving first-seen
-                        // order) so the slot doesn't pin one producer twice.
-                        let mut seen = std::collections::BTreeSet::new();
-                        SlotBinding::FromAnyBound {
-                            producers: ids
-                                .into_iter()
-                                .filter(|id| seen.insert(id.clone()))
-                                .map(|id| ProducerRef::new(producer_core_node, id))
-                                .collect(),
-                        }
-                    }
-                    None => SlotBinding::FromAnyUnbound,
-                };
-                resolved.insert((*slot_link_id).to_string(), slot);
-            }
-
-            // Rule 1: every pinned slot must be bound. Suppress when
-            // the slot's KEY was present in the binding map but
-            // errored elsewhere; surfacing both
-            // `BindingTargetMismatch` and `BindingMissingForPinnedDep`
-            // for the same slot is double-reporting one root cause.
-            for (slot_link_id, slot) in &declared_pinned {
-                if resolved.contains_key(*slot_link_id) {
-                    continue;
-                }
-                if pinned_keys_seen.contains(*slot_link_id) {
-                    continue;
-                }
-                out.errors
-                    .push(ParsingError::BindingMissingForPinnedDep(Box::new(
-                        BindingMissingForPinnedDep {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            link_id: (*slot_link_id).to_string(),
-                            kind: slot.kind,
-                            expected_name: slot.name.to_string(),
-                            expected_tag: slot.tag.to_string(),
-                        },
-                    )));
+            // Materialize every declared slot the bindings left out as
+            // explicitly unbound (empty producer list), so the boot config
+            // carries the complete slot picture and the runtime keeps the
+            // slot silent.
+            for slot_link_id in declared_slots.keys() {
+                resolved.entry((*slot_link_id).to_string()).or_default();
             }
 
             if !resolved.is_empty() {
@@ -309,7 +239,7 @@ fn build_instance_lookup<'a>(
     lookup
 }
 
-/// Stack-wide `instance_id` uniqueness (rule 7). Two entries anywhere
+/// Stack-wide `instance_id` uniqueness (rule 4). Two entries anywhere
 /// in `items.instances` (across any `(node_name, node_tag)`) sharing
 /// an `instance_id` is a hard error: `--bind KEY@id` would be
 /// ambiguous.
@@ -350,42 +280,35 @@ fn check_stack_wide_instance_id_uniqueness(
 
 type DeclaredSlots<'a> = BTreeMap<&'a str, SlotMeta<'a>>;
 
-/// Split declared `depends_on` entries into pinned (`from_any: false`)
-/// and `from_any: true` slots. Each map is keyed by `link_id` and
-/// values carry the dep's `(name, tag, kind)` so the matching paths can
-/// branch on node-vs-interface without re-scanning the manifest.
-fn collect_declared_slots(
-    depends_on: Option<&DependsOn>,
-) -> (DeclaredSlots<'_>, DeclaredSlots<'_>) {
-    let mut pinned = BTreeMap::new();
-    let mut from_any = BTreeMap::new();
+/// The declared binding slots: every `depends_on.{nodes,interfaces}`
+/// entry keyed by `link_id`, with the dep's `(name, tag, kind)` so the
+/// target-matching path can branch on node-vs-interface without
+/// re-scanning the manifest.
+fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
+    let mut slots = BTreeMap::new();
     if let Some(deps) = depends_on {
         for dep in &deps.nodes {
-            let meta = SlotMeta {
-                name: dep.name.as_str(),
-                tag: dep.tag.as_str(),
-                kind: SlotKind::Node,
-            };
-            if dep.from_any {
-                from_any.insert(dep.link_id.as_str(), meta);
-            } else {
-                pinned.insert(dep.link_id.as_str(), meta);
-            }
+            slots.insert(
+                dep.link_id.as_str(),
+                SlotMeta {
+                    name: dep.name.as_str(),
+                    tag: dep.tag.as_str(),
+                    kind: SlotKind::Node,
+                },
+            );
         }
         for dep in &deps.interfaces {
-            let meta = SlotMeta {
-                name: dep.name.as_str(),
-                tag: dep.tag.as_str(),
-                kind: SlotKind::Interface,
-            };
-            if dep.from_any {
-                from_any.insert(dep.link_id.as_str(), meta);
-            } else {
-                pinned.insert(dep.link_id.as_str(), meta);
-            }
+            slots.insert(
+                dep.link_id.as_str(),
+                SlotMeta {
+                    name: dep.name.as_str(),
+                    tag: dep.tag.as_str(),
+                    kind: SlotKind::Interface,
+                },
+            );
         }
     }
-    (pinned, from_any)
+    slots
 }
 
 /// Does a producer satisfy a declared slot? Node slots match by
@@ -403,10 +326,8 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
     }
 }
 
-fn format_declared_keys(pinned: &DeclaredSlots<'_>, from_any: &DeclaredSlots<'_>) -> String {
-    let mut keys: Vec<&str> = pinned.keys().chain(from_any.keys()).copied().collect();
-    keys.sort();
-    keys.dedup();
+fn format_declared_keys(slots: &DeclaredSlots<'_>) -> String {
+    let keys: Vec<&str> = slots.keys().copied().collect();
     keys.join(", ")
 }
 
@@ -465,7 +386,11 @@ mod tests {
         }
     }
 
-    fn slot_binding(out: &ValidatedBindings, instance: &str, link_id: &str) -> Option<SlotBinding> {
+    fn slot_binding(
+        out: &ValidatedBindings,
+        instance: &str,
+        link_id: &str,
+    ) -> Option<Vec<ProducerRef>> {
         out.slot_bindings
             .get(instance)
             .and_then(|m| m.get(link_id))
@@ -490,10 +415,9 @@ mod tests {
         assert!(out.slot_bindings.is_empty());
     }
 
-    /// Rule 4: a `--bind KEY@VALUE` whose KEY matches neither a pinned
-    /// link_id nor a from_any slot for VALUE's (name, tag) is dead.
+    /// Rule 1: a binding whose KEY names no declared slot is rejected.
     #[test]
-    fn rule4_rejects_dead_binding_key() {
+    fn rule1_rejects_unknown_slot_key() {
         let instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -517,20 +441,18 @@ mod tests {
             "expected one error, got {:?}",
             out.errors
         );
-        let ParsingError::BindingDeadKey(info) = &out.errors[0] else {
-            panic!("expected BindingDeadKey, got {:?}", out.errors[0]);
+        let ParsingError::BindingUnknownSlot(info) = &out.errors[0] else {
+            panic!("expected BindingUnknownSlot, got {:?}", out.errors[0]);
         };
         assert_eq!(info.owner_instance_id, "cons1");
         assert_eq!(info.binding, "stale_slot");
-        assert_eq!(info.target_instance_id, "prod1");
-        assert_eq!(info.producer_name, "camera");
-        assert_eq!(info.producer_tag, "v1");
         assert_eq!(info.declared_link_ids, "main");
     }
 
-    /// Rule 1: pinned-unbound is a hard error.
+    /// A declared slot with no binding entry is legal and resolves to an
+    /// empty producer list: the consumer's subscription stays silent.
     #[test]
-    fn rule1_rejects_pinned_unbound() {
+    fn unbound_slot_resolves_to_empty_producer_list() {
         let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
         let depends_on = parse_depends_on(
             r#"{
@@ -539,33 +461,14 @@ mod tests {
         );
         let items = vec![item("cons", "v1", &instances, Some(&depends_on))];
         let out = validate_bindings(&items, TEST_CORE);
-        assert_eq!(out.errors.len(), 1);
-        let ParsingError::BindingMissingForPinnedDep(info) = &out.errors[0] else {
-            panic!(
-                "expected BindingMissingForPinnedDep, got {:?}",
-                out.errors[0]
-            );
-        };
-        assert_eq!(info.owner_instance_id, "cons1");
-        assert_eq!(info.link_id, "main");
-        assert_eq!(info.kind, SlotKind::Node);
-        assert_eq!(info.expected_name, "camera");
-        assert_eq!(info.expected_tag, "v1");
-        let msg = info.to_string();
-        assert!(
-            msg.contains("slot `main` is unbound"),
-            "unexpected error message: {msg}"
-        );
-        assert!(
-            msg.contains("expected node `camera:v1`"),
-            "unexpected error message: {msg}"
-        );
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(slot_binding(&out, "cons1", "main"), Some(Vec::new()));
     }
 
-    /// Rule 2 (happy path): pinned binding resolves to
-    /// `SlotBinding::Pinned`.
+    /// Rule 2 (happy path): a single-target binding resolves the slot to
+    /// that producer.
     #[test]
-    fn rule2_pinned_binding_resolves_to_pinned() {
+    fn rule2_single_target_binding_resolves() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -586,55 +489,23 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "main"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "prod1")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "prod1")])
         );
     }
 
-    /// Rule 3 (happy path): a free-form key whose target's (name, tag)
-    /// matches a from_any slot attaches the binding to that slot.
+    /// Rule 2 (happy path): an array binding resolves the slot to every
+    /// listed producer, in binding order.
     #[test]
-    fn rule3_free_form_key_resolves_to_from_any_slot() {
+    fn rule2_array_binding_resolves_all_targets_in_order() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { the_extra: "prod1" }
+                bindings: { states: ["prod2", "prod1"] }
             }]"#,
         );
         let depends_on = parse_depends_on(
             r#"{
-                nodes: [{ name: "camera", tag: "v1", link_id: "extra", from_any: true }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
-        let items = vec![
-            item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item("camera", "v1", &prod_instances, None),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "cons1", "extra"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "prod1")]
-            })
-        );
-    }
-
-    /// Rule 3: multiple free-form keys on the same from_any slot
-    /// accumulate.
-    #[test]
-    fn rule3_multiple_free_form_keys_accumulate_on_from_any_slot() {
-        let cons_instances = parse_instances(
-            r#"[{
-                instance_id: "cons1",
-                bindings: { alpha: "prod1", beta: "prod2" }
-            }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [{ name: "camera", tag: "v1", link_id: "extra", from_any: true }]
+                nodes: [{ name: "camera", tag: "v1", link_id: "states" }]
             }"#,
         );
         let prod_instances = parse_instances(
@@ -649,129 +520,49 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        let Some(SlotBinding::FromAnyBound { producers }) = slot_binding(&out, "cons1", "extra")
-        else {
-            panic!(
-                "expected FromAnyBound, got {:?}",
-                slot_binding(&out, "cons1", "extra")
-            );
-        };
-        let mut producers = producers;
-        producers.sort();
         assert_eq!(
-            producers,
-            vec![
-                ProducerRef::new(TEST_CORE, "prod1"),
+            slot_binding(&out, "cons1", "states"),
+            Some(vec![
                 ProducerRef::new(TEST_CORE, "prod2"),
-            ]
+                ProducerRef::new(TEST_CORE, "prod1"),
+            ])
         );
     }
 
-    /// Rule 3: two free-form keys naming the same target collapse to a
-    /// single producer entry on the from_any slot.
+    /// Rule 2: every target of an array binding must satisfy the slot; a
+    /// single bad target rejects the binding while the good target's
+    /// sibling error stands alone.
     #[test]
-    fn rule3_duplicate_free_form_targets_dedupe_on_from_any_slot() {
+    fn rule2_array_binding_rejects_any_mismatched_target() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { alpha: "prod1", beta: "prod1" }
+                bindings: { states: ["prod1", "actually_lidar"] }
             }]"#,
         );
         let depends_on = parse_depends_on(
             r#"{
-                nodes: [{ name: "camera", tag: "v1", link_id: "extra", from_any: true }]
+                nodes: [{ name: "camera", tag: "v1", link_id: "states" }]
             }"#,
         );
-        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let cam_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let lidar_instances = parse_instances(r#"[{ instance_id: "actually_lidar" }]"#);
         let items = vec![
             item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item("camera", "v1", &prod_instances, None),
+            item("camera", "v1", &cam_instances, None),
+            item("lidar", "v1", &lidar_instances, None),
         ];
         let out = validate_bindings(&items, TEST_CORE);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "cons1", "extra"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "prod1")]
-            })
-        );
-    }
-
-    /// Rule 3: a free-form key whose target's (name, tag) doesn't
-    /// match any from_any slot is dead.
-    #[test]
-    fn rule3_free_form_key_without_matching_from_any_is_dead() {
-        let cons_instances = parse_instances(
-            r#"[{
-                instance_id: "cons1",
-                bindings: { the_extra: "lidar_inst" }
-            }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [{ name: "camera", tag: "v1", link_id: "extra", from_any: true }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "lidar_inst" }]"#);
-        let items = vec![
-            item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item("lidar", "v1", &prod_instances, None),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert_eq!(out.errors.len(), 1);
-        assert!(matches!(out.errors[0], ParsingError::BindingDeadKey(_)));
-    }
-
-    /// A `from_any` slot with no bindings resolves to
-    /// `SlotBinding::FromAnyUnbound`.
-    #[test]
-    fn from_any_without_bindings_resolves_to_unbound() {
-        let cons_instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [{ name: "camera", tag: "v1", link_id: "extra", from_any: true }]
-            }"#,
-        );
-        let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "cons1", "extra"),
-            Some(SlotBinding::FromAnyUnbound)
-        );
-    }
-
-    /// Rule 1 (interface variant): pinned interface dep without
-    /// binding fails the same way.
-    #[test]
-    fn rule1_rejects_missing_binding_for_pinned_interface_dep() {
-        let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{
-                    name: "depth_camera",
-                    tag: "v1",
-                    link_id: "depth"
-                }]
-            }"#,
-        );
-        let items = vec![item("cons", "v1", &instances, Some(&depends_on))];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert_eq!(out.errors.len(), 1);
-        let ParsingError::BindingMissingForPinnedDep(info) = &out.errors[0] else {
-            panic!(
-                "expected BindingMissingForPinnedDep, got {:?}",
-                out.errors[0]
-            );
+        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
+        let ParsingError::BindingTargetMismatch(info) = &out.errors[0] else {
+            panic!("expected BindingTargetMismatch, got {:?}", out.errors[0]);
         };
-        assert_eq!(info.kind, SlotKind::Interface);
-        assert_eq!(info.link_id, "depth");
+        assert_eq!(info.target_instance_id, "actually_lidar");
     }
 
     /// Rule 5: pinned binding whose target deploys the wrong node.
     #[test]
-    fn rule5_rejects_target_node_mismatch() {
+    fn rejects_target_node_mismatch() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -798,12 +589,12 @@ mod tests {
         assert_eq!(info.target_instance_id, "actually_lidar");
     }
 
-    /// Pinned interface bindings check the producer's `conforms_to`
+    /// Interface bindings check the producer's `conforms_to`
     /// (not just node identity). A producer with no matching
     /// `conforms_to` entry is rejected with
     /// `BindingInterfaceNotConformed`.
     #[test]
-    fn pinned_interface_binding_rejects_non_conforming_producer() {
+    fn interface_binding_rejects_non_conforming_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -840,13 +631,13 @@ mod tests {
         assert_eq!(info.producer_tag, "v1");
     }
 
-    /// Pinned interface dep targets a producer whose `conforms_to`
-    /// includes the requested interface: accepted as `SlotBinding::Pinned`.
-    /// The producer's node name is intentionally different from the
-    /// interface name so this test exercises the conformance path
-    /// rather than a coincidental identity match.
+    /// Interface dep targets a producer whose `conforms_to` includes the
+    /// requested interface: accepted. The producer's node name is
+    /// intentionally different from the interface name so this test
+    /// exercises the conformance path rather than a coincidental
+    /// identity match.
     #[test]
-    fn pinned_interface_binding_accepts_conforming_producer() {
+    fn interface_binding_accepts_conforming_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -873,15 +664,13 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "depth"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "webcam_inst_1")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "webcam_inst_1")])
         );
     }
 
-    /// A well-formed launcher (matching the spec's openarm01_backbone
-    /// example: two pinned slots and a from_any slot) passes with no
-    /// errors and all slots resolve.
+    /// A well-formed launcher (matching the openarm backbone shape: two
+    /// bound interface slots and one left unbound) passes with no errors
+    /// and every declared slot resolves.
     #[test]
     fn openarm_style_manifest_resolves_all_slots() {
         let cons_instances = parse_instances(
@@ -889,8 +678,7 @@ mod tests {
                 instance_id: "backbone_inst_1",
                 bindings: {
                     wrist_left_camera: "depth_cam_inst1",
-                    wrist_right_camera: "depth_cam_inst1",
-                    the_extra_camera: "depth_cam_inst1"
+                    wrist_right_camera: "depth_cam_inst1"
                 }
             }]"#,
         );
@@ -900,7 +688,7 @@ mod tests {
                 interfaces: [
                     { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
                     { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-                    { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true }
+                    { name: "depth_camera", tag: "v1", link_id: "extra_cam" }
                 ]
             }"#,
         );
@@ -929,39 +717,33 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "backbone_inst_1", "wrist_left_camera"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "depth_cam_inst1")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")])
         );
         assert_eq!(
             slot_binding(&out, "backbone_inst_1", "wrist_right_camera"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "depth_cam_inst1")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")])
         );
         assert_eq!(
             slot_binding(&out, "backbone_inst_1", "extra_cam"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")]
-            })
+            Some(Vec::new()),
+            "the unbound slot must materialize as an empty producer list"
         );
     }
 
-    /// An "inert" item (`depends_on: None`) must NOT trigger Rule 1
-    /// against the slots it would have declared if `depends_on` were
-    /// populated; it represents a node whose bindings were already
-    /// resolved at spawn time. At the same time, its instances and
-    /// `conforms_to` must still feed the producer-lookup index so a
-    /// live consumer in the same `validate_bindings` call can satisfy
-    /// pinned node / interface deps against them.
+    /// An "inert" item (`depends_on: None`) contributes no slots of its
+    /// own; it represents a node whose bindings were already resolved at
+    /// spawn time. Its instances and `conforms_to` must still feed the
+    /// producer-lookup index so a live consumer in the same
+    /// `validate_bindings` call can satisfy node / interface deps against
+    /// them.
     ///
     /// This locks in the contract that
     /// `peppy::commands::node::run::validate_binds_against_stack`
     /// relies on when it folds already-running stack nodes into the
     /// validator snapshot without re-checking their bindings.
     #[test]
-    fn inert_item_with_no_depends_on_does_not_trigger_rule1_but_remains_a_producer() {
-        // Live consumer with a pinned node dep + a pinned interface dep.
+    fn inert_item_with_no_depends_on_remains_a_producer() {
+        // Live consumer with a node dep + an interface dep.
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -976,8 +758,7 @@ mod tests {
         );
 
         // Inert node producer: depends_on omitted entirely, even though
-        // it WOULD declare deps in real life. If Rule 1 fired against
-        // inert items, this is where the false positive would surface.
+        // it WOULD declare deps in real life.
         let node_prod_instances = parse_instances(r#"[{ instance_id: "node_prod_inst" }]"#);
 
         // Inert interface producer: same shape, plus a `conforms_to`
@@ -1001,15 +782,11 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "cam"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "node_prod_inst")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "node_prod_inst")])
         );
         assert_eq!(
             slot_binding(&out, "cons1", "depth"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "iface_prod_inst")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "iface_prod_inst")])
         );
     }
 
@@ -1043,10 +820,10 @@ mod tests {
         assert_eq!(instance_id, "ghost_producer");
     }
 
-    /// Rule 7: stack-wide instance_id duplicate across different
+    /// Rule 4: stack-wide instance_id duplicate across different
     /// (node_name, node_tag).
     #[test]
-    fn rule7_rejects_stack_wide_duplicate_instance_id() {
+    fn rule4_rejects_stack_wide_duplicate_instance_id() {
         let camera_instances = parse_instances(r#"[{ instance_id: "shared_inst" }]"#);
         let lidar_instances = parse_instances(r#"[{ instance_id: "shared_inst" }]"#);
         let items = vec![
@@ -1077,7 +854,7 @@ mod tests {
     /// than silently letting `build_instance_lookup` resolve by first
     /// insertion.
     #[test]
-    fn rule7_reports_duplicate_instance_id_even_for_same_name_tag() {
+    fn rule4_reports_duplicate_instance_id_even_for_same_name_tag() {
         let camera_instances = parse_instances(
             r#"[
                 { instance_id: "shared_inst" },
@@ -1100,13 +877,14 @@ mod tests {
         assert_eq!(info.tag_b, "v1");
     }
 
-    /// Pinned and from_any errors aggregate (no short-circuit).
+    /// Errors aggregate (no short-circuit): an unknown slot key and an
+    /// unknown target instance surface together.
     #[test]
     fn aggregates_multiple_errors() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { unknown_slot: "prod1" }
+                bindings: { unknown_slot: "prod1", main: "ghost" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1126,94 +904,13 @@ mod tests {
             "expected two errors, got {:?}",
             out.errors
         );
-        // BindingDeadKey is emitted first (in iteration order),
-        // BindingMissingForPinnedDep after.
-        assert!(matches!(out.errors[0], ParsingError::BindingDeadKey(_)));
+        // Bindings iterate in key order: `main` errors first, then
+        // `unknown_slot`.
         assert!(matches!(
-            out.errors[1],
-            ParsingError::BindingMissingForPinnedDep(_)
+            out.errors[0],
+            ParsingError::UnknownInstanceId { .. }
         ));
-    }
-
-    /// A `from_any` interface dep accepts a producer whose
-    /// `interfaces.conforms_to` includes the requested interface, even
-    /// when the producer's node name differs from the interface name.
-    #[test]
-    fn from_any_interface_dep_accepts_producer_via_conforms_to() {
-        let cons_instances = parse_instances(
-            r#"[{
-                instance_id: "cons1",
-                bindings: { extra_cam: "webcam_inst_1" }
-            }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{
-                    name: "depth_camera",
-                    tag: "v1",
-                    link_id: "extra_cam",
-                    from_any: true
-                }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "webcam_inst_1" }]"#);
-        let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
-        let items = vec![
-            item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item_with_conforms_to("webcam", "v1", &prod_instances, None, &producer_conforms),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "cons1", "extra_cam"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "webcam_inst_1")]
-            })
-        );
-    }
-
-    /// A `from_any` interface dep rejects a producer that lacks the
-    /// matching `conforms_to`, even when its node name coincidentally
-    /// equals the requested interface name+tag. Interface satisfaction
-    /// is determined solely by `conforms_to`, never by node identity.
-    #[test]
-    fn from_any_interface_dep_rejects_producer_without_conforms_to() {
-        let cons_instances = parse_instances(
-            r#"[{
-                instance_id: "cons1",
-                bindings: { extra_cam: "depth_cam_inst_1" }
-            }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [{
-                    name: "depth_camera",
-                    tag: "v1",
-                    link_id: "extra_cam",
-                    from_any: true
-                }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst_1" }]"#);
-        // Producer's node identity coincidentally matches the interface
-        // name+tag, but it declares no `conforms_to`, so it must be rejected
-        // (the binding's `KEY` doesn't match any pinned link_id either,
-        // so this falls through to `BindingDeadKey`).
-        let items = vec![
-            item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item("depth_camera", "v1", &prod_instances, None),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingDeadKey(info) = &out.errors[0] else {
-            panic!("expected BindingDeadKey, got {:?}", out.errors[0]);
-        };
-        assert_eq!(info.binding, "extra_cam");
-        assert_eq!(info.target_instance_id, "depth_cam_inst_1");
-        assert_eq!(info.producer_name, "depth_camera");
-        assert_eq!(info.producer_tag, "v1");
+        assert!(matches!(out.errors[1], ParsingError::BindingUnknownSlot(_)));
     }
 
     /// `conforms_to` matching is strict on `(name, tag)`: a producer
@@ -1314,75 +1011,16 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "depth_cons", "feed"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "multi_prod")
-            })
+            Some(vec![ProducerRef::new(TEST_CORE, "multi_prod")])
         );
         assert_eq!(
             slot_binding(&out, "uvc_cons", "feed"),
-            Some(SlotBinding::Pinned {
-                producer: ProducerRef::new(TEST_CORE, "multi_prod")
-            })
-        );
-    }
-
-    /// When a producer's `conforms_to` could match multiple from_any
-    /// interface slots, the validator picks the first slot in
-    /// `BTreeMap` (alphabetical by link_id) order and attaches the
-    /// producer there. Other matching slots remain unbound. Documents
-    /// the deterministic first-match-wins shadowing.
-    #[test]
-    fn from_any_multiple_slots_first_match_wins() {
-        let cons_instances = parse_instances(
-            r#"[{
-                instance_id: "cons1",
-                bindings: { whatever: "multi_prod" }
-            }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [],
-                interfaces: [
-                    { name: "alpha_iface", tag: "v1", link_id: "slot_a", from_any: true },
-                    { name: "beta_iface", tag: "v1", link_id: "slot_b", from_any: true }
-                ]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "multi_prod" }]"#);
-        let producer_conforms = parse_conforms_to(
-            r#"[
-                { name: "alpha_iface", tag: "v1" },
-                { name: "beta_iface", tag: "v1" }
-            ]"#,
-        );
-        let items = vec![
-            item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item_with_conforms_to(
-                "multi_iface_node",
-                "v1",
-                &prod_instances,
-                None,
-                &producer_conforms,
-            ),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        // `slot_a` sorts before `slot_b`, so the producer lands on
-        // slot_a; slot_b stays unbound.
-        assert_eq!(
-            slot_binding(&out, "cons1", "slot_a"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "multi_prod")]
-            })
-        );
-        assert_eq!(
-            slot_binding(&out, "cons1", "slot_b"),
-            Some(SlotBinding::FromAnyUnbound)
+            Some(vec![ProducerRef::new(TEST_CORE, "multi_prod")])
         );
     }
 
     /// A `--bind` whose KEY names a pairing slot gets the targeted
-    /// "use --pair" error, not `BindingDeadKey`. Pairing slots are
+    /// "use --pair" error, not `BindingUnknownSlot`. Pairing slots are
     /// established via `--pair`/`pairings:` only.
     #[test]
     fn binding_key_naming_a_pairing_slot_says_use_pair() {
@@ -1420,11 +1058,11 @@ mod tests {
         );
     }
 
-    /// Rule 1 must NOT fire for pairing slots: `collect_declared_slots`
-    /// reads only nodes/interfaces, so a required pairing slot with no
-    /// binding produces no `BindingMissingForPinnedDep`.
+    /// Pairing slots are not binding slots: a required pairing slot with
+    /// no binding produces no error and no slot entry here (the pairing
+    /// validator owns that surface).
     #[test]
-    fn pairing_slots_are_invisible_to_rule1() {
+    fn pairing_slots_are_invisible_to_binding_validation() {
         let cons_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
         let depends_on = parse_depends_on(
             r#"{
@@ -1442,24 +1080,23 @@ mod tests {
         assert!(out.slot_bindings.is_empty());
     }
 
-    /// Stamping: every producer reference the validator emits (pinned
-    /// and from_any-bound alike) carries exactly the
-    /// `producer_core_node` passed by the caller (the launching
-    /// daemon). This is the single point where the instance-only
-    /// `--bind` syntax becomes a wire-complete address.
+    /// Stamping: every producer reference the validator emits carries
+    /// exactly the `producer_core_node` passed by the caller (the
+    /// launching daemon). This is the single point where the
+    /// instance-only `--bind` syntax becomes a wire-complete address.
     #[test]
     fn every_resolved_binding_is_stamped_with_the_launching_core_node() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "prod1", extra_feed: "prod2" }
+                bindings: { main: "prod1", extra: ["prod2"] }
             }]"#,
         );
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [
                     { name: "camera", tag: "v1", link_id: "main" },
-                    { name: "camera", tag: "v1", link_id: "extra", from_any: true }
+                    { name: "camera", tag: "v1", link_id: "extra" }
                 ]
             }"#,
         );
@@ -1476,25 +1113,10 @@ mod tests {
         let out = validate_bindings(&items, "daemon_west");
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         let resolved = out.slot_bindings.get("cons1").expect("cons1 bindings");
-        let mut producer_count = 0;
-        for binding in resolved.values() {
-            match binding {
-                SlotBinding::Pinned { producer } => {
-                    producer_count += 1;
-                    assert_eq!(producer.core_node, "daemon_west");
-                }
-                SlotBinding::FromAnyBound { producers } => {
-                    for producer in producers {
-                        producer_count += 1;
-                        assert_eq!(producer.core_node, "daemon_west");
-                    }
-                }
-                SlotBinding::FromAnyUnbound => {}
-            }
+        let producers: Vec<&ProducerRef> = resolved.values().flatten().collect();
+        assert_eq!(producers.len(), 2, "both bound producers must be stamped");
+        for producer in producers {
+            assert_eq!(producer.core_node, "daemon_west");
         }
-        assert_eq!(
-            producer_count, 2,
-            "both the pinned and the from_any producer must be stamped"
-        );
     }
 }

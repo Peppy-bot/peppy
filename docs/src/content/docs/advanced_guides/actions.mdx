@@ -453,7 +453,7 @@ if __name__ == "__main__":
   </TabItem>
 </Tabs>
 
-The signature is the same for pinned and `from_any: true` slots: `fire_goal` takes no call-site targeting argument. The slot's launcher binding (or absence of one) decides which producer instance the goal addresses.
+`fire_goal` takes no call-site targeting argument: the slot's launcher binding decides which producer instance the goal addresses. An action slot must be bound to exactly one producer; firing a goal on a slot bound to zero or several producers fails with `ServiceSlotNotPinned`.
 
 `fire_goal` returns an `ActionHandle` whose `data` field holds the goal response (e.g. `data.accepted`). The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 
@@ -600,10 +600,7 @@ The cancel targets only this goal; other concurrent goals are unaffected. To lea
 
 Routing for actions uses the same consumer-side model as topics and services. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the client's declared slots; the action server itself is binding-agnostic.
 
-Each slot in `depends_on` is either:
-
-- **Pinned** (the default, when `from_any` is absent or `false`): the slot must be bound. The generated `fire_goal` resolves the bound producer's full `(core_node, instance_id)` wire address from the binding, and the goal, cancel, result, and feedback channels all address that one producer. The validator rejects a pinned-unbound slot before the stack starts.
-- **`from_any: true`**: when the slot is bound to a single producer, the generated `fire_goal` resolves the binding and addresses that producer's `(core_node, instance_id)` directly, exactly like a pinned slot. When the slot is left unbound, the call falls back to wildcard discovery: a probe goes out to every matching producer and the first responder is pinned for the rest of the goal cycle, so the same producer handles the goal, cancel, result, and feedback. Bindings constrain which producers discovery may consider.
+An action slot resolves through its binding: the generated `fire_goal` reads the slot's bound producer's full `(core_node, instance_id)` wire address, and the goal, cancel, result, and feedback channels all address that one producer. Because the whole goal cycle needs exactly one server, the slot must be bound to exactly one producer; a slot bound to none (silent) or to several fails the call with `ServiceSlotNotPinned` naming the slot.
 
 In a launcher / stack config:
 
@@ -623,17 +620,9 @@ or, when launching a single node during development:
 peppy node run --bind brain@left-arm-1 .
 ```
 
-### Per-call precedence
-
-When several sibling slots of the same `(name, tag)` exist on a client, the framework applies the same precedence rule used for topics:
-
-1. If pinned slots' bindings name the producer the call resolves to → the call lands on that pinned slot.
-2. Otherwise, if a `from_any` slot exists for the producer's `(name, tag)` and is either explicitly bound to that producer or unbound (wildcard fallback) → the call lands on the `from_any` slot.
-3. Otherwise the call cannot be resolved.
-
 ### Worked example: `openarm01_backbone`
 
-A client that wires two specific depth cameras to dedicated wrist slots and lets a third slot reach any other depth camera:
+A client that wires three depth cameras to three dedicated slots:
 
 ```json5
 // openarm01_backbone/peppy.json5
@@ -645,7 +634,7 @@ A client that wires two specific depth cameras to dedicated wrist slots and lets
       interfaces: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-        { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true },
+        { name: "depth_camera", tag: "v1", link_id: "extra_cam" },
       ],
     },
   },
@@ -666,45 +655,32 @@ A client that wires two specific depth cameras to dedicated wrist slots and lets
       { instance_id: "backbone_inst_1", bindings: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
+        extra_cam: "ceiling_cam",
       }},
     ]},
   ],
 }
 ```
 
-Four contract statements follow from this manifest:
+Three contract statements follow from this manifest:
 
-1. `wrist_left_camera_<action>::fire_goal(...)` reaches `left_cam` (pinned-bound).
-2. `wrist_right_camera_<action>::fire_goal(...)` reaches `right_cam` (pinned-bound).
-3. `extra_cam_<action>::fire_goal(...)` reaches `ceiling_cam` via the unbound `from_any` wildcard; discovery only finds the producer not already claimed by a pinned binding.
-4. If `extra_cam` had been bound to a single producer (e.g. `extra_cam: "ceiling_cam"`), the slot would resolve to that producer's full wire address and skip discovery entirely, exactly like a pinned slot.
+1. `wrist_left_camera_<action>::fire_goal(...)` reaches `left_cam`.
+2. `wrist_right_camera_<action>::fire_goal(...)` reaches `right_cam`.
+3. `extra_cam_<action>::fire_goal(...)` reaches `ceiling_cam`. If the `extra_cam` binding line were removed, that call would fail with `ServiceSlotNotPinned`: a goal cycle has no wildcard fallback.
 
-### Discover-then-pin (`from_any` slots only)
+### Why exactly one producer?
 
-When `fire_goal` is called on a `from_any` slot with no binding to a single producer, the framework runs a **discover-then-pin** sequence before sending the real goal:
-
-1. A lightweight probe is broadcast to every matching producer. The probe is auto-handled by the framework before any user goal handler runs.
-2. The first producer to respond is captured and the wire sender is pinned to its `(core_node, instance_id)`.
-3. The real goal request is delivered only to that pinned producer. All subsequent `cancel_goal`, `get_result`, and feedback calls also target the same producer.
-
-The non-winning producers see only the probe; their goal handler **never runs**. Without this step every matching producer would execute the goal concurrently, which for state-changing actions (motor commands, file writes, payment dispatches) is a real-world hazard.
-
-Pinned slots (and `from_any` slots bound to a single producer) skip discovery entirely; no probe is sent. The binding carries the producer's full `(core_node, instance_id)` wire address, so the generated call addresses exactly one producer and the goal request has the caller's whole `goal_timeout` to itself. Probes for the wildcard calls that do discover are answered by the transport adapter, so a producer busy executing a goal still answers discovery promptly.
-
-The cost is one additional round-trip on wildcard `fire_goal` calls (typically a few milliseconds). If the discovered producer dies between the probe and the real goal, `fire_goal` surfaces `ServiceUnreachable` and the caller can retry; the next attempt re-discovers a different producer if one is available. Discovery is capped at the caller's `goal_timeout` if that is tighter than the framework's default probe timeout, so a fast-fail budget still surfaces unreachable producers quickly.
+Without a single bound producer, a goal request would be broadcast to every matching producer and each one would execute the goal concurrently, which for state-changing actions (motor commands, file writes, payment dispatches) is a real-world hazard. Binding the slot removes that hazard by construction: the binding carries the producer's full `(core_node, instance_id)` wire address, so `fire_goal` addresses exactly one producer with no probe round-trip, and the goal, cancel, result, and feedback channels all stay on that producer for the whole goal cycle. If the bound producer dies mid-cycle, the affected call surfaces `ServiceUnreachable` and the caller can retry once the producer is back.
 
 ### Validator rules
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Pinned-unbound is a hard error.** Every pinned slot in `depends_on` must have a binding whose `KEY` equals the slot's `link_id`.
-2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
-3. **Free-form `KEY`s are allowed for `from_any` slots.** A binding whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot exists for `VALUE`'s `(name, tag)`; multiple such bindings on the same `from_any` slot accumulate.
-4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot for `VALUE`'s `(name, tag)` is a dead key and is rejected.
-5. A pinned binding whose target `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected.
-6. `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
-7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
-8. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, so generated calls address exactly one producer and never match on `instance_id` alone.
+1. **Every `KEY` must name a declared slot.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared slot with no binding is legal at launch (it stays silent), but firing a goal on it fails at call time.
+2. **Every target must satisfy the slot.** A binding whose target `instance_id` deploys a different node than the slot expects (or one that does not conform to the requested interface) is rejected.
+3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
+4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
+5. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, so generated calls address exactly one producer and never match on `instance_id` alone.
 
 ## Concurrent processing
 

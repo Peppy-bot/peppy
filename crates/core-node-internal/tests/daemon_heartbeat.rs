@@ -11,21 +11,19 @@ use common::{CALLER_INSTANCE_ID, core_node_target, start_core_node_with_mock_mes
 use config::node::QoSProfile;
 use core_node_api::TopicId;
 use core_node_api::encoding::ClockTick;
-use peppylib::messaging::{ConsumerFilter, TopicMessenger};
+use peppylib::messaging::TopicMessenger;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_publishes_liveness_heartbeats() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(
+    let mut subscription = TopicMessenger::subscribe_target_scoped(
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        Some(core_node_target(&started.core_node_name)),
-        false,
+        core_node_target(&started.core_node_name),
         TopicId::DaemonHeartbeat.name(),
-        &ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await

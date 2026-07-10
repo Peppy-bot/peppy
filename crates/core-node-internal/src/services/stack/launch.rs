@@ -488,7 +488,7 @@ async fn start_node_instances(
     run_log_paths: &mut Vec<NodeRunLogEntry>,
     resolved_slot_bindings: &std::collections::BTreeMap<
         String,
-        std::collections::BTreeMap<String, config::runtime::SlotBinding>,
+        std::collections::BTreeMap<String, Vec<config::runtime::ProducerRef>>,
     >,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
 ) -> std::result::Result<(), LaunchResult> {

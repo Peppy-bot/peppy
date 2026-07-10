@@ -302,7 +302,7 @@ pub fn build_peer_topic_publisher(
 /// Consume side of a peer topic: a subscription backed by
 /// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
 /// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
-/// on re-pin). The `from_any` reservation machinery is never involved.
+/// on re-pin). The binding-slot consumer filters are never involved.
 pub struct PeerTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
@@ -469,7 +469,6 @@ pub fn build_consumed_topic_subscription(
 
     let from_target_expr = consumed_from_target_expression(dependency);
     let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
-    let is_from_any_lit = is_from_any_literal(dependency);
 
     let subscription_tokens = build_subscription_struct(
         quote! {
@@ -510,7 +509,6 @@ pub fn build_consumed_topic_subscription(
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #from_target_expr,
-                #is_from_any_lit,
                 topic_name,
                 #consumer_filter_expr,
                 qos,
@@ -541,94 +539,42 @@ pub fn consumed_from_target_expression(
 }
 
 /// Returns the `&ConsumerFilter` expression spliced into a generated
-/// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot.
-/// Calls `Processor::consumer_filter(<manifest link_id>)` when the
-/// dependency carries a `link_id` (pinned or `from_any: true`); falls
-/// back to a `&ConsumerFilter::Any` reference for synthetic test
-/// fixtures that don't model a manifest dep. The validator pre-resolves
-/// the consumer's launcher / CLI binding map into per-slot
-/// [`config::runtime::SlotBinding`] entries, and the runtime processor
-/// expands those into [`peppylib::messaging::ConsumerFilter`]s; see the
-/// resolver in `peppylib::messaging::filter`.
+/// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot:
+/// `Processor::consumer_filter(<manifest link_id>)`, the slot's bound
+/// producers. The validator pre-resolves the consumer's launcher / CLI
+/// binding map into per-slot producer lists, and the runtime processor
+/// caches them as [`peppylib::messaging::ConsumerFilter`]s; an unbound
+/// slot yields the silent filter and the subscription receives nothing.
 pub fn consumed_consumer_filter_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    match dependency.wire_link_id() {
-        Some(link_id) => {
-            let literal = Literal::string(link_id);
-            quote!(node_runner.processor().consumer_filter(#literal))
-        }
-        None => quote!(&peppylib::messaging::ConsumerFilter::Any),
-    }
+    let literal = Literal::string(&dependency.link_id);
+    quote!(node_runner.processor().consumer_filter(#literal))
 }
 
-/// Returns the `Option<&ProducerRef>` expression spliced into a generated
-/// [`peppylib::ActionMessenger::send_goal`] call at the single `target`
-/// slot. When `dependency.wire_link_id()` is `Some(link_id)` (i.e., any
-/// real manifest dep, whether pinned or `from_any`), the emitted
-/// expression calls `consumer_filter(link_id).pinned_target()`: a pinned
-/// slot (or a `from_any` slot bound to a single producer) resolves at
-/// runtime to that producer's full `(core_node, instance_id)` and the
-/// call addresses it directly with no discovery; other variants
-/// (multi-pin, wildcards) give `None` and the call site falls back to
-/// wildcard discovery. Synthetic test fixtures with no manifest dep skip
-/// the lookup and emit a typed `None` directly.
-pub fn consumed_target_expression(
+/// Returns a statement-position splice that resolves the slot's single
+/// bound producer into a local `let pinned_producer` for a generated
+/// [`peppylib::ActionMessenger::send_goal`] /
+/// [`peppylib::ServiceMessenger::poll`] call. Service and action calls
+/// address exactly one producer; a slot bound to zero or several
+/// producers fails with [`peppylib::PeppyError::ServiceSlotNotPinned`]
+/// instead of falling back to wildcard discovery.
+pub fn consumed_pinned_producer_statement(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    match dependency.wire_link_id() {
-        Some(link_id) => {
-            let literal = Literal::string(link_id);
-            quote!(node_runner.processor().consumer_filter(#literal).pinned_target())
-        }
-        None => quote!(Option::<&peppylib::messaging::ProducerRef>::None),
-    }
-}
-
-/// Returns the `peppylib::messaging::ServiceTarget` expression spliced into
-/// a generated [`peppylib::ServiceMessenger::poll`] call at the `target`
-/// slot. Same producer-resolution rules as [`consumed_target_expression`],
-/// mapped onto the service target enum: a pinned slot (or a `from_any` slot
-/// bound to a single producer) resolves to `ServiceTarget::Producer` and
-/// the call addresses it directly with no discovery; other variants
-/// (multi-pin, wildcards) give `ServiceTarget::Any` and the call site falls
-/// back to wildcard discovery. Synthetic test fixtures with no manifest dep
-/// skip the lookup and emit `ServiceTarget::Any` directly.
-pub fn consumed_service_target_expression(
-    dependency: &crate::generator::types::DependencyContext,
-) -> TokenStream {
-    match dependency.wire_link_id() {
-        Some(link_id) => {
-            let literal = Literal::string(link_id);
-            quote! {
-                node_runner
+    let literal = Literal::string(&dependency.link_id);
+    quote! {
+        let pinned_producer = node_runner
+            .processor()
+            .pinned_producer_for(#literal)
+            .ok_or_else(|| crate::Error::ServiceSlotNotPinned {
+                link_id: #literal.to_string(),
+                bound: node_runner
                     .processor()
                     .consumer_filter(#literal)
-                    .pinned_target()
-                    .map_or(
-                        peppylib::messaging::ServiceTarget::Any,
-                        peppylib::messaging::ServiceTarget::Producer,
-                    )
-            }
-        }
-        None => quote!(peppylib::messaging::ServiceTarget::Any),
-    }
-}
-
-/// `bool` literal for the `is_from_any` argument of
-/// [`peppylib::TopicMessenger::subscribe`]. `true` for `from_any: true`
-/// deps, `false` for pinned deps (and the test-fixture wildcard
-/// variant, which has no manifest dep and so should not reserve a
-/// `from_any` slot).
-pub fn is_from_any_literal(dependency: &crate::generator::types::DependencyContext) -> TokenStream {
-    let is_from_any = matches!(
-        dependency.link_id,
-        crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
-    );
-    if is_from_any {
-        quote!(true)
-    } else {
-        quote!(false)
+                    .producers()
+                    .len(),
+            })?;
     }
 }
 

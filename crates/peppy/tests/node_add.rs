@@ -1149,16 +1149,15 @@ fn write_consumer_with_pinned_depends_on(
     consumer_dir
 }
 
-/// `peppy node add . -sbr` (sync + build + run) on a consumer whose
-/// manifest declares a pinned `depends_on` entry MUST fail validation when
-/// no `--bind` is supplied. Before the fix the chained-run path called
-/// `run_instance_async` with an empty slot map, so the daemon would spawn
-/// the consumer despite the missing binding, exactly the bug from the
-/// reproducer at the top of this file. The fix routes both `node run` and
-/// `node add -r` through `validate_and_run_instance`, so the same
-/// unbound-slot error fires for both.
+/// `peppy node add . -sbr` (sync + build + run) runs the chained spawn
+/// through the same binding validation as `node run`: a `--bind` whose
+/// KEY names no declared slot MUST fail before any spawn side-effect.
+/// Before the fix the chained-run path called `run_instance_async`
+/// directly, bypassing validation entirely; the fix routes both `node
+/// run` and `node add -r` through `validate_and_run_instance`, so the
+/// same error fires for both.
 #[test]
-fn node_add_with_run_rejects_unbound_pinned_dependency() {
+fn node_add_with_run_rejects_unknown_binding_slot() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
@@ -1217,8 +1216,8 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     .execute(&node_ctx)
     .expect("producer node add should succeed");
 
-    // Consumer with a single pinned link_id. With no `--bind`, launching
-    // this consumer must be rejected.
+    // Consumer with a single declared link_id. A `--bind` on a key that
+    // names no declared slot must be rejected by the chained run.
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
         consumer_name,
@@ -1237,7 +1236,8 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
             run: true, // chain run, the path that used to bypass validation
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(), // <-- the bug: this used to silently succeed
+            // The bug: an invalid binding used to silently succeed here.
+            binds: vec![("stale_slot".to_string(), "ghost_producer".to_string())],
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1246,17 +1246,17 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     .execute(&node_ctx);
 
     let err = result.expect_err(
-        "node add -r on a consumer with unbound pinned deps must fail with the same error \
+        "node add -r with a binding on an undeclared slot must fail with the same error \
          as `node run`; chaining must NOT bypass binding validation",
     );
     let msg = err.to_string();
     assert!(
-        msg.contains("is unbound"),
-        "error should report the slot as unbound. Got: {msg}"
+        msg.contains("names no declared slot"),
+        "error should report the unknown slot key. Got: {msg}"
     );
     assert!(
-        msg.contains("wrist_left"),
-        "error should name the missing link_id. Got: {msg}"
+        msg.contains("stale_slot"),
+        "error should name the offending binding key. Got: {msg}"
     );
 
     // The instance must NEVER have been spawned: the validator runs
@@ -1265,12 +1265,12 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     let logs = log_capture.logs();
     assert!(
         !logs.contains("Started node instance"),
-        "node add -r must NOT spawn an instance when a pinned dep is unbound. Logs:\n{logs}"
+        "node add -r must NOT spawn an instance when a binding is invalid. Logs:\n{logs}"
     );
 }
 
 /// Positive control: `peppy node add -r --bind KEY@VALUE` (where KEY is a
-/// declared pinned link_id and VALUE is the producer's instance_id) is the
+/// declared link_id and VALUE is the producer's instance_id) is the
 /// supported path. The same producer/consumer scaffolding as the
 /// rejection test above, but with the binding supplied; the consumer
 /// must launch cleanly.

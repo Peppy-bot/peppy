@@ -1,7 +1,7 @@
 use config::AnyType;
 use config::node::ConformsToItem;
 use config::runtime::PairingSlotBinding;
-use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
+use config::runtime::{Name, NodeInstanceConfig, ProducerRef, RuntimeConfig};
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, PairTarget, StackListRequest,
@@ -286,12 +286,25 @@ fn entries_to_unique_map<V: Clone>(
     Ok(map)
 }
 
-/// `--bind KEY@VALUE` entries as a map. Each `KEY` must be unique per
-/// invocation (rule 6): pinned `KEY`s match a declared link_id, free-form
-/// `KEY`s label a `from_any` binding, and either way two bindings on the
-/// same key would clobber.
-fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
-    entries_to_unique_map(binds, instance_id, "binding", "--bind KEY")
+/// `--bind KEY@VALUE` entries as a map of `KEY` (a declared slot link_id)
+/// to producer targets. Repeating a `KEY` accumulates producers on the
+/// slot (the CLI form of the launcher's array binding); repeating the
+/// exact same `KEY@VALUE` pair is a typo and rejected.
+fn binds_to_map(
+    binds: &[(String, String)],
+    instance_id: &str,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (key, value) in binds {
+        let targets = map.entry(key.clone()).or_default();
+        if targets.contains(value) {
+            return Err(Error::ExecutionFailed(format!(
+                "duplicate binding `{key}@{value}` on instance `{instance_id}` (each --bind KEY@VALUE must be distinct)"
+            )));
+        }
+        targets.push(value.clone());
+    }
+    Ok(map)
 }
 
 /// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
@@ -307,7 +320,7 @@ fn pairs_to_map(
 /// Pre-flight bind validation. Snapshots the running stack via
 /// `stack_list` + `node_info`, feeds it together with the consumer
 /// being launched into the launcher's `validate_bindings`, and returns
-/// the resolved per-slot `SlotBinding` map for the consumer instance.
+/// the resolved per-slot producer map for the consumer instance.
 /// Every rule violation is a hard error; there is no warning path.
 ///
 /// The snapshot is split into two flavors of [`BindingValidationItem`]:
@@ -316,14 +329,14 @@ fn pairs_to_map(
 ///   carry real `instances` (so stack-wide `instance_id` uniqueness can
 ///   fire) and real `conforms_to` (so the new instance can still match
 ///   them as a producer / interface-conformant target), but their
-///   `depends_on` is `None`. Their declared slots were already validated
-///   when each instance was first spawned, so re-running per-instance
-///   rules against them (with the empty `bindings` we synthesize here)
-///   would emit spurious `BindingMissingForPinnedDep` errors for
-///   pins the running invocation actually satisfied.
+///   `depends_on` is `None`. Their declared slots were already resolved
+///   when each instance was first spawned, so re-materializing them here
+///   (with the empty `bindings` we synthesize) would produce meaningless
+///   all-unbound slot maps for instances whose real bindings live in
+///   their own boot configs.
 /// - **One live item**: for the synthesized new instance, carrying the
 ///   target's real `depends_on` + `conforms_to`. This is the only item
-///   whose pinned slots are checked by Rule 1.
+///   whose bindings are validated and materialized.
 ///
 /// Returns `Ok(None)` on transient transport failures so the call site
 /// can swallow them and continue; an unreachable daemon should fail
@@ -335,10 +348,10 @@ async fn validate_binds_against_stack(
     target_name: &str,
     target_tag: &str,
     target_instance_id: &str,
-    binds: &BTreeMap<String, String>,
+    binds: &BTreeMap<String, Vec<String>>,
     pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
-) -> Result<Option<BTreeMap<String, SlotBinding>>> {
+) -> Result<Option<BTreeMap<String, Vec<ProducerRef>>>> {
     let stack_response = poll(
         &StackListRequest::new(false),
         messenger,
@@ -580,7 +593,7 @@ async fn validate_binds_against_stack(
 }
 
 /// Validate the supplied `--bind` pairs against the running stack, resolve
-/// them to per-slot `SlotBinding`s, then spawn the instance. This is the
+/// them to per-slot producer lists, then spawn the instance. This is the
 /// single entry point shared between `peppy node run` and `peppy node add
 /// --run`: both surfaces must accept `--bind` and enforce the same binding
 /// rules, so there is exactly one code path responsible for materializing
@@ -662,7 +675,7 @@ pub async fn run_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    slot_bindings: BTreeMap<String, SlotBinding>,
+    slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
     requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
     timeouts: &TimeoutConfig,
@@ -919,19 +932,30 @@ mod tests {
         );
     }
 
-    /// Duplicate `--bind` and `--pair` keys are hard errors: collecting
-    /// straight into the `BTreeMap` would silently keep the last value.
+    /// Repeated `--bind KEY@…` entries accumulate producers on the slot
+    /// (the CLI form of the launcher's array binding); repeating the exact
+    /// same pair is rejected. `--pair` keys stay strictly unique.
     #[test]
-    fn duplicate_bind_and_pair_keys_are_rejected() {
+    fn repeated_bind_keys_accumulate_and_duplicate_pairs_are_rejected() {
         let entries = vec![
             ("arm".to_string(), "arm_1".to_string()),
             ("arm".to_string(), "arm_2".to_string()),
         ];
+        let map = binds_to_map(&entries, "ctrl_1").expect("repeated keys should accumulate");
+        assert_eq!(
+            map.get("arm").map(Vec::as_slice),
+            Some(["arm_1".to_string(), "arm_2".to_string()].as_slice())
+        );
 
-        let err = binds_to_map(&entries, "ctrl_1").expect_err("duplicate --bind rejected");
+        let exact_duplicate = vec![
+            ("arm".to_string(), "arm_1".to_string()),
+            ("arm".to_string(), "arm_1".to_string()),
+        ];
+        let err =
+            binds_to_map(&exact_duplicate, "ctrl_1").expect_err("exact duplicate pair rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("duplicate binding key `arm`") && msg.contains("--bind"),
+            msg.contains("duplicate binding `arm@arm_1`") && msg.contains("--bind"),
             "unexpected error: {msg}"
         );
 

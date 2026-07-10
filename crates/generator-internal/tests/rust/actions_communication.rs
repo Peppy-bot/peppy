@@ -3,10 +3,10 @@ use crate::helpers::{
     EXPOSED_ACTION_EXAMPLE,
 };
 use crate::helpers::{
-    CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project,
-    copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
-    test_peppy_dirs, wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
+    consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
+    send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -59,7 +59,7 @@ const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
 /// producer node run on one core_node, and a generated consumer whose
 /// manifest slot is pinned (via `NodeInstanceConfig.slot_bindings`) to one
 /// of them fires goals repeatedly. The full chain under test is
-/// runtime-config parse (`SlotBinding::Pinned { producer: ProducerRef }`)
+/// runtime-config parse (`slot_bindings` producer lists of `ProducerRef`s)
 /// → processor filter resolution → generated `fire_goal` target splice →
 /// pinned wire delivery. Every goal must run on the bound instance and the
 /// sibling instance must never execute a goal handler; pre-`ProducerRef`,
@@ -98,8 +98,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
             // The manifest link_id rides into codegen so the generated
             // fire_goal resolves `consumer_filter("brain").pinned_target()`
             // at runtime instead of emitting a wildcard target.
-            &generator::DependencyContext::native("brain", "v1")
-                .with_link_id(generator::WireLinkId::from_link_id("brain", false)),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -119,9 +118,10 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
         NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap());
     consumer_node_instance.slot_bindings.insert(
         "brain".to_string(),
-        config::runtime::SlotBinding::Pinned {
-            producer: config::runtime::ProducerRef::new(TEST_CORE_NODE, LEFT_ARM_INSTANCE_ID),
-        },
+        vec![config::runtime::ProducerRef::new(
+            TEST_CORE_NODE,
+            LEFT_ARM_INSTANCE_ID,
+        )],
     );
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -445,12 +445,15 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -472,6 +475,12 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -774,12 +783,15 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -801,6 +813,12 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -1110,12 +1128,15 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1137,6 +1158,12 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -1492,12 +1519,15 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1519,6 +1549,12 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -1858,12 +1894,15 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1885,6 +1924,12 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -2242,12 +2287,15 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -2269,6 +2317,12 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config

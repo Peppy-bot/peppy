@@ -1,7 +1,7 @@
 //! Python template snapshots for peer (pairing) topics — twins of the Rust
 //! suite: slot-scoped publisher (`link_id=LINK_ID`), the pairing wire
 //! target, the `subscribe_peer` seam, `paired()`/`wait_paired()`, and no
-//! `from_any` involvement.
+//! binding-slot involvement.
 
 use super::*;
 use config::node::EmittedTopic;
@@ -68,7 +68,7 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
 }
 
 #[test]
-fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
+fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
     let topic = parse_topic(JOINT_STATES);
     let mut generator = PythonGenerator::new();
     generator
@@ -93,8 +93,8 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
         assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
     }
     assert!(
-        !code.contains("is_from_any") && !code.contains("TopicMessenger.subscribe("),
-        "peer subscriptions must ride subscribe_peer, not the from_any path:\n{code}"
+        !code.contains("bound_producers_for") && !code.contains("TopicMessenger.subscribe("),
+        "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{code}"
     );
 }
 

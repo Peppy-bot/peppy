@@ -502,7 +502,7 @@ fn consumed_action() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -588,9 +588,9 @@ fn consumed_action() {
         &["pub struct FeedbackMessage", "pub new_position: [i32; 3]"],
     );
 
-    // fire_goal method (constructor). The fixture's `DependencyContext::native`
-    // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
-    // send_goal call splices a typed `None` at its single target slot.
+    // fire_goal method (constructor). The slot's single bound producer is
+    // resolved into `pinned_producer` (erroring when the slot is not
+    // bound to exactly one) and spliced at the single target slot.
     assert_contains_all(
         &rendered,
         &[
@@ -598,8 +598,10 @@ fn consumed_action() {
             "request: GoalRequest",
             "feedback_qos: peppylib::config::QoSProfile",
             "-> crate::Result<Self>",
+            ".pinned_producer_for(\"brain\")",
+            "crate::Error::ServiceSlotNotPinned",
             "peppylib::ActionMessenger::send_goal",
-            "Option::<&peppylib::messaging::ProducerRef>::None,",
+            "Some(&pinned_producer),",
             "node_runner.messenger().clone()",
         ],
     );
@@ -685,14 +687,14 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &move_arm_action,
             &move_arm_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &rotate_action,
             &rotate_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
 
@@ -803,11 +805,10 @@ fn consumed_two_actions_same_node() {
     );
 }
 
-/// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the single `target` argument of the generated `send_goal`:
-/// `consumer_filter(<link_id>).pinned_target()` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)`, so a pinned
-/// slot addresses exactly one producer with no discovery probe.
+/// The generated `send_goal` resolves the slot's single bound producer
+/// via `pinned_producer_for(<link_id>)` into its full
+/// `(core_node, instance_id)`, so the goal addresses exactly one
+/// producer with no discovery probe.
 #[test]
 fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -828,8 +829,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1")
-                .with_link_id(crate::WireLinkId::from_link_id("left_arm", false)),
+            &crate::DependencyContext::native("brain", "v1", "left_arm"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -837,7 +837,10 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
 
     assert_contains_all(
         &rendered,
-        &[".consumer_filter(\"left_arm\")", ".pinned_target()"],
+        &[
+            ".pinned_producer_for(\"left_arm\")",
+            "Some(&pinned_producer),",
+        ],
     );
     assert_rendered!(
         !rendered.contains("Option::<&peppylib::messaging::ProducerRef>::None"),
@@ -865,7 +868,7 @@ fn consumed_action_without_response_payload() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -916,7 +919,7 @@ fn consumed_action_without_feedback() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -992,14 +995,14 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .add_consumed_action(
             &consumed_action1,
             &consumed_action1_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &consumed_action2_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -1079,14 +1082,14 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         .add_consumed_action(
             &consumed_action1,
             &consumed_action1_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &consumed_action2_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -1192,7 +1195,7 @@ fn clippy_consumed_action_empty_goal_request() {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &crate::DependencyContext::native("robot", "v1"),
+            &crate::DependencyContext::native("robot", "v1", "robot"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

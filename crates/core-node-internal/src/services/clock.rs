@@ -332,14 +332,12 @@ pub async fn watch_for_name_collision(
     node_name: &str,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut subscription: Subscription = TopicMessenger::subscribe(
+    let mut subscription: Subscription = TopicMessenger::subscribe_target_scoped(
         &messenger,
         core_node_name,
         instance_id,
-        Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
-        false,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         TopicId::DaemonHeartbeat.name(),
-        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await?;
@@ -394,14 +392,12 @@ pub async fn subscribe_external_clock(
     cache: Arc<AtomicU64>,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<Result<()>>> {
-    let mut subscription: Subscription = TopicMessenger::subscribe(
+    let mut subscription: Subscription = TopicMessenger::subscribe_target_scoped(
         &messenger,
         core_node_name,
         instance_id,
-        Some(SenderTarget::node(node_name, names::CORE_NODE_TAG)?),
-        false,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         TopicId::Clock.name(),
-        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await?;

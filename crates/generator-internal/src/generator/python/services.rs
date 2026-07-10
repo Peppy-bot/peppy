@@ -29,21 +29,29 @@ pub(crate) fn sender_target_python_expr(
 }
 
 /// Returns the Python expression for the consumer's single `target` /
-/// `from_producer` argument at a consumed subscribe / poll / send_goal
-/// call site. Calls `node_runner.pinned_producer_for(<link_id>)` when
-/// the dependency carries a manifest link_id; `None` for synthetic test
-/// fixtures that don't model a manifest dep. Pinned slots (and `from_any`
-/// slots bound to a single producer) resolve to the bound producer's
-/// full `(core_node, instance_id)` tuple and address it directly with no
-/// discovery; other `from_any` shapes resolve to `None` and fall back to
-/// wildcard discover-then-pin at the call site.
-pub(crate) fn consumed_target_python_expr(
+/// Emits the statements that resolve the slot's single bound producer
+/// into a local `pinned_producer` ahead of a consumed poll / send_goal
+/// call. Service and action calls address exactly one producer; a slot
+/// bound to zero or several producers raises instead of falling back to
+/// wildcard discovery.
+pub(crate) fn emit_pinned_producer_lookup(
+    builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
-) -> String {
-    match dependency.wire_link_id() {
-        Some(link_id) => format!("node_runner.pinned_producer_for({link_id:?})"),
-        None => "None".to_string(),
-    }
+) {
+    let link_id = &dependency.link_id;
+    builder.line(&format!(
+        "pinned_producer = node_runner.pinned_producer_for({link_id:?})"
+    ));
+    builder.line("if pinned_producer is None:");
+    builder.indent();
+    builder.line(&format!(
+        "bound = len(node_runner.bound_producers_for({link_id:?}))"
+    ));
+    builder.line(&format!(
+        "raise RuntimeError(f\"slot {link_id} is bound to {{bound}} producers, but service \
+         and action calls require exactly one; bind a single producer to {link_id}\")"
+    ));
+    builder.dedent();
 }
 
 /// Generates Python code for an exposed (handler) service.
@@ -321,6 +329,7 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
+    emit_pinned_producer_lookup(&mut builder, dependency);
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
@@ -331,14 +340,13 @@ pub fn build_consumed_service(
         "NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    let pinned_target_expr = consumed_target_python_expr(dependency);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line(&format!("{pinned_target_expr},"));
+    builder.line("pinned_producer,");
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

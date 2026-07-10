@@ -156,14 +156,12 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
     caller_instance_id: &str,
     tick_timeout: Duration,
 ) {
-    let mut subscription = TopicMessenger::subscribe(
+    let mut subscription = TopicMessenger::subscribe_target_scoped(
         &started.caller_handle,
         caller_core_node,
         caller_instance_id,
-        Some(core_node_target(&started.core_node_name)),
-        false,
+        core_node_target(&started.core_node_name),
         TopicId::Clock.name(),
-        &peppylib::messaging::ConsumerFilter::Any,
         QoSProfile::SensorData,
     )
     .await

@@ -236,7 +236,7 @@ fn consumed_service() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -270,11 +270,11 @@ fn consumed_service() {
     // Request struct
     assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
-    // Poll function signature. The fixture's `DependencyContext::native`
-    // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
-    // poll call splices `peppylib::messaging::ServiceTarget::Any` at the
-    // single target slot and the user-facing `target_instance_id` parameter
-    // is gone. `target_core_node` is never exposed in the generated API.
+    // Poll function signature. The slot's single bound producer is
+    // resolved into `pinned_producer` (erroring when the slot is not
+    // bound to exactly one) and spliced at the single target slot; the
+    // user-facing `target_instance_id` parameter is gone.
+    // `target_core_node` is never exposed in the generated API.
     assert_contains_all(
         &rendered,
         &["pub async fn poll(", "-> crate::Result<Response>"],
@@ -289,14 +289,15 @@ fn consumed_service() {
     );
 
     // Request serialization and messenger integration, including the
-    // wildcard `ServiceTarget::Any` spliced at the poll call's single
-    // target slot.
+    // resolved producer spliced at the poll call's single target slot.
     assert_contains_all(
         &rendered,
         &[
             "root.set_enable(enable);",
+            ".pinned_producer_for(\"uvc_camera\")",
+            "crate::Error::ServiceSlotNotPinned",
             "peppylib::ServiceMessenger::poll(",
-            "peppylib::messaging::ServiceTarget::Any,",
+            "peppylib::messaging::ServiceTarget::Producer(&pinned_producer),",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );
@@ -325,7 +326,7 @@ fn consumed_service_via_interface_origin_targets_interface() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::interface("camera_iface", "v2"),
+            &crate::DependencyContext::interface("camera_iface", "v2", "camera_iface"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -357,6 +358,7 @@ fn consumed_service_via_interface_origin_targets_interface() {
                     iface_name: "camera_iface".to_string(),
                     iface_tag: "v2".to_string(),
                 },
+                "uvc_camera",
             ),
         )
         .unwrap();
@@ -394,7 +396,7 @@ fn consumed_two_services_same_node() {
             &service1,
             &request_format1,
             &response_format1,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -402,7 +404,7 @@ fn consumed_two_services_same_node() {
             &service2,
             &empty_format,
             &response_format2,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -446,7 +448,7 @@ fn consumed_service_without_response_payload() {
             &service,
             &empty_format,
             &empty_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .expect("generator should allow services without response format");
 
@@ -476,7 +478,7 @@ fn consumed_service_rejects_optional_scalar_response_field() {
             &service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap_err();
 
@@ -532,14 +534,14 @@ fn clippy_single_exposed_service_without_request_body() {
         .add_consumed_action(
             &consumed_action1,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &action_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -606,7 +608,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service1,
             &consumed_service_request1,
             &consumed_service_response1,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -614,7 +616,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service2,
             &empty_format,
             &consumed_service_response2,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -697,7 +699,7 @@ fn clippy_consumed_service_empty_request_format() {
             &consumed_service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native("sensor", "v1"),
+            &crate::DependencyContext::native("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -736,7 +738,7 @@ fn clippy_consumed_service_empty_response_format() {
             &consumed_service,
             &request_format,
             &empty_format,
-            &crate::DependencyContext::native("sensor", "v1"),
+            &crate::DependencyContext::native("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

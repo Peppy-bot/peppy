@@ -206,19 +206,26 @@ We need to make sure that at least one instance is started for `hello_receiver:v
 The order in which the nodes are started does not affect the node communication.
 Let's start a `hello_world_param:v1` instance:
 ```sh
-peppy node run hello_world_param:v1 name=planet
+❯ peppy node run hello_world_param:v1 name=planet
+Running node hello_world_param:v1...
+Starting node hello_world_param:v1 with instance_id 'gifted-moser-9365' and 1 argument(s)...
+Calling node_start for hello_world_param:v1 (instance_id=gifted-moser-9365)...
+Log file: /Users/tuatini/.peppy/logs/run/gifted-moser-9365.log
+Started node instance 'gifted-moser-9365' (pid: 76981)
 ```
 
-Since our node requires a `name`, we provide it with that argument on startup.
-Now let's start the `hello_receiver` node:
+Since our node requires a `name`, we provide it with that argument on startup. Note the producer's instance id in the output (`gifted-moser-9365` here): a consumer receives messages only from the producers explicitly bound to its slots, so we need that id to start the receiver.
+Now let's start the `hello_receiver` node, binding its `hello_world_param` slot to the producer instance with `--bind LINK_ID@INSTANCE_ID`:
 ```sh
-❯ peppy node run hello_receiver:v1
+❯ peppy node run hello_receiver:v1 --bind hello_world_param@gifted-moser-9365
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_start for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
 Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
+
+A slot left without a `--bind` is legal but stays silent: the receiver would boot and simply never yield a message.
 
 When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
@@ -242,6 +249,16 @@ Starting node hello_world_param:v1 with instance_id 'admiring-black-0614' and 1 
 Calling node_start for hello_world_param:v1 (instance_id=admiring-black-0614)...
 Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
+```
+
+The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer. To receive from both, restart the receiver with one `--bind` per producer (repeating `--bind` on the same slot accumulates producers on it):
+```sh
+❯ peppy node stop vigorous-buck-8117
+❯ peppy node run hello_receiver:v1 \
+    --bind hello_world_param@gifted-moser-9365 \
+    --bind hello_world_param@admiring-black-0614
+Running node hello_receiver:v1...
+Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 ```
 And we check the logs again:
 ```sh
@@ -276,7 +293,11 @@ Instance bindings
 ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
 │ core-node-sweet-germain-4388:v0.10.0 │ core-node-sweet-germain-4388 │ running │ healthy │ (none)                    │
 ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
-│ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param → (any) │
+│ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param →       │
+│                                      │                              │         │         │ gifted-moser-9365@core-no │
+│                                      │                              │         │         │ de-sweet-germain-4388,    │
+│                                      │                              │         │         │ admiring-black-0614@core- │
+│                                      │                              │         │         │ node-sweet-germain-4388   │
 ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
 │ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ (none)                    │
 │                                      │ admiring-black-0614          │ running │ healthy │ (none)                    │
@@ -286,7 +307,7 @@ Dependencies
   hello_receiver:v1 ➔ hello_world_param:v1
 ```
 
-The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to `(any)`. Because `hello_receiver` declares that dependency with `from_any: true` and we never passed a `--bind`, the slot stays unbound and accepts every `hello_world_param` instance, which is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above. To restrict it to one producer, start the consumer with `--bind hello_world_param@<instance_id>`; the cell would then read `hello_world_param → <instance_id>@<core_node>` (a resolved binding shows the producer as `instance_id@core_node`, its full wire address).
+The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to the two producers we bound, each rendered as `instance_id@core_node` (its full wire address). A slot only ever receives from the producers bound to it: that is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above, and why an unbound slot renders `(unbound)` and stays silent.
 
 ---
 We'll explore [services](/advanced_guides/services) and [actions](/advanced_guides/actions) in the advanced guides, although they fundamentally work the same way.

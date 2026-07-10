@@ -41,16 +41,16 @@ The shape says nothing about which node sits on the other end. A consumer couple
 
 | | Declared under | Who can fill the slot | Instances per slot |
 |---|---|---|---|
-| Direct node dependency | `depends_on.nodes` | Instances of that exact producer node | One (pinned binding) or all matching instances (`from_any: true`) |
-| [Interface dependency](/advanced_guides/interface_conformance/) | `depends_on.interfaces` | Any node whose `conforms_to` names the contract | One (pinned binding) or any number of conforming producers (`from_any: true`) |
+| Direct node dependency | `depends_on.nodes` | Instances of that exact producer node | The instances the launcher binds to the slot (one or several) |
+| [Interface dependency](/advanced_guides/interface_conformance/) | `depends_on.interfaces` | Any node whose `conforms_to` names the contract | The conforming instances the launcher binds to the slot (one or several) |
 | [Pairing slot](/advanced_guides/pairing/) | `depends_on.pairings` | One instance playing the complementary role of the pairing | Exactly one peer at a time, exclusive, both directions |
 
 :::note
-For topics, a `from_any` slot receives from every matching producer. For services and actions, every call is still answered by exactly one producer: an unbound `from_any` call runs a discover-then-pin probe and delivers the request to a single responder, so a state-changing call never executes on several producers at once. See [Why discover-then-pin?](/advanced_guides/services/#why-discover-then-pin).
+A topic slot receives from every producer bound to it and from no one else; a slot left unbound stays silent. For services and actions, every call is answered by exactly one producer: the slot must be bound to a single producer, and the call addresses it directly. See [Why exactly one producer?](/advanced_guides/services/#why-exactly-one-producer).
 :::
 
 - Use a **direct node dependency** when exactly one implementation exists and substitution is not a goal. It is the simplest wiring and the default.
-- Use an **interface** when several nodes implement the same contract (a hardware driver and its sim twin, several camera vendors) or when any number of producers should feed one slot (telemetry fan-in, monitoring). The consumer names the contract; the launcher picks the producers. See [Pairing vs. interfaces](/advanced_guides/pairing/#pairing-vs-interfaces-from_any) for the boundary on the other side.
+- Use an **interface** when several nodes implement the same contract (a hardware driver and its sim twin, several camera vendors) or when several producers should feed one slot (telemetry fan-in, monitoring, via the launcher's array binding). The consumer names the contract; the launcher picks the producers. See [Pairing vs. interfaces](/advanced_guides/pairing/#pairing-vs-interfaces) for the boundary on the other side.
 - Use a **pairing** when two specific instances belong together and both directions form one conversation, like a controller and *its* arm. The pair is established explicitly at start, is exclusive while it lasts, and dissolves when either side dies.
 
 The contract's home follows the same ladder: a direct dependency's message formats live on the producer's own manifest, an interface's live in a standalone `interface/v1` document both sides cite, and a pairing's live in a standalone `pairing/v1` document naming the two roles.
@@ -71,7 +71,7 @@ The mechanisms compose freely on the same nodes. A complete robot arm setup migh
 - `robot_arm` and `arm_controller` exchange `joint_commands` and `joint_states` through a **pairing**: continuous, both directions, exactly these two instances, and the arm's slot goes silent if its controller dies.
 - `robot_arm` exposes a `calibrate` **action**: run on demand, streams progress, ends with a result, can be cancelled.
 - `robot_arm` exposes an `enable_motors` **service**: a quick toggle with an immediate answer.
-- `robot_arm` also conforms to a `joint_state_source` **interface**; dashboards consume its state **topic** through a `from_any` slot, so every arm on the floor feeds the same monitor without disturbing any pairing.
+- `robot_arm` also conforms to a `joint_state_source` **interface**; dashboards consume its state **topic** through an interface slot the launcher binds to every arm on the floor, feeding one monitor without disturbing any pairing.
 - The calibration result is written to the **datastore**, so a restarted controller reads it back instead of re-running the calibration.
 
 One relationship, one mechanism: the pairing carries the control loop, the action carries the bounded job, the interface carries the fan-in, and the datastore carries the state that outlives any single exchange.

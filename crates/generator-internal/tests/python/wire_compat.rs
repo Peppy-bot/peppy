@@ -80,7 +80,7 @@ fn build_runtime_config(
     node_name: &str,
     runtime_config_path: &Path,
 ) {
-    let cfg = RuntimeConfig::new(
+    let mut cfg = RuntimeConfig::new(
         router_host,
         router_port,
         NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
@@ -89,6 +89,18 @@ fn build_runtime_config(
         TEST_CORE_NODE,
     )
     .unwrap();
+    // Consumers declare their dep at link_id "producer"; bind it to the
+    // producer instance so the generated call sites resolve their pinned
+    // target (producers ignore the extra entry: their manifests declare
+    // no such slot and the runtime only reads bindings for declared
+    // slots).
+    cfg.node_instance.slot_bindings.insert(
+        "producer".to_string(),
+        vec![config::runtime::ProducerRef::new(
+            TEST_CORE_NODE,
+            PRODUCER_INSTANCE_ID,
+        )],
+    );
     cfg.save_json5_launch_config(runtime_config_path).unwrap();
 }
 
@@ -286,7 +298,11 @@ if __name__ == "__main__":
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: consumed_action_messages,
-        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
+        dependency: generator::DependencyContext::native(
+            PRODUCER_NODE_NAME,
+            "v1",
+            PRODUCER_NODE_NAME,
+        ),
     });
 
     generate_peppygen_lib(
@@ -656,7 +672,11 @@ if __name__ == "__main__":
             .response_message_format
             .clone()
             .unwrap_or_default(),
-        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
+        dependency: generator::DependencyContext::native(
+            PRODUCER_NODE_NAME,
+            "v1",
+            PRODUCER_NODE_NAME,
+        ),
     });
 
     generate_peppygen_lib(
@@ -1005,7 +1025,11 @@ if __name__ == "__main__":
             .message_format
             .clone()
             .expect("emitted topic has a message format"),
-        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
+        dependency: generator::DependencyContext::native(
+            PRODUCER_NODE_NAME,
+            "v1",
+            PRODUCER_NODE_NAME,
+        ),
     });
 
     generate_peppygen_lib(

@@ -957,9 +957,10 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&config::runtime::SlotBinding::Pinned {
-            producer: config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
-        }),
+        Some(&vec![config::runtime::ProducerRef::new(
+            &core_node_name,
+            producer_instance_id
+        )]),
         "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
          consumer's runtime config as a Pinned slot binding stamped with the daemon's core_node",
     );
@@ -1105,7 +1106,7 @@ fn write_interface_v1_doc(path: &Path, name: &str, tag: &str) {
 }
 
 /// Like [`write_interface_v1_doc`] but parameterized on the single topic
-/// name and its `message_format` body. The bidirectional `from_any` test
+/// name and its `message_format` body. The bidirectional bindings test
 /// uses this to materialize two distinct per-direction contracts
 /// (`joint_states` and `joint_commands`) rather than the default
 /// `video_stream` shape.
@@ -1360,9 +1361,10 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_interface_doc() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&config::runtime::SlotBinding::Pinned {
-            producer: config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
-        }),
+        Some(&vec![config::runtime::ProducerRef::new(
+            &core_node_name,
+            producer_instance_id
+        )]),
         "interface dep `{link_id}` should resolve to the conforming producer's instance \
          stamped with the daemon's core_node",
     );
@@ -1612,18 +1614,18 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
     );
 }
 
-/// Bidirectional `from_any` is the optional, wildcard form of interface
-/// communication: two nodes each emit one interface (`conforms_to`) and
-/// consume the other through a `from_any: true` interface dep, launched
-/// with NO `--bind` on either side. Because neither slot pins a producer,
-/// the launcher must materialize each consumed slot as
-/// `SlotBinding::FromAnyUnbound` without raising
-/// `BindingInterfaceNotConformed`, and the stack must come up regardless
-/// of deployment order: no node depends on the other being present. This
-/// is the end-to-end counterpart to the unit-level binding validator tests
-/// and the wire-level flow test in `peppylib/tests/topics.rs`.
+/// Bidirectional interface communication under explicit bindings: two
+/// nodes each emit one interface (`conforms_to`) and consume the other
+/// through an interface dep. The controller's slot is bound to the arm in
+/// the launcher (conformance-matched, not node-identity-matched); the
+/// arm's slot is deliberately left unbound. The launcher must materialize
+/// the bound slot with the producer's full address and the unbound slot
+/// as an empty producer list (a silent slot, not an error), and the stack
+/// must come up regardless of deployment order. This is the end-to-end
+/// counterpart to the unit-level binding validator tests and the
+/// wire-level flow test in `peppylib/tests/topics.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stack_launch_bidirectional_from_any_needs_no_binds() {
+async fn stack_launch_binds_interface_slot_and_leaves_unbound_slot_silent() {
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1685,7 +1687,7 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
     fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
     // arm_controller: emits joint_commands (conforms_to joint_command_source),
-    // consumes joint_states from any conforming producer (from_any, unbound).
+    // consumes joint_states through its `arm` slot (bound in the launcher).
     let controller_run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
@@ -1700,8 +1702,7 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
             interfaces: [{{
                 name: "{state_interface}",
                 tag: "{interface_tag}",
-                link_id: "{controller_link_id}",
-                from_any: true
+                link_id: "{controller_link_id}"
             }}]
         }}"#
     );
@@ -1721,7 +1722,8 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
     );
 
     // robot_arm: emits joint_states (conforms_to joint_state_source),
-    // consumes joint_commands from any conforming producer (from_any, unbound).
+    // consumes joint_commands through its `controller` slot, deliberately
+    // left unbound here.
     let arm_run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
@@ -1736,8 +1738,7 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
             interfaces: [{{
                 name: "{command_interface}",
                 tag: "{interface_tag}",
-                link_id: "{arm_link_id}",
-                from_any: true
+                link_id: "{arm_link_id}"
             }}]
         }}"#
     );
@@ -1820,7 +1821,7 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
     .await
     .expect("arm shutdown service should start");
 
-    // Launch BOTH deployments with NO `bindings` on either instance.
+    // Bind the controller's slot to the arm; leave the arm's slot unbound.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
@@ -1828,7 +1829,10 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
             deployments: [
                 {{
                     source: {{ local: "{controller_path}" }},
-                    instances: [{{ instance_id: "{controller_instance_id}" }}]
+                    instances: [{{
+                        instance_id: "{controller_instance_id}",
+                        bindings: {{ {controller_link_id}: "{arm_instance_id}" }}
+                    }}]
                 }},
                 {{
                     source: {{ local: "{arm_path}" }},
@@ -1851,7 +1855,7 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
         },
     }
     .execute(&ctx)
-    .expect("launch should succeed with no binds on either bidirectional node");
+    .expect("launch should succeed with one bound and one unbound interface slot");
 
     // Both `sh` wrappers snapshot their runtime config before sleeping.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1896,9 +1900,12 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
             .node_instance
             .slot_bindings
             .get(controller_link_id),
-        Some(&config::runtime::SlotBinding::FromAnyUnbound),
-        "arm_controller's `{controller_link_id}` interface slot should materialize as \
-         FromAnyUnbound when launched with no --bind",
+        Some(&vec![config::runtime::ProducerRef::new(
+            &core_node_name,
+            arm_instance_id,
+        )]),
+        "arm_controller's `{controller_link_id}` interface slot should materialize with \
+         the bound producer's full wire address",
     );
 
     let arm_config = arm_config.unwrap_or_else(|| {
@@ -1909,9 +1916,9 @@ async fn stack_launch_bidirectional_from_any_needs_no_binds() {
     });
     assert_eq!(
         arm_config.node_instance.slot_bindings.get(arm_link_id),
-        Some(&config::runtime::SlotBinding::FromAnyUnbound),
-        "robot_arm's `{arm_link_id}` interface slot should materialize as \
-         FromAnyUnbound when launched with no --bind",
+        Some(&Vec::new()),
+        "robot_arm's `{arm_link_id}` interface slot should materialize as an empty \
+         producer list (a silent slot) when launched with no binding",
     );
 }
 

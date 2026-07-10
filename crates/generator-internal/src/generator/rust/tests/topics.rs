@@ -378,8 +378,7 @@ fn consumed_topic_with_link_id_splices_runtime_consumer_filter() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1")
-                .with_link_id(crate::WireLinkId::from_link_id("cam_left", false)),
+            &crate::DependencyContext::native("uvc_camera", "v1", "cam_left"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -404,7 +403,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -461,15 +460,14 @@ fn consumed_topic() {
         &["fn deseralize_payload(", "capnp::serialize::read_message"],
     );
 
-    // Topic metadata. The fixture's `DependencyContext::native` defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the subscribe call
-    // splices a wildcard `&ConsumerFilter::Any` at the consumer-filter slot.
+    // Topic metadata: the subscribe call resolves the slot's bound
+    // producers from the runtime binding map.
     assert_contains_all(
         &rendered,
         &[
             "let node_name = \"uvc_camera\";",
             "peppylib::TopicMessenger::subscribe(",
-            "&peppylib::messaging::ConsumerFilter::Any,",
+            ".consumer_filter(\"uvc_camera\")",
         ],
     );
 
@@ -517,7 +515,7 @@ fn consumed_topic_escapes_rust_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("keyword_source", "v1"),
+            &crate::DependencyContext::native("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -550,14 +548,14 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &sound_topic,
             sound_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -621,14 +619,14 @@ fn clippy_single_emitted_topic_empty_format() {
         .add_consumed_action(
             &consumed_action1,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &action_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -677,14 +675,14 @@ fn compile_lib_with_emitted_and_consumed_topics() {
         .add_consumed_topic(
             &consumed_topic1,
             subscribed_format1,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &consumed_topic2,
             subscribed_format2,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -781,7 +779,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -789,14 +787,14 @@ fn no_user_facing_producer_identity_params() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &action,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
@@ -814,12 +812,9 @@ fn no_user_facing_producer_identity_params() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // The fixture's `DependencyContext::native` defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the consumed
-    // service/action call sites splice a typed
-    // `Option::<&peppylib::messaging::ProducerRef>::None` at the single
-    // target slot and the user-facing `target_instance_id` parameter is
-    // gone. `target_core_node` is never exposed in the generated API.
+    // Consumed service/action call sites resolve the slot's single bound
+    // producer at runtime; the user-facing `target_instance_id` parameter
+    // is gone. `target_core_node` is never exposed in the generated API.
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"

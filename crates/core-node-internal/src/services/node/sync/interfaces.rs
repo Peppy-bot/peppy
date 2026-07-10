@@ -64,9 +64,9 @@ pub fn collect_consumed_interfaces(
     let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
     // Memoized parsed interface contracts for `depends_on.interfaces`
     // entries, keyed by `link_id` so two entries with the same
-    // `(name, tag)` but different sha256 pin or `from_any` flag cache and
-    // resolve separately. `resolve_interface_doc` handles SHA-pin matching
-    // and on-disk drift detection per load.
+    // `(name, tag)` but different sha256 pin cache and resolve
+    // separately. `resolve_interface_doc` handles SHA-pin matching and
+    // on-disk drift detection per load.
     let mut iface_dep_contracts: HashMap<String, daemon_config::interface::PeppyInterface> =
         HashMap::new();
 
@@ -246,13 +246,7 @@ fn resolve_consumed_offering<T>(
             let (extracted, origin) = extract_from_node(offerings, lookup_name)?;
             Some((
                 extracted,
-                build_dependency_context_for_node(
-                    &entry.name,
-                    &entry.tag,
-                    origin,
-                    link_id,
-                    entry.from_any,
-                ),
+                build_dependency_context_for_node(&entry.name, &entry.tag, origin, link_id),
             ))
         }
         DependencyKind::Interface => {
@@ -260,12 +254,7 @@ fn resolve_consumed_offering<T>(
             let extracted = extract_from_interface(parsed, lookup_name)?;
             Some((
                 extracted,
-                build_dependency_context_for_interface(
-                    &entry.name,
-                    &entry.tag,
-                    link_id,
-                    entry.from_any,
-                ),
+                build_dependency_context_for_interface(&entry.name, &entry.tag, link_id),
             ))
         }
     }
