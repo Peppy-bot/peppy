@@ -755,7 +755,9 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.caller_instance_id,
             test_node_target(to_node_name),
             to_action_name,
-            target.as_ref(),
+            target
+                .as_ref()
+                .map_or(ServiceTarget::Any, ServiceTarget::Producer),
         )
         .await
         .unwrap_or_else(|err| {

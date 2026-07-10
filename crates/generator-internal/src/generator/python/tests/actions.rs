@@ -440,10 +440,12 @@ fn expose_two_actions() {
 }
 
 /// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the single `target` argument of the generated `send_goal`:
-/// `node_runner.pinned_producer_for(<link_id>)` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)` tuple, so a
-/// pinned slot addresses exactly one producer with no discovery probe.
+/// lookup as the `filter` argument of the generated `send_goal`:
+/// `node_runner.consumer_filter(<link_id>)` resolves at runtime to the
+/// slot's daemon-resolved `ConsumerFilter`, so a pinned slot addresses
+/// exactly one producer with no discovery probe, a multi-bound slot
+/// discovers within its bound set only, and an unbound slot fails
+/// before any wire work.
 #[test]
 fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -471,10 +473,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(
-        &rendered,
-        &["node_runner.pinned_producer_for(\"left_arm\"),"],
-    );
+    assert_contains_all(&rendered, &["node_runner.consumer_filter(\"left_arm\"),"]);
 }
 
 #[test]
@@ -608,11 +607,11 @@ fn consumed_action() {
     // fire_goal @classmethod with typed signature, serialization, and
     // ActionHandle construction. The fixture defaults to
     // `WireLinkId::wildcard()` (no manifest link_id), so the send_goal
-    // call splices `None` at the single target slot and the user-facing
+    // call splices `None` at the filter slot and the user-facing
     // `target_instance_id` parameter is gone. `target_core_node` is never
-    // exposed in the generated API, and the renamed `pinned_target_for`
+    // exposed in the generated API, and the deleted `pinned_producer_for`
     // accessor must never be emitted (the runtime helper is
-    // `pinned_producer_for`).
+    // `consumer_filter`).
     assert_contains_all(
         &rendered,
         &[
@@ -644,8 +643,8 @@ fn consumed_action() {
         "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
     assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; got:\n{rendered}"
+        !rendered.contains("pinned_producer_for"),
+        "pinned_producer_for is deleted and must never be emitted; the runtime helper is consumer_filter; got:\n{rendered}"
     );
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.

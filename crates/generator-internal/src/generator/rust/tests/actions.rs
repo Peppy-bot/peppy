@@ -590,7 +590,8 @@ fn consumed_action() {
 
     // fire_goal method (constructor). The fixture's `DependencyContext::native`
     // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
-    // send_goal call splices a typed `None` at its single target slot.
+    // send_goal call splices the wildcard `ServiceTarget::Any` at its
+    // target slot.
     assert_contains_all(
         &rendered,
         &[
@@ -599,7 +600,7 @@ fn consumed_action() {
             "feedback_qos: peppylib::config::QoSProfile",
             "-> crate::Result<Self>",
             "peppylib::ActionMessenger::send_goal",
-            "Option::<&peppylib::messaging::ProducerRef>::None,",
+            "peppylib::messaging::ServiceTarget::Any,",
             "node_runner.messenger().clone()",
         ],
     );
@@ -804,10 +805,11 @@ fn consumed_two_actions_same_node() {
 }
 
 /// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the single `target` argument of the generated `send_goal`:
-/// `consumer_filter(<link_id>).pinned_target()` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)`, so a pinned
-/// slot addresses exactly one producer with no discovery probe.
+/// lookup as the `target` argument of the generated `send_goal`:
+/// `consumer_filter(<link_id>).call_target()` resolves at runtime to the
+/// slot's producer scope — a pinned slot addresses exactly one producer
+/// with no discovery probe, a multi-bound slot discovers within the
+/// bound set only, and an unbound slot fails before any wire work.
 #[test]
 fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -837,10 +839,10 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
 
     assert_contains_all(
         &rendered,
-        &[".consumer_filter(\"left_arm\")", ".pinned_target()"],
+        &[".consumer_filter(\"left_arm\")", ".call_target()"],
     );
     assert_rendered!(
-        !rendered.contains("Option::<&peppylib::messaging::ProducerRef>::None"),
+        !rendered.contains("ServiceTarget::Any"),
         rendered,
         "a linked dep must resolve its target from the bindings map, not emit a wildcard",
     );

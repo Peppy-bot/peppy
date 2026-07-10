@@ -17,6 +17,7 @@ use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
 use peppylib::ActionMessenger;
+use peppylib::messaging::ServiceTarget;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;

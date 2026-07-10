@@ -14,7 +14,7 @@ use core_node_api::encoding::{
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use gix_url::Url as GitUrl;
 use peppylib::ActionMessenger;
-use peppylib::messaging::{ActionGoalHandle, MessengerHandle, ResultStatus};
+use peppylib::messaging::{ActionGoalHandle, MessengerHandle, ResultStatus, ServiceTarget};
 use peppylib::services::health::listen_for_node_health;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -150,7 +150,7 @@ async fn send_node_run_goal(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         ActionId::NodeRun.name(),
-        None,
+        ServiceTarget::Any,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,
@@ -451,7 +451,7 @@ async fn send_node_add_and_wait_internal<'a>(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         ActionId::NodeAdd.name(),
-        None,
+        ServiceTarget::Any,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,
@@ -595,7 +595,7 @@ async fn send_node_build_and_wait_internal(
         CALLER_INSTANCE_ID,
         core_node_target(core_node_name),
         ActionId::NodeBuild.name(),
-        None,
+        ServiceTarget::Any,
         goal_payload,
         QoSProfile::default(),
         goal_timeout,

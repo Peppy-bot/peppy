@@ -213,10 +213,13 @@ pub enum NodeCommands {
         /// Only meaningful with `--run`; gated with `requires = "run"`.
         #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
-        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// Bind a `link_id` from this consumer's `depends_on` to a
         /// producer `instance_id`: `KEY@VALUE`. Repeatable
         /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`). Only valid alongside `--run`: without a
+        /// (`--bind a@p1,b@p2`); repeating the same KEY accumulates
+        /// producers onto that slot (`from_any` slots take any number,
+        /// pinned slots exactly one). An unbound `from_any` slot is valid
+        /// and stays silent. Only valid alongside `--run`: without a
         /// chained run there is no instance to apply the bindings to, so
         /// `requires = "run"` rejects the combination at parse time.
         /// Validation is shared with `peppy node run`; see

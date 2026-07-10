@@ -437,11 +437,12 @@ fn emit_topic_with_dynamic_object_array() {
 }
 
 /// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the `from_producer` argument of the generated subscribe:
-/// `node_runner.pinned_producer_for(<link_id>)` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)` tuple, so a
-/// pinned topic slot sets both wire slots and can never receive from a
-/// same-instance_id producer on another core node.
+/// lookup as the `filter` argument of the generated subscribe:
+/// `node_runner.consumer_filter(<link_id>)` resolves at runtime to the
+/// slot's daemon-resolved `ConsumerFilter`, so a pinned topic slot sets
+/// both wire slots (and can never receive from a same-instance_id
+/// producer on another core node), a multi-bound slot subscribes to its
+/// bound set only, and an unbound slot stays silent.
 #[test]
 fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -459,10 +460,7 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(
-        &rendered,
-        &["node_runner.pinned_producer_for(\"cam_left\"),"],
-    );
+    assert_contains_all(&rendered, &["node_runner.consumer_filter(\"cam_left\"),"]);
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -824,11 +822,11 @@ fn no_user_facing_producer_identity_params() {
 
     // The fixture's `DependencyContext::native` defaults to
     // `WireLinkId::wildcard()` (no manifest link_id), so the consumed call
-    // sites splice `None` at the single target slot and the user-facing
+    // sites splice `None` at the filter slot and the user-facing
     // `target_instance_id` parameter is gone. `target_core_node` is never
-    // exposed in the generated API, and the renamed `pinned_target_for`
+    // exposed in the generated API, and the deleted `pinned_producer_for`
     // accessor must never be emitted (the runtime helper is
-    // `pinned_producer_for`).
+    // `consumer_filter`).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -838,7 +836,7 @@ fn no_user_facing_producer_identity_params() {
         "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
     assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; rendered:\n{rendered}"
+        !rendered.contains("pinned_producer_for"),
+        "pinned_producer_for is deleted and must never be emitted; the runtime helper is consumer_filter; rendered:\n{rendered}"
     );
 }

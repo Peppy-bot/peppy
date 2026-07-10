@@ -161,22 +161,19 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
-/// Payload for [`ParsingError::BindingDeadKey`]. Boxed for the same
-/// `result_large_err` reason as the other binding variants; the six
-/// `String` fields push the enum past the lint threshold otherwise.
+/// Payload for [`ParsingError::BindingDeadKey`]. Binding keys are the
+/// consumer's declared `depends_on` link_ids — nothing else; a key that
+/// matches no declared slot is dead regardless of what it targets.
+/// Boxed for the same `result_large_err` reason as the other binding
+/// variants.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "binding `{binding}` on instance `{owner_instance_id}` matches no \
-     declared slot, and no `from_any` slot accepts target \
-     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`); \
-     declared link_ids: [{declared_link_ids}]"
+    "binding key `{binding}` on instance `{owner_instance_id}` is not a \
+     declared link_id; declared link_ids: [{declared_link_ids}]"
 )]
 pub struct BindingDeadKey {
     pub owner_instance_id: String,
     pub binding: String,
-    pub target_instance_id: String,
-    pub producer_name: String,
-    pub producer_tag: String,
     pub declared_link_ids: String,
 }
 
@@ -330,17 +327,29 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
-    /// `--bind KEY@VALUE` whose `KEY` neither matches a declared pinned
-    /// `link_id` nor a declared `from_any` slot for VALUE's `(name, tag)`.
-    /// Boxed for the same `result_large_err` reason as the other binding
-    /// variants.
+    /// A binding whose `KEY` matches no declared `depends_on` link_id
+    /// (pinned or `from_any`). Boxed for the same `result_large_err`
+    /// reason as the other binding variants.
     #[error(transparent)]
     BindingDeadKey(Box<BindingDeadKey>),
+    /// A binding on a pinned (`from_any: false`) slot whose value names
+    /// zero or several producers. Pinned slots bind exactly one; only
+    /// `from_any` slots accept arrays.
+    #[error(
+        "binding `{binding}` on instance `{owner_instance_id}` names \
+         {target_count} producers, but the slot is pinned \
+         (`from_any: false`) and binds exactly one"
+    )]
+    BindingPinnedTakesOneTarget {
+        owner_instance_id: String,
+        binding: String,
+        target_count: usize,
+    },
     /// Two `--bind KEY@…` entries on the same invocation share the same
-    /// `KEY`. Each `KEY` is the binding's label (pinned KEYs match a
-    /// declared link_id; `from_any` KEYs are free-form) and must be
-    /// distinct so the validator can resolve each to a slot
-    /// unambiguously.
+    /// `KEY`. Each `KEY` is a declared `link_id` and must be distinct so
+    /// the validator can resolve each to a slot unambiguously (repeat
+    /// `--bind KEY@…` flags accumulate into one multi-target entry
+    /// before this rule applies).
     #[error(
         "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct)"
     )]

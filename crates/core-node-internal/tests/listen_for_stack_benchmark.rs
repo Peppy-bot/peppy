@@ -10,7 +10,7 @@ use core_node_api::encoding::{
     StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
 use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
+use peppylib::messaging::{ResultStatus, ServiceTarget};
 
 /// Drives the `stack_benchmark` action end-to-end against the in-process daemon
 /// and returns the decoded result plus the count of feedback messages received.
@@ -26,7 +26,7 @@ async fn run_benchmark_goal(
         CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         ActionId::StackBenchmark.name(),
-        None,
+        ServiceTarget::Any,
         goal_payload,
         QoSProfile::default(),
         Duration::from_secs(5),

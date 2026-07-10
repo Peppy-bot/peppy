@@ -8,8 +8,8 @@ use core_node_api::encoding::{
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
-    BindingValidationItem, DeploymentInstance, PairingValidationItem, validate_bindings,
-    validate_pairings,
+    BindingTargets, BindingValidationItem, DeploymentInstance, PairingValidationItem,
+    validate_bindings, validate_pairings,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -286,12 +286,34 @@ fn entries_to_unique_map<V: Clone>(
     Ok(map)
 }
 
-/// `--bind KEY@VALUE` entries as a map. Each `KEY` must be unique per
-/// invocation (rule 6): pinned `KEY`s match a declared link_id, free-form
-/// `KEY`s label a `from_any` binding, and either way two bindings on the
-/// same key would clobber.
-fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
-    entries_to_unique_map(binds, instance_id, "binding", "--bind KEY")
+/// `--bind KEY@VALUE` entries as a map, accumulating repeated `KEY`s into
+/// one multi-target binding: `--bind arm_states@left --bind
+/// arm_states@right` binds both producers to the `arm_states` slot (flag
+/// order preserved). Every `KEY` is a `link_id` declared by the
+/// consumer's `depends_on`. Listing the same VALUE twice under one KEY is
+/// a hard error here; whether a KEY may carry several values at all is
+/// the validator's per-slot arity rule (pinned slots take exactly one,
+/// `from_any` slots any number).
+fn binds_to_map(
+    binds: &[(String, String)],
+    instance_id: &str,
+) -> Result<BTreeMap<String, BindingTargets>> {
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (key, value) in binds {
+        grouped.entry(key.clone()).or_default().push(value.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(key, targets)| {
+            BindingTargets::new(targets)
+                .map(|targets| (key.clone(), targets))
+                .map_err(|err| {
+                    Error::ExecutionFailed(format!(
+                        "--bind {key}@… on instance `{instance_id}`: {err}"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
@@ -335,7 +357,7 @@ async fn validate_binds_against_stack(
     target_name: &str,
     target_tag: &str,
     target_instance_id: &str,
-    binds: &BTreeMap<String, String>,
+    binds: &BTreeMap<String, BindingTargets>,
     pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
 ) -> Result<Option<BTreeMap<String, SlotBinding>>> {
@@ -919,19 +941,35 @@ mod tests {
         );
     }
 
-    /// Duplicate `--bind` and `--pair` keys are hard errors: collecting
-    /// straight into the `BTreeMap` would silently keep the last value.
+    /// Repeated `--bind KEY@…` flags accumulate into one multi-target
+    /// binding (order preserved); the same VALUE twice under one KEY is a
+    /// hard error. `--pair` keys stay strictly unique.
     #[test]
-    fn duplicate_bind_and_pair_keys_are_rejected() {
+    fn repeated_bind_keys_accumulate_and_pair_keys_stay_unique() {
         let entries = vec![
-            ("arm".to_string(), "arm_1".to_string()),
-            ("arm".to_string(), "arm_2".to_string()),
+            ("arm_states".to_string(), "left_arm".to_string()),
+            ("proximity".to_string(), "backbone".to_string()),
+            ("arm_states".to_string(), "right_arm".to_string()),
         ];
+        let map = binds_to_map(&entries, "cmd_1").expect("repeated keys accumulate");
+        assert_eq!(
+            map.get("arm_states").map(|t| t.targets()),
+            Some(&["left_arm".to_string(), "right_arm".to_string()][..])
+        );
+        assert_eq!(
+            map.get("proximity").map(|t| t.targets()),
+            Some(&["backbone".to_string()][..])
+        );
 
-        let err = binds_to_map(&entries, "ctrl_1").expect_err("duplicate --bind rejected");
+        let duplicate_value = vec![
+            ("arm_states".to_string(), "left_arm".to_string()),
+            ("arm_states".to_string(), "left_arm".to_string()),
+        ];
+        let err = binds_to_map(&duplicate_value, "cmd_1")
+            .expect_err("duplicate VALUE under one KEY rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("duplicate binding key `arm`") && msg.contains("--bind"),
+            msg.contains("duplicate") && msg.contains("left_arm"),
             "unexpected error: {msg}"
         );
 

@@ -161,9 +161,9 @@ If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, t
 
 ### From-any interface bindings
 
-A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
+A `from_any: true` interface slot accepts any number of conforming producers, all bound under the slot's `link_id` (an array in a launcher, or repeated `--bind link_id@...` flags): the slot receives from every producer in its bound set, and only those.
 
-A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the natural shape for optional many-to-one fan-in: telemetry, monitoring, any consumer that accepts data from whichever producers happen to exist. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+A `from_any` slot may also be left without a binding. It then materializes **unbound** and the node still boots — but the slot is silent: no subscription is created, nothing is received, and service or action calls on it fail before any wire work. Fan-in is always explicit: the launcher lists exactly the conforming producers that feed the slot, and the next launch can list a different set (or none) without touching the consumer. That property makes it the natural shape for optional many-to-one fan-in: telemetry, monitoring, any consumer whose input set is chosen deployment by deployment. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {
@@ -177,7 +177,7 @@ manifest: {
 }
 ```
 
-The launcher routes each `--bind` whose value names a conforming producer to the first matching slot in `link_id` order (alphabetical). Pinned slots claim their producers first; the remaining bindings fall into the from_any slot. The same per-message routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for the wildcard-vs-explicit semantics.
+Every binding is keyed by a declared `link_id`: `left_cam` and `right_cam` each take exactly one conforming producer, and `extras` takes any number. The same per-message routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for the bound-set semantics.
 
 #### Multiple producer instances under the same node identity
 
@@ -216,7 +216,7 @@ First, the consumer declares a single `from_any: true` interface dep and consume
 }
 ```
 
-Then the launcher accepts one `--bind` per producer instance, each under a distinct free-form key:
+Then the launcher binds all three producer instances under the slot's `link_id`, using the array form:
 
 ```json5
 // peppy_launcher.json5
@@ -237,9 +237,7 @@ Then the launcher accepts one `--bind` per producer instance, each under a disti
         {
           instance_id: "recon_1",
           bindings: {
-            front_cam: "rs_front",
-            back_left_cam: "rs_back_left",
-            back_right_cam: "rs_back_right",
+            extras: ["rs_front", "rs_back_left", "rs_back_right"],
           },
         },
       ],
@@ -248,9 +246,9 @@ Then the launcher accepts one `--bind` per producer instance, each under a disti
 }
 ```
 
-None of the binding keys (`front_cam`, `back_left_cam`, `back_right_cam`) match a declared `link_id`, so each one falls into the `extras` from_any slot. All three producer instances accumulate under that single slot, and the consumer receives messages from all of them through the generated `extras_video_stream` module. The free-form key is just a label; it does not surface in the consumer's generated code.
+All three producer instances are listed under the `extras` key — the slot's declared `link_id` — and form that slot's bound set: the consumer receives messages from all three, and only these three, through the generated `extras_video_stream` module. From the command line the same set accumulates by repeating the flag: `--bind extras@rs_front --bind extras@rs_back_left --bind extras@rs_back_right`.
 
-Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.). New producer instances added in a future launcher show up automatically.
+Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.). New producer instances added to the slot's bound set in a future launcher show up automatically, with no consumer code change.
 
 <Tabs>
   <TabItem label="Python">
@@ -355,7 +353,7 @@ A launcher can wire the three slots to any mix of conforming producers:
           bindings: {
             left_cam: "rs_left",
             right_cam: "rs_right",
-            any_label: "zed_overhead",
+            backup_cams: ["zed_overhead"],
           },
         },
       ],
@@ -364,7 +362,7 @@ A launcher can wire the three slots to any mix of conforming producers:
 }
 ```
 
-`left_cam` and `right_cam` are pinned interface bindings: the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `any_label` is a free-form binding key; the launcher attaches it to the `backup_cams` from_any slot because `zed_overhead`'s node `(zed_2i:v1)` conforms to `depth_camera:v1`.
+`left_cam` and `right_cam` are pinned interface bindings: the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `backup_cams` is the `from_any` slot's own `link_id`; the launcher accepts `zed_overhead` into its bound set because `zed_overhead`'s node (`zed_2i:v1`) conforms to `depth_camera:v1`. A second backup camera would simply join the array: `backup_cams: ["zed_overhead", "zed_shelf"]`.
 
 Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same interface and the binding works unchanged.
 

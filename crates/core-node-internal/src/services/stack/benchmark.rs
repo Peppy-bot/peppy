@@ -847,7 +847,7 @@ async fn measure_probe(
                     &ctx.core_instance_id,
                     target.clone(),
                     service_name,
-                    None, // wildcard: the edge's producers all live on this daemon
+                    ServiceTarget::Any, // the edge's producers all live on this daemon
                     timeout,
                     request_size,
                     response_size,

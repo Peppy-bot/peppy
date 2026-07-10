@@ -245,14 +245,14 @@ Pairing and [interface conformance](/advanced_guides/interface_conformance) both
 
 | | Pairing | Interface (`from_any`) |
 |---|---|---|
-| Cardinality | Exactly 1:1 per slot, exclusive | Any number of conforming producers |
+| Cardinality | Exactly 1:1 per slot, exclusive | Any number of launcher-bound conforming producers |
 | Directionality | Both directions in one contract (two roles) | One direction per interface |
-| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Implicit: any conforming producer that publishes is received |
+| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Explicit (`--bind` / `bindings:`), at instance start; unbound means silent |
 | Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |
-| Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | Producers come and go freely |
+| Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | A bound producer's death dissolves nothing; the slot keeps receiving from the rest of its bound set |
 | Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry fan-in, monitoring, swappable many-to-one sources |
 
-Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **interfaces** when any number of loosely-coupled producers should feed a consumer, like every arm on the floor publishing diagnostics to one observer. The two compose: `robot_arm` can be paired with its controller *and* conform to a one-way `joint_state_source` interface so dashboards can watch it.
+Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **interfaces** when the launcher should choose which loosely-coupled producers feed a consumer — one, several, or every arm on the floor publishing diagnostics to one observer. The two compose: `robot_arm` can be paired with its controller *and* conform to a one-way `joint_state_source` interface so dashboards can watch it.
 
 ## Pairing vs. actions
 

@@ -50,7 +50,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
         for deployment in &raw.deployments {
             for instance in &deployment.instances {
-                for (binding, target) in &instance.bindings {
+                for (binding, targets) in &instance.bindings {
                     if binding == DEFAULT_LINK_ID_SENTINEL {
                         let err = StructuredError::BindingSentinelKey {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -58,13 +58,15 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                         };
                         return Err(de::Error::custom(err.json5_message()));
                     }
-                    if !known_ids.contains(target.as_str()) {
-                        let err = StructuredError::UnknownInstanceId {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding.clone(),
-                            instance_id: target.clone(),
-                        };
-                        return Err(de::Error::custom(err.json5_message()));
+                    for target in targets.targets() {
+                        if !known_ids.contains(target.as_str()) {
+                            let err = StructuredError::UnknownInstanceId {
+                                owner_instance_id: instance.instance_id.to_string(),
+                                binding: binding.clone(),
+                                instance_id: target.clone(),
+                            };
+                            return Err(de::Error::custom(err.json5_message()));
+                        }
                     }
                 }
                 for (key, target) in &instance.pairings {
@@ -141,12 +143,17 @@ pub struct DeploymentInstance {
     pub env_vars: BTreeMap<String, String>,
     #[serde(default)]
     pub framework: FrameworkOverrides,
+    /// Consumer-slot bindings: the deployed node's `depends_on` `link_id`
+    /// → one producer `instance_id` (pinned slots) or an array of them
+    /// (from_any slots). An omitted key or an empty array leaves a
+    /// from_any slot deliberately unbound (silent). See
+    /// [`BindingTargets`].
     #[serde(
         default,
         deserialize_with = "deserialize_bindings",
         skip_serializing_if = "BTreeMap::is_empty"
     )]
-    pub bindings: BTreeMap<String, String>,
+    pub bindings: BTreeMap<String, BindingTargets>,
     /// Pairing declarations: own pairing-slot `link_id` → peer instance
     /// (`"<instance_id>"` or `"<instance_id>/<peer_link_id>"` when the peer
     /// has more than one complementary slot). Declaring the pair on ONE side
@@ -165,19 +172,120 @@ pub struct DeploymentInstance {
     pub defer_pairings: Vec<String>,
 }
 
+/// One binding's producer set, as written in the launcher: a scalar
+/// `"instance_id"` (the single-producer form) or an array `["a", "b"]`
+/// (a from_any slot bound to several producers). An **empty array is
+/// legal** and means the same as omitting the key — the slot stays
+/// deliberately unbound (silent). Elements must be non-empty and unique;
+/// declaration order is preserved. Serializes back to the scalar form
+/// when it holds exactly one target, so a parse → serialize round-trip
+/// is byte-stable for scalar-form launchers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingTargets(Vec<String>);
+
+impl BindingTargets {
+    /// Validated constructor applying the same rules as the
+    /// deserializer: no empty-string elements, no duplicate elements.
+    /// Empty vectors are accepted (deliberately unbound).
+    pub fn new(targets: Vec<String>) -> Result<Self, String> {
+        let mut seen: HashSet<&str> = HashSet::with_capacity(targets.len());
+        for target in &targets {
+            if target.trim().is_empty() {
+                return Err("binding target cannot be empty".to_string());
+            }
+            if !seen.insert(target.as_str()) {
+                return Err(format!(
+                    "duplicate binding target `{target}` (each producer may be listed once)"
+                ));
+            }
+        }
+        Ok(Self(targets))
+    }
+
+    /// The bound producer `instance_id`s, in declaration order. Empty
+    /// means the slot is deliberately unbound.
+    pub fn targets(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for BindingTargets {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0.as_slice() {
+            // Scalar round-trip: a single target re-serializes to the
+            // scalar form so rewriting a launcher is byte-stable.
+            [single] => serializer.serialize_str(single),
+            targets => targets.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BindingTargets {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TargetsVisitor;
+
+        impl<'de> Visitor<'de> for TargetsVisitor {
+            type Value = BindingTargets;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(
+                    "a producer instance_id string or an array of producer instance_id strings",
+                )
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                BindingTargets::new(vec![value.to_string()]).map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut targets = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(target) = seq.next_element::<String>()? {
+                    targets.push(target);
+                }
+                BindingTargets::new(targets).map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(TargetsVisitor)
+    }
+}
+
 /// Each key is a `link_id` literal declared by the deployed node's
-/// `depends_on.{nodes,interfaces}` and each value points at the producer
-/// `instance_id` defined elsewhere in the launcher. Keys and values are
-/// validated for non-emptiness and intra-collection duplicates via
-/// [`validate_named_items`]; the reserved producer-default sentinel
-/// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
-/// launcher cannot redundantly "bind" to the default. The value's
-/// existence as an `instance_id` is checked later at the
-/// [`PeppyLauncher`] level once all deployments have been parsed; the
+/// `depends_on.{nodes,interfaces}` and each value names the producer
+/// `instance_id`(s) defined elsewhere in the launcher — one for a pinned
+/// slot, zero or more for a `from_any` slot (see [`BindingTargets`]).
+/// Keys are validated for non-emptiness and intra-collection duplicates
+/// via [`validate_named_items`]; per-element value rules live in
+/// [`BindingTargets`]; the reserved producer-default sentinel
+/// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key at the
+/// [`PeppyLauncher`] level. Each element's existence as an `instance_id`
+/// is checked there too, once all deployments have been parsed; the
 /// key's existence in the deployed node's `depends_on` and the producer
 /// identity are checked at launch time, when both the launcher and the
 /// node manifests are loaded.
-fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+fn deserialize_bindings<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, BindingTargets>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -196,8 +304,13 @@ fn deserialize_pairings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Stri
 where
     D: Deserializer<'de>,
 {
-    let entries = deserialize_kv_entries(deserializer, "pairing")?;
+    let entries: Vec<(String, String)> = deserialize_kv_entries(deserializer, "pairing")?;
     for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "pairing target for key `{key}` cannot be empty"
+            )));
+        }
         // Reject malformed targets at parse time rather than letting an
         // empty or slash-bearing peer_link fail later as "no complementary
         // slot" during plan validation.
@@ -213,30 +326,28 @@ where
 }
 
 /// Shared scaffold of [`deserialize_bindings`] / [`deserialize_pairings`]:
-/// duplicate-key and empty-key/value checks over a `link_id -> target` map,
-/// with `kind` labeling the errors. Entries are captured as a Vec because a
+/// duplicate-key and empty-key checks over a `link_id -> V` map, with
+/// `kind` labeling the errors. Entries are captured as a Vec because a
 /// direct `BTreeMap::deserialize` would silently overwrite duplicate keys,
 /// hiding them from `validate_named_items`. Duplicate VALUES are
 /// intentionally permitted: one producer/peer may serve multiple `link_id`
-/// slots. Sentinel-key checks live in `PeppyLauncher::deserialize` where
-/// the owning `instance_id` is in scope for the structured error.
-fn deserialize_kv_entries<'de, D>(
+/// slots. Value-shape rules are the value type's own concern
+/// ([`BindingTargets`] for bindings; [`deserialize_pairings`] checks its
+/// `String` targets). Sentinel-key checks live in
+/// `PeppyLauncher::deserialize` where the owning `instance_id` is in
+/// scope for the structured error.
+fn deserialize_kv_entries<'de, D, V>(
     deserializer: D,
     kind: &'static str,
-) -> Result<Vec<(String, String)>, D::Error>
+) -> Result<Vec<(String, V)>, D::Error>
 where
     D: Deserializer<'de>,
+    V: Deserialize<'de>,
 {
-    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
+    let entries =
+        deserializer.deserialize_map(BindingEntriesVisitor::<V>(std::marker::PhantomData))?;
     validate_named_items(entries.iter().map(|(k, _)| k.as_str()), kind)
         .map_err(de::Error::custom)?;
-    for (key, value) in &entries {
-        if value.trim().is_empty() {
-            return Err(de::Error::custom(format!(
-                "{kind} target for key `{key}` cannot be empty"
-            )));
-        }
-    }
     Ok(entries)
 }
 
@@ -250,13 +361,16 @@ pub fn split_pair_target(value: &str) -> (&str, Option<&str>) {
     }
 }
 
-struct BindingEntriesVisitor;
+struct BindingEntriesVisitor<V>(std::marker::PhantomData<V>);
 
-impl<'de> Visitor<'de> for BindingEntriesVisitor {
-    type Value = Vec<(String, String)>;
+impl<'de, V> Visitor<'de> for BindingEntriesVisitor<V>
+where
+    V: Deserialize<'de>,
+{
+    type Value = Vec<(String, V)>;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a map of binding link_id -> instance_id strings")
+        f.write_str("a map of link_id -> target entries")
     }
 
     fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
@@ -264,7 +378,7 @@ impl<'de> Visitor<'de> for BindingEntriesVisitor {
         A: MapAccess<'de>,
     {
         let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
-        while let Some((key, value)) = access.next_entry::<String, String>()? {
+        while let Some((key, value)) = access.next_entry::<String, V>()? {
             entries.push((key, value));
         }
         Ok(entries)
@@ -406,8 +520,8 @@ mod tests {
         assert_eq!(backbone.instance_id, "backbone");
         assert_eq!(backbone.bindings.len(), 3);
         assert_eq!(
-            backbone.bindings.get("torso_camera").map(String::as_str),
-            Some("cam_torso")
+            backbone.bindings.get("torso_camera").map(|t| t.targets()),
+            Some(&["cam_torso".to_string()][..])
         );
     }
 
@@ -478,8 +592,10 @@ mod tests {
     /// Two binding keys may point at the same producer `instance_id`:
     /// that is the "one producer serves multiple `link_id` slots" case
     /// the wiring step materializes as a producer with multiple
-    /// concurrent `link_ids` on the wire. Duplicates on the value side
-    /// are therefore intentionally permitted.
+    /// concurrent `link_ids` on the wire. Duplicates across DIFFERENT
+    /// keys are therefore intentionally permitted (duplicates within one
+    /// key's array are not — see
+    /// `bindings_reject_duplicate_elements_within_one_key`).
     #[test]
     fn bindings_accept_duplicate_values() {
         let json5 = r#"{
@@ -492,13 +608,129 @@ mod tests {
         let instance: DeploymentInstance =
             serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
         assert_eq!(
-            instance.bindings.get("a").map(String::as_str),
-            Some("cam_torso")
+            instance.bindings.get("a").map(|t| t.targets()),
+            Some(&["cam_torso".to_string()][..])
         );
         assert_eq!(
-            instance.bindings.get("b").map(String::as_str),
-            Some("cam_torso")
+            instance.bindings.get("b").map(|t| t.targets()),
+            Some(&["cam_torso".to_string()][..])
         );
+    }
+
+    /// A binding value may be an array of producer instance_ids (a
+    /// from_any slot bound to several producers). Order is preserved,
+    /// and serialization keeps the array form for multi-target values
+    /// while collapsing single-target values back to the scalar form.
+    #[test]
+    fn bindings_accept_array_values_and_round_trip() {
+        let json5 = r#"{
+            instance_id: "commander",
+            bindings: {
+                arm_states: ["left_arm", "right_arm"],
+                proximity: "backbone",
+            }
+        }"#;
+        let instance: DeploymentInstance =
+            serde_json5::from_str(json5).expect("array binding should parse");
+        assert_eq!(
+            instance.bindings.get("arm_states").map(|t| t.targets()),
+            Some(&["left_arm".to_string(), "right_arm".to_string()][..])
+        );
+        assert_eq!(
+            instance.bindings.get("proximity").map(|t| t.targets()),
+            Some(&["backbone".to_string()][..])
+        );
+
+        let serialized = serde_json5::to_string(&instance).unwrap();
+        assert!(
+            serialized.contains(r#"["left_arm","right_arm"]"#),
+            "multi-target keeps array form: {serialized}"
+        );
+        assert!(
+            serialized.contains(r#""proximity":"backbone""#),
+            "single target collapses to scalar form: {serialized}"
+        );
+        let reparsed: DeploymentInstance = serde_json5::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.bindings, instance.bindings);
+    }
+
+    /// An empty array is legal and equivalent to omitting the key: the
+    /// from_any slot stays deliberately unbound (silent).
+    #[test]
+    fn bindings_accept_empty_array_as_deliberately_unbound() {
+        let json5 = r#"{
+            instance_id: "backbone",
+            bindings: { commander: [] }
+        }"#;
+        let instance: DeploymentInstance =
+            serde_json5::from_str(json5).expect("empty array binding should parse");
+        let targets = instance.bindings.get("commander").expect("key present");
+        assert!(targets.is_empty());
+    }
+
+    /// Duplicate elements within one key's array are rejected at parse
+    /// time — one producer cannot be bound to the same slot twice.
+    #[test]
+    fn bindings_reject_duplicate_elements_within_one_key() {
+        let json5 = r#"{
+            instance_id: "commander",
+            bindings: { arm_states: ["left_arm", "left_arm"] }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("duplicate array element must be rejected");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Empty-string elements inside an array are rejected exactly like
+    /// an empty scalar value.
+    #[test]
+    fn bindings_reject_empty_element_in_array() {
+        let json5 = r#"{
+            instance_id: "commander",
+            bindings: { arm_states: ["left_arm", ""] }
+        }"#;
+        let err = serde_json5::from_str::<DeploymentInstance>(json5)
+            .expect_err("empty array element must be rejected");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    /// The launcher-level unknown-instance cross-check runs per element
+    /// of an array value.
+    #[test]
+    fn bindings_reject_unknown_instance_id_inside_array() {
+        let json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { local: "./left" },
+                    instances: [{ instance_id: "left_arm" }]
+                },
+                {
+                    source: { local: "./commander" },
+                    instances: [{
+                        instance_id: "commander",
+                        bindings: { arm_states: ["left_arm", "ghost_arm"] }
+                    }]
+                }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<PeppyLauncher>(json5)
+            .expect_err("unknown array element must be rejected");
+        let parsing_err = ParsingError::from(err);
+        let ParsingError::UnknownInstanceId {
+            owner_instance_id,
+            binding,
+            instance_id,
+        } = parsing_err
+        else {
+            panic!("expected UnknownInstanceId, got {parsing_err:?}");
+        };
+        assert_eq!(owner_instance_id, "commander");
+        assert_eq!(binding, "arm_states");
+        assert_eq!(instance_id, "ghost_arm");
     }
 
     /// The launcher rejects unknown framework keys so a typo (e.g.

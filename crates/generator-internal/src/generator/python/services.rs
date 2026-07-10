@@ -28,20 +28,20 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Returns the Python expression for the consumer's single `target` /
-/// `from_producer` argument at a consumed subscribe / poll / send_goal
-/// call site. Calls `node_runner.pinned_producer_for(<link_id>)` when
-/// the dependency carries a manifest link_id; `None` for synthetic test
-/// fixtures that don't model a manifest dep. Pinned slots (and `from_any`
-/// slots bound to a single producer) resolve to the bound producer's
-/// full `(core_node, instance_id)` tuple and address it directly with no
-/// discovery; other `from_any` shapes resolve to `None` and fall back to
-/// wildcard discover-then-pin at the call site.
+/// Returns the Python expression for the consumer's `filter` argument at
+/// a consumed subscribe / poll / send_goal call site. Calls
+/// `node_runner.consumer_filter(<link_id>)` when the dependency carries a
+/// manifest link_id — the slot's daemon-resolved `ConsumerFilter`, from
+/// which the messaging layer derives the wire shape (single pin: direct
+/// address, no discovery; multi-bound: discovery within the bound set
+/// only; deliberately unbound: silent / fails before any wire work) —
+/// and `None` (the pure-wildcard fixture default) for synthetic test
+/// fixtures that don't model a manifest dep.
 pub(crate) fn consumed_target_python_expr(
     dependency: &crate::generator::types::DependencyContext,
 ) -> String {
     match dependency.wire_link_id() {
-        Some(link_id) => format!("node_runner.pinned_producer_for({link_id:?})"),
+        Some(link_id) => format!("node_runner.consumer_filter({link_id:?})"),
         None => "None".to_string(),
     }
 }

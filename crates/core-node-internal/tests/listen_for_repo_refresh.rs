@@ -14,7 +14,7 @@ use core_node_api::encoding::{
 };
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
+use peppylib::messaging::{ResultStatus, ServiceTarget};
 use std::path::Path;
 use std::time::Duration;
 
@@ -93,7 +93,7 @@ async fn send_refresh_inner(
         caller_instance_id,
         common::core_node_target(&started.core_node_name),
         ActionId::RepoRefresh.name(),
-        None,
+        ServiceTarget::Any,
         goal_payload,
         QoSProfile::default(),
         Duration::from_secs(5),

@@ -391,11 +391,11 @@ fn consumed_service() {
     // Poll function signature with typed params and return type. The
     // fixture's `DependencyContext::native` defaults to
     // `WireLinkId::wildcard()` (no manifest link_id), so the poll call
-    // splices `None` at the single target slot and the user-facing
+    // splices `None` at the filter slot and the user-facing
     // `target_instance_id` parameter is gone. `target_core_node` is never
-    // exposed in the user-facing generated API, and the renamed
-    // `pinned_target_for` accessor must never be emitted (the runtime
-    // helper is `pinned_producer_for`).
+    // exposed in the user-facing generated API, and the deleted
+    // `pinned_producer_for` accessor must never be emitted (the runtime
+    // helper is `consumer_filter`).
     assert_contains_all(
         &rendered,
         &[
@@ -415,15 +415,15 @@ fn consumed_service() {
         "target_core_node should not appear in the generated API; got:\n{rendered}"
     );
     assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; got:\n{rendered}"
+        !rendered.contains("pinned_producer_for"),
+        "pinned_producer_for is deleted and must never be emitted; the runtime helper is consumer_filter; got:\n{rendered}"
     );
 
     // Request serialization
     assert_contains_all(&rendered, &["request_payload = capnp_msg.to_bytes()"]);
 
     // Messenger integration, including the `None` spliced at the poll
-    // call's single target slot.
+    // call's filter slot (the fixture models no manifest dep).
     assert_contains_all(
         &rendered,
         &[

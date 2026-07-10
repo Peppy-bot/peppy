@@ -9,7 +9,7 @@ use common::{
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::{MessengerHandle, ServiceTarget};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
@@ -979,7 +979,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         common::CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         core_node_api::ActionId::NodeRun.name(),
-        None,
+        ServiceTarget::Any,
         first_goal_payload,
         QoSProfile::default(),
         Duration::from_secs(5),

@@ -11,7 +11,7 @@ use core_node_api::encoding::{
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
-use peppylib::messaging::{MessengerHandle, ResultStatus};
+use peppylib::messaging::{MessengerHandle, ResultStatus, ServiceTarget};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::fs;
@@ -407,7 +407,7 @@ async fn send_launch_origin_and_wait(
         CALLER_INSTANCE_ID,
         common::core_node_target(core_node_name),
         ActionId::StackLaunch.name(),
-        None,
+        ServiceTarget::Any,
         goal_payload,
         config::node::QoSProfile::default(),
         goal_timeout,

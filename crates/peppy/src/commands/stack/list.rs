@@ -369,9 +369,11 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 
 /// Right-hand side of a `link_id -> …` binding line: the producer the slot
 /// resolves to, rendered as `instance_id@core_node` (the full wire address
-/// every binding now carries). A `from_any` slot with explicit producers
-/// lists them comma-separated; a `from_any` slot left bindless (and the
-/// degenerate "bound to nothing" case) render as `(any)`.
+/// every binding carries). A `from_any` slot with explicit producers lists
+/// them comma-separated; a `from_any` slot deliberately left bindless
+/// renders as `(unbound)` — the slot is silent, not listening to anyone.
+/// (The validator never materializes an empty `FromAnyBound`; render it
+/// as `(unbound)` too so the line never trails empty.)
 fn format_slot_binding(binding: &SlotBinding) -> String {
     let render =
         |producer: &ProducerRef| format!("{}@{}", producer.instance_id, producer.core_node);
@@ -380,10 +382,7 @@ fn format_slot_binding(binding: &SlotBinding) -> String {
         SlotBinding::FromAnyBound { producers } if !producers.is_empty() => {
             producers.iter().map(render).collect::<Vec<_>>().join(", ")
         }
-        // `FromAnyBound` with no producers and `FromAnyUnbound` are both "no
-        // pinned producer"; collapse them so the line never trails as
-        // `link_id -> ` with an empty right-hand side.
-        SlotBinding::FromAnyBound { .. } | SlotBinding::FromAnyUnbound => "(any)".to_string(),
+        SlotBinding::FromAnyBound { .. } | SlotBinding::FromAnyUnbound => "(unbound)".to_string(),
     }
 }
 
@@ -952,8 +951,8 @@ mod tests {
             .find("sensors → cam-1@core_a, cam-2@core_a")
             .expect("from_any bound producers should be comma-joined");
         let extra_at = section
-            .find("extra → (any)")
-            .expect("from_any unbound should render (any)");
+            .find("extra → (unbound)")
+            .expect("from_any unbound should render (unbound)");
         // Sorted by link id regardless of insertion order: "extra" < "sensors".
         assert!(
             extra_at < sensors_at,
@@ -1078,8 +1077,8 @@ mod tests {
         let section = bindings_section(&out);
 
         assert!(
-            section.contains("sensors → (any)"),
-            "empty from_any bound should collapse to (any):\n{out}"
+            section.contains("sensors → (unbound)"),
+            "empty from_any bound should collapse to (unbound):\n{out}"
         );
         assert!(
             !section.contains("sensors → \n") && !section.contains("sensors →  "),
