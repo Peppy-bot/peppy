@@ -110,10 +110,11 @@ pub fn bind_slot(
 ) -> config::runtime::RuntimeConfig {
     config.node_instance.slot_bindings.insert(
         link_id.to_string(),
-        vec![config::runtime::ProducerRef::new(
+        config::runtime::BoundProducers::new(vec![config::runtime::ProducerRef::new(
             producer_core_node,
             producer_instance_id,
-        )],
+        )])
+        .expect("test bindings are non-empty"),
     );
     config
 }

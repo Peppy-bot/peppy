@@ -250,12 +250,10 @@ pub(super) async fn fail_and_clear_stack(
 /// of deployments to spawn, plus the resolved per-instance slot
 /// producers produced by the launcher's binding validator. The map is
 /// keyed by `consumer_instance_id`; each inner map is keyed by the
-/// consumer's manifest `link_id`, an unbound slot carrying an empty
-/// list.
-type ResolvedSlotBindings = std::collections::BTreeMap<
-    String,
-    std::collections::BTreeMap<String, Vec<config::runtime::ProducerRef>>,
->;
+/// consumer's manifest `link_id` and carries the slot's bound producers
+/// (validation guarantees every declared slot is bound, so an inner
+/// entry is never empty).
+type ResolvedSlotBindings = std::collections::BTreeMap<String, config::runtime::SlotBindings>;
 
 /// Step 3: Validate dependencies and compute a stable topological order.
 pub(super) async fn validate_and_order_dependencies(
@@ -321,11 +319,12 @@ pub(super) async fn validate_and_order_dependencies(
     // preserves it), so its instance_id must participate in stack-wide uniqueness
     // checks. Synthesize a single-instance DeploymentInstance for it, but pass
     // `depends_on: None` / empty `conforms_to` in the binding item below so the
-    // per-instance binding rules treat the root as inert and only
+    // per-instance binding rules treat the root as inert (no declared slots, so
+    // the every-slot-bound rule never fires on it) and only
     // check_stack_wide_instance_id_uniqueness (which reads name/tag/instance_id)
-    // acts on it. Forwarding the root's real depends_on would re-materialize its
-    // slots as all-unbound from the synthesized instance's empty bindings,
-    // clobbering the resolution its own spawn already produced.
+    // acts on it. Forwarding the root's real depends_on would pit rule 5 against
+    // the synthesized instance's empty bindings and reject a launch whose root
+    // already resolved its slots at its own spawn.
     let root_instance_id_str = ctx
         .node_stack
         .root()

@@ -1182,8 +1182,8 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     // Set up a built producer the consumer depends on; we don't spawn an
-    // instance of it because the validator's pinned-unbound rule fires on
-    // declaration alone; no producer instance is needed to reproduce.
+    // instance of it because the unknown-key rule fires on the binding
+    // key alone; no producer instance is needed to reproduce.
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),

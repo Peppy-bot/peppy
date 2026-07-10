@@ -273,7 +273,7 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 
 Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--pair` at instance start, not by a binding.)
 
-A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` names one target producer `instance_id` or an array of them. Each binding creates a private one-way channel from those producer instances to the consumer's slot. A declared slot with no binding is legal and stays **silent**: it receives nothing; there is no wildcard fallback.
+A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` names one target producer `instance_id` or an array of them. Each binding creates a private one-way channel from those producer instances to the consumer's slot. **Every declared slot must be bound**: a launch that leaves a slot without a binding is rejected before anything starts; there is no wildcard fallback and no unbound state.
 
 In a launcher / stack config:
 
@@ -353,13 +353,13 @@ Four contract statements follow from this manifest:
 1. A frame from `left_cam` arrives only on the `wrist_left_camera_video_stream` slot.
 2. A frame from `right_cam` arrives only on the `wrist_right_camera_video_stream` slot.
 3. A frame from `ceiling_cam` arrives only on the `extra_cam_video_stream` slot, because the binding names it.
-4. If the `extra_cam` binding line were removed, the slot would stay silent: `ceiling_cam` frames would reach no slot at all, since a producer named by no binding is ignored.
+4. If the `extra_cam` binding line were removed, the launch would be rejected: every declared slot must be bound. A producer named by no binding is simply ignored — but a declared slot with no binding is an error, not a silent gap.
 
 ### Validator rules
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected. There are no free-form keys. A declared slot with no binding is legal; it simply stays silent.
+1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared slot the bindings leave out fails the launch with one error per unfulfilled slot.
 2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `interfaces.conforms_to` must include the slot's `(name, tag)` (`BindingContractNotConformed` otherwise); see [Contract conformance](/advanced_guides/contract_conformance) for the conformance contract.
 3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced; a slot's producer list is given in one place (repeat `--bind KEY@…` on the CLI to accumulate, or use the array form in a launcher). A producer repeated within one slot's list is rejected as a typo.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.

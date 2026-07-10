@@ -172,9 +172,9 @@ pub struct DeploymentInstance {
 /// `instance_id` defined elsewhere in the launcher, or an array of them
 /// (a multi-producer slot). Keys are validated for non-emptiness and
 /// intra-collection duplicates via [`validate_named_items`]; targets must
-/// be non-empty, an array must list at least one target (bind nothing by
-/// removing the line instead), and a target repeated within one slot's
-/// array is rejected as a typo. The reserved producer-default sentinel
+/// be non-empty, an array must list at least one target (every slot must
+/// be bound — there is no unbound state), and a target repeated within
+/// one slot's array is rejected as a typo. The reserved producer-default sentinel
 /// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
 /// launcher cannot redundantly "bind" to the default. Each target's
 /// existence as an `instance_id` is checked later at the
@@ -207,7 +207,7 @@ where
         };
         if targets.is_empty() {
             return Err(de::Error::custom(format!(
-                "binding `{key}` lists no producer; remove the line to leave the slot unbound"
+                "binding `{key}` lists no producer; every slot must be bound to at least one producer"
             )));
         }
         let mut seen = HashSet::with_capacity(targets.len());
@@ -485,8 +485,8 @@ mod tests {
         );
     }
 
-    /// An empty array binds nothing and is rejected: leave the slot
-    /// unbound by removing the line instead.
+    /// An empty array binds nothing and is rejected: every slot must be
+    /// bound to at least one producer — there is no unbound state.
     #[test]
     fn bindings_reject_empty_producer_array() {
         let json5 = r#"{

@@ -600,7 +600,7 @@ The cancel targets only this goal; other concurrent goals are unaffected. To lea
 
 Routing for actions uses the same consumer-side model as topics and services. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the client's declared slots; the action server itself is binding-agnostic.
 
-An action slot resolves through its binding: the generated `fire_goal` reads the slot's bound producer's full `(core_node, instance_id)` wire address, and the goal, cancel, result, and feedback channels all address that one producer. Because the whole goal cycle needs exactly one server, the slot must be bound to exactly one producer; a slot bound to none (silent) or to several fails the call with `ServiceSlotNotPinned` naming the slot.
+An action slot resolves through its binding: the generated `fire_goal` reads the slot's bound producer's full `(core_node, instance_id)` wire address, and the goal, cancel, result, and feedback channels all address that one producer. Because the whole goal cycle needs exactly one server, the slot must be bound to exactly one producer; a slot bound to several fails the call with `ServiceSlotNotPinned` naming the slot (a slot bound to none cannot exist — launch rejects it).
 
 In a launcher / stack config:
 
@@ -676,7 +676,7 @@ Without a single bound producer, a goal request would be broadcast to every matc
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared slot with no binding is legal at launch (it stays silent), but firing a goal on it fails at call time.
+1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys and no unbound slots — a declared slot with no binding entry fails the launch before anything is spawned.
 2. **Every target must satisfy the slot.** A binding whose target `instance_id` deploys a different node than the slot expects (or one that does not conform to the requested interface) is rejected.
 3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.

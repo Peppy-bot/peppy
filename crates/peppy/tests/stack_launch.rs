@@ -957,10 +957,10 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&vec![config::runtime::ProducerRef::new(
+        Some(&bound(vec![config::runtime::ProducerRef::new(
             &core_node_name,
             producer_instance_id
-        )]),
+        )])),
         "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
          consumer's runtime config as a Pinned slot binding stamped with the daemon's core_node",
     );
@@ -1085,6 +1085,12 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
+}
+
+/// Expected-value helper for `slot_bindings` assertions: wraps producers
+/// in the non-empty-by-construction [`config::runtime::BoundProducers`].
+fn bound(producers: Vec<config::runtime::ProducerRef>) -> config::runtime::BoundProducers {
+    config::runtime::BoundProducers::new(producers).expect("test bindings are non-empty")
 }
 
 /// Writes a minimal `peppy_schema: "contract/v1"` document at `path` with
@@ -1361,10 +1367,10 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&vec![config::runtime::ProducerRef::new(
+        Some(&bound(vec![config::runtime::ProducerRef::new(
             &core_node_name,
             producer_instance_id
-        )]),
+        )])),
         "contract dep `{link_id}` should resolve to the conforming producer's instance \
          stamped with the daemon's core_node",
     );
@@ -1616,16 +1622,15 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
 
 /// Bidirectional contract communication under explicit bindings: two
 /// nodes each emit one contract (`conforms_to`) and consume the other
-/// through a contract dep. The controller's slot is bound to the arm in
-/// the launcher (conformance-matched, not node-identity-matched); the
-/// arm's slot is deliberately left unbound. The launcher must materialize
-/// the bound slot with the producer's full address and the unbound slot
-/// as an empty producer list (a silent slot, not an error), and the stack
-/// must come up regardless of deployment order. This is the end-to-end
-/// counterpart to the unit-level binding validator tests and the
-/// wire-level flow test in `peppylib/tests/topics.rs`.
+/// through a contract dep, each slot bound to the other instance in the
+/// launcher (conformance-matched, not node-identity-matched). The
+/// launcher must materialize both slots with the producer's full wire
+/// address, and the stack must come up regardless of deployment order.
+/// This is the end-to-end counterpart to the unit-level binding
+/// validator tests and the wire-level flow test in
+/// `peppylib/tests/topics.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
+async fn stack_launch_binds_contract_slots_in_both_directions() {
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1722,8 +1727,9 @@ async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
     );
 
     // robot_arm: emits joint_states (conforms_to joint_state_source),
-    // consumes joint_commands through its `controller` slot, deliberately
-    // left unbound here.
+    // consumes joint_commands through its `controller` slot, bound back
+    // to the controller in the launcher (every declared slot must be
+    // bound).
     let arm_run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
@@ -1821,7 +1827,9 @@ async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
     .await
     .expect("arm shutdown service should start");
 
-    // Bind the controller's slot to the arm; leave the arm's slot unbound.
+    // Bind both directions: the controller's slot to the arm and the
+    // arm's slot to the controller — an unbound slot would be rejected
+    // at the validation step.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
@@ -1836,7 +1844,10 @@ async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
                 }},
                 {{
                     source: {{ local: "{arm_path}" }},
-                    instances: [{{ instance_id: "{arm_instance_id}" }}]
+                    instances: [{{
+                        instance_id: "{arm_instance_id}",
+                        bindings: {{ {arm_link_id}: "{controller_instance_id}" }}
+                    }}]
                 }}
             ]
         }}"#,
@@ -1855,7 +1866,7 @@ async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
         },
     }
     .execute(&ctx)
-    .expect("launch should succeed with one bound and one unbound interface slot");
+    .expect("launch should succeed with both contract slots bound");
 
     // Both `sh` wrappers snapshot their runtime config before sleeping.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1900,10 +1911,10 @@ async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
             .node_instance
             .slot_bindings
             .get(controller_link_id),
-        Some(&vec![config::runtime::ProducerRef::new(
+        Some(&bound(vec![config::runtime::ProducerRef::new(
             &core_node_name,
             arm_instance_id,
-        )]),
+        )])),
         "arm_controller's `{controller_link_id}` interface slot should materialize with \
          the bound producer's full wire address",
     );
@@ -1916,9 +1927,132 @@ async fn stack_launch_binds_contract_slot_and_leaves_unbound_slot_silent() {
     });
     assert_eq!(
         arm_config.node_instance.slot_bindings.get(arm_link_id),
-        Some(&Vec::new()),
-        "robot_arm's `{arm_link_id}` interface slot should materialize as an empty \
-         producer list (a silent slot) when launched with no binding",
+        Some(&bound(vec![config::runtime::ProducerRef::new(
+            &core_node_name,
+            controller_instance_id,
+        )])),
+        "robot_arm's `{arm_link_id}` interface slot should materialize with the bound \
+         producer's full wire address",
+    );
+}
+
+/// Every declared `depends_on` slot must be bound: a launcher that omits a
+/// binding entry for a declared slot is rejected at the validation step —
+/// before anything is added or spawned — with an error naming the instance
+/// and the unfulfilled slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_unbound_slot() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let producer_name = "unbound_camera";
+    let consumer_name = "unbound_consumer";
+    let node_tag = "v1";
+    let link_id = "main_cam";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    let producer_path = write_node_config(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &["sh", "-c", "sleep 30"],
+    );
+    let consumer_run_cmd = vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()];
+    let consumer_depends_on = format!(
+        r#"{{
+            nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}" }}]
+        }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // The consumer instance carries no `bindings:` map at all, so its
+    // declared `main_cam` slot is unfulfilled.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer}" }},
+                    instances: [{{ instance_id: "cam_1" }}]
+                }},
+                {{
+                    source: {{ local: "{consumer}" }},
+                    instances: [{{ instance_id: "cons_1" }}]
+                }}
+            ]
+        }}"#,
+        producer = producer_path.display(),
+        consumer = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(3600),
+        },
+    }
+    .execute(&ctx);
+
+    let err_msg = result
+        .expect_err("launch must fail on an unfulfilled declared slot")
+        .to_string();
+    assert!(
+        err_msg.contains("cons_1")
+            && err_msg.contains("leaves slot `main_cam`")
+            && err_msg.contains("unfulfilled"),
+        "error should name the owning instance and the unfulfilled slot. Got:\n{err_msg}"
+    );
+    assert!(
+        err_msg.contains("--bind main_cam@"),
+        "error should show the exact bind syntax that fixes it. Got:\n{err_msg}"
+    );
+
+    // No spawn side-effect: neither node should appear in the stack.
+    let messenger_handle = ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = poll(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    assert!(
+        !graph
+            .nodes
+            .iter()
+            .any(|n| n.name == producer_name || n.name == consumer_name),
+        "rejected launcher must not have added or spawned anything. Graph: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }
 

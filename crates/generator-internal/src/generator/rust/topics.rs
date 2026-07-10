@@ -531,9 +531,10 @@ pub fn build_consumed_topic_subscription(
 /// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot:
 /// `Processor::consumer_filter(<manifest link_id>)`, the slot's bound
 /// producers. The validator pre-resolves the consumer's launcher / CLI
-/// binding map into per-slot producer lists, and the runtime processor
-/// caches them as [`peppylib::messaging::ConsumerFilter`]s; an unbound
-/// slot yields the silent filter and the subscription receives nothing.
+/// binding map into per-slot producer lists — every declared slot bound
+/// to at least one producer (unbound slots are rejected at launch) — and
+/// the runtime processor caches them as
+/// [`peppylib::messaging::ConsumerFilter`]s at startup.
 pub fn consumed_consumer_filter_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
@@ -545,9 +546,10 @@ pub fn consumed_consumer_filter_expression(
 /// bound producer into a local `let pinned_producer` for a generated
 /// [`peppylib::ActionMessenger::send_goal`] /
 /// [`peppylib::ServiceMessenger::poll`] call. Service and action calls
-/// address exactly one producer; a slot bound to zero or several
-/// producers fails with [`peppylib::PeppyError::ServiceSlotNotPinned`]
-/// instead of falling back to wildcard discovery.
+/// address exactly one producer; a slot bound to several producers
+/// fails with [`peppylib::PeppyError::ServiceSlotNotPinned`] instead of
+/// falling back to wildcard discovery (zero-producer slots cannot exist
+/// — launch rejects them).
 pub fn consumed_pinned_producer_statement(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {

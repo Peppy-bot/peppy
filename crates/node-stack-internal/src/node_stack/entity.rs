@@ -183,7 +183,7 @@ pub struct StartContext<'a> {
     /// recorded on the `TrackedNodeInstance` so the daemon can surface
     /// them via `node_info`. The launcher / CLI compute this from the
     /// validator's per-slot resolution before spawning.
-    pub slot_bindings: std::collections::BTreeMap<String, Vec<config::runtime::ProducerRef>>,
+    pub slot_bindings: config::runtime::SlotBindings,
     /// User + injected env vars (already passed through
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
@@ -1239,7 +1239,7 @@ pub struct TrackedNodeInstance {
     /// cross-check newly-staged binding plans against running
     /// consumers' existing claims. Empty when the node has no
     /// `depends_on` slots.
-    slot_bindings: std::collections::BTreeMap<String, Vec<config::runtime::ProducerRef>>,
+    slot_bindings: config::runtime::SlotBindings,
     /// Last `node_health` outcome recorded by the daemon's health monitor.
     /// Behind an `Arc<AtomicBool>` so the monitor can update it through the
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
@@ -1270,7 +1270,7 @@ impl TrackedNodeInstance {
         instance_id: Name,
         pid: Option<u32>,
         state: InstanceState,
-        slot_bindings: std::collections::BTreeMap<String, Vec<config::runtime::ProducerRef>>,
+        slot_bindings: config::runtime::SlotBindings,
     ) -> Self {
         Self {
             instance_id,
@@ -1288,9 +1288,7 @@ impl TrackedNodeInstance {
     /// this instance. Empty for instances whose manifest has no
     /// `depends_on` slots or for snapshot-restored / test-fixture
     /// instances built with an empty bindings map.
-    pub fn slot_bindings(
-        &self,
-    ) -> &std::collections::BTreeMap<String, Vec<config::runtime::ProducerRef>> {
+    pub fn slot_bindings(&self) -> &config::runtime::SlotBindings {
         &self.slot_bindings
     }
 
@@ -1410,7 +1408,10 @@ mod tests {
         let mut bindings = BTreeMap::new();
         bindings.insert(
             "arm".to_string(),
-            vec![config::runtime::ProducerRef::new("core_a", "arm-1")],
+            config::runtime::BoundProducers::new(vec![config::runtime::ProducerRef::new(
+                "core_a", "arm-1",
+            )])
+            .unwrap(),
         );
         let bound = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),

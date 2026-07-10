@@ -431,8 +431,8 @@ pub fn build_consumed_topic(
     );
     builder.line(&format!("{from_target},"));
     builder.line("topic_name,");
-    // The slot's bound producers: an unbound slot yields an empty list
-    // and the subscription stays silent.
+    // The slot's bound producers — never empty: a declared slot with no
+    // bound producers fails node startup before any subscribe runs.
     builder.line(&format!(
         "node_runner.bound_producers_for({:?}),",
         dependency.link_id

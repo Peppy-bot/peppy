@@ -161,7 +161,7 @@ If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, t
 
 ### Multi-producer contract bindings
 
-A topic slot can be bound to several conforming producers at once with the launcher's array form (`extras: ["cam_a", "cam_b"]`), and a slot left unbound is legal: the node still boots, but the slot stays silent until a launch binds it. That makes contract slots the natural shape for many-to-one fan-in whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+A topic slot can be bound to several conforming producers at once with the launcher's array form (`extras: ["cam_a", "cam_b"]`). That makes contract slots the natural shape for many-to-one fan-in whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared slot must be bound — a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {

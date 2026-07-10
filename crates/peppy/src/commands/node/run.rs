@@ -1,7 +1,7 @@
 use config::AnyType;
 use config::node::ConformsToItem;
 use config::runtime::PairingSlotBinding;
-use config::runtime::{Name, NodeInstanceConfig, ProducerRef, RuntimeConfig};
+use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, PairTarget, StackListRequest,
@@ -318,10 +318,10 @@ fn pairs_to_map(
 ///   fire) and real `conforms_to` (so the new instance can still match
 ///   them as a producer / contract-conformant target), but their
 ///   `depends_on` is `None`. Their declared slots were already resolved
-///   when each instance was first spawned, so re-materializing them here
-///   (with the empty `bindings` we synthesize) would produce meaningless
-///   all-unbound slot maps for instances whose real bindings live in
-///   their own boot configs.
+///   when each instance was first spawned; forwarding the real
+///   `depends_on` here (with the empty `bindings` we synthesize) would
+///   pit the every-slot-bound rule against instances whose real bindings
+///   live in their own boot configs.
 /// - **One live item**: for the synthesized new instance, carrying the
 ///   target's real `depends_on` + `conforms_to`. This is the only item
 ///   whose bindings are validated and materialized.
@@ -339,7 +339,7 @@ async fn validate_binds_against_stack(
     binds: &BTreeMap<String, Vec<String>>,
     pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
-) -> Result<Option<BTreeMap<String, Vec<ProducerRef>>>> {
+) -> Result<Option<config::runtime::SlotBindings>> {
     let stack_response = poll(
         &StackListRequest::new(false),
         messenger,
@@ -663,7 +663,7 @@ pub async fn run_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
+    slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
     timeouts: &TimeoutConfig,

@@ -148,20 +148,26 @@ pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str])
 }
 
 /// Run a snippet that depends on other snippets being added first.
-/// Dependencies are added to the node stack but not started.
+/// Each `(dep, dep_run_args)` entry is added, built, and started under
+/// the deterministic instance id `<dep>_1` (with `dep_run_args` appended,
+/// e.g. required `key=value` parameters), so the main node's `--bind`
+/// lines (passed via `start_args`) can name it — every declared
+/// `depends_on` slot must be bound, so consumer snippets launch against
+/// live producers.
 pub fn run_snippet_with_deps(
     snippets_root: &str,
     snippet_name: &str,
     start_args: &[&str],
-    deps: &[&str],
+    deps: &[(&str, &[&str])],
 ) {
     let peppy = peppy_binary();
     let node_dir = snippet_dir(snippets_root, snippet_name);
 
     let setup = setup_env(peppy, &node_dir);
 
-    // Add and build dependencies first (must happen before syncing the main node)
-    for dep in deps {
+    // Add, build, and run dependencies first (must happen before syncing
+    // the main node).
+    for (dep, dep_run_args) in deps {
         let dep_dir = snippet_dir(snippets_root, dep);
         let dep_config_path = dep_dir.join("peppy.json5");
         let dep_config = NodeConfigParser::from_path(&dep_config_path)
@@ -173,6 +179,17 @@ pub fn run_snippet_with_deps(
         );
         sync_and_add_node(peppy, &setup.daemon_state_path, &dep_dir, dep, &[]);
         build_node(peppy, &setup.daemon_state_path, &dep_dir, &dep_ref);
+        let dep_instance_id = format!("{dep}_1");
+        let mut dep_run_cmd = vec![
+            "node",
+            "run",
+            dep_ref.as_str(),
+            "--instance-id",
+            dep_instance_id.as_str(),
+        ];
+        dep_run_cmd.extend_from_slice(dep_run_args);
+        let dep_run = peppy_output(peppy, &setup.daemon_state_path, &dep_dir, &dep_run_cmd);
+        assert_success(&dep_run, &format!("peppy node run {dep_ref}"));
     }
 
     // Now sync, add, and build the main node

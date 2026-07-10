@@ -160,6 +160,26 @@ pub struct BindingUnknownSlot {
     pub declared_link_ids: String,
 }
 
+/// Payload for [`ParsingError::BindingSlotUnfulfilled`]. A declared
+/// `depends_on` slot with no binding entry. Every declared slot must be
+/// bound to at least one producer; unbound slots were removed together
+/// with `from_any`.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
+     `{slot_name}:{slot_tag}`) unfulfilled: every declared depends_on slot \
+     must be bound; add `bindings: {{ {link_id}: \"<producer_instance_id>\" }}` \
+     (or `--bind {link_id}@<producer_instance_id>`) or remove the dependency \
+     from the node manifest"
+)]
+pub struct BindingSlotUnfulfilled {
+    pub owner_instance_id: String,
+    pub link_id: String,
+    pub slot_kind: SlotKind,
+    pub slot_name: String,
+    pub slot_tag: String,
+}
+
 /// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
 /// `--pair` link_id) that matches no declared `depends_on.pairings` slot of
 /// the instance's node.
@@ -314,6 +334,12 @@ pub enum ParsingError {
     /// `depends_on.{nodes,interfaces}` slot link_id.
     #[error(transparent)]
     BindingUnknownSlot(Box<BindingUnknownSlot>),
+    /// A declared `depends_on` slot with no binding entry. Every declared
+    /// slot must be bound to at least one producer; unbound slots were
+    /// removed together with `from_any`. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
+    #[error(transparent)]
+    BindingSlotUnfulfilled(Box<BindingSlotUnfulfilled>),
     /// Two `--bind KEY@…` entries on the same invocation share the same
     /// `KEY`. Each `KEY` names a declared slot link_id and a slot's
     /// producer list is given in one place, so a repeated `KEY` would

@@ -6,20 +6,21 @@
 //! Every binding entry maps a declared slot to its producers: the KEY
 //! must equal a `depends_on.{nodes,contracts}` `link_id` and each
 //! target must deploy the slot's node (node slots) or conform to the
-//! slot's contract (contract slots). A declared slot with no binding
-//! entry stays unbound — the consumer's subscription for it is silent;
-//! there is no wildcard fallback and no free-form key.
+//! slot's contract (contract slots). Every declared slot must have a
+//! binding entry — an unfulfilled slot fails validation before anything
+//! is spawned; there is no wildcard fallback, no free-form key, and no
+//! unbound state.
 //!
 //! The validator emits both errors and the resolved per-slot producer
 //! lists per consumer instance, which the caller serializes into
 //! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
-    BindingContractNotConformed, BindingTargetMismatch, BindingUnknownSlot,
+    BindingContractNotConformed, BindingSlotUnfulfilled, BindingTargetMismatch, BindingUnknownSlot,
     DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use config::node::{ConformsToItem, DependsOn};
-use config::runtime::ProducerRef;
+use config::runtime::{BoundProducers, ProducerRef, SlotBindings};
 use std::collections::BTreeMap;
 
 use super::types::DeploymentInstance;
@@ -58,9 +59,11 @@ struct SlotMeta<'a> {
 #[derive(Debug, Default)]
 pub struct ValidatedBindings {
     pub errors: Vec<ParsingError>,
-    /// `consumer_instance_id → link_id → bound producers`. Every declared
-    /// slot of an instance appears, an unbound slot with an empty list.
-    pub slot_bindings: BTreeMap<String, BTreeMap<String, Vec<ProducerRef>>>,
+    /// `consumer_instance_id → link_id → bound producers`. When `errors`
+    /// is empty, every declared slot of an instance appears, each bound
+    /// to at least one producer ([`BoundProducers`] is non-empty by
+    /// construction).
+    pub slot_bindings: BTreeMap<String, SlotBindings>,
 }
 
 /// Run all binding validator rules over the snapshot. Returns
@@ -96,10 +99,10 @@ pub struct ValidatedBindings {
 /// 4. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
-///
-/// A declared slot with no binding entry is legal: it resolves to an
-/// empty producer list and the consumer's subscription for it stays
-/// silent.
+/// 5. Every declared `depends_on.{nodes,contracts}` slot must have a
+///    binding entry. A declared slot the bindings leave out emits one
+///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in link_id
+///    order) — there is no unbound state.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
     producer_core_node: &str,
@@ -124,7 +127,7 @@ pub fn validate_bindings(
             .unwrap_or_default();
 
         for instance in item.instances {
-            let mut resolved: BTreeMap<String, Vec<ProducerRef>> = BTreeMap::new();
+            let mut resolved: SlotBindings = BTreeMap::new();
             let mut seen_keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
 
             for (binding_key, target_ids) in &instance.bindings {
@@ -213,16 +216,32 @@ pub fn validate_bindings(
                     producers.push(ProducerRef::new(producer_core_node, target_id.clone()));
                 }
                 if !target_errors {
+                    let producers = BoundProducers::new(producers).expect(
+                        "binding entries carry at least one target (the deserializer and the \
+                         --bind parser both reject empty producer lists)",
+                    );
                     resolved.insert(binding_key.clone(), producers);
                 }
             }
 
-            // Materialize every declared slot the bindings left out as
-            // explicitly unbound (empty producer list), so the boot config
-            // carries the complete slot picture and the runtime keeps the
-            // slot silent.
-            for slot_link_id in declared_slots.keys() {
-                resolved.entry((*slot_link_id).to_string()).or_default();
+            // Rule 5: every declared slot must have a binding entry. One
+            // error per slot the bindings left out, in link_id
+            // (`BTreeMap`) order. Keyed on `seen_keys`, not `resolved`,
+            // so a slot whose entry failed target validation reports
+            // only its target error, not a bogus "add a binding" too.
+            for (slot_link_id, slot) in &declared_slots {
+                if !seen_keys.contains(*slot_link_id) {
+                    out.errors
+                        .push(ParsingError::BindingSlotUnfulfilled(Box::new(
+                            BindingSlotUnfulfilled {
+                                owner_instance_id: instance.instance_id.to_string(),
+                                link_id: (*slot_link_id).to_string(),
+                                slot_kind: slot.kind,
+                                slot_name: slot.name.to_string(),
+                                slot_tag: slot.tag.to_string(),
+                            },
+                        )));
+                }
             }
 
             if !resolved.is_empty() {
@@ -407,7 +426,7 @@ mod tests {
         out.slot_bindings
             .get(instance)
             .and_then(|m| m.get(link_id))
-            .cloned()
+            .map(|producers| producers.as_slice().to_vec())
     }
 
     #[test]
@@ -462,10 +481,10 @@ mod tests {
         assert_eq!(info.declared_link_ids, "main");
     }
 
-    /// A declared slot with no binding entry is legal and resolves to an
-    /// empty producer list: the consumer's subscription stays silent.
+    /// Rule 5: a declared slot with no binding entry is rejected — the
+    /// unbound state was removed together with `from_any`.
     #[test]
-    fn unbound_slot_resolves_to_empty_producer_list() {
+    fn unbound_slot_is_rejected() {
         let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
         let depends_on = parse_depends_on(
             r#"{
@@ -474,8 +493,72 @@ mod tests {
         );
         let items = vec![item("cons", "v1", &instances, Some(&depends_on))];
         let out = validate_bindings(&items, TEST_CORE);
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(slot_binding(&out, "cons1", "main"), Some(Vec::new()));
+        assert_eq!(
+            out.errors.len(),
+            1,
+            "expected one error, got {:?}",
+            out.errors
+        );
+        let ParsingError::BindingSlotUnfulfilled(info) = &out.errors[0] else {
+            panic!("expected BindingSlotUnfulfilled, got {:?}", out.errors[0]);
+        };
+        assert_eq!(info.owner_instance_id, "cons1");
+        assert_eq!(info.link_id, "main");
+        assert_eq!(info.slot_kind, SlotKind::Node);
+        assert_eq!(info.slot_name, "camera");
+        assert_eq!(info.slot_tag, "v1");
+        assert!(
+            !out.slot_bindings.contains_key("cons1"),
+            "an instance with no resolvable bindings must not appear in the resolution"
+        );
+    }
+
+    /// Rule 5: every unfulfilled slot on an instance gets its own error,
+    /// in link_id order, and a slot WITH a binding entry never
+    /// double-reports. `cons1` declares three slots and binds only
+    /// `middle`.
+    #[test]
+    fn rule5_reports_each_unfulfilled_slot_in_link_id_order() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { middle: "prod1" }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [
+                    { name: "camera", tag: "v1", link_id: "zeta" },
+                    { name: "camera", tag: "v1", link_id: "middle" },
+                    { name: "camera", tag: "v1", link_id: "alpha" }
+                ]
+            }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        let unfulfilled: Vec<&str> = out
+            .errors
+            .iter()
+            .map(|e| match e {
+                ParsingError::BindingSlotUnfulfilled(info) => info.link_id.as_str(),
+                other => panic!("expected only BindingSlotUnfulfilled, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            unfulfilled,
+            ["alpha", "zeta"],
+            "one error per unfulfilled slot, in link_id order; bound `middle` must not report"
+        );
+        // The bound slot still resolves (errors gate consumption at the
+        // caller, but the resolution itself is complete for bound slots).
+        assert_eq!(
+            slot_binding(&out, "cons1", "middle"),
+            Some(vec![ProducerRef::new(TEST_CORE, "prod1")])
+        );
     }
 
     /// Rule 2: a target repeated within one slot's list is rejected. The
@@ -722,9 +805,9 @@ mod tests {
         );
     }
 
-    /// A well-formed launcher (matching the openarm backbone shape: two
-    /// bound contract slots and one left unbound) passes with no errors
-    /// and every declared slot resolves.
+    /// A well-formed launcher (matching the openarm backbone shape:
+    /// every declared contract slot bound) passes with no errors and
+    /// every declared slot resolves.
     #[test]
     fn openarm_style_manifest_resolves_all_slots() {
         let cons_instances = parse_instances(
@@ -732,7 +815,8 @@ mod tests {
                 instance_id: "backbone_inst_1",
                 bindings: {
                     wrist_left_camera: "depth_cam_inst1",
-                    wrist_right_camera: "depth_cam_inst1"
+                    wrist_right_camera: "depth_cam_inst1",
+                    extra_cam: "depth_cam_inst1"
                 }
             }]"#,
         );
@@ -769,19 +853,69 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        assert_eq!(
-            slot_binding(&out, "backbone_inst_1", "wrist_left_camera"),
-            Some(vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")])
+        for link_id in ["wrist_left_camera", "wrist_right_camera", "extra_cam"] {
+            assert_eq!(
+                slot_binding(&out, "backbone_inst_1", link_id),
+                Some(vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")])
+            );
+        }
+    }
+
+    /// The same openarm backbone shape with `extra_cam` left out of the
+    /// bindings map is rejected by rule 5, naming the slot's contract.
+    #[test]
+    fn openarm_style_manifest_rejects_unbound_extra_cam() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "backbone_inst_1",
+                bindings: {
+                    wrist_left_camera: "depth_cam_inst1",
+                    wrist_right_camera: "depth_cam_inst1"
+                }
+            }]"#,
         );
-        assert_eq!(
-            slot_binding(&out, "backbone_inst_1", "wrist_right_camera"),
-            Some(vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")])
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [],
+                contracts: [
+                    { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
+                    { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
+                    { name: "depth_camera", tag: "v1", link_id: "extra_cam" }
+                ]
+            }"#,
         );
+        let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
+        let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
+        let items = vec![
+            item(
+                "openarm01_backbone",
+                "v1",
+                &cons_instances,
+                Some(&depends_on),
+            ),
+            item_with_conforms_to(
+                "depth_camera",
+                "v1",
+                &prod_instances,
+                None,
+                &producer_conforms,
+            ),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(
-            slot_binding(&out, "backbone_inst_1", "extra_cam"),
-            Some(Vec::new()),
-            "the unbound slot must materialize as an empty producer list"
+            out.errors.len(),
+            1,
+            "expected one error, got {:?}",
+            out.errors
         );
+        let ParsingError::BindingSlotUnfulfilled(info) = &out.errors[0] else {
+            panic!("expected BindingSlotUnfulfilled, got {:?}", out.errors[0]);
+        };
+        assert_eq!(info.owner_instance_id, "backbone_inst_1");
+        assert_eq!(info.link_id, "extra_cam");
+        assert_eq!(info.slot_kind, SlotKind::Contract);
+        assert_eq!(info.slot_name, "depth_camera");
+        assert_eq!(info.slot_tag, "v1");
     }
 
     /// An "inert" item (`depends_on: None`) contributes no slots of its
@@ -1167,7 +1301,10 @@ mod tests {
         let out = validate_bindings(&items, "daemon_west");
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         let resolved = out.slot_bindings.get("cons1").expect("cons1 bindings");
-        let producers: Vec<&ProducerRef> = resolved.values().flatten().collect();
+        let producers: Vec<&ProducerRef> = resolved
+            .values()
+            .flat_map(BoundProducers::as_slice)
+            .collect();
         assert_eq!(producers.len(), 2, "both bound producers must be stamped");
         for producer in producers {
             assert_eq!(producer.core_node, "daemon_west");

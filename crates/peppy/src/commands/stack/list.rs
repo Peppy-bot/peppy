@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::runtime::{PairingSlotBinding, ProducerRef};
+use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
 
@@ -370,13 +370,11 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// Right-hand side of a `link_id -> …` binding line: the producers the
 /// slot is bound to, rendered as `instance_id@core_node` (the full wire
 /// address every binding carries), comma-separated for multi-producer
-/// slots. An unbound slot renders as `(unbound)` so the line never trails
-/// as `link_id -> ` with an empty right-hand side.
-fn format_slot_binding(producers: &[ProducerRef]) -> String {
-    if producers.is_empty() {
-        return "(unbound)".to_string();
-    }
+/// slots. Never empty — every declared slot is bound to at least one
+/// producer, so the line never trails as `link_id -> `.
+fn format_slot_binding(producers: &config::runtime::BoundProducers) -> String {
     producers
+        .as_slice()
         .iter()
         .map(|producer| format!("{}@{}", producer.instance_id, producer.core_node))
         .collect::<Vec<_>>()
@@ -472,6 +470,7 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 mod tests {
     use super::super::table::skip_csi;
     use super::*;
+    use config::runtime::ProducerRef;
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
@@ -520,7 +519,13 @@ mod tests {
                     healthy: true,
                     slot_bindings: binds
                         .into_iter()
-                        .map(|(slot, binding)| (slot.to_string(), binding))
+                        .map(|(slot, binding)| {
+                            (
+                                slot.to_string(),
+                                config::runtime::BoundProducers::new(binding)
+                                    .expect("test bindings are non-empty"),
+                            )
+                        })
                         .collect(),
                     pairing_slots: std::collections::BTreeMap::new(),
                 })
@@ -896,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn bindings_table_renders_multi_producer_and_unbound_slots() {
+    fn bindings_table_renders_multi_producer_slots_sorted_by_link_id() {
         let nodes = vec![binding_node(
             "nav",
             vec![(
@@ -910,7 +915,7 @@ mod tests {
                             ProducerRef::new("core_a", "cam-2"),
                         ],
                     ),
-                    ("extra", Vec::new()),
+                    ("extra", vec![ProducerRef::new("core_a", "lidar-1")]),
                 ],
             )],
         )];
@@ -921,8 +926,8 @@ mod tests {
             .find("sensors → cam-1@core_a, cam-2@core_a")
             .expect("multi-producer slots should be comma-joined");
         let extra_at = section
-            .find("extra → (unbound)")
-            .expect("an unbound slot should render (unbound)");
+            .find("extra → lidar-1@core_a")
+            .expect("a single-producer slot should render its wire address");
         // Sorted by link id regardless of insertion order: "extra" < "sensors".
         assert!(
             extra_at < sensors_at,
@@ -1027,27 +1032,6 @@ mod tests {
         assert!(
             !section.contains("BINDINGS"),
             "no bindings table should render when no instances exist:\n{out}"
-        );
-    }
-
-    #[test]
-    fn bindings_table_renders_unbound_for_empty_producer_list() {
-        // An unbound slot must not render a dangling `slot -> ` with an
-        // empty right-hand side.
-        let nodes = vec![binding_node(
-            "nav",
-            vec![("nav-1", InstanceState::Running, vec![("sensors", vec![])])],
-        )];
-        let out = format_stack_list(&nodes, &[], false);
-        let section = bindings_section(&out);
-
-        assert!(
-            section.contains("sensors → (unbound)"),
-            "an unbound slot should render (unbound):\n{out}"
-        );
-        assert!(
-            !section.contains("sensors → \n") && !section.contains("sensors →  "),
-            "binding line must not trail with an empty producer:\n{out}"
         );
     }
 

@@ -1140,16 +1140,15 @@ async fn install_node_services(
 // ─── --bind binding-driven-routing integration tests ───────────────────────
 
 /// Consumer manifest declares two `link_id` slots. Running the consumer
-/// without `--bind` for either of them is legal: unbound slots stay
-/// silent (there is no wildcard fallback and no must-bind rule), so the
-/// spawn proceeds.
+/// without `--bind` for either of them fails the preflight: every
+/// declared slot must be bound, and the error names each unfulfilled
+/// slot before any spawn side-effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_succeeds_with_unbound_slots() {
+async fn node_run_rejects_unbound_slots() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_bind_reject_producer";
@@ -1179,10 +1178,6 @@ async fn node_run_succeeds_with_unbound_slots() {
     )
     .await;
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services =
-        install_node_services(&node_messenger, &core_node_name, consumer_name, instance_id).await;
-
     let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
@@ -1200,12 +1195,20 @@ async fn node_run_succeeds_with_unbound_slots() {
     }
     .execute(&node_ctx);
 
-    result.expect("node run must succeed with unbound slots (they stay silent)");
+    let msg = result
+        .expect_err("node run must fail when declared slots are left unbound")
+        .to_string();
+    assert!(
+        msg.contains("unfulfilled")
+            && msg.contains("leaves slot `wrist_left`")
+            && msg.contains("leaves slot `wrist_right`"),
+        "preflight should report one unfulfilled-slot error per declared slot. Got: {msg}"
+    );
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("Started node instance"),
-        "run should complete with unbound slots. Logs:\n{logs}"
+        !logs.contains("Started node instance"),
+        "a rejected run must not spawn anything. Logs:\n{logs}"
     );
 }
 
@@ -1653,18 +1656,19 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     );
 }
 
-/// A new instance launched with no `--bind` runs clean even while other
-/// consumers with bound slots are already running: unbound slots are
-/// silent, and inert items for already-running consumers participate in
+/// A new instance launched with no `--bind` fails on ITS OWN declared
+/// slot only: inert items for already-running consumers participate in
 /// producer lookup and stack-wide `instance_id` uniqueness without
-/// contributing slots of their own.
+/// contributing slots of their own, so the unfulfilled-slot error names
+/// the new instance's slot and never the running consumer's.
 ///
 /// Setup: producer `cam` is built, plus consumer `cons_a` (running
 /// with both slots bound) and consumer `cons_b` (a second consumer
 /// with one declared `link_id`). Launching `cons_b` with no `--bind`
-/// must succeed with its slot left silent.
+/// must fail naming `second_consumer_pin`, without dragging `cons_a`'s
+/// already-satisfied slots into the error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_succeeds_with_unbound_slot_when_others_run_clean() {
+async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1767,15 +1771,8 @@ async fn node_run_succeeds_with_unbound_slot_when_others_run_clean() {
     .expect("consumer_a run with both pins bound should succeed");
 
     // cons_b has a declared slot but we deliberately omit --bind: the
-    // slot stays silent and the run must succeed, unaffected by cons_a's
-    // bound slots.
-    let _cons_b_svcs = install_node_services(
-        &node_messenger,
-        &core_node_name,
-        consumer_b_name,
-        consumer_b_instance_id,
-    )
-    .await;
+    // preflight must reject the run naming cons_b's own slot, and only
+    // that slot — cons_a's bound slots are inert items here.
     let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
@@ -1793,7 +1790,17 @@ async fn node_run_succeeds_with_unbound_slot_when_others_run_clean() {
     }
     .execute(&node_ctx);
 
-    result.expect("cons_b with no --bind must run clean with its slot silent");
+    let msg = result
+        .expect_err("cons_b with no --bind must fail its unfulfilled-slot preflight")
+        .to_string();
+    assert!(
+        msg.contains("leaves slot `second_consumer_pin`") && msg.contains(consumer_b_instance_id),
+        "error should name cons_b's own unfulfilled slot. Got: {msg}"
+    );
+    assert!(
+        !msg.contains("wrist_left") && !msg.contains("wrist_right"),
+        "inert running consumers must not be dragged into the new instance's error. Got: {msg}"
+    );
 }
 
 /// When the target node already has running instances, the pre-flight

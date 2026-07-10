@@ -46,7 +46,7 @@ The shape says nothing about which node sits on the other end. A consumer couple
 | [Pairing slot](/advanced_guides/pairing/) | `depends_on.pairings` | One instance playing the complementary role of the pairing | Exactly one peer at a time, exclusive, both directions |
 
 :::note
-A topic slot receives from every producer bound to it and from no one else; a slot left unbound stays silent. For services and actions, every call is answered by exactly one producer: the slot must be bound to a single producer, and the call addresses it directly. See [Why exactly one producer?](/advanced_guides/services/#why-exactly-one-producer).
+A topic slot receives from every producer bound to it and from no one else; every declared slot must be bound (launch rejects unbound slots). For services and actions, every call is answered by exactly one producer: the slot must be bound to a single producer, and the call addresses it directly. See [Why exactly one producer?](/advanced_guides/services/#why-exactly-one-producer).
 :::
 
 - Use a **direct node dependency** when exactly one implementation exists and substitution is not a goal. It is the simplest wiring and the default.

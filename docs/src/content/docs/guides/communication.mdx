@@ -225,7 +225,7 @@ Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A slot left without a `--bind` is legal but stays silent: the receiver would boot and simply never yield a message.
+A slot left without a `--bind` is an error: every declared slot must be bound, and the run is rejected before the node spawns.
 
 When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
@@ -307,7 +307,7 @@ Dependencies
   hello_receiver:v1 ➔ hello_world_param:v1
 ```
 
-The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to the two producers we bound, each rendered as `instance_id@core_node` (its full wire address). A slot only ever receives from the producers bound to it: that is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above, and why an unbound slot renders `(unbound)` and stays silent.
+The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to the two producers we bound, each rendered as `instance_id@core_node` (its full wire address). A slot only ever receives from the producers bound to it: that is exactly why `vigorous-buck-8117` prints messages from both `gifted-moser-9365` and `admiring-black-0614` above.
 
 ---
 We'll explore [services](/advanced_guides/services) and [actions](/advanced_guides/actions) in the advanced guides, although they fundamentally work the same way.
