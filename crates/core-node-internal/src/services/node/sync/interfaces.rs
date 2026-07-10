@@ -62,12 +62,12 @@ pub fn collect_consumed_interfaces(
     // still addresses native producers via `SenderTarget::Node` and conformed
     // ones via `SenderTarget::Interface`.
     let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
-    // Memoized parsed interface contracts for `depends_on.interfaces`
+    // Memoized parsed contracts for `depends_on.contracts`
     // entries, keyed by `link_id` so two entries with the same
     // `(name, tag)` but different sha256 pin or `from_any` flag cache and
-    // resolve separately. `resolve_interface_doc` handles SHA-pin matching
+    // resolve separately. `resolve_contract_doc` handles SHA-pin matching
     // and on-disk drift detection per load.
-    let mut iface_dep_contracts: HashMap<String, daemon_config::interface::PeppyInterface> =
+    let mut iface_dep_contracts: HashMap<String, daemon_config::contract::PeppyContract> =
         HashMap::new();
 
     for (link_id, entry) in dep_lookup.iter() {
@@ -98,7 +98,7 @@ pub fn collect_consumed_interfaces(
                 if iface_dep_contracts.contains_key(link_id) {
                     continue;
                 }
-                let parsed = resolve_interface_doc(
+                let parsed = resolve_contract_doc(
                     peppy_dirs,
                     &entry.name,
                     &entry.tag,
@@ -230,14 +230,14 @@ pub fn collect_consumed_interfaces(
 fn resolve_consumed_offering<T>(
     dep_lookup: &HashMap<String, DependencyLookupEntry>,
     node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
-    iface_dep_contracts: &HashMap<String, daemon_config::interface::PeppyInterface>,
+    iface_dep_contracts: &HashMap<String, daemon_config::contract::PeppyContract>,
     link_id: &str,
     lookup_name: &str,
     extract_from_node: impl FnOnce(
         &DependencyOfferings,
         &str,
     ) -> Option<(T, Option<generator::InterfaceOrigin>)>,
-    extract_from_interface: impl FnOnce(&daemon_config::interface::PeppyInterface, &str) -> Option<T>,
+    extract_from_interface: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
 ) -> Option<(T, generator::DependencyContext)> {
     let entry = dep_lookup.get(link_id)?;
     match entry.kind {
@@ -290,36 +290,36 @@ pub(super) fn action_message_from_exposed(
     }
 }
 
-/// Loads a `PeppyInterface` document from the local interface cache for
+/// Loads a `PeppyContract` document from the local contract cache for
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
-/// against the cached fingerprint. Returns the parsed interface document
+/// against the cached fingerprint. Returns the parsed contract document
 /// alongside the cache entry's path, so callers can pass through to the
 /// `InterfaceOrigin` stamping step. Shared between [`resolve_conforms_to`]
-/// (producer side) and the `depends_on.interfaces` resolution path
+/// (producer side) and the `depends_on.contracts` resolution path
 /// (consumer side).
-pub(crate) fn resolve_interface_doc(
+pub(crate) fn resolve_contract_doc(
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<daemon_config::interface::PeppyInterface, String> {
-    let cache = repo_cache::load_interface_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load interface cache: {e}"))?;
+) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
+    let cache = repo_cache::load_contract_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load contract cache: {e}"))?;
 
     let entry = match sha256_pin {
-        Some(sha) => repo_cache::lookup_interface_by_sha256(&cache, name, tag, sha),
-        None => repo_cache::lookup_interface(&cache, name, tag),
+        Some(sha) => repo_cache::lookup_contract_by_sha256(&cache, name, tag, sha),
+        None => repo_cache::lookup_contract(&cache, name, tag),
     };
 
     repo_cache::resolve_cached_doc(
         peppy_dirs,
-        "interface",
+        "contract",
         &format!("{name}:{tag}"),
         sha256_pin,
         entry.map(Into::into),
         |content| {
-            daemon_config::interface::PeppyInterfaceParser::from_content(content)
+            daemon_config::contract::PeppyContractParser::from_content(content)
                 .map_err(|e| e.to_string())
         },
         on_feedback,
@@ -390,7 +390,7 @@ pub fn resolve_conforms_to(
         let name = item.name.as_str();
         let tag = item.tag.as_str();
         let parsed =
-            resolve_interface_doc(peppy_dirs, name, tag, item.sha256.as_deref(), on_feedback)?;
+            resolve_contract_doc(peppy_dirs, name, tag, item.sha256.as_deref(), on_feedback)?;
 
         let origin = InterfaceOrigin {
             iface_name: name.to_string(),
@@ -449,22 +449,22 @@ mod conforms_to_tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Writes an interface manifest to `dir/{name}_{tag}.json5` and seeds the
-    /// returned `InterfaceCacheEntry` with the matching sha256. Returns
+    /// Writes a contract manifest to `dir/{name}_{tag}.json5` and seeds the
+    /// returned `ContractCacheEntry` with the matching sha256. Returns
     /// `(entry, abs_path)` so callers can either keep or mutate the entry
     /// (e.g. for the drift test).
-    fn seed_interface(
+    fn seed_contract(
         dir: &std::path::Path,
         name: &str,
         tag: &str,
         body: &str,
-    ) -> repo_cache::InterfaceCacheEntry {
+    ) -> repo_cache::ContractCacheEntry {
         let file_name = format!("{name}_{tag}.json5");
         let path = dir.join(&file_name);
-        fs::write(&path, body).expect("write interface file");
+        fs::write(&path, body).expect("write contract file");
         let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
-        repo_cache::InterfaceCacheEntry {
-            interface_name: name.to_string(),
+        repo_cache::ContractCacheEntry {
+            contract_name: name.to_string(),
             tag: tag.to_string(),
             sha256: sha,
             source_type: RepoSourceKind::Fs,
@@ -475,22 +475,22 @@ mod conforms_to_tests {
         }
     }
 
-    /// Builds an interfaces.json5 cache + dir-rooted `PeppyDirs` from a set of
+    /// Builds a contracts.json5 cache + dir-rooted `PeppyDirs` from a set of
     /// seeded entries.
     fn make_peppy_dirs_with_cache(
-        entries: &[repo_cache::InterfaceCacheEntry],
+        entries: &[repo_cache::ContractCacheEntry],
     ) -> (TempDir, PeppyDirs) {
         let tmp = TempDir::new().expect("temp dir");
         let dirs = PeppyDirs::new(tmp.path().to_path_buf());
         fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
-        let cache_path = repo_cache::interfaces_repo_cache_path(&dirs);
+        let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
         let json = serde_json5::to_string(&entries.to_vec()).expect("serialize cache");
         fs::write(&cache_path, json).expect("write cache file");
         (tmp, dirs)
     }
 
     const DEPTH_V1_BODY: &str = r#"{
-        peppy_schema: "interface/v1",
+        peppy_schema: "contract/v1",
         manifest: { name: "depth_camera", tag: "v1" },
         interfaces: {
             topics: [
@@ -522,13 +522,13 @@ mod conforms_to_tests {
     }
 
     /// Happy path: a `conforms_to` entry whose `(name, tag)` is present in the
-    /// interfaces cache yields the underlying interface's topics, each wrapped
+    /// contracts cache yields the underlying contract's topics, each wrapped
     /// as `EmittedTopic` and stamped with `origin` pointing back to the source
-    /// interface so downstream codegen can attribute the topic.
+    /// contract so downstream codegen can attribute the topic.
     #[test]
     fn resolves_cache_hit_with_origin() {
         let tmp = TempDir::new().unwrap();
-        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         let cfg = interfaces_with_conforms(vec![ConformsToItem {
@@ -572,7 +572,7 @@ mod conforms_to_tests {
     #[test]
     fn duplicate_raw_entries_are_rejected() {
         let tmp = TempDir::new().unwrap();
-        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         // Two entries with the same raw `(name, tag)`; sha256 differing
@@ -603,9 +603,9 @@ mod conforms_to_tests {
         // pass that the wire-path and generated-symbol layers apply. Refuse
         // rather than silently merge.
         let tmp = TempDir::new().unwrap();
-        let entry_a = seed_interface(tmp.path(), "depth_camera", "v_1", DEPTH_V1_BODY);
+        let entry_a = seed_contract(tmp.path(), "depth_camera", "v_1", DEPTH_V1_BODY);
         let body_b = DEPTH_V1_BODY.replace("\"v1\"", "\"v-1\"");
-        let entry_b = seed_interface(tmp.path(), "depth_camera", "v-1", &body_b);
+        let entry_b = seed_contract(tmp.path(), "depth_camera", "v-1", &body_b);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry_a, entry_b]);
 
         let cfg = interfaces_with_conforms(vec![
@@ -629,7 +629,7 @@ mod conforms_to_tests {
     }
 
     const ARM_V1_WITH_SERVICE_AND_ACTION: &str = r#"{
-        peppy_schema: "interface/v1",
+        peppy_schema: "contract/v1",
         manifest: { name: "arm", tag: "v1" },
         interfaces: {
             services: [
@@ -648,7 +648,7 @@ mod conforms_to_tests {
     #[test]
     fn resolves_cache_hit_with_service_and_action_origin() {
         let tmp = TempDir::new().unwrap();
-        let entry = seed_interface(tmp.path(), "arm", "v1", ARM_V1_WITH_SERVICE_AND_ACTION);
+        let entry = seed_contract(tmp.path(), "arm", "v1", ARM_V1_WITH_SERVICE_AND_ACTION);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         let cfg = interfaces_with_conforms(vec![ConformsToItem {
@@ -691,7 +691,7 @@ mod conforms_to_tests {
     #[test]
     fn sha256_drift_is_rejected() {
         let tmp = TempDir::new().unwrap();
-        let entry = seed_interface(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         // Rewrite the underlying file so its fingerprint no longer matches
         // the cache's `sha256`, i.e. the cache thinks the file is X but it
         // is now Y. resolve_conforms_to must catch this.
@@ -701,7 +701,7 @@ mod conforms_to_tests {
         )
         .unwrap();
         // Keep the stale (pre-rewrite) sha256 in the cache entry. We need to
-        // ensure load_interface_cache trusts it.
+        // ensure load_contract_cache trusts it.
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         let cfg = interfaces_with_conforms(vec![ConformsToItem {
@@ -729,7 +729,7 @@ mod conforms_to_tests {
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent).expect("create parent dirs");
         }
-        fs::write(&abs, body).expect("write interface file");
+        fs::write(&abs, body).expect("write contract file");
 
         let mut index = repo.index().expect("open index");
         index
@@ -739,7 +739,7 @@ mod conforms_to_tests {
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
         let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        repo.commit(Some("HEAD"), &sig, &sig, "seed interface", &tree, &[])
+        repo.commit(Some("HEAD"), &sig, &sig, "seed contract", &tree, &[])
             .expect("commit");
         repo.head()
             .expect("head")
@@ -768,8 +768,8 @@ mod conforms_to_tests {
         );
         let repo_url = source_repo_dir.display().to_string();
 
-        let entry = repo_cache::InterfaceCacheEntry {
-            interface_name: "depth_camera".to_string(),
+        let entry = repo_cache::ContractCacheEntry {
+            contract_name: "depth_camera".to_string(),
             tag: "v1".to_string(),
             sha256: config::fingerprint::fingerprint_for_bytes(DEPTH_V1_BODY.as_bytes()),
             source_type: RepoSourceKind::Git,
@@ -778,7 +778,7 @@ mod conforms_to_tests {
             path: "cameras/depth_camera.json5".to_string(),
             repo_id: 0,
         };
-        let cache_path = repo_cache::interfaces_repo_cache_path(&dirs);
+        let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
         fs::write(
             &cache_path,
             serde_json5::to_string(&vec![entry]).expect("serialize cache"),
@@ -828,8 +828,8 @@ mod conforms_to_tests {
         );
         let repo_url = source_repo_dir.display().to_string();
 
-        let entry = repo_cache::InterfaceCacheEntry {
-            interface_name: "depth_camera".to_string(),
+        let entry = repo_cache::ContractCacheEntry {
+            contract_name: "depth_camera".to_string(),
             tag: "v1".to_string(),
             // Deliberately wrong fingerprint; must trigger drift detection.
             sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -839,7 +839,7 @@ mod conforms_to_tests {
             path: "cameras/depth_camera.json5".to_string(),
             repo_id: 0,
         };
-        let cache_path = repo_cache::interfaces_repo_cache_path(&dirs);
+        let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
         fs::write(
             &cache_path,
             serde_json5::to_string(&vec![entry]).expect("serialize cache"),
@@ -863,7 +863,7 @@ mod conforms_to_tests {
     #[test]
     fn consumed_service_with_response_only_format_resolves() {
         const UVC_V1_BODY: &str = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "uvc_camera", tag: "v1" },
             interfaces: {
                 services: [
@@ -880,7 +880,7 @@ mod conforms_to_tests {
         }"#;
 
         let tmp = TempDir::new().unwrap();
-        let entry = seed_interface(tmp.path(), "uvc_camera", "v1", UVC_V1_BODY);
+        let entry = seed_contract(tmp.path(), "uvc_camera", "v1", UVC_V1_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         let manifest: config::node::Manifest = serde_json5::from_str(
@@ -888,7 +888,7 @@ mod conforms_to_tests {
                 name: "uvc_consumer",
                 tag: "v1",
                 depends_on: {
-                    interfaces: [
+                    contracts: [
                         { name: "uvc_camera", tag: "v1", link_id: "camera" }
                     ]
                 }

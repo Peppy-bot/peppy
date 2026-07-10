@@ -23,7 +23,7 @@ The manifest defines a node's identity:
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
 | `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
-| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or interface contracts (`depends_on.interfaces`); see [Interface conformance](/advanced_guides/interface_conformance) |
+| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or contracts (`depends_on.contracts`); see [Contract conformance](/advanced_guides/contract_conformance) |
 
 A node is uniquely identified by its `name:tag` combination.
 
@@ -53,7 +53,7 @@ Nodes communicate through three types of interfaces:
 
 A node can **expose** interfaces (make them available to others) and **consume** interfaces from other nodes.
 
-Two higher-level constructs build on these: [interface conformance](/advanced_guides/interface_conformance/), where the contract lives in a standalone document and any conforming producer can fill the consumer's slot, and [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
+Two higher-level constructs build on these: [contract conformance](/advanced_guides/contract_conformance/), where the contract lives in a standalone document and any conforming producer can fill the consumer's slot, and [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
 
 ## Node Instance
 

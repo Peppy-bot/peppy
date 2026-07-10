@@ -57,7 +57,7 @@ fn make_consumer_depend_on_provider(
             link_id: provider_name.to_string(),
             from_any: false,
         }],
-        interfaces: vec![],
+        contracts: vec![],
         pairings: vec![],
     });
 

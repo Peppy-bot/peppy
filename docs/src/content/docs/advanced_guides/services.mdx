@@ -276,7 +276,7 @@ A consumer that wires two specific depth cameras to dedicated wrist slots and le
     name: "openarm01_backbone",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
         { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true },

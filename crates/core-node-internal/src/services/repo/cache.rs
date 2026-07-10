@@ -1,5 +1,5 @@
 //! Typed loaders for the four repo caches written by `repo_refresh`:
-//! `~/.peppy/cache/nodes.json5`, `launchers.json5`, `interfaces.json5`,
+//! `~/.peppy/cache/nodes.json5`, `launchers.json5`, `contracts.json5`,
 //! and `pairings.json5`. Each file lists every item of its kind
 //! discovered across every configured repository (FS, Git, or HTTP).
 //! This module gives the rest of the daemon a typed view over those
@@ -37,7 +37,7 @@ use tracing::warn;
 /// One entry as it appears in `nodes.json5`.
 ///
 /// `path` points at the `peppy.json5` file itself (matching launcher
-/// and interface semantics). Callers that need the containing directory
+/// and contract semantics). Callers that need the containing directory
 /// derive it via `Path::new(&entry.path).parent()`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeCacheEntry {
@@ -104,14 +104,14 @@ pub struct LauncherCacheEntry {
     pub repo_id: u32,
 }
 
-/// One entry as it appears in `interfaces.json5`. Interfaces are
-/// stand-alone JSON5 documents (`peppy_schema: "interface/v1"`) that
+/// One entry as it appears in `contracts.json5`. Contracts are
+/// stand-alone JSON5 documents (`peppy_schema: "contract/v1"`) that
 /// describe a reusable contract of topics / services / actions. The
 /// `sha256` of the manifest bytes is the primary way to disambiguate
 /// entries that share `(name, tag)`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct InterfaceCacheEntry {
-    pub interface_name: String,
+pub struct ContractCacheEntry {
+    pub contract_name: String,
     pub tag: String,
     /// SHA-256 of the manifest file bytes.
     pub sha256: String,
@@ -123,10 +123,10 @@ pub struct InterfaceCacheEntry {
     /// refresh. `None` for FS entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ref: Option<String>,
-    /// Absolute path (fs) or repo-relative (git) path to the interface
+    /// Absolute path (fs) or repo-relative (git) path to the contract
     /// manifest file.
     pub path: String,
-    /// The id of the repository entry this interface was discovered
+    /// The id of the repository entry this contract was discovered
     /// under. Derived at read time and never serialized back to disk.
     #[serde(skip)]
     pub repo_id: u32,
@@ -317,14 +317,14 @@ impl RepoCacheEntry for LauncherCacheEntry {
     }
 }
 
-impl RepoCacheEntry for InterfaceCacheEntry {
-    const KIND: &'static str = "interface";
-    const FILE_NAME: &'static str = "interfaces.json5";
-    const ITEM_KIND: RepoItemKind = RepoItemKind::Interface;
+impl RepoCacheEntry for ContractCacheEntry {
+    const KIND: &'static str = "contract";
+    const FILE_NAME: &'static str = "contracts.json5";
+    const ITEM_KIND: RepoItemKind = RepoItemKind::Contract;
 
     fn from_discovered(d: DiscoveredEntry) -> Self {
         Self {
-            interface_name: d.name,
+            contract_name: d.name,
             tag: d.tag,
             sha256: d.sha256,
             source_type: d.source_type,
@@ -336,7 +336,7 @@ impl RepoCacheEntry for InterfaceCacheEntry {
     }
 
     fn name(&self) -> &str {
-        &self.interface_name
+        &self.contract_name
     }
     fn tag(&self) -> &str {
         &self.tag
@@ -365,7 +365,7 @@ impl RepoCacheEntry for InterfaceCacheEntry {
     // `sha256` is required: it is the primary way sha-pinned syncs
     // disambiguate same-`(name, tag)` entries.
     fn is_well_formed(&self) -> bool {
-        !self.interface_name.is_empty()
+        !self.contract_name.is_empty()
             && !self.tag.is_empty()
             && !self.path.is_empty()
             && !self.sha256.is_empty()
@@ -603,24 +603,24 @@ pub fn lookup_launcher<'a>(
     lookup_repo_entry(entries, name, "")
 }
 
-/// Returns the highest-priority (lowest `repo_id`) interface entry
+/// Returns the highest-priority (lowest `repo_id`) contract entry
 /// matching `(name, tag)`. Returns `None` when no entry matches.
-pub fn lookup_interface<'a>(
-    entries: &'a [InterfaceCacheEntry],
+pub fn lookup_contract<'a>(
+    entries: &'a [ContractCacheEntry],
     name: &str,
     tag: &str,
-) -> Option<&'a InterfaceCacheEntry> {
+) -> Option<&'a ContractCacheEntry> {
     lookup_repo_entry(entries, name, tag)
 }
 
-/// Returns the interface entry whose `(name, tag, sha256)` triple
+/// Returns the contract entry whose `(name, tag, sha256)` triple
 /// matches exactly. Returns `None` when no entry matches.
-pub fn lookup_interface_by_sha256<'a>(
-    entries: &'a [InterfaceCacheEntry],
+pub fn lookup_contract_by_sha256<'a>(
+    entries: &'a [ContractCacheEntry],
     name: &str,
     tag: &str,
     sha256: &str,
-) -> Option<&'a InterfaceCacheEntry> {
+) -> Option<&'a ContractCacheEntry> {
     lookup_repo_entry_by_sha256(entries, name, tag, sha256)
 }
 
@@ -653,8 +653,8 @@ pub fn launchers_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     repo_cache_path::<LauncherCacheEntry>(peppy_dirs)
 }
 
-pub fn interfaces_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    repo_cache_path::<InterfaceCacheEntry>(peppy_dirs)
+pub fn contracts_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    repo_cache_path::<ContractCacheEntry>(peppy_dirs)
 }
 
 pub fn pairings_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
@@ -665,9 +665,9 @@ pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.conf_dir().join("repositories.json5")
 }
 
-/// Reads `interfaces.json5` (no memoization: interface resolution is a
+/// Reads `contracts.json5` (no memoization: contract resolution is a
 /// sync-time event, not a hot path).
-pub fn load_interface_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<InterfaceCacheEntry>> {
+pub fn load_contract_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<ContractCacheEntry>> {
     load_repo_cache(peppy_dirs)
 }
 
@@ -784,7 +784,7 @@ pub(crate) fn resolve_repo_launcher_path(
 }
 
 /// Translates a cache entry's `(source_type, source_uri, resolved_ref, path)`
-/// tuple into a concrete on-disk path. Shared between launcher and interface
+/// tuple into a concrete on-disk path. Shared between launcher and contract
 /// resolution so the Fs/Git/Url branching lives in one place.
 ///
 /// For Git entries this materializes the repo's checkout via
@@ -793,7 +793,7 @@ pub(crate) fn resolve_repo_launcher_path(
 /// repo-relative `path` onto the checkout dir. `on_feedback` receives
 /// clone/refresh progress lines.
 ///
-/// Errors are artifact-agnostic (no "launcher" / "interface" wording); the
+/// Errors are artifact-agnostic (no "launcher" / "contract" wording); the
 /// caller is expected to `map_err` with its own context prefix.
 pub(crate) fn resolve_cached_artifact_path(
     peppy_dirs: &PeppyDirs,
@@ -845,10 +845,10 @@ impl<'a, E: RepoCacheEntry> From<&'a E> for CachedDocEntryRef<'a> {
     }
 }
 
-/// Shared tail of the interface/pairing document resolvers: turns a cache
+/// Shared tail of the contract/pairing document resolvers: turns a cache
 /// lookup result into a parsed document — resolves the entry's on-disk
 /// path, reads the bytes, rejects fingerprint drift, and hands the UTF-8
-/// content to `parse`. `kind` labels every error ("interface" /
+/// content to `parse`. `kind` labels every error ("contract" /
 /// "pairing") and `id` is the document's `name:tag` label; `entry: None`
 /// produces the cache-miss error (naming the sha pin when one was set).
 pub(crate) fn resolve_cached_doc<T>(
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn mk_interface_entry(
+    fn mk_contract_entry(
         name: &str,
         tag: &str,
         sha256: &str,
@@ -1030,9 +1030,9 @@ mod tests {
         resolved_ref: Option<&str>,
         path: &str,
         repo_id: u32,
-    ) -> InterfaceCacheEntry {
-        InterfaceCacheEntry {
-            interface_name: name.to_owned(),
+    ) -> ContractCacheEntry {
+        ContractCacheEntry {
+            contract_name: name.to_owned(),
             tag: tag.to_owned(),
             sha256: sha256.to_owned(),
             source_type,
@@ -1486,7 +1486,7 @@ mod tests {
         .expect_err("url should error");
         assert!(err.contains("not yet supported"), "got: {err}");
         assert!(
-            !err.contains("launcher") && !err.contains("interface"),
+            !err.contains("launcher") && !err.contains("contract"),
             "helper error should be artifact-agnostic, got: {err}"
         );
     }
@@ -1530,7 +1530,7 @@ mod tests {
     /// `LauncherCacheEntry` records a repo-relative `path`, so resolution
     /// must materialize the checkout and join the relative path on top,
     /// not just read `entry.path` from the CWD. This test covered nothing
-    /// before; the missing coverage is what let the symmetric interface
+    /// before; the missing coverage is what let the symmetric contract
     /// bug land.
     #[test]
     fn resolve_launcher_git_materializes_checkout() {
@@ -1598,15 +1598,15 @@ mod tests {
         );
     }
 
-    // -- interface cache tests --
+    // -- contract cache tests --
 
-    /// `write_repo_cache` round-trips an interface entry through JSON5 with
-    /// the documented field names: `interface_name`, `tag`, `sha256`.
+    /// `write_repo_cache` round-trips a contract entry through JSON5 with
+    /// the documented field names: `contract_name`, `tag`, `sha256`.
     #[test]
-    fn write_interface_cache_serializes_entries() {
+    fn write_contract_cache_serializes_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_interface_entry(
+        let entries = vec![mk_contract_entry(
             "uvc_camera",
             "v1",
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
@@ -1618,15 +1618,15 @@ mod tests {
         )];
         write_repo_cache(&peppy_dirs, &entries).unwrap();
 
-        let path = interfaces_repo_cache_path(&peppy_dirs);
-        assert!(path.exists(), "interfaces cache should exist");
+        let path = contracts_repo_cache_path(&peppy_dirs);
+        assert!(path.exists(), "contracts cache should exist");
 
-        let raw = std::fs::read_to_string(&path).expect("read interfaces cache");
+        let raw = std::fs::read_to_string(&path).expect("read contracts cache");
         let parsed: serde_json::Value =
-            serde_json5::from_str(&raw).expect("interfaces cache should be valid JSON5");
+            serde_json5::from_str(&raw).expect("contracts cache should be valid JSON5");
         let arr = parsed.as_array().expect("expected array");
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["interface_name"], "uvc_camera");
+        assert_eq!(arr[0]["contract_name"], "uvc_camera");
         assert_eq!(arr[0]["tag"], "v1");
         assert_eq!(
             arr[0]["sha256"],
@@ -1637,12 +1637,12 @@ mod tests {
     }
 
     /// Lookup picks the lowest-`repo_id` entry, even when two repos
-    /// declare interfaces with the same `(name, tag)` and different
+    /// declare contracts with the same `(name, tag)` and different
     /// `sha256` fingerprints.
     #[test]
-    fn lookup_interface_picks_highest_priority_repo() {
+    fn lookup_contract_picks_highest_priority_repo() {
         let entries = vec![
-            mk_interface_entry(
+            mk_contract_entry(
                 "uvc_camera",
                 "v1",
                 "bbbb",
@@ -1652,7 +1652,7 @@ mod tests {
                 "uvc_camera/peppy.json5",
                 5,
             ),
-            mk_interface_entry(
+            mk_contract_entry(
                 "uvc_camera",
                 "v1",
                 "aaaa",
@@ -1663,17 +1663,17 @@ mod tests {
                 1,
             ),
         ];
-        let hit = lookup_interface(&entries, "uvc_camera", "v1").unwrap();
+        let hit = lookup_contract(&entries, "uvc_camera", "v1").unwrap();
         assert_eq!(hit.repo_id, 1);
         assert_eq!(hit.sha256, "aaaa");
     }
 
-    /// `lookup_interface_by_sha256` returns the exact content match
+    /// `lookup_contract_by_sha256` returns the exact content match
     /// regardless of repo priority.
     #[test]
-    fn lookup_interface_by_sha256_returns_exact_match() {
+    fn lookup_contract_by_sha256_returns_exact_match() {
         let entries = vec![
-            mk_interface_entry(
+            mk_contract_entry(
                 "uvc_camera",
                 "v1",
                 "aaaa",
@@ -1683,7 +1683,7 @@ mod tests {
                 "/a/peppy.json5",
                 1,
             ),
-            mk_interface_entry(
+            mk_contract_entry(
                 "uvc_camera",
                 "v1",
                 "bbbb",
@@ -1694,8 +1694,8 @@ mod tests {
                 9,
             ),
         ];
-        let hit = lookup_interface_by_sha256(&entries, "uvc_camera", "v1", "bbbb").unwrap();
+        let hit = lookup_contract_by_sha256(&entries, "uvc_camera", "v1", "bbbb").unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(lookup_interface_by_sha256(&entries, "uvc_camera", "v1", "zzzz").is_none());
+        assert!(lookup_contract_by_sha256(&entries, "uvc_camera", "v1", "zzzz").is_none());
     }
 }

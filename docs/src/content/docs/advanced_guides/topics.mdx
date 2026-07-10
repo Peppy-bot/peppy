@@ -11,7 +11,7 @@ A node *emits* a topic to publish messages, and other nodes *consume* that topic
 Use topics for continuous, unidirectional data streams such as sensor readings, camera frames, state updates, or any information that flows over time.
 Multiple consumers can listen to the same topic simultaneously.
 
-Topics also underpin two higher-level constructs: [interface conformance](/advanced_guides/interface_conformance), where a topic's contract lives in a standalone interface document that producers conform to, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract. For a side-by-side decision guide across every mechanism, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+Topics also underpin two higher-level constructs: [contract conformance](/advanced_guides/contract_conformance), where a topic's contract lives in a standalone contract document that producers conform to, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract. For a side-by-side decision guide across every mechanism, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## Emitting a topic
 
@@ -180,7 +180,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 :::
 
 :::tip
-To depend on a contract instead of a specific producer node, so any conforming node can fill the slot at launch time, declare the dep under `depends_on.interfaces` rather than `depends_on.nodes`. See the [Interface conformance](/advanced_guides/interface_conformance) guide.
+To depend on a contract instead of a specific producer node, so any conforming node can fill the slot at launch time, declare the dep under `depends_on.contracts` rather than `depends_on.nodes`. See the [Contract conformance](/advanced_guides/contract_conformance) guide.
 :::
 
 ### Receiving messages
@@ -317,7 +317,7 @@ A consumer that wires two specific depth cameras to dedicated wrist slots and le
     name: "openarm01_backbone",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
         { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true },
@@ -362,9 +362,9 @@ The launcher validator runs these checks before the stack starts:
 
 1. **Pinned-unbound is a hard error.** Every pinned (`from_any` absent or `false`) slot in `depends_on` must have a `--bind KEY@VALUE` whose `KEY` equals the slot's `link_id`.
 2. A `KEY` that matches a pinned slot's `link_id` binds that slot to `VALUE`.
-3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot accepts `VALUE` as a satisfying producer. For node slots, the producer's `(node_name, node_tag)` must equal the slot's declared pair. For interface slots, the producer's `interfaces.conforms_to` must include the slot's `(name, tag)`; see [Interface conformance](/advanced_guides/interface_conformance) for the conformance contract. Multiple such bindings on the same `from_any` slot accumulate.
+3. **Free-form `KEY`s are allowed for `from_any` slots.** A `--bind KEY@VALUE` whose `KEY` doesn't match a pinned `link_id` is accepted as long as some `from_any` slot accepts `VALUE` as a satisfying producer. For node slots, the producer's `(node_name, node_tag)` must equal the slot's declared pair. For contract slots, the producer's `interfaces.conforms_to` must include the slot's `(name, tag)`; see [Contract conformance](/advanced_guides/contract_conformance) for the conformance contract. Multiple such bindings on the same `from_any` slot accumulate.
 4. A `KEY` that matches neither a pinned `link_id` nor a `from_any` slot satisfied by `VALUE` is a dead key and is rejected.
-5. A pinned binding whose target `instance_id` deploys a different node than the slot expects (for node deps) or a node that does not `conforms_to` the requested interface (for interface deps) is rejected. Node-dep mismatches surface as `BindingTargetMismatch`; interface-dep mismatches surface as `BindingInterfaceNotConformed`.
+5. A pinned binding whose target `instance_id` deploys a different node than the slot expects (for node deps) or a node that does not `conforms_to` the requested contract (for contract deps) is rejected. Node-dep mismatches surface as `BindingTargetMismatch`; contract-dep mismatches surface as `BindingContractNotConformed`.
 6. `KEY` uniqueness within a single invocation is enforced (no two bindings may share the same `KEY`).
 7. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
 8. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a pinned slot subscribes with both wire slots set, and multi-producer (`from_any`) filters compare the full pair in-process. A producer on another core node that happens to share an `instance_id` can never feed a pinned slot.

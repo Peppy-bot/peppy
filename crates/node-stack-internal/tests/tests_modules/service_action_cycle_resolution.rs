@@ -30,7 +30,7 @@ fn interface_node(
                 name: "{name}",
                 tag: "v1",
                 depends_on: {{
-                    interfaces: [{{ name: "{dep_iface}", tag: "v1", link_id: "{link_id}" }}]
+                    contracts: [{{ name: "{dep_iface}", tag: "v1", link_id: "{link_id}" }}]
                 }},
             }},
             interfaces: {{
@@ -77,11 +77,11 @@ fn mutual_service_through_interfaces_rejected_when_second_node_added() {
     );
     let err = stack
         .push_config(b, false, PathBuf::from("/tmp"))
-        .expect_err("mutual service through interfaces must be rejected");
+        .expect_err("mutual service through contracts must be rejected");
 
     match err {
-        NodeStackError::ServiceActionInterfaceCycle { kind, .. } => assert_eq!(kind, "service"),
-        other => panic!("expected ServiceActionInterfaceCycle, got {other:?}"),
+        NodeStackError::ServiceActionContractCycle { kind, .. } => assert_eq!(kind, "service"),
+        other => panic!("expected ServiceActionContractCycle, got {other:?}"),
     }
     assert_eq!(stack.len(), 2, "rejected node must not be added");
     assert!(!stack.contains("b", "v1"));
@@ -119,8 +119,8 @@ fn mutual_service_through_interfaces_rejected_on_permissive_add() {
         .expect_err("a permissive add must still reject a service cycle");
 
     match err {
-        NodeStackError::ServiceActionInterfaceCycle { kind, .. } => assert_eq!(kind, "service"),
-        other => panic!("expected ServiceActionInterfaceCycle, got {other:?}"),
+        NodeStackError::ServiceActionContractCycle { kind, .. } => assert_eq!(kind, "service"),
+        other => panic!("expected ServiceActionContractCycle, got {other:?}"),
     }
     assert_eq!(stack.len(), 2, "rejected node must not be added");
     assert!(!stack.contains("b", "v1"));
@@ -150,11 +150,11 @@ fn mutual_action_through_interfaces_rejected_when_second_node_added() {
     );
     let err = stack
         .push_config(b, false, PathBuf::from("/tmp"))
-        .expect_err("mutual action through interfaces must be rejected");
+        .expect_err("mutual action through contracts must be rejected");
 
     match err {
-        NodeStackError::ServiceActionInterfaceCycle { kind, .. } => assert_eq!(kind, "action"),
-        other => panic!("expected ServiceActionInterfaceCycle, got {other:?}"),
+        NodeStackError::ServiceActionContractCycle { kind, .. } => assert_eq!(kind, "action"),
+        other => panic!("expected ServiceActionContractCycle, got {other:?}"),
     }
     assert!(!stack.contains("b", "v1"));
 }

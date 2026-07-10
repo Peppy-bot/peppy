@@ -19,8 +19,8 @@
 //! serializes into [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
-    BindingDeadKey, BindingInterfaceNotConformed, BindingMissingForPinnedDep,
-    BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
+    BindingContractNotConformed, BindingDeadKey, BindingMissingForPinnedDep, BindingTargetMismatch,
+    DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use config::node::{ConformsToItem, DependsOn};
 use config::runtime::{ProducerRef, SlotBinding};
@@ -114,7 +114,7 @@ pub fn validate_bindings(
         let (declared_pinned, declared_from_any) = collect_declared_slots(item.depends_on);
         let declared_csv = format_declared_keys(&declared_pinned, &declared_from_any);
         // Pairing slots are never binding slots: `collect_declared_slots`
-        // reads only `depends_on.{nodes,interfaces}`, so a pairing link_id
+        // reads only `depends_on.{nodes,contracts}`, so a pairing link_id
         // can never satisfy rule 1 or match a pinned KEY. This set exists
         // solely to turn a `--bind` on a pairing slot into a targeted
         // "use --pair" error instead of a generic `BindingDeadKey`.
@@ -177,13 +177,13 @@ pub fn validate_bindings(
                                     actual_tag: target_item.node_tag.to_string(),
                                 },
                             )),
-                            SlotKind::Interface => ParsingError::BindingInterfaceNotConformed(
-                                Box::new(BindingInterfaceNotConformed {
+                            SlotKind::Contract => ParsingError::BindingContractNotConformed(
+                                Box::new(BindingContractNotConformed {
                                     owner_instance_id: instance.instance_id.to_string(),
                                     binding: binding_key.clone(),
                                     target_instance_id: target_id.clone(),
-                                    interface_name: slot.name.to_string(),
-                                    interface_tag: slot.tag.to_string(),
+                                    contract_name: slot.name.to_string(),
+                                    contract_tag: slot.tag.to_string(),
                                     producer_name: target_item.node_name.to_string(),
                                     producer_tag: target_item.node_tag.to_string(),
                                 }),
@@ -372,11 +372,11 @@ fn collect_declared_slots(
                 pinned.insert(dep.link_id.as_str(), meta);
             }
         }
-        for dep in &deps.interfaces {
+        for dep in &deps.contracts {
             let meta = SlotMeta {
                 name: dep.name.as_str(),
                 tag: dep.tag.as_str(),
-                kind: SlotKind::Interface,
+                kind: SlotKind::Contract,
             };
             if dep.from_any {
                 from_any.insert(dep.link_id.as_str(), meta);
@@ -392,11 +392,11 @@ fn collect_declared_slots(
 /// `(name, tag)` identity; interface slots match against the producer's
 /// `conforms_to`. sha256 is not cross-checked here; each side
 /// independently verifies its own declared sha256 against the on-disk
-/// interface document at cache resolution time.
+/// contract document at cache resolution time.
 fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'_>) -> bool {
     match slot.kind {
         SlotKind::Node => producer.node_name == slot.name && producer.node_tag == slot.tag,
-        SlotKind::Interface => producer
+        SlotKind::Contract => producer
             .conforms_to
             .iter()
             .any(|item| item.name.as_str() == slot.name && item.tag.as_str() == slot.tag),
@@ -448,7 +448,7 @@ mod tests {
     }
 
     /// Like `item` but also threads a `conforms_to` slice, for tests
-    /// that exercise interface-conformance matching.
+    /// that exercise contract-conformance matching.
     fn item_with_conforms_to<'a>(
         node_name: &'a str,
         node_tag: &'a str,
@@ -741,7 +741,7 @@ mod tests {
         );
     }
 
-    /// Rule 1 (interface variant): pinned interface dep without
+    /// Rule 1 (contract variant): pinned contract dep without
     /// binding fails the same way.
     #[test]
     fn rule1_rejects_missing_binding_for_pinned_interface_dep() {
@@ -749,7 +749,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -765,7 +765,7 @@ mod tests {
                 out.errors[0]
             );
         };
-        assert_eq!(info.kind, SlotKind::Interface);
+        assert_eq!(info.kind, SlotKind::Contract);
         assert_eq!(info.link_id, "depth");
     }
 
@@ -801,7 +801,7 @@ mod tests {
     /// Pinned interface bindings check the producer's `conforms_to`
     /// (not just node identity). A producer with no matching
     /// `conforms_to` entry is rejected with
-    /// `BindingInterfaceNotConformed`.
+    /// `BindingContractNotConformed`.
     #[test]
     fn pinned_interface_binding_rejects_non_conforming_producer() {
         let cons_instances = parse_instances(
@@ -813,7 +813,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -827,20 +827,20 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingInterfaceNotConformed(info) = &out.errors[0] else {
+        let ParsingError::BindingContractNotConformed(info) = &out.errors[0] else {
             panic!(
-                "expected BindingInterfaceNotConformed, got {:?}",
+                "expected BindingContractNotConformed, got {:?}",
                 out.errors[0]
             );
         };
         assert_eq!(info.binding, "depth");
-        assert_eq!(info.interface_name, "depth_camera");
-        assert_eq!(info.interface_tag, "v1");
+        assert_eq!(info.contract_name, "depth_camera");
+        assert_eq!(info.contract_tag, "v1");
         assert_eq!(info.producer_name, "whatever");
         assert_eq!(info.producer_tag, "v1");
     }
 
-    /// Pinned interface dep targets a producer whose `conforms_to`
+    /// Pinned contract dep targets a producer whose `conforms_to`
     /// includes the requested interface: accepted as `SlotBinding::Pinned`.
     /// The producer's node name is intentionally different from the
     /// interface name so this test exercises the conformance path
@@ -856,7 +856,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -897,7 +897,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [
+                contracts: [
                     { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
                     { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
                     { name: "depth_camera", tag: "v1", link_id: "extra_cam", from_any: true }
@@ -961,7 +961,7 @@ mod tests {
     /// validator snapshot without re-checking their bindings.
     #[test]
     fn inert_item_with_no_depends_on_does_not_trigger_rule1_but_remains_a_producer() {
-        // Live consumer with a pinned node dep + a pinned interface dep.
+        // Live consumer with a pinned node dep + a pinned contract dep.
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -971,7 +971,7 @@ mod tests {
         let cons_depends_on = parse_depends_on(
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "cam" }],
-                interfaces: [{ name: "depth_camera", tag: "v1", link_id: "depth" }]
+                contracts: [{ name: "depth_camera", tag: "v1", link_id: "depth" }]
             }"#,
         );
 
@@ -981,7 +981,7 @@ mod tests {
         let node_prod_instances = parse_instances(r#"[{ instance_id: "node_prod_inst" }]"#);
 
         // Inert interface producer: same shape, plus a `conforms_to`
-        // entry that should still match the consumer's interface dep.
+        // entry that should still match the consumer's contract dep.
         let iface_prod_instances = parse_instances(r#"[{ instance_id: "iface_prod_inst" }]"#);
         let iface_prod_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
 
@@ -1135,7 +1135,7 @@ mod tests {
         ));
     }
 
-    /// A `from_any` interface dep accepts a producer whose
+    /// A `from_any` contract dep accepts a producer whose
     /// `interfaces.conforms_to` includes the requested interface, even
     /// when the producer's node name differs from the interface name.
     #[test]
@@ -1149,7 +1149,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "extra_cam",
@@ -1173,7 +1173,7 @@ mod tests {
         );
     }
 
-    /// A `from_any` interface dep rejects a producer that lacks the
+    /// A `from_any` contract dep rejects a producer that lacks the
     /// matching `conforms_to`, even when its node name coincidentally
     /// equals the requested interface name+tag. Interface satisfaction
     /// is determined solely by `conforms_to`, never by node identity.
@@ -1188,7 +1188,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "extra_cam",
@@ -1230,7 +1230,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -1245,13 +1245,13 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingInterfaceNotConformed(info) = &out.errors[0] else {
+        let ParsingError::BindingContractNotConformed(info) = &out.errors[0] else {
             panic!(
-                "expected BindingInterfaceNotConformed, got {:?}",
+                "expected BindingContractNotConformed, got {:?}",
                 out.errors[0]
             );
         };
-        assert_eq!(info.interface_tag, "v1");
+        assert_eq!(info.contract_tag, "v1");
         assert_eq!(info.producer_name, "webcam");
     }
 
@@ -1269,7 +1269,7 @@ mod tests {
         let depth_deps = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "feed"
@@ -1285,7 +1285,7 @@ mod tests {
         let uvc_deps = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "uvc_camera",
                     tag: "v1",
                     link_id: "feed"
@@ -1342,7 +1342,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [
+                contracts: [
                     { name: "alpha_iface", tag: "v1", link_id: "slot_a", from_any: true },
                     { name: "beta_iface", tag: "v1", link_id: "slot_b", from_any: true }
                 ]
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     /// Rule 1 must NOT fire for pairing slots: `collect_declared_slots`
-    /// reads only nodes/interfaces, so a required pairing slot with no
+    /// reads only nodes/contracts, so a required pairing slot with no
     /// binding produces no `BindingMissingForPinnedDep`.
     #[test]
     fn pairing_slots_are_invisible_to_rule1() {

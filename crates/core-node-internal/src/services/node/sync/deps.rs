@@ -120,7 +120,7 @@ pub(super) async fn materialize_repo_deps(
 
 /// Discriminator carried by [`DependencyLookupEntry`] so the resolver knows
 /// whether a `link_id` resolves to a `depends_on.nodes` entry (load
-/// offerings from the producer node config) or a `depends_on.interfaces`
+/// offerings from the producer node config) or a `depends_on.contracts`
 /// entry (load the contract directly from the interface cache).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DependencyKind {
@@ -141,7 +141,7 @@ pub(crate) struct DependencyLookupEntry {
 }
 
 /// Builds a lookup from `link_id` → [`DependencyLookupEntry`] using the
-/// node's `depends_on.nodes` and `depends_on.interfaces`. Parse-time
+/// node's `depends_on.nodes` and `depends_on.contracts`. Parse-time
 /// validation has already guaranteed uniqueness of `link_id` across both
 /// lists, so insertion-order is preserved.
 pub(super) fn build_dependency_lookup(
@@ -163,7 +163,7 @@ pub(super) fn build_dependency_lookup(
             },
         );
     }
-    for iface in &depends_on.interfaces {
+    for iface in &depends_on.contracts {
         out.insert(
             iface.link_id.clone(),
             DependencyLookupEntry {
@@ -180,7 +180,7 @@ pub(super) fn build_dependency_lookup(
 
 /// Builds a [`generator::DependencyContext`] for a `depends_on.nodes`
 /// resolution path. `origin` carries the optional `(iface_name,
-/// iface_tag)` when the producer node `conforms_to` an interface; `None`
+/// iface_tag)` when the producer node `conforms_to` a contract; `None`
 /// means the producer emits natively.
 pub(super) fn build_dependency_context_for_node(
     dep_name: &str,
@@ -197,7 +197,7 @@ pub(super) fn build_dependency_context_for_node(
 }
 
 /// Builds a [`generator::DependencyContext`] for a
-/// `depends_on.interfaces` resolution path. `node_name` / `node_tag`
+/// `depends_on.contracts` resolution path. `node_name` / `node_tag`
 /// carry the interface's `(name, tag)` here (no producer node is
 /// involved).
 pub(super) fn build_dependency_context_for_interface(
