@@ -474,6 +474,10 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_contains_all(&rendered, &["node_runner.consumer_filter(\"left_arm\"),"]);
+    assert!(
+        !rendered.contains("TARGET_ACTION_NAME,\n            peppylib.ConsumerFilter.any(),"),
+        "a linked dep must resolve its filter from the bindings map, not splice the explicit wildcard; got:\n{rendered}"
+    );
 }
 
 #[test]
@@ -624,7 +628,7 @@ fn consumed_action() {
             ") -> Self:",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
-            "TARGET_ACTION_NAME,\n            None,\n            user_goal_payload,",
+            "TARGET_ACTION_NAME,\n            peppylib.ConsumerFilter.any(),\n            user_goal_payload,",
             "feedback_qos,",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",

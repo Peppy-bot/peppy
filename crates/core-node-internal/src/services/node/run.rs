@@ -673,7 +673,7 @@ async fn process_node_run(
         }
     };
 
-    // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
+    // Stack-wide `instance_id` uniqueness (spec rule 6): reject if the
     // candidate id is already tracked by a *different* `(node_name,
     // node_tag)` anywhere in the stack. The validator catches this at
     // plan time (`peppy node run` / launcher); this is the daemon's

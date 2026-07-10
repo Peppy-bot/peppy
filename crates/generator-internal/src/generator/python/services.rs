@@ -35,14 +35,16 @@ pub(crate) fn sender_target_python_expr(
 /// which the messaging layer derives the wire shape (single pin: direct
 /// address, no discovery; multi-bound: discovery within the bound set
 /// only; deliberately unbound: silent / fails before any wire work) —
-/// and `None` (the pure-wildcard fixture default) for synthetic test
-/// fixtures that don't model a manifest dep.
+/// and the explicit `peppylib.ConsumerFilter.any()` wildcard for
+/// synthetic test fixtures that don't model a manifest dep. The peppylib
+/// entry points require the filter argument, so the wildcard is always
+/// spelled out; there is no `None` fallback.
 pub(crate) fn consumed_target_python_expr(
     dependency: &crate::generator::types::DependencyContext,
 ) -> String {
     match dependency.wire_link_id() {
         Some(link_id) => format!("node_runner.consumer_filter({link_id:?})"),
-        None => "None".to_string(),
+        None => "peppylib.ConsumerFilter.any()".to_string(),
     }
 }
 

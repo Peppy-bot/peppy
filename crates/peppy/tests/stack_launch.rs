@@ -965,7 +965,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     );
 }
 
-/// Stack-wide `instance_id` uniqueness (spec rule 7): two instances
+/// Stack-wide `instance_id` uniqueness (spec rule 6): two instances
 /// anywhere in the launcher, even across different `(node_name,
 /// node_tag)` pairs, sharing an `instance_id` must fail at the parse
 /// stage, before any node is added, built, or spawned. The binding

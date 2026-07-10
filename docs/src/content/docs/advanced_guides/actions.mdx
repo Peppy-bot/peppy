@@ -624,7 +624,7 @@ In a launcher / stack config:
 or, when launching a single node during development (repeating `--bind` with the same `KEY` accumulates producers onto that `from_any` slot):
 
 ```sh
-peppy node run --bind brain@left-arm-1 --bind arms@left-arm-1 --bind arms@right-arm-1 .
+peppy node run controller:v1 --bind brain@left-arm-1 --bind arms@left-arm-1 --bind arms@right-arm-1
 ```
 
 ### Per-call precedence

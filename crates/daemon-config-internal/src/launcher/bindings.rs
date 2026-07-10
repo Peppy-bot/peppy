@@ -83,7 +83,10 @@ pub struct ValidatedBindings {
 /// cross-daemon stacks ever land, the launcher knows each instance's
 /// target daemon and the stamp generalizes to a per-instance input.
 ///
-/// Rules enforced:
+/// Rules enforced (the numbering matches the user-facing copy in
+/// `docs/src/content/docs/advanced_guides/_validator_rules.mdx`, shared
+/// by the topics / services / actions guides; keep both in sync when
+/// validator behavior changes):
 /// 1. Every pinned `depends_on` slot has a binding whose `KEY` equals
 ///    the slot's `link_id`, naming exactly one producer. Unbound →
 ///    [`ParsingError::BindingMissingForPinnedDep`]; zero or several
@@ -95,23 +98,26 @@ pub struct ValidatedBindings {
 ///    `from_any`); anything else is [`ParsingError::BindingDeadKey`].
 ///    Keys naming pairing slots get the targeted
 ///    [`ParsingError::BindingKeyIsPairingSlot`] instead.
-/// 3. Every bound producer must satisfy the slot: node slots match the
+/// 3. A `from_any` `KEY` binds the slot's explicit producer set: one
+///    producer or several, via the array form in a launcher or repeated
+///    `--bind KEY@...` flags on the CLI. Listing the same producer
+///    twice under one `KEY` is rejected by the deserializer; an empty
+///    set is valid and resolves to [`SlotBinding::FromAnyUnbound`].
+/// 4. Every bound producer must satisfy the slot: node slots match the
 ///    producer's `(name, tag)` identity, interface slots match its
 ///    `conforms_to` — checked **per element** for `from_any` arrays.
 ///    Violations emit [`ParsingError::BindingTargetMismatch`] /
 ///    [`ParsingError::BindingInterfaceNotConformed`]; unknown
 ///    instance_ids emit [`ParsingError::UnknownInstanceId`].
-/// 4. Binding keys are unique per instance — enforced by the CLI
+/// 5. Binding keys are unique per instance — enforced by the CLI
 ///    accumulator and the deserializer; residual duplicates surface as
 ///    [`ParsingError::BindingDuplicateKey`] (defensive).
-/// 5. Stack-wide `instance_id` uniqueness across every entry in
+/// 6. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
-///
-/// The user-facing copy of these rules lives in
-/// `docs/src/content/docs/advanced_guides/_validator_rules.mdx` (shared
-/// by the topics / services / actions guides); keep it in sync when
-/// validator behavior changes.
+/// 7. Every resolved binding is stamped with the launching daemon's
+///    `core_node` (`producer_core_node`, see above), so the runtime
+///    never matches producers on `instance_id` alone.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
     producer_core_node: &str,
@@ -147,7 +153,7 @@ pub fn validate_bindings(
                 std::collections::BTreeSet::new();
 
             for (binding_key, targets) in &instance.bindings {
-                // Rule 4 defensive check.
+                // Rule 5 defensive check.
                 if !seen_keys.insert(binding_key.as_str()) {
                     out.errors.push(ParsingError::BindingDuplicateKey {
                         owner_instance_id: instance.instance_id.to_string(),
@@ -199,7 +205,7 @@ pub fn validate_bindings(
                     // KEY matches a declared from_any link_id: every
                     // element of the (possibly empty) target set must
                     // exist and satisfy the slot, checked per element by
-                    // rule 3. Valid elements become the slot's explicit
+                    // rule 4. Valid elements become the slot's explicit
                     // bound set; `SlotBinding::from_any` resolves an empty
                     // or fully-rejected set to the unbound (silent) state,
                     // so an empty bound set is unrepresentable.
@@ -290,7 +296,7 @@ fn build_instance_lookup<'a>(
     lookup
 }
 
-/// Stack-wide `instance_id` uniqueness (rule 7). Two entries anywhere
+/// Stack-wide `instance_id` uniqueness (rule 6). Two entries anywhere
 /// in `items.instances` (across any `(node_name, node_tag)`) sharing
 /// an `instance_id` is a hard error: `--bind KEY@id` would be
 /// ambiguous.
@@ -384,7 +390,7 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
     }
 }
 
-/// Rule 3 for one bound producer, shared by the pinned path and the
+/// Rule 4 for one bound producer, shared by the pinned path and the
 /// per-element from_any path so both enforce the same per-producer
 /// contract: the target must name a known instance (else
 /// [`ParsingError::UnknownInstanceId`]) and satisfy the slot via
@@ -418,7 +424,7 @@ fn check_bound_target(
 }
 
 /// The identity-mismatch error for a bound producer that does not satisfy
-/// `slot` (rule 3): node slots report the deployed `(name, tag)` mismatch,
+/// `slot` (rule 4): node slots report the deployed `(name, tag)` mismatch,
 /// interface slots the missing `conforms_to` claim.
 fn identity_mismatch_error(
     slot: &SlotMeta<'_>,
@@ -811,7 +817,7 @@ mod tests {
         );
     }
 
-    /// Rule 3 runs per element of an array: a good element binds, a
+    /// Rule 4 runs per element of an array: a good element binds, a
     /// wrong-identity element errors, an unknown element errors — all in
     /// one pass.
     #[test]
@@ -901,9 +907,9 @@ mod tests {
         assert_eq!(info.link_id, "depth");
     }
 
-    /// Rule 5: pinned binding whose target deploys the wrong node.
+    /// Rule 4: pinned binding whose target deploys the wrong node.
     #[test]
-    fn rule5_rejects_target_node_mismatch() {
+    fn rule4_rejects_target_node_mismatch() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -1176,10 +1182,10 @@ mod tests {
         assert_eq!(instance_id, "ghost_producer");
     }
 
-    /// Rule 7: stack-wide instance_id duplicate across different
+    /// Rule 6: stack-wide instance_id duplicate across different
     /// (node_name, node_tag).
     #[test]
-    fn rule7_rejects_stack_wide_duplicate_instance_id() {
+    fn rule6_rejects_stack_wide_duplicate_instance_id() {
         let camera_instances = parse_instances(r#"[{ instance_id: "shared_inst" }]"#);
         let lidar_instances = parse_instances(r#"[{ instance_id: "shared_inst" }]"#);
         let items = vec![
@@ -1210,7 +1216,7 @@ mod tests {
     /// than silently letting `build_instance_lookup` resolve by first
     /// insertion.
     #[test]
-    fn rule7_reports_duplicate_instance_id_even_for_same_name_tag() {
+    fn rule6_reports_duplicate_instance_id_even_for_same_name_tag() {
         let camera_instances = parse_instances(
             r#"[
                 { instance_id: "shared_inst" },

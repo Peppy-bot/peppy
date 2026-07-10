@@ -604,7 +604,7 @@ fn consumed_topic() {
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
-            "topic_name,\n        None,\n        peppylib.QoSProfile.Standard,",
+            "topic_name,\n        peppylib.ConsumerFilter.any(),\n        peppylib.QoSProfile.Standard,",
         ],
     );
 

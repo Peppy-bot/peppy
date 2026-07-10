@@ -343,7 +343,7 @@ impl NodeStackInner {
     /// already tracks an instance with `instance_id`, in any state:
     /// `Starting`, `Running`, etc. Used by the daemon's stack-wide
     /// instance_id uniqueness guard at spawn time (the validator's
-    /// `rule 7` is the primary check at plan time; this is the
+    /// `rule 6` is the primary check at plan time; this is the
     /// defensive backstop at the trust boundary).
     ///
     /// Skips the root entity; the daemon's own internals own an
@@ -1023,7 +1023,7 @@ impl NodeStack {
     /// tracks an instance with `instance_id` in any state: `Starting`,
     /// `Running`, etc. Used by the daemon to enforce stack-wide
     /// `instance_id` uniqueness at the spawn trust boundary (per spec
-    /// rule 7). The validator catches collisions at plan time; this is
+    /// rule 6). The validator catches collisions at plan time; this is
     /// the defensive backstop.
     pub fn find_entity_label_for_instance_id_any_state(
         &self,

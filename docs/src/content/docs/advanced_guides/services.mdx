@@ -259,7 +259,7 @@ In a launcher / stack config:
 or, when launching a single node during development (repeating `--bind` with the same `KEY` accumulates producers onto that `from_any` slot):
 
 ```sh
-peppy node run --bind uvc_camera@my-camera-instance --bind extra_cams@cam-left --bind extra_cams@cam-right .
+peppy node run robot_brain:v1 --bind uvc_camera@my-camera-instance --bind extra_cams@cam-left --bind extra_cams@cam-right
 ```
 
 ### Per-call precedence
@@ -335,7 +335,8 @@ If the discovered producer dies between the probe and the real request, the call
 
 ## Error handling
 
-Service calls can fail with three error types:
+Service calls can fail with these errors:
+- **UnboundConsumerSlot**: the call was made on an unbound `from_any` slot, so it fails before any wire work (see [Bindings and routing](#bindings-and-routing)).
 - **ServiceUnreachable**: no instance is listening for that service.
 - **ServiceTimeout**: no response was received within the timeout.
 - **ServiceError**: the handler returned an error, which is propagated back to the caller.

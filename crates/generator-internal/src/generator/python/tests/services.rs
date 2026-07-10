@@ -422,13 +422,13 @@ fn consumed_service() {
     // Request serialization
     assert_contains_all(&rendered, &["request_payload = capnp_msg.to_bytes()"]);
 
-    // Messenger integration, including the `None` spliced at the poll
-    // call's filter slot (the fixture models no manifest dep).
+    // Messenger integration, including the explicit wildcard spliced at
+    // the poll call's filter slot (the fixture models no manifest dep).
     assert_contains_all(
         &rendered,
         &[
             "peppylib.ServiceMessenger.poll(",
-            "SERVICE_NAME,\n        None,\n        request_payload,",
+            "SERVICE_NAME,\n        peppylib.ConsumerFilter.any(),\n        request_payload,",
         ],
     );
 
