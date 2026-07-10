@@ -234,12 +234,23 @@ where
 /// keys/values, and malformed targets are rejected here; sentinel keys and
 /// unknown target instances are checked at the [`PeppyLauncher`] level where
 /// the owning `instance_id` and the full instance set are in scope.
+/// Entries are captured as a Vec because a direct `BTreeMap::deserialize`
+/// would silently overwrite duplicate keys, hiding them from
+/// `validate_named_items`. Duplicate VALUES are intentionally permitted:
+/// one peer may serve multiple `link_id` slots.
 fn deserialize_pairings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let entries = deserialize_kv_entries(deserializer, "pairing")?;
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor::<String>::new())?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "pairing")
+        .map_err(de::Error::custom)?;
     for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "pairing target for key `{key}` cannot be empty"
+            )));
+        }
         // Reject malformed targets at parse time rather than letting an
         // empty or slash-bearing peer_link fail later as "no complementary
         // slot" during plan validation.
@@ -252,34 +263,6 @@ where
         }
     }
     Ok(entries.into_iter().collect())
-}
-
-/// Scaffold of [`deserialize_pairings`]: duplicate-key and empty-key/value
-/// checks over a `link_id -> target` map, with `kind` labeling the errors.
-/// Entries are captured as a Vec because a direct `BTreeMap::deserialize`
-/// would silently overwrite duplicate keys, hiding them from
-/// `validate_named_items`. Duplicate VALUES are intentionally permitted:
-/// one producer/peer may serve multiple `link_id` slots. Sentinel-key
-/// checks live in `PeppyLauncher::deserialize` where the owning
-/// `instance_id` is in scope for the structured error.
-fn deserialize_kv_entries<'de, D>(
-    deserializer: D,
-    kind: &'static str,
-) -> Result<Vec<(String, String)>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let entries = deserializer.deserialize_map(BindingEntriesVisitor::<String>::new())?;
-    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), kind)
-        .map_err(de::Error::custom)?;
-    for (key, value) in &entries {
-        if value.trim().is_empty() {
-            return Err(de::Error::custom(format!(
-                "{kind} target for key `{key}` cannot be empty"
-            )));
-        }
-    }
-    Ok(entries)
 }
 
 /// Splits a launcher `pairings` value (or CLI `--pair` right-hand side) into

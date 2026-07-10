@@ -82,11 +82,12 @@ pub struct ValidatedBindings {
 ///    contracts}` `link_id`. A key naming a pairing slot gets the
 ///    targeted [`ParsingError::BindingKeyIsPairingSlot`]; any other
 ///    unknown key is [`ParsingError::BindingUnknownSlot`].
-/// 2. Every target exists in the snapshot
-///    ([`ParsingError::UnknownInstanceId`] otherwise) and satisfies the
-///    slot: node slots match the target's `(name, tag)` identity
-///    ([`ParsingError::BindingTargetMismatch`] otherwise), contract
-///    slots match the target's `conforms_to`
+/// 2. Every target appears at most once in the slot's list
+///    ([`ParsingError::BindingDuplicateTarget`] otherwise), exists in
+///    the snapshot ([`ParsingError::UnknownInstanceId`] otherwise) and
+///    satisfies the slot: node slots match the target's `(name, tag)`
+///    identity ([`ParsingError::BindingTargetMismatch`] otherwise),
+///    contract slots match the target's `conforms_to`
 ///    ([`ParsingError::BindingContractNotConformed`] otherwise).
 /// 3. `--bind KEY` uniqueness within one invocation is enforced by the
 ///    CLI parser and the deserializer; this validator surfaces any
@@ -156,10 +157,22 @@ pub fn validate_bindings(
                     continue;
                 };
 
-                // Rule 2: every target exists and satisfies the slot.
+                // Rule 2: every target is unique within the slot, exists,
+                // and satisfies the slot.
                 let mut producers = Vec::with_capacity(target_ids.len());
                 let mut target_errors = false;
+                let mut seen_targets: std::collections::BTreeSet<&str> =
+                    std::collections::BTreeSet::new();
                 for target_id in target_ids {
+                    if !seen_targets.insert(target_id.as_str()) {
+                        out.errors.push(ParsingError::BindingDuplicateTarget {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding_key.clone(),
+                            target_instance_id: target_id.clone(),
+                        });
+                        target_errors = true;
+                        continue;
+                    }
                     let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
                         out.errors.push(ParsingError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -463,6 +476,47 @@ mod tests {
         let out = validate_bindings(&items, TEST_CORE);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(slot_binding(&out, "cons1", "main"), Some(Vec::new()));
+    }
+
+    /// Rule 2: a target repeated within one slot's list is rejected. The
+    /// deserializer and the `--bind` CLI parser catch this at parse time,
+    /// so the fixture injects the duplicate directly, the way a caller
+    /// synthesizing a `DeploymentInstance` (e.g. `peppy node run`) could.
+    #[test]
+    fn rule2_rejects_duplicate_target_within_one_slot() {
+        let mut instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
+        instances[0].bindings.insert(
+            "main".to_string(),
+            vec!["prod1".to_string(), "prod1".to_string()],
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+            }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert_eq!(
+            out.errors.len(),
+            1,
+            "expected one error, got {:?}",
+            out.errors
+        );
+        let ParsingError::BindingDuplicateTarget {
+            owner_instance_id,
+            binding,
+            target_instance_id,
+        } = &out.errors[0]
+        else {
+            panic!("expected BindingDuplicateTarget, got {:?}", out.errors[0]);
+        };
+        assert_eq!(owner_instance_id, "cons1");
+        assert_eq!(binding, "main");
+        assert_eq!(target_instance_id, "prod1");
     }
 
     /// Rule 2 (happy path): a single-target binding resolves the slot to

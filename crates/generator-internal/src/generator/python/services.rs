@@ -28,7 +28,6 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Returns the Python expression for the consumer's single `target` /
 /// Emits the statements that resolve the slot's single bound producer
 /// into a local `pinned_producer` ahead of a consumed poll / send_goal
 /// call. Service and action calls address exactly one producer; a slot

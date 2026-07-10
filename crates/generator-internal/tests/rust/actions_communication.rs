@@ -114,24 +114,21 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     // Bind the consumer's pinned slot to the LEFT arm with the full
     // (core_node, instance_id) pair, exactly what the validator stamps
     // when a stack launches with `--bind brain@left_arm_instance`.
-    let mut consumer_node_instance =
-        NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap());
-    consumer_node_instance.slot_bindings.insert(
-        "brain".to_string(),
-        vec![config::runtime::ProducerRef::new(
-            TEST_CORE_NODE,
-            LEFT_ARM_INSTANCE_ID,
-        )],
-    );
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        consumer_node_instance,
+        NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap()),
         CONSUMER_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        LEFT_ARM_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config

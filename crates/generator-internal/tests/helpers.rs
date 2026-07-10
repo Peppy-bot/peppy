@@ -63,6 +63,24 @@ pub fn apply_mode(
 /// would stay silent). `link_id` must match the `DependencyContext`
 /// link_id the test's generator calls use.
 pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
+    consumer_stub_node_config_with_execution(
+        dep_name,
+        dep_tag,
+        link_id,
+        r#"language: "rust",
+    run_cmd: ["./target/release/generated_node"]"#,
+    )
+}
+
+/// Shared manifest template behind [`consumer_stub_node_config`] and
+/// [`python_consumer_stub_node_config`]; `execution` is the body of the
+/// `execution` block, the only per-toolchain part.
+fn consumer_stub_node_config_with_execution(
+    dep_name: &str,
+    dep_tag: &str,
+    link_id: &str,
+    execution: &str,
+) -> String {
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -74,8 +92,7 @@ pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -
     }}
   }},
   execution: {{
-    language: "rust",
-    run_cmd: ["./target/release/generated_node"]
+    {execution}
   }}
 }}
 "#
@@ -937,22 +954,12 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
 
 /// Python-toolchain variant of [`consumer_stub_node_config`].
 pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "generated_node",
-    tag: "v1",
-    depends_on: {{
-      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}" }}]
-    }}
-  }},
-  execution: {{
-    language: "python",
-    run_cmd: ["uv", "run", "python", "main.py"]
-  }}
-}}
-"#
+    consumer_stub_node_config_with_execution(
+        dep_name,
+        dep_tag,
+        link_id,
+        r#"language: "python",
+    run_cmd: ["uv", "run", "python", "main.py"]"#,
     )
 }
 

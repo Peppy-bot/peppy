@@ -563,10 +563,14 @@ pub fn consumed_pinned_producer_statement(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let literal = Literal::string(&dependency.link_id);
+    // `pinned_target()` borrows from the filter the processor caches at
+    // startup, so the resolution allocates nothing per call (the owned
+    // `pinned_producer_for` exists for the PyO3 boundary).
     quote! {
         let pinned_producer = node_runner
             .processor()
-            .pinned_producer_for(#literal)
+            .consumer_filter(#literal)
+            .pinned_target()
             .ok_or_else(|| crate::Error::ServiceSlotNotPinned {
                 link_id: #literal.to_string(),
                 bound: node_runner

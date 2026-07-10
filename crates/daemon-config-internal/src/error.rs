@@ -325,6 +325,20 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
+    /// One slot's binding array lists the same producer `instance_id`
+    /// more than once. The `bindings:` deserializer and the `--bind` CLI
+    /// parser both reject this at parse time; this validator-level
+    /// variant covers callers that synthesize instances directly (e.g.
+    /// `peppy node run` building a [`super::launcher::DeploymentInstance`]
+    /// from its preflight snapshot).
+    #[error(
+        "binding `{binding}` on instance `{owner_instance_id}` lists producer `{target_instance_id}` more than once"
+    )]
+    BindingDuplicateTarget {
+        owner_instance_id: String,
+        binding: String,
+        target_instance_id: String,
+    },
     /// Boxed payload so this variant does not grow `ParsingError` past the
     /// `clippy::result_large_err` threshold; without the indirection, the
     /// seven `String` fields would inflate every `Result<_, _>` that

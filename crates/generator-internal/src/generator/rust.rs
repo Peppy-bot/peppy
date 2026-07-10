@@ -309,7 +309,7 @@ impl RustGenerator {
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
                     TARGET_ACTION_NAME,
-                    Some(&pinned_producer),
+                    Some(pinned_producer),
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1269,7 +1269,7 @@ impl LanguageGenerator for RustGenerator {
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
                 SERVICE_NAME,
-                peppylib::messaging::ServiceTarget::Producer(&pinned_producer),
+                peppylib::messaging::ServiceTarget::Producer(pinned_producer),
                 request_payload,
                 timeout,
             )

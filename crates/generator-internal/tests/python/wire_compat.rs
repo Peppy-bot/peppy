@@ -29,7 +29,7 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, WaitContext, init_python_project_venv, init_python_user_node,
+    DEFAULT_WAIT_TIMEOUT, WaitContext, bind_slot, init_python_project_venv, init_python_user_node,
     send_shutdown, spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
@@ -80,7 +80,7 @@ fn build_runtime_config(
     node_name: &str,
     runtime_config_path: &Path,
 ) {
-    let mut cfg = RuntimeConfig::new(
+    let cfg = RuntimeConfig::new(
         router_host,
         router_port,
         NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
@@ -94,13 +94,7 @@ fn build_runtime_config(
     // target (producers ignore the extra entry: their manifests declare
     // no such slot and the runtime only reads bindings for declared
     // slots).
-    cfg.node_instance.slot_bindings.insert(
-        "producer".to_string(),
-        vec![config::runtime::ProducerRef::new(
-            TEST_CORE_NODE,
-            PRODUCER_INSTANCE_ID,
-        )],
-    );
+    let cfg = bind_slot(cfg, "producer", TEST_CORE_NODE, PRODUCER_INSTANCE_ID);
     cfg.save_json5_launch_config(runtime_config_path).unwrap();
 }
 
