@@ -395,7 +395,7 @@ fn consumed_service() {
     // parameter is gone. `target_core_node` is never exposed in the
     // user-facing generated API, and the renamed `pinned_target_for`
     // accessor must never be emitted (the runtime helper is
-    // `pinned_producer_for`).
+    // `require_pinned_producer`).
     assert_contains_all(
         &rendered,
         &[
@@ -416,7 +416,7 @@ fn consumed_service() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helper is require_pinned_producer; got:\n{rendered}"
     );
 
     // Request serialization
@@ -427,9 +427,7 @@ fn consumed_service() {
     assert_contains_all(
         &rendered,
         &[
-            "pinned_producer = node_runner.pinned_producer_for(\"uvc_camera\")",
-            "if pinned_producer is None:",
-            "raise RuntimeError(",
+            "pinned_producer = node_runner.require_pinned_producer(\"uvc_camera\")",
             "peppylib.ServiceMessenger.poll(",
             "SERVICE_NAME,\n        pinned_producer,\n        request_payload,",
         ],

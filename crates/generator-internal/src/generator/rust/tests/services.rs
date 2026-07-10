@@ -294,9 +294,7 @@ fn consumed_service() {
         &rendered,
         &[
             "root.set_enable(enable);",
-            ".consumer_filter(\"uvc_camera\")",
-            ".pinned_target()",
-            "crate::Error::ServiceSlotNotPinned",
+            ".require_pinned_producer(\"uvc_camera\")",
             "peppylib::ServiceMessenger::poll(",
             "peppylib::messaging::ServiceTarget::Producer(pinned_producer),",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",

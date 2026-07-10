@@ -28,29 +28,20 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Emits the statements that resolve the slot's single bound producer
+/// Emits the statement that resolves the slot's single bound producer
 /// into a local `pinned_producer` ahead of a consumed poll / send_goal
-/// call. Service and action calls address exactly one producer; a slot
-/// bound to zero or several producers raises instead of falling back to
-/// wildcard discovery.
+/// call. Service and action calls address exactly one producer;
+/// `require_pinned_producer` raises (peppylib's `ServiceSlotNotPinned`,
+/// surfaced as `RuntimeError`) when the slot is bound to zero or several,
+/// instead of falling back to wildcard discovery.
 pub(crate) fn emit_pinned_producer_lookup(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    let link_id = &dependency.link_id;
     builder.line(&format!(
-        "pinned_producer = node_runner.pinned_producer_for({link_id:?})"
+        "pinned_producer = node_runner.require_pinned_producer({:?})",
+        dependency.link_id
     ));
-    builder.line("if pinned_producer is None:");
-    builder.indent();
-    builder.line(&format!(
-        "bound = len(node_runner.bound_producers_for({link_id:?}))"
-    ));
-    builder.line(&format!(
-        "raise RuntimeError(f\"slot {link_id} is bound to {{bound}} producers, but service \
-         and action calls require exactly one; bind a single producer to {link_id}\")"
-    ));
-    builder.dedent();
 }
 
 /// Generates Python code for an exposed (handler) service.

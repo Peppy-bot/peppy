@@ -467,7 +467,7 @@ pub fn build_consumed_topic_subscription(
         struct_prefix,
     )?;
 
-    let from_target_expr = consumed_from_target_expression(dependency);
+    let from_target_expr = consumed_to_target_expression(dependency);
     let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
 
     let subscription_tokens = build_subscription_struct(
@@ -527,17 +527,6 @@ pub fn build_consumed_topic_subscription(
     })
 }
 
-/// Returns the `Option<SenderTarget>` expression spliced into a generated
-/// `TopicMessenger::subscribe` call to pin the consumer on a specific producer.
-/// When the dependency emits via `conforms_to`, the consumer matches on
-/// `Interface(name, tag)`; otherwise on `Node(node_name, node_tag)`.
-pub fn consumed_from_target_expression(
-    dependency: &crate::generator::types::DependencyContext,
-) -> TokenStream {
-    let target = consumed_to_target_expression(dependency);
-    quote!(Some(#target))
-}
-
 /// Returns the `&ConsumerFilter` expression spliced into a generated
 /// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot:
 /// `Processor::consumer_filter(<manifest link_id>)`, the slot's bound
@@ -563,29 +552,18 @@ pub fn consumed_pinned_producer_statement(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let literal = Literal::string(&dependency.link_id);
-    // `pinned_target()` borrows from the filter the processor caches at
-    // startup, so the resolution allocates nothing per call (the owned
-    // `pinned_producer_for` exists for the PyO3 boundary).
     quote! {
         let pinned_producer = node_runner
             .processor()
-            .consumer_filter(#literal)
-            .pinned_target()
-            .ok_or_else(|| crate::Error::ServiceSlotNotPinned {
-                link_id: #literal.to_string(),
-                bound: node_runner
-                    .processor()
-                    .consumer_filter(#literal)
-                    .producers()
-                    .len(),
-            })?;
+            .require_pinned_producer(#literal)?;
     }
 }
 
 /// Returns the `SenderTarget` expression spliced into a generated
-/// `ServiceMessenger::poll` / `ActionMessenger::send_goal` call. Same producer
-/// matching rules as [`consumed_from_target_expression`] but without the
-/// `Option` wrapper since these APIs require a target.
+/// `TopicMessenger::subscribe` / `ServiceMessenger::poll` /
+/// `ActionMessenger::send_goal` call. When the dependency emits via
+/// `conforms_to`, the consumer matches on `Interface(name, tag)`; otherwise
+/// on `Node(node_name, node_tag)`.
 pub fn consumed_to_target_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {

@@ -824,8 +824,8 @@ fn no_user_facing_producer_identity_params() {
     // sites splice `None` at the single target slot and the user-facing
     // `target_instance_id` parameter is gone. `target_core_node` is never
     // exposed in the generated API, and the renamed `pinned_target_for`
-    // accessor must never be emitted (the runtime helper is
-    // `pinned_producer_for`).
+    // accessor must never be emitted (the runtime helpers are
+    // `bound_producers_for` / `require_pinned_producer`).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -836,6 +836,6 @@ fn no_user_facing_producer_identity_params() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; rendered:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helpers are bound_producers_for / require_pinned_producer; rendered:\n{rendered}"
     );
 }

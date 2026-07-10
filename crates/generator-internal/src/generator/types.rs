@@ -138,7 +138,7 @@ pub fn ensure_no_peer_collision(
 /// never pins by `link_id` on the wire (producers always advertise the `_`
 /// sentinel); instead the generated call sites splice
 /// `processor().consumer_filter(<link_id>)` /
-/// `processor().pinned_producer_for(<link_id>)` lookups.
+/// `processor().require_pinned_producer(<link_id>)` lookups.
 ///
 /// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node

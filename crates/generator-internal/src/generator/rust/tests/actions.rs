@@ -598,9 +598,7 @@ fn consumed_action() {
             "request: GoalRequest",
             "feedback_qos: peppylib::config::QoSProfile",
             "-> crate::Result<Self>",
-            ".consumer_filter(\"brain\")",
-            ".pinned_target()",
-            "crate::Error::ServiceSlotNotPinned",
+            ".require_pinned_producer(\"brain\")",
             "peppylib::ActionMessenger::send_goal",
             "Some(pinned_producer),",
             "node_runner.messenger().clone()",
@@ -807,7 +805,7 @@ fn consumed_two_actions_same_node() {
 }
 
 /// The generated `send_goal` resolves the slot's single bound producer
-/// via `consumer_filter(<link_id>).pinned_target()` into its full
+/// via `require_pinned_producer(<link_id>)` into its full
 /// `(core_node, instance_id)`, so the goal addresses exactly one
 /// producer with no discovery probe.
 #[test]
@@ -839,8 +837,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
     assert_contains_all(
         &rendered,
         &[
-            ".consumer_filter(\"left_arm\")",
-            ".pinned_target()",
+            ".require_pinned_producer(\"left_arm\")",
             "Some(pinned_producer),",
         ],
     );
