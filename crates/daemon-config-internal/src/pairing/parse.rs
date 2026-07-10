@@ -5,7 +5,7 @@ use std::path::Path;
 /// Parser responsible for extracting pairing documents.
 ///
 /// Pairing files are stand-alone JSON5 documents declaring
-/// `peppy_schema: "pairing/v1"`. Like interfaces and launchers, they are
+/// `peppy_schema: "pairing/v1"`. Like contracts and launchers, they are
 /// filename-agnostic: schema and shape validation are handled by serde so
 /// callers walking a repository can attempt to parse and treat failures as
 /// "not a pairing."
@@ -91,17 +91,17 @@ mod tests {
         ));
     }
 
-    /// An interface document must not be misread as a pairing. The schema
+    /// A contract document must not be misread as a pairing. The schema
     /// field is the source of truth.
     #[test]
-    fn interface_document_rejected() {
+    fn contract_document_rejected() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {}
         }"#;
         let err = PeppyPairingParser::from_content(json5)
-            .expect_err("interface must not parse as pairing");
+            .expect_err("contract must not parse as pairing");
         assert!(
             err.to_string().contains("pairing/v1"),
             "error should mention expected schema, got: {err}"

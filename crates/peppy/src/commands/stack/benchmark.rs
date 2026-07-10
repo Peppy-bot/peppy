@@ -224,7 +224,7 @@ const NOTE_WRAP_COLS: usize = 18;
 /// cyan, as `stack list` colors them. Mirrors [`InterfaceLatency::edge_label`]
 /// but colored and wrapped; the plain `edge_label` still backs the baseline key.
 fn edge_cell(row: &InterfaceLatency, colorize: bool) -> String {
-    let arrow = if row.via_interface.is_some() {
+    let arrow = if row.via_contract.is_some() {
         "➔"
     } else {
         "→"
@@ -354,7 +354,7 @@ fn benchmark_legend(colorize: bool) -> String {
         "\
 Legend:
   edge       →  direct dependency (depends_on.nodes)
-             ➔  resolved through interface conformance (the note names the interface)
+             ➔  resolved through contract conformance (the note names the contract)
   synthetic  round-trips on a single clock; the producer's framework replies and
              handlers never run, with payloads sized from the message schema
              {svc}  round-trip to the service
@@ -369,7 +369,7 @@ Legend:
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
-  note       the interface (➔ edges) and, for probe rows, the measured payload
+  note       the contract (➔ edges) and, for probe rows, the measured payload
              sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
@@ -403,12 +403,12 @@ fn display_rows(
                     fmt_duration(Duration::from_nanos(ns))
                 }
             };
-            // The `➔` arrow + legend already say "via interface conformance",
-            // so the note only names the interface (tinted like the labels it
+            // The `➔` arrow + legend already say "via contract conformance",
+            // so the note only names the contract (tinted like the labels it
             // relates), followed by any measurement diagnostic / payload summary.
             // Wrapped so a long note doesn't widen the whole table.
             let iface = row
-                .via_interface
+                .via_contract
                 .as_deref()
                 .map(|i| paint(colorize, NODE_COLOR, i));
             let note = match (iface, &row.note) {
@@ -465,7 +465,7 @@ mod tests {
             to_tag: "v1".to_string(),
             interface_name: interface.to_string(),
             link_id: link_id.to_string(),
-            via_interface: via.map(str::to_string),
+            via_contract: via.map(str::to_string),
             kind,
             measurement,
             clock_confidence: clock,
@@ -480,7 +480,7 @@ mod tests {
 
     /// Rows mirroring the real stack: a direct action edge, an interface-
     /// conformance topic edge measured both ways (node-probe + delivery), and an
-    /// interface-conformance service-probe edge whose payload note is long
+    /// contract-conformance service-probe edge whose payload note is long
     /// enough to exercise wrapping.
     fn sample_rows() -> Vec<InterfaceLatency> {
         vec![
@@ -547,7 +547,7 @@ mod tests {
             direct,
             "my_python_robot_backbone:v1\n→ my_python_robot_arm:v1\n  /move_arm"
         );
-        // Interface-conformance edge uses the heavy arrow.
+        // Contract-conformance edge uses the heavy arrow.
         let conformance = edge_cell(&rows[1], false);
         assert_eq!(
             conformance,

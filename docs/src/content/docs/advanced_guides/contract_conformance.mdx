@@ -1,26 +1,26 @@
 ---
-title: Interface conformance
-description: Declare reusable message contracts as interfaces and let nodes conform to them, so consumers can bind any conforming producer at launch time
+title: Contract conformance
+description: Declare reusable message contracts and let nodes conform to them, so consumers can bind any conforming producer at launch time
 sidebar:
   order: 5
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **interface**. An interface is a standalone document with its own `peppy_schema: "interface/v1"` that names a set of topics, services and actions. Producers conform to the interface; consumers depend on the interface. Both sides cite the interface by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
+A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **contract**. A contract is a standalone document with its own `peppy_schema: "contract/v1"` that names a set of topics, services and actions. Producers conform to the contract; consumers depend on the contract. Both sides cite the contract by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
 
-Interface conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` interface and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how conformance compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+Contract conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` contract and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how conformance compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## The three pieces
 
-### 1. The interface document
+### 1. The contract document
 
-An interface lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "interface/v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
+A contract lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "contract/v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
 
 ```json5
 // depth_camera/peppy.json5 (inside a registered repo)
 {
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest: {
     name: "depth_camera",
     tag: "v1",
@@ -54,11 +54,11 @@ An interface lives in its own file under a repository peppy scans (see [Reposito
 }
 ```
 
-After `peppy repo refresh`, the interface is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies an `interface/v1` document by its `peppy_schema` field.
+After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies a `contract/v1` document by its `peppy_schema` field.
 
 ### 2. A producer that conforms
 
-A producer node declares conformance with an `interfaces.conforms_to` list. Each entry names an interface by `(name, tag)`. The producer does not re-declare the interface's topics or services; it inherits them by reference:
+A producer node declares conformance with an `interfaces.conforms_to` list. Each entry names a contract by `(name, tag)`. The producer does not re-declare the contract's topics, services, or actions; it inherits them by reference:
 
 ```json5
 // realsense_d405/peppy.json5
@@ -83,11 +83,11 @@ A producer node declares conformance with an `interfaces.conforms_to` list. Each
 
 The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `conforms_to` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the contract directly would get.
 
-A single node can conform to multiple interfaces (e.g. `[{depth_camera, v1}, {uvc_camera, v1}]`), and then satisfies any consumer slot that asks for either.
+A single node can conform to multiple contracts (e.g. `[{depth_camera, v1}, {uvc_camera, v1}]`), and then satisfies any consumer slot that asks for either.
 
-### 3. A consumer that depends on the interface
+### 3. A consumer that depends on the contract
 
-A consumer references an interface through `manifest.depends_on.interfaces` rather than `depends_on.nodes`. Every interface dep carries a `link_id` and optionally a `from_any` flag (exactly like a node dep), but its `(name, tag)` names the interface contract instead of a concrete producer:
+A consumer references a contract through `manifest.depends_on.contracts` rather than `depends_on.nodes`. Every contract dep carries a `link_id` and optionally a `from_any` flag (exactly like a node dep), but its `(name, tag)` names the contract instead of a concrete producer:
 
 ```json5
 // video_reconstruction/peppy.json5
@@ -97,7 +97,7 @@ A consumer references an interface through `manifest.depends_on.interfaces` rath
     name: "video_reconstruction",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
       ],
     },
@@ -120,15 +120,15 @@ A consumer references an interface through `manifest.depends_on.interfaces` rath
 }
 ```
 
-The consumer never names a producer node. It names the interface, and the launcher does the matchmaking.
+The consumer never names a producer node. It names the contract, and the launcher does the matchmaking.
 
 ## Binding a conforming producer
 
-The matching predicate at binding time is: *a producer satisfies an interface slot if its `interfaces.conforms_to` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that `conforms_to: [{ depth_camera, v1 }]` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that conforms.
+The matching predicate at binding time is: *a producer satisfies a contract slot if its `interfaces.conforms_to` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that `conforms_to: [{ depth_camera, v1 }]` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that conforms.
 
-### Pinned interface bindings
+### Pinned contract bindings
 
-A pinned interface dep (`from_any: false`, the default) requires an explicit `--bind link_id@producer_instance_id` whose value points at an instance whose node conforms to the requested interface:
+A pinned contract dep (`from_any: false`, the default) requires an explicit `--bind link_id@producer_instance_id` whose value points at an instance whose node conforms to the requested contract:
 
 ```json5
 // peppy_launcher.json5
@@ -157,18 +157,18 @@ peppy node run --instance-id=depth_cam_inst1 realsense_d405:v1
 peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 video_reconstruction:v1
 ```
 
-If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, the launcher rejects the binding with a `BindingInterfaceNotConformed` error citing the expected interface and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `conforms_to: [{ depth_camera, v1 }]` is treated like any other non-conforming node.
+If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, the launcher rejects the binding with a `BindingContractNotConformed` error citing the expected contract and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `conforms_to: [{ depth_camera, v1 }]` is treated like any other non-conforming node.
 
-### From-any interface bindings
+### From-any contract bindings
 
-A `from_any: true` interface slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
+A `from_any: true` contract slot accepts any number of conforming producers and accumulates them under the slot's `link_id`:
 
 A `from_any` slot also needs no binding at all. With zero producers it materializes unbound and the node still boots, accepting whichever conforming producers publish (including ones that join later). That property makes it the natural shape for optional many-to-one fan-in: telemetry, monitoring, any consumer that accepts data from whichever producers happen to exist. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {
   depends_on: {
-    interfaces: [
+    contracts: [
       { name: "depth_camera", tag: "v1", link_id: "left_cam" },
       { name: "depth_camera", tag: "v1", link_id: "right_cam" },
       { name: "depth_camera", tag: "v1", link_id: "extras", from_any: true },
@@ -183,7 +183,7 @@ The launcher routes each `--bind` whose value names a conforming producer to the
 
 A common case is several instances of the same conforming node (say, three `realsense_d405:v1` cameras plugged into the same robot) all feeding the same `from_any` slot.
 
-First, the consumer declares a single `from_any: true` interface dep and consumes the topic through that slot's `link_id`:
+First, the consumer declares a single `from_any: true` contract dep and consumes the topic through that slot's `link_id`:
 
 ```json5
 // video_reconstruction/peppy.json5
@@ -193,7 +193,7 @@ First, the consumer declares a single `from_any: true` interface dep and consume
     name: "video_reconstruction",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "depth_camera", tag: "v1", link_id: "extras", from_any: true },
       ],
     },
@@ -291,12 +291,12 @@ The same applies when the producers are a mix of node identities, as long as eac
 
 ## sha256 pinning
 
-Both sides can optionally pin a specific interface revision by `sha256`:
+Both sides can optionally pin a specific contract revision by `sha256`:
 
 ```json5
 // consumer side
 depends_on: {
-  interfaces: [{ name: "depth_camera", tag: "v1", sha256: "aaaa…", link_id: "rear_camera" }],
+  contracts: [{ name: "depth_camera", tag: "v1", sha256: "aaaa…", link_id: "rear_camera" }],
 }
 
 // producer side
@@ -305,14 +305,14 @@ interfaces: {
 }
 ```
 
-Each side independently verifies its pinned `sha256` against the on-disk interface document at cache-resolution time. Peppy refuses to start a node whose pinned interface revision is not in the cache. The two sides are not cross-checked: a producer that pins `sha256` against the cached interface and a consumer that does not pin can still bind, as long as both pass their own checks.
+Each side independently verifies its pinned `sha256` against the on-disk contract document at cache-resolution time. Peppy refuses to start a node whose pinned contract revision is not in the cache. The two sides are not cross-checked: a producer that pins `sha256` against the cached contract and a consumer that does not pin can still bind, as long as both pass their own checks.
 
 ## Worked example: multi-camera reconstruction
 
 Combining the pieces above, a typical setup looks like this:
 
 ```
-┌─ depth_camera:v1 (interface)
+┌─ depth_camera:v1 (contract)
 │   topics: [video_stream]
 │   services: [video_stream_info]
 │
@@ -321,7 +321,7 @@ Combining the pieces above, a typical setup looks like this:
 └─ mujoco_depth_camera_sim:v1 (node) conforms_to: [{depth_camera, v1}]
 
 video_reconstruction:v1 (consumer)
-   depends_on.interfaces: [
+   depends_on.contracts: [
      { depth_camera, v1, link_id: left_cam },
      { depth_camera, v1, link_id: right_cam },
      { depth_camera, v1, link_id: backup_cams, from_any: true },
@@ -364,26 +364,26 @@ A launcher can wire the three slots to any mix of conforming producers:
 }
 ```
 
-`left_cam` and `right_cam` are pinned interface bindings: the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `any_label` is a free-form binding key; the launcher attaches it to the `backup_cams` from_any slot because `zed_overhead`'s node `(zed_2i:v1)` conforms to `depth_camera:v1`.
+`left_cam` and `right_cam` are pinned contract bindings: the launcher checks `rs_left` and `rs_right` both conform to `depth_camera:v1` (they do, via the `realsense_d405:v1` producer node). `any_label` is a free-form binding key; the launcher attaches it to the `backup_cams` from_any slot because `zed_overhead`'s node `(zed_2i:v1)` conforms to `depth_camera:v1`.
 
-Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same interface and the binding works unchanged.
+Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same contract and the binding works unchanged.
 
-Once the stack is running, these conformance-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 interface conformance)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a conformance edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
+Once the stack is running, these conformance-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 contract conformance)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a conformance edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
 
 ## Caller-driven cycles are rejected
 
-An interface dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's interfaces without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
+A contract dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's contracts without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
 
-**Services and actions are different.** Consuming a service or action interface means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through interfaces hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each interface dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
+**Services and actions are different.** Consuming a service or action contract means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through contracts hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each contract dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
 
 ### An example that is rejected
 
-Two service interfaces, one provided by each node:
+Two service contracts, one provided by each node:
 
 ```json5
-// pose_service/peppy.json5 (interface)
+// pose_service/peppy.json5 (contract)
 {
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest: { name: "pose_service", tag: "v1" },
   interfaces: {
     services: [
@@ -395,9 +395,9 @@ Two service interfaces, one provided by each node:
   },
 }
 
-// obstacle_service/peppy.json5 (interface)
+// obstacle_service/peppy.json5 (contract)
 {
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest: { name: "obstacle_service", tag: "v1" },
   interfaces: {
     services: [
@@ -411,7 +411,7 @@ Two service interfaces, one provided by each node:
 }
 ```
 
-`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the interface it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
+`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the contract it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
 
 ```json5
 // localizer/peppy.json5
@@ -421,7 +421,7 @@ Two service interfaces, one provided by each node:
     name: "localizer",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
       ],
     },
@@ -448,7 +448,7 @@ Two service interfaces, one provided by each node:
     name: "mapper",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "pose_service", tag: "v1", link_id: "pose" },
       ],
     },
@@ -477,17 +477,17 @@ localizer ── calls obstacle_service (nearest_obstacle) ──▶ mapper
     └────────── calls pose_service (current_pose) ◀──────────┘
 ```
 
-Whichever node is added second is rejected at add time with a `ServiceActionInterfaceCycle` error. The offending node is **not** committed and the stack is left unchanged:
+Whichever node is added second is rejected at add time with a `ServiceActionContractCycle` error. The offending node is **not** committed and the stack is left unchanged:
 
 ```
-service dependency cycle through interfaces involving localizer:v1 -> mapper:v1 (closing interface `obstacle_service:v1`). service request/response cycles deadlock and are not allowed; only topics may be bidirectional. If these providers are not actually cross-bound, pin the binding or split the interface.
+service dependency cycle through contracts involving localizer:v1 -> mapper:v1 (closing dependency `obstacle_service:v1`). service request/response cycles deadlock and are not allowed; only topics may be bidirectional. If these providers are not actually cross-bound, pin the binding or split the contract.
 ```
 
-The same rejection applies however you wire it: directly through `depends_on.nodes`, through interfaces, through the launcher (`peppy stack launch`), or incrementally across separate commands. Bringing the nodes up one at a time does not relax the rule: the first node is added because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
+The same rejection applies however you wire it: directly through `depends_on.nodes`, through contracts, through the launcher (`peppy stack launch`), or incrementally across separate commands. Bringing the nodes up one at a time does not relax the rule: the first node is added because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
 
 ### Two properties of the check
 
-- **It is conservative (type-level).** The check reasons about node identities and their declared `conforms_to`, not about which producer a specific `--bind` resolves to. If a service or action interface has several conforming providers and only one of them closes a cycle, the configuration is still rejected, because *any* conforming provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the interface so the cyclic capability is not declared on the shared contract.
+- **It is conservative (type-level).** The check reasons about node identities and their declared `conforms_to`, not about which producer a specific `--bind` resolves to. If a service or action contract has several conforming providers and only one of them closes a cycle, the configuration is still rejected, because *any* conforming provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
 - **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing) relies on.
 
 ### How to fix it
@@ -501,6 +501,6 @@ See [Why topics only?](/advanced_guides/pairing/#why-topics-only) for the full r
 
 ## What conformance is not
 
-- **Conformance is explicit.** A node that natively emits `video_stream` but does not declare `conforms_to: [{ depth_camera, v1 }]` does **not** satisfy a `depth_camera:v1` interface slot, even if every field matches. The contract is the explicit `conforms_to` claim, not structural duck typing.
-- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal an interface's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `conforms_to`. The reverse is also true: a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it declares conformance.
-- **Conformance does not flow through node deps.** `depends_on.nodes` still names a specific producer node by `(name, tag)`; `depends_on.interfaces` is what introduces conformance-based matching. The two coexist on the same consumer.
+- **Conformance is explicit.** A node that natively emits `video_stream` but does not declare `conforms_to: [{ depth_camera, v1 }]` does **not** satisfy a `depth_camera:v1` contract slot, even if every field matches. The contract is the explicit `conforms_to` claim, not structural duck typing.
+- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal a contract's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `conforms_to`. The reverse is also true: a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it declares conformance.
+- **Conformance does not flow through node deps.** `depends_on.nodes` still names a specific producer node by `(name, tag)`; `depends_on.contracts` is what introduces conformance-based matching. The two coexist on the same consumer.

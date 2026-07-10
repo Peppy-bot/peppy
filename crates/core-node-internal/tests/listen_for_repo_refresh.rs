@@ -827,13 +827,13 @@ async fn refresh_excludes_git_repo() {
     assert_eq!(item_name, "fs_node");
 }
 
-/// End-to-end coverage of interface discovery: refresh writes
-/// `interfaces.json5` with the expected shape (interface_name + tag +
-/// sha256), the result reports the interface count, and feedback
-/// includes the discovered interface tagged with kind = Interface.
+/// End-to-end coverage of contract discovery: refresh writes
+/// `contracts.json5` with the expected shape (contract_name + tag +
+/// sha256), the result reports the contract count, and feedback
+/// includes the discovered contract tagged with kind = Contract.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_discovers_interfaces() {
-    use core_node::interfaces_repo_cache_path;
+async fn refresh_discovers_contracts() {
+    use core_node::contracts_repo_cache_path;
     use core_node_api::encoding::RepoItemKind;
 
     let started = start_core_node_with_real_messenger().await;
@@ -842,11 +842,11 @@ async fn refresh_discovers_interfaces() {
     let iface_dir = repo_dir.join("uvc_camera");
     std::fs::create_dir_all(&iface_dir).expect("create iface dir");
     let manifest_body = r#"{
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest: { name: "uvc_camera", tag: "v1", labels: ["uvc", "camera"] },
   interfaces: {}
 }"#;
-    std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write interface manifest");
+    std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write contract manifest");
 
     write_repositories_json5(
         &started,
@@ -858,7 +858,7 @@ async fn refresh_discovers_interfaces() {
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
     assert!(result.result.success, "refresh should succeed");
-    assert_eq!(result.result.total_interfaces_found, 1);
+    assert_eq!(result.result.total_contracts_found, 1);
 
     let Some(RepoRefreshFeedback::Discovered {
         item_name,
@@ -869,13 +869,13 @@ async fn refresh_discovers_interfaces() {
         matches!(
             f,
             RepoRefreshFeedback::Discovered {
-                kind: RepoItemKind::Interface,
+                kind: RepoItemKind::Contract,
                 ..
             }
         )
     })
     else {
-        panic!("interface discovery feedback")
+        panic!("contract discovery feedback")
     };
     assert_eq!(item_name, "uvc_camera");
     assert_eq!(item_tag, "v1");
@@ -884,13 +884,13 @@ async fn refresh_discovers_interfaces() {
         "feedback should carry the sha256 fingerprint"
     );
 
-    let cache_path = interfaces_repo_cache_path(&started.peppy_dirs);
-    assert!(cache_path.exists(), "interfaces cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read interfaces cache");
+    let cache_path = contracts_repo_cache_path(&started.peppy_dirs);
+    assert!(cache_path.exists(), "contracts cache should be written");
+    let content = std::fs::read_to_string(&cache_path).expect("read contracts cache");
     let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse interfaces cache");
+        serde_json5::from_str(&content).expect("parse contracts cache");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["interface_name"], "uvc_camera");
+    assert_eq!(entries[0]["contract_name"], "uvc_camera");
     assert_eq!(entries[0]["tag"], "v1");
     assert_eq!(entries[0]["source_type"], "fs");
     assert!(

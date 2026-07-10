@@ -303,7 +303,7 @@ fn consumed_service() {
 }
 
 /// A consumed service pulled via a `conforms_to` interface (or a
-/// `depends_on.interfaces` dependency) addresses the producer as an
+/// `depends_on.contracts` dependency) addresses the producer as an
 /// *interface* rather than a node: the `to_target` becomes
 /// `SenderTarget::interface(iface_name, iface_tag)` instead of
 /// `SenderTarget::node(...)`. This is the consumer-side complement to the
@@ -311,7 +311,7 @@ fn consumed_service() {
 /// `DependencyContext::interface` / `::conformed` constructors that only the
 /// external consumer drives in production.
 #[test]
-fn consumed_service_via_interface_origin_targets_interface() {
+fn consumed_service_via_contract_origin_targets_interface() {
     let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();

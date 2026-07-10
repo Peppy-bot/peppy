@@ -7,8 +7,8 @@
 //! the other form a request/response cycle that deadlocks at runtime.
 //!
 //! The static dependency graph deliberately drops interface edges (that is what
-//! makes bidirectional communication through interfaces possible), so a
-//! service/action cycle routed through interfaces is invisible to the node-dep
+//! makes bidirectional communication through contracts possible), so a
+//! service/action cycle routed through contracts is invisible to the node-dep
 //! DAG check. This module rebuilds the *caller-driven* edges only, resolving
 //! interface dependencies to their providers via `conforms_to`, and reports any
 //! cycle so callers can reject it.
@@ -68,8 +68,8 @@ struct Edge {
 /// Edge rule (direction is caller -> provider; cycle detection is
 /// direction-agnostic but the convention is kept consistent):
 /// - For every link a node consumes as a service or action, its matching
-///   `depends_on.interfaces` entry adds an edge to every in-set node that
-///   `conforms_to` that interface, and its matching `depends_on.nodes` entry
+///   `depends_on.contracts` entry adds an edge to every in-set node that
+///   `conforms_to` that contract, and its matching `depends_on.nodes` entry
 ///   adds an edge to the in-set node with that identity (the mixed direct +
 ///   interface case).
 /// - Links consumed only as topics add no edge, so bidirectional topics stay
@@ -120,7 +120,7 @@ fn build_caller_driven_edges(
             continue;
         };
 
-        for dep in &depends_on.interfaces {
+        for dep in &depends_on.contracts {
             let Some(&kind) = caller_driven.get(dep.link_id.as_str()) else {
                 continue;
             };
@@ -322,7 +322,7 @@ mod tests {
                     manifest: {{
                         name: "{name}",
                         tag: "v1",
-                        depends_on: {{ nodes: [{node_deps}], interfaces: [{iface_deps}] }},
+                        depends_on: {{ nodes: [{node_deps}], contracts: [{iface_deps}] }},
                     }},
                     interfaces: {{
                         conforms_to: [{conforms}],
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn mutual_service_via_interfaces_is_cycle() {
+    fn mutual_service_via_contracts_is_cycle() {
         let a = NodeSpec::new("a")
             .conforms("iface_a", "v1")
             .iface_dep("iface_b", "v1", "to_b")
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn mutual_action_via_interfaces_is_cycle() {
+    fn mutual_action_via_contracts_is_cycle() {
         let a = NodeSpec::new("a")
             .conforms("iface_a", "v1")
             .iface_dep("iface_b", "v1", "to_b")
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn bidirectional_topic_via_interfaces_is_not_cycle() {
+    fn bidirectional_topic_via_contracts_is_not_cycle() {
         let a = NodeSpec::new("a")
             .conforms("iface_a", "v1")
             .iface_dep("iface_b", "v1", "to_b")

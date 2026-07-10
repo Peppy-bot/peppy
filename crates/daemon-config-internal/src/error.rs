@@ -63,21 +63,21 @@ where
 }
 
 /// Whether a declared slot is a node dep (matched by `(name, tag)` identity)
-/// or an interface dep (matched against the producer's `conforms_to`). Used
+/// or a contract dep (matched against the producer's `conforms_to`). Used
 /// in error payloads so messages can name the expected category in singular
-/// human form instead of leaking the `depends_on.nodes` / `depends_on.interfaces`
+/// human form instead of leaking the `depends_on.nodes` / `depends_on.contracts`
 /// field path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotKind {
     Node,
-    Interface,
+    Contract,
 }
 
 impl core::fmt::Display for SlotKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             SlotKind::Node => "node",
-            SlotKind::Interface => "interface",
+            SlotKind::Contract => "contract",
         })
     }
 }
@@ -117,9 +117,9 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
-/// Payload for [`ParsingError::BindingInterfaceNotConformed`]. Raised when a
-/// `--bind` targets an interface slot but the producer's `interfaces.conforms_to`
-/// list does not include the requested `(interface_name, interface_tag)`.
+/// Payload for [`ParsingError::BindingContractNotConformed`]. Raised when a
+/// `--bind` targets a contract slot but the producer's `interfaces.conforms_to`
+/// list does not include the requested `(contract_name, contract_tag)`.
 ///
 /// Boxed in the variant for the same `clippy::result_large_err` reason as the
 /// other binding error payloads.
@@ -127,15 +127,15 @@ pub struct BindingTargetMismatch {
 #[error(
     "binding `{binding}` on instance `{owner_instance_id}`: target \
      `{target_instance_id}` deploys `{producer_name}:{producer_tag}`, but \
-     the slot requires interface `{interface_name}:{interface_tag}` (add it \
+     the slot requires contract `{contract_name}:{contract_tag}` (add it \
      to the producer's `conforms_to`)"
 )]
-pub struct BindingInterfaceNotConformed {
+pub struct BindingContractNotConformed {
     pub owner_instance_id: String,
     pub binding: String,
     pub target_instance_id: String,
-    pub interface_name: String,
-    pub interface_tag: String,
+    pub contract_name: String,
+    pub contract_tag: String,
     pub producer_name: String,
     pub producer_tag: String,
 }
@@ -365,7 +365,7 @@ pub enum ParsingError {
     /// declare conformance to the requested interface. Boxed for the same
     /// `result_large_err` reason as the other binding variants.
     #[error(transparent)]
-    BindingInterfaceNotConformed(Box<BindingInterfaceNotConformed>),
+    BindingContractNotConformed(Box<BindingContractNotConformed>),
     /// Two instances anywhere in the running stack share an `instance_id`.
     /// Boxed for the same `result_large_err` reason as the other binding
     /// variants.

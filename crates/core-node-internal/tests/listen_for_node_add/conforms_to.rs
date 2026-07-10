@@ -4,7 +4,7 @@
 //! peppygen there before handing off to `node_build`. An earlier version
 //! of the add path called only `collect_consumed_interfaces` (which
 //! handles `depends_on`) and skipped `resolve_conforms_to`, so the
-//! generator never saw the conformed interface's topics/services. The
+//! generator never saw the conformed contract's topics/services. The
 //! resulting peppygen had a flat layout (`emitted_topics.rs` was empty)
 //! and any node code importing nested paths like
 //! `peppygen::emitted_topics::<iface>::<tag>::<topic>` failed to compile
@@ -18,8 +18,8 @@
 use super::*;
 use common::TestPackagesCache;
 
-const INTERFACE_BODY: &str = r#"{
-    peppy_schema: "interface/v1",
+const CONTRACT_BODY: &str = r#"{
+    peppy_schema: "contract/v1",
     manifest: { name: "uvc_camera", tag: "v1" },
     interfaces: {
         topics: [
@@ -57,14 +57,14 @@ async fn node_add_generates_conformed_interface_modules_in_working_dir() {
     let node_stack = started.node_stack.clone();
     let peppy_dirs = started.peppy_dirs.clone();
 
-    // Stage the interface on disk plus an fs-backed cache entry so
+    // Stage the contract on disk plus an fs-backed cache entry so
     // `resolve_conforms_to` can find it.
     let iface_dir = TempDir::new().expect("iface tempdir");
     let iface_path = iface_dir.path().join("uvc_camera.json5");
-    std::fs::write(&iface_path, INTERFACE_BODY).expect("write interface");
+    std::fs::write(&iface_path, CONTRACT_BODY).expect("write contract");
 
     TestPackagesCache::new()
-        .interface_fs_entry("uvc_camera", "v1", &iface_path, INTERFACE_BODY)
+        .contract_fs_entry("uvc_camera", "v1", &iface_path, CONTRACT_BODY)
         .write(&peppy_dirs);
 
     let node_dir = TempDir::new().expect("node tempdir");

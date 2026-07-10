@@ -123,8 +123,8 @@ impl VirtualDeptree {
             });
         }
 
-        // Interface deps were dropped from the node-dep graph above, so a
-        // service/action cycle routed through interfaces survives the toposort.
+        // Contract deps were dropped from the node-dep graph above, so a
+        // service/action cycle routed through contracts survives the toposort.
         // Reject it explicitly: caller-driven dependencies must stay acyclic.
         let mut cycle_nodes: Vec<CycleCheckNode<'_>> = infos
             .values()
@@ -139,7 +139,7 @@ impl VirtualDeptree {
         // (and thus which SCC it reports when several exist) is stable.
         cycle_nodes.sort_by(|a, b| (a.name, a.tag).cmp(&(b.name, b.tag)));
         if let Some(cycle) = find_service_action_cycle(&cycle_nodes) {
-            return Err(Error::ServiceActionInterfaceCycle {
+            return Err(Error::ServiceActionContractCycle {
                 nodes: cycle.nodes,
                 closing_dependency: cycle.closing_dependency,
                 kind: cycle.kind.to_string(),
@@ -328,15 +328,15 @@ mod tests {
         }
     }
 
-    /// Writes a node config that conforms to interfaces and consumes
-    /// service/action/topic items through interface deps, for the
-    /// caller-driven cycle tests. `iface_deps` and the consume lists are
+    /// Writes a node config that conforms to contracts and consumes
+    /// service/action/topic items through contract deps, for the
+    /// caller-driven cycle tests. `contract_deps` and the consume lists are
     /// `(name, tag, link_id)` / `link_id` / `(link_id, topic_name)`.
     fn write_node_full(
         dir: &Path,
         name: &str,
         conforms_to: &[(&str, &str)],
-        iface_deps: &[(&str, &str, &str)],
+        contract_deps: &[(&str, &str, &str)],
         service_consumes: &[&str],
         action_consumes: &[&str],
         topic_consumes: &[(&str, &str)],
@@ -349,8 +349,8 @@ mod tests {
                 .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}" }}"#))
                 .collect(),
         );
-        let ifaces = join(
-            iface_deps
+        let contracts = join(
+            contract_deps
                 .iter()
                 .map(|(n, t, l)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{l}" }}"#))
                 .collect(),
@@ -379,7 +379,7 @@ mod tests {
                 manifest: {{
                     name: "{name}",
                     tag: "v1",
-                    depends_on: {{ nodes: [], interfaces: [{ifaces}] }},
+                    depends_on: {{ nodes: [], contracts: [{contracts}] }},
                 }},
                 interfaces: {{
                     conforms_to: [{conforms}],
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn build_detects_mutual_service_interface_cycle() {
+    fn build_detects_mutual_service_contract_cycle() {
         let tmp = TempDir::new().unwrap();
         let a_dir = tmp.path().join("a");
         let b_dir = tmp.path().join("b");
@@ -420,13 +420,13 @@ mod tests {
         );
 
         match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]) {
-            Err(Error::ServiceActionInterfaceCycle { kind, .. }) => assert_eq!(kind, "service"),
-            other => panic!("expected ServiceActionInterfaceCycle, got {:?}", other),
+            Err(Error::ServiceActionContractCycle { kind, .. }) => assert_eq!(kind, "service"),
+            other => panic!("expected ServiceActionContractCycle, got {:?}", other),
         }
     }
 
     #[test]
-    fn build_detects_mutual_action_interface_cycle() {
+    fn build_detects_mutual_action_contract_cycle() {
         let tmp = TempDir::new().unwrap();
         let a_dir = tmp.path().join("a");
         let b_dir = tmp.path().join("b");
@@ -450,8 +450,8 @@ mod tests {
         );
 
         match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b)]) {
-            Err(Error::ServiceActionInterfaceCycle { kind, .. }) => assert_eq!(kind, "action"),
-            other => panic!("expected ServiceActionInterfaceCycle, got {:?}", other),
+            Err(Error::ServiceActionContractCycle { kind, .. }) => assert_eq!(kind, "action"),
+            other => panic!("expected ServiceActionContractCycle, got {:?}", other),
         }
     }
 
@@ -540,8 +540,8 @@ mod tests {
         );
 
         match VirtualDeptree::build(vec![(a_dir, a), (b_dir, b), (c_dir, c)]) {
-            Err(Error::ServiceActionInterfaceCycle { nodes, .. }) => assert_eq!(nodes.len(), 3),
-            other => panic!("expected ServiceActionInterfaceCycle, got {:?}", other),
+            Err(Error::ServiceActionContractCycle { nodes, .. }) => assert_eq!(nodes.len(), 3),
+            other => panic!("expected ServiceActionContractCycle, got {:?}", other),
         }
     }
 }

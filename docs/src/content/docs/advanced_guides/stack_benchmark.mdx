@@ -23,9 +23,9 @@ and must not be read side by side:
 It covers **both** ways a node can depend on another:
 
 - **direct** dependencies (`depends_on.nodes`), drawn with a light arrow `→`; and
-- dependencies resolved through **interface conformance** (`depends_on.interfaces`
+- dependencies resolved through **contract conformance** (`depends_on.contracts`
   matched by a producer's `interfaces.conforms_to`), drawn with a heavy arrow `➔`.
-  See [Interface conformance](/advanced_guides/interface_conformance/).
+  See [Contract conformance](/advanced_guides/contract_conformance/).
 
 Use it to answer questions like "is this service round-trip as fast as I expect?",
 "how long does a frame take to reach its consumer?", or "did my last change make a
@@ -100,7 +100,7 @@ Real traffic: observe-only one-way delivery of live topic messages (200 samples/
 - **edge**: the dependency, wrapped over three lines: the **consumer**, then the
   kind arrow + **producer**, then the consumed `/interface` (topic, service, or
   action name). `→` is a direct `depends_on.nodes` edge; `➔` is one resolved
-  through interface conformance (the `note` names the interface).
+  through contract conformance (the `note` names the contract).
 - **binding**: the dependency binding (`link_id`) this edge was measured through.
   A node can consume the same interface from one producer via several bindings;
   this column tells those rows apart.
@@ -114,7 +114,7 @@ Real traffic: observe-only one-way delivery of live topic messages (200 samples/
 - **n**: how many samples were collected (an unreachable or idle edge shows `0`).
 - **Δp50**: change in the median versus the previous run **on this machine**
   (baselines are machine-local, so numbers are never compared across machines).
-- **note**: for `➔` rows, the interface the edge was resolved through; for
+- **note**: for `➔` rows, the contract the edge was resolved through; for
   probe rows, the measured payload sizes (see
   [Payload sizing](#payload-sizing)); plus any diagnostic (e.g. a suppressed
   cross-host value, or a topic with no live traffic).
@@ -124,7 +124,7 @@ A legend repeating all of this prints beneath the tables:
 ```
 Legend:
   edge       →  direct dependency (depends_on.nodes)
-             ➔  resolved through interface conformance (the note names the interface)
+             ➔  resolved through contract conformance (the note names the contract)
   synthetic  round-trips on a single clock; the producer's framework replies and
              handlers never run, with payloads sized from the message schema
              svc-probe   round-trip to the service
@@ -139,7 +139,7 @@ Legend:
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
-  note       the interface (➔ edges) and, for probe rows, the measured payload
+  note       the contract (➔ edges) and, for probe rows, the measured payload
              sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 

@@ -20,7 +20,7 @@
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::resolve_interface_doc;
+use crate::services::node::resolve_contract_doc;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_conforms_to,
@@ -114,7 +114,7 @@ struct BenchmarkActionContext {
     bound_core_node: String,
     core_instance_id: String,
     /// Interface cache root, used to resolve a conformed topic's QoS from its
-    /// interface contract (a conformed producer has no native `emits` to read).
+    /// contract document (a conformed producer has no native `emits` to read).
     peppy_dirs: PeppyDirs,
 }
 
@@ -214,7 +214,7 @@ struct Edge {
     /// edges can share producer + interface but differ only by this link.
     link_id: String,
     /// `Some((iface_name, iface_tag))` when this edge is resolved through
-    /// interface conformance: the producer emits/serves the artifact under the
+    /// contract conformance: the producer emits/serves the artifact under the
     /// interface-keyed wire path, so measurement must target the interface, not
     /// the node. `None` for a direct `depends_on.nodes` edge.
     origin: Option<(String, String)>,
@@ -250,7 +250,7 @@ impl Edge {
     }
 
     /// `Some("name:tag")` of the interface this edge routes through, for the row.
-    fn via_interface(&self) -> Option<String> {
+    fn via_contract(&self) -> Option<String> {
         self.origin
             .as_ref()
             .map(|(name, tag)| format!("{name}:{tag}"))
@@ -269,15 +269,15 @@ fn emit_feedback(
 struct ResolvedProducer {
     name: String,
     tag: String,
-    /// `Some((iface_name, iface_tag))` for an interface-conformance edge; `None`
+    /// `Some((iface_name, iface_tag))` for a contract-conformance edge; `None`
     /// for a direct node dependency.
     origin: Option<(String, String)>,
 }
 
 /// Resolve a consumed interface's `link_id` to its producer(s):
 /// - a `depends_on.nodes` entry resolves to exactly that node (`origin = None`);
-/// - a `depends_on.interfaces` entry resolves to **every** config in `configs`
-///   that `conforms_to` the interface (`origin = Some`), since any of them can
+/// - a `depends_on.contracts` entry resolves to **every** config in `configs`
+///   that `conforms_to` the contract (`origin = Some`), since any of them can
 ///   satisfy the dependency.
 fn resolve_link(
     depends_on: Option<&DependsOn>,
@@ -296,7 +296,7 @@ fn resolve_link(
         }];
     }
 
-    if let Some(dep) = depends_on.interfaces.iter().find(|d| d.link_id == link_id) {
+    if let Some(dep) = depends_on.contracts.iter().find(|d| d.link_id == link_id) {
         let iface_name = dep.name.as_str();
         let iface_tag = dep.tag.as_str();
         return configs
@@ -324,9 +324,9 @@ fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSPro
 }
 
 /// Walk every node's consumed interfaces and resolve each to one edge per
-/// producer. A direct node dep yields one edge; an interface dep yields one per
-/// conforming producer. Topic QoS for interface-conformance edges is left at the
-/// default here and resolved from the interface contract by
+/// producer. A direct node dep yields one edge; a contract dep yields one per
+/// conforming producer. Topic QoS for contract-conformance edges is left at the
+/// default here and resolved from the contract document by
 /// [`resolve_conformed_topic_qos`] (the conformed producer has no native `emits`
 /// to read it from).
 fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
@@ -389,7 +389,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
     edges
 }
 
-/// Fill in topic QoS for interface-conformance edges from the interface
+/// Fill in topic QoS for contract-conformance edges from the contract
 /// contract. The conformed producer declares no native `emits`, so the QoS lives
 /// in the `(iface_name, iface_tag)` contract. On any cache miss / parse failure
 /// the edge keeps the default QoS and is left to measure on a best-effort basis
@@ -399,7 +399,7 @@ fn resolve_conformed_topic_qos(
     peppy_dirs: &PeppyDirs,
     tx: &UnboundedSender<StackBenchmarkFeedback>,
 ) {
-    let mut cache: HashMap<(String, String), Option<daemon_config::interface::PeppyInterface>> =
+    let mut cache: HashMap<(String, String), Option<daemon_config::contract::PeppyContract>> =
         HashMap::new();
     for edge in edges.iter_mut() {
         if edge.kind != InterfaceKind::Topic {
@@ -411,7 +411,7 @@ fn resolve_conformed_topic_qos(
         let doc = cache
             .entry((iface_name.clone(), iface_tag.clone()))
             .or_insert_with(|| {
-                match resolve_interface_doc(peppy_dirs, &iface_name, &iface_tag, None, &|_| {}) {
+                match resolve_contract_doc(peppy_dirs, &iface_name, &iface_tag, None, &|_| {}) {
                     Ok(doc) => Some(doc),
                     Err(e) => {
                         emit_feedback(
@@ -443,7 +443,7 @@ fn resolve_conformed_topic_qos(
 /// resolve their request/response `MessageFormat`s; topic edges resolve the
 /// topic's `MessageFormat` as the response side (the node-probe asks the
 /// producer to reply with a topic-sized body). Formats come from the producer's
-/// node config (direct deps) or interface contract (conformance deps), then a
+/// node config (direct deps) or contract document (conformance deps), then a
 /// lower-bound serialized size is estimated. Leaves an edge at `0` (empty
 /// probe) when the schema can't be resolved, and never aborts.
 fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &PeppyDirs) {
@@ -451,10 +451,8 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
         .iter()
         .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
         .collect();
-    let mut iface_cache: HashMap<
-        (String, String),
-        Option<daemon_config::interface::PeppyInterface>,
-    > = HashMap::new();
+    let mut iface_cache: HashMap<(String, String), Option<daemon_config::contract::PeppyContract>> =
+        HashMap::new();
 
     for edge in edges.iter_mut() {
         let (req, resp) = match &edge.origin {
@@ -468,9 +466,9 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
                 let doc = iface_cache
                     .entry((name.clone(), tag.clone()))
                     .or_insert_with(|| {
-                        resolve_interface_doc(peppy_dirs, name, tag, None, &|_| {}).ok()
+                        resolve_contract_doc(peppy_dirs, name, tag, None, &|_| {}).ok()
                     });
-                formats_from_interface(doc.as_ref(), edge.kind, &edge.interface)
+                formats_from_contract(doc.as_ref(), edge.kind, &edge.interface)
             }
         };
         if let Some(r) = req {
@@ -542,10 +540,10 @@ fn formats_from_node(
     }
 }
 
-/// Request/response size estimates for an interface declared in an interface
-/// contract. Same response-side convention for topics as [`formats_from_node`].
-fn formats_from_interface(
-    doc: Option<&daemon_config::interface::PeppyInterface>,
+/// Request/response size estimates for an interface declared in a contract.
+/// Same response-side convention for topics as [`formats_from_node`].
+fn formats_from_contract(
+    doc: Option<&daemon_config::contract::PeppyContract>,
     kind: InterfaceKind,
     name: &str,
 ) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
@@ -769,7 +767,7 @@ fn row_from_samples(
         to_tag: edge.to_tag.clone(),
         interface_name: edge.interface.clone(),
         link_id: edge.link_id.clone(),
-        via_interface: edge.via_interface(),
+        via_contract: edge.via_contract(),
         kind: edge.kind,
         measurement,
         clock_confidence,
@@ -800,7 +798,7 @@ async fn measure_probe(
 ) -> InterfaceLatency {
     // The node-probe rides the node-keyed wire path regardless of how the topic
     // itself is keyed: `node_health` is a per-node framework service, so an
-    // interface-conformance edge still probes the producer node directly.
+    // contract-conformance edge still probes the producer node directly.
     let target = match measurement {
         MeasurementKind::NodeProbe => SenderTarget::node(&edge.to_node, &edge.to_tag),
         _ => edge.target(),
@@ -1093,7 +1091,7 @@ mod tests {
                 manifest: {
                     name: "brain", tag: "v1",
                     depends_on: {
-                        interfaces: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ],
+                        contracts: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ],
                         nodes: [ { name: "arm", tag: "v1", link_id: "robot_controller" } ]
                     }
                 },
@@ -1141,7 +1139,7 @@ mod tests {
         let configs = vec![consumer(), camera_mock(), arm()];
         let edges = enumerate_edges(&configs);
 
-        // Two interface-conformance edges (topic + service) + one direct action.
+        // Two contract-conformance edges (topic + service) + one direct action.
         assert_eq!(edges.len(), 3, "edges: {}", edges.len());
 
         let video = find(&edges, "video_stream");
@@ -1151,7 +1149,7 @@ mod tests {
             video.origin,
             Some(("uvc_camera".to_string(), "v1".to_string()))
         );
-        assert_eq!(video.via_interface(), Some("uvc_camera:v1".to_string()));
+        assert_eq!(video.via_contract(), Some("uvc_camera:v1".to_string()));
 
         let info = find(&edges, "video_stream_info");
         assert_eq!(info.kind, InterfaceKind::Service);
@@ -1164,7 +1162,7 @@ mod tests {
         assert_eq!(move_arm.kind, InterfaceKind::Action);
         assert_eq!(move_arm.to_node, "arm");
         assert_eq!(move_arm.origin, None);
-        assert_eq!(move_arm.via_interface(), None);
+        assert_eq!(move_arm.via_contract(), None);
     }
 
     #[test]
@@ -1268,10 +1266,10 @@ mod tests {
     }
 
     #[test]
-    fn formats_from_interface_sizes_topic_message_on_response_side() {
-        let doc = daemon_config::interface::PeppyInterfaceParser::from_content(
+    fn formats_from_contract_sizes_topic_message_on_response_side() {
+        let doc = daemon_config::contract::PeppyContractParser::from_content(
             r#"{
-                peppy_schema: "interface/v1",
+                peppy_schema: "contract/v1",
                 manifest: { name: "uvc_camera", tag: "v1" },
                 interfaces: { topics: [ {
                     name: "video_stream",
@@ -1285,7 +1283,7 @@ mod tests {
             }"#,
         )
         .expect("parse interface");
-        let (req, resp) = formats_from_interface(Some(&doc), InterfaceKind::Topic, "video_stream");
+        let (req, resp) = formats_from_contract(Some(&doc), InterfaceKind::Topic, "video_stream");
         assert!(req.is_none(), "a topic has no request leg");
         let resp = resp.expect("topic message sized");
         assert!(resp.bytes > 0);

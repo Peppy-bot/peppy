@@ -3,7 +3,7 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::repo::cache::{
-    DiscoveredEntry, InterfaceCacheEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
+    ContractCacheEntry, DiscoveredEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
     RepoCacheEntry, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
@@ -19,7 +19,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::interface::PeppyInterfaceParser;
+use daemon_config::contract::PeppyContractParser;
 use daemon_config::launcher::PeppyLauncherParser;
 use daemon_config::pairing::PeppyPairingParser;
 use peppylib::messaging::SenderTarget;
@@ -160,7 +160,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                         Ok((
                             count_unique(&refreshed.nodes),
                             count_unique(&refreshed.launchers),
-                            count_unique(&refreshed.interfaces),
+                            count_unique(&refreshed.contracts),
                             count_unique(&refreshed.pairings),
                             refreshed.excluded,
                         ))
@@ -174,13 +174,13 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 Ok(Ok((
                     unique_nodes,
                     unique_launchers,
-                    unique_interfaces,
+                    unique_contracts,
                     unique_pairings,
                     _excluded,
                 ))) => RepoRefreshResult::success(
                     unique_nodes,
                     unique_launchers,
-                    unique_interfaces,
+                    unique_contracts,
                     unique_pairings,
                 ),
                 Ok(Err(e)) => {
@@ -211,12 +211,12 @@ pub(crate) struct ExcludedRepo {
 }
 
 /// Aggregated output of [`process_refresh`]: all discovered entries
-/// (nodes, launchers, interfaces) plus the repositories that were
+/// (nodes, launchers, contracts) plus the repositories that were
 /// skipped because they appear in the exclusion list.
 pub(crate) struct RefreshedRepos {
     pub(crate) nodes: Vec<NodeCacheEntry>,
     pub(crate) launchers: Vec<LauncherCacheEntry>,
-    pub(crate) interfaces: Vec<InterfaceCacheEntry>,
+    pub(crate) contracts: Vec<ContractCacheEntry>,
     pub(crate) pairings: Vec<PairingCacheEntry>,
     pub(crate) excluded: Vec<ExcludedRepo>,
 }
@@ -228,7 +228,7 @@ pub(crate) struct RefreshedRepos {
 pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepos) -> Result<()> {
     write_repo_cache(peppy_dirs, &refreshed.nodes)?;
     write_repo_cache(peppy_dirs, &refreshed.launchers)?;
-    write_repo_cache(peppy_dirs, &refreshed.interfaces)?;
+    write_repo_cache(peppy_dirs, &refreshed.contracts)?;
     write_repo_cache(peppy_dirs, &refreshed.pairings)
 }
 
@@ -300,7 +300,7 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns
-/// discovered nodes, launchers, interfaces, and the list of
+/// discovered nodes, launchers, contracts, and the list of
 /// repositories that were excluded.
 ///
 /// Every discovered entry is kept in the result so the cache (and
@@ -323,11 +323,11 @@ pub(crate) fn process_refresh(
 
     let mut global_seen_nodes: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_launchers: HashSet<(String, String)> = HashSet::new();
-    let mut global_seen_interfaces: HashSet<(String, String)> = HashSet::new();
+    let mut global_seen_contracts: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_pairings: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<NodeCacheEntry> = Vec::new();
     let mut all_launchers: Vec<LauncherCacheEntry> = Vec::new();
-    let mut all_interfaces: Vec<InterfaceCacheEntry> = Vec::new();
+    let mut all_contracts: Vec<ContractCacheEntry> = Vec::new();
     let mut all_pairings: Vec<PairingCacheEntry> = Vec::new();
     let excluded_repos: Vec<ExcludedRepo> = exclusions
         .entries
@@ -409,9 +409,9 @@ pub(crate) fn process_refresh(
             on_feedback,
         );
         merge_walked(
-            walked.interfaces,
-            &mut global_seen_interfaces,
-            &mut all_interfaces,
+            walked.contracts,
+            &mut global_seen_contracts,
+            &mut all_contracts,
             on_feedback,
         );
         merge_walked(
@@ -425,7 +425,7 @@ pub(crate) fn process_refresh(
     Ok(RefreshedRepos {
         nodes: all_nodes,
         launchers: all_launchers,
-        interfaces: all_interfaces,
+        contracts: all_contracts,
         pairings: all_pairings,
         excluded: excluded_repos,
     })
@@ -435,7 +435,7 @@ pub(crate) fn process_refresh(
 pub(crate) struct WalkResult {
     pub nodes: Vec<NodeCacheEntry>,
     pub launchers: Vec<LauncherCacheEntry>,
-    pub interfaces: Vec<InterfaceCacheEntry>,
+    pub contracts: Vec<ContractCacheEntry>,
     pub pairings: Vec<PairingCacheEntry>,
 }
 
@@ -520,11 +520,11 @@ pub(crate) fn walk_directory(
 
     let mut nodes_seen: HashSet<(String, String)> = HashSet::new();
     let mut launchers_seen: HashSet<(String, String)> = HashSet::new();
-    let mut interfaces_seen: HashSet<(String, String)> = HashSet::new();
+    let mut contracts_seen: HashSet<(String, String)> = HashSet::new();
     let mut pairings_seen: HashSet<(String, String)> = HashSet::new();
     let mut nodes: Vec<NodeCacheEntry> = Vec::new();
     let mut launchers: Vec<LauncherCacheEntry> = Vec::new();
-    let mut interfaces: Vec<InterfaceCacheEntry> = Vec::new();
+    let mut contracts: Vec<ContractCacheEntry> = Vec::new();
     let mut pairings: Vec<PairingCacheEntry> = Vec::new();
 
     for entry in walker.flatten() {
@@ -556,7 +556,7 @@ pub(crate) fn walk_directory(
         if file_name == NODE_CONFIG_FILE {
             // Try node parse first to preserve the documented filename
             // convention for nodes. If the file's schema doesn't match,
-            // fall through to the launcher/interface dispatch; that
+            // fall through to the launcher/contract dispatch; that
             // way a non-node `peppy.json5` is still discoverable.
             if try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes) {
                 continue;
@@ -575,8 +575,8 @@ pub(crate) fn walk_directory(
             PeppySchema::LauncherV1 => {
                 collect_launcher_entry(&ctx, &mut launchers_seen, &mut launchers);
             }
-            PeppySchema::InterfaceV1 => {
-                collect_interface_entry(&ctx, &mut interfaces_seen, &mut interfaces);
+            PeppySchema::ContractV1 => {
+                collect_contract_entry(&ctx, &mut contracts_seen, &mut contracts);
             }
             PeppySchema::PairingV1 => {
                 collect_pairing_entry(&ctx, &mut pairings_seen, &mut pairings);
@@ -587,7 +587,7 @@ pub(crate) fn walk_directory(
     WalkResult {
         nodes,
         launchers,
-        interfaces,
+        contracts,
         pairings,
     }
 }
@@ -716,13 +716,13 @@ fn collect_launcher_entry(
     });
 }
 
-fn collect_interface_entry(
+fn collect_contract_entry(
     ctx: &EntryContext<'_>,
     seen: &mut HashSet<(String, String)>,
-    interfaces: &mut Vec<InterfaceCacheEntry>,
+    contracts: &mut Vec<ContractCacheEntry>,
 ) {
-    collect_repo_entry(ctx, "malformed interface", seen, interfaces, |content| {
-        let parsed = PeppyInterfaceParser::from_content(content).map_err(|e| e.to_string())?;
+    collect_repo_entry(ctx, "malformed contract", seen, contracts, |content| {
+        let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
         Ok(Some((
             parsed.manifest.name.as_str().to_string(),
             parsed.manifest.tag.clone(),
@@ -1207,14 +1207,14 @@ mod tests {
         .unwrap();
     }
 
-    /// Helper: write a minimal valid interface manifest at `path`.
-    fn write_interface_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
+    /// Helper: write a minimal valid contract manifest at `path`.
+    fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
         let body = format!(
             r#"{{
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}}
 }}"#
@@ -1223,17 +1223,17 @@ mod tests {
         body.into_bytes()
     }
 
-    /// FS-side interface discovery: an `interface/v1` document is
+    /// FS-side contract discovery: a `contract/v1` document is
     /// recognized regardless of its filename, the cached `path` points
     /// at the manifest file itself, and `sha256` matches the raw bytes.
     #[test]
-    fn process_refresh_discovers_interfaces_from_fs_repo() {
+    fn process_refresh_discovers_contracts_from_fs_repo() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
         let iface_path = repo.join("uvc_camera/peppy.json5");
-        let bytes = write_interface_json5(&iface_path, "uvc_camera", "v1");
+        let bytes = write_contract_json5(&iface_path, "uvc_camera", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1243,10 +1243,10 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { interfaces, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
-        assert_eq!(interfaces.len(), 1, "exactly one interface expected");
-        let iface = &interfaces[0];
-        assert_eq!(iface.interface_name, "uvc_camera");
+        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        assert_eq!(contracts.len(), 1, "exactly one contract expected");
+        let iface = &contracts[0];
+        assert_eq!(iface.contract_name, "uvc_camera");
         assert_eq!(iface.tag, "v1");
         assert_eq!(iface.source_type, RepoSourceKind::Fs);
         assert!(
@@ -1261,21 +1261,21 @@ mod tests {
         );
     }
 
-    /// Git-side interface discovery: the cached `path` is relative to
+    /// Git-side contract discovery: the cached `path` is relative to
     /// the repo root, and `resolved_ref` records the branch that was
     /// cloned.
     #[test]
-    fn process_refresh_discovers_interfaces_from_git_repo() {
+    fn process_refresh_discovers_contracts_from_git_repo() {
         let src_tmp = tempfile::tempdir().unwrap();
         let src = src_tmp.path();
         let repo = git2::Repository::init(src).expect("init repo");
         let iface_rel = Path::new("uvc_camera/peppy.json5");
-        write_interface_json5(&src.join(iface_rel), "uvc_camera", "v1");
+        write_contract_json5(&src.join(iface_rel), "uvc_camera", "v1");
 
         let signature =
             git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
         let mut index = repo.index().expect("open index");
-        index.add_path(iface_rel).expect("stage interface");
+        index.add_path(iface_rel).expect("stage contract");
         index.write().expect("write index");
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
@@ -1283,7 +1283,7 @@ mod tests {
             Some("HEAD"),
             &signature,
             &signature,
-            "add uvc_camera interface",
+            "add uvc_camera contract",
             &tree,
             &[],
         )
@@ -1303,10 +1303,10 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { interfaces, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
-        assert_eq!(interfaces.len(), 1, "exactly one interface expected");
-        let iface = &interfaces[0];
-        assert_eq!(iface.interface_name, "uvc_camera");
+        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        assert_eq!(contracts.len(), 1, "exactly one contract expected");
+        let iface = &contracts[0];
+        assert_eq!(iface.contract_name, "uvc_camera");
         assert_eq!(iface.tag, "v1");
         assert_eq!(iface.source_type, RepoSourceKind::Git);
         assert_eq!(iface.path, "uvc_camera/peppy.json5");
@@ -1333,7 +1333,7 @@ mod tests {
         std::fs::write(
             repo_a.join("uvc_camera/peppy.json5"),
             r#"{
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest: { name: "uvc_camera", tag: "v1" },
   interfaces: {}
 }"#,
@@ -1344,7 +1344,7 @@ mod tests {
             repo_b.join("uvc_camera/peppy.json5"),
             r#"{
   // Same identity, different content fingerprint via extra whitespace.
-  peppy_schema: "interface/v1",
+  peppy_schema: "contract/v1",
   manifest:    { name: "uvc_camera", tag: "v1" },
   interfaces:  {}
 }"#,
@@ -1364,15 +1364,15 @@ mod tests {
         );
 
         let mut feedbacks = Vec::new();
-        let RefreshedRepos { interfaces, .. } =
+        let RefreshedRepos { contracts, .. } =
             process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
 
         assert_eq!(
-            interfaces.len(),
+            contracts.len(),
             2,
             "both entries should be kept (sha256 disambiguates)"
         );
-        let shas: HashSet<&str> = interfaces.iter().map(|i| i.sha256.as_str()).collect();
+        let shas: HashSet<&str> = contracts.iter().map(|i| i.sha256.as_str()).collect();
         assert_eq!(
             shas.len(),
             2,
@@ -1403,7 +1403,7 @@ mod tests {
     }
 
     /// `walk_directory` dispatches `.json5` files by `peppy_schema`:
-    /// a node manifest, a launcher, and an interface coexisting in the
+    /// a node manifest, a launcher, and a contract coexisting in the
     /// same repository each land in the matching collector.
     #[test]
     fn walk_directory_dispatches_by_schema() {
@@ -1411,7 +1411,7 @@ mod tests {
         let repo = tmp.path().join("mixed");
         write_peppy_json5(&repo.join("nodes/my_sensor"), "my_sensor", "v1");
         write_launcher_json5(&repo.join("teleop.json5"));
-        write_interface_json5(
+        write_contract_json5(
             &repo.join("interfaces/uvc_camera.json5"),
             "uvc_camera",
             "v1",
@@ -1422,8 +1422,8 @@ mod tests {
         assert_eq!(walked.nodes[0].node_name, "my_sensor");
         assert_eq!(walked.launchers.len(), 1, "one launcher");
         assert_eq!(walked.launchers[0].launcher_name, "teleop");
-        assert_eq!(walked.interfaces.len(), 1, "one interface");
-        assert_eq!(walked.interfaces[0].interface_name, "uvc_camera");
+        assert_eq!(walked.contracts.len(), 1, "one contract");
+        assert_eq!(walked.contracts[0].contract_name, "uvc_camera");
     }
 
     /// Process_refresh discovers launcher files (any `.json5` filename
