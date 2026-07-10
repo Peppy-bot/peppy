@@ -30,14 +30,14 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
-/// Builder for `nodes.json5` and `interfaces.json5` cache fixtures. Tests call
-/// [`TestPackagesCache::fs_entry`] / `git_entry` / `interface_git_entry` to
+/// Builder for `nodes.json5` and `contracts.json5` cache fixtures. Tests call
+/// [`TestPackagesCache::fs_entry`] / `git_entry` / `contract_git_entry` to
 /// declare discovered items, then [`TestPackagesCache::write`] to serialize
 /// the files under `peppy_dirs.cache_dir()`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
-    interfaces: Vec<serde_json::Value>,
+    contracts: Vec<serde_json::Value>,
 }
 
 impl TestPackagesCache {
@@ -97,11 +97,11 @@ impl TestPackagesCache {
         self
     }
 
-    /// Adds an `interfaces.json5` entry for a git-sourced interface. `body`
-    /// is the on-disk interface JSON5 (assumed already committed at
+    /// Adds a `contracts.json5` entry for a git-sourced contract. `body`
+    /// is the on-disk contract JSON5 (assumed already committed at
     /// `path_in_repo` inside `repo_url`); its sha256 is computed here so
     /// the cache fingerprint matches what `ensure_checkout` will read.
-    pub fn interface_git_entry(
+    pub fn contract_git_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -113,7 +113,7 @@ impl TestPackagesCache {
         let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
         let mut m = serde_json::Map::new();
         m.insert(
-            "interface_name".into(),
+            "contract_name".into(),
             serde_json::Value::String(name.into()),
         );
         m.insert("tag".into(), serde_json::Value::String(tag.into()));
@@ -134,15 +134,15 @@ impl TestPackagesCache {
             "path".into(),
             serde_json::Value::String(path_in_repo.into()),
         );
-        self.interfaces.push(serde_json::Value::Object(m));
+        self.contracts.push(serde_json::Value::Object(m));
         self
     }
 
-    /// Adds an `interfaces.json5` entry for a filesystem-sourced interface.
-    /// `body` is the on-disk interface JSON5 (assumed already written at
+    /// Adds a `contracts.json5` entry for a filesystem-sourced contract.
+    /// `body` is the on-disk contract JSON5 (assumed already written at
     /// `absolute_path`); its sha256 is computed here so the cache
-    /// fingerprint matches what `resolve_interface_doc` reads back.
-    pub fn interface_fs_entry(
+    /// fingerprint matches what `resolve_contract_doc` reads back.
+    pub fn contract_fs_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -152,7 +152,7 @@ impl TestPackagesCache {
         let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
         let mut m = serde_json::Map::new();
         m.insert(
-            "interface_name".into(),
+            "contract_name".into(),
             serde_json::Value::String(name.into()),
         );
         m.insert("tag".into(), serde_json::Value::String(tag.into()));
@@ -162,7 +162,7 @@ impl TestPackagesCache {
             "path".into(),
             serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
         );
-        self.interfaces.push(serde_json::Value::Object(m));
+        self.contracts.push(serde_json::Value::Object(m));
         self
     }
 
@@ -173,18 +173,18 @@ impl TestPackagesCache {
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
-        let interfaces_path = core_node::interfaces_repo_cache_path(peppy_dirs);
-        if self.interfaces.is_empty() {
-            match std::fs::remove_file(&interfaces_path) {
+        let contracts_path = core_node::contracts_repo_cache_path(peppy_dirs);
+        if self.contracts.is_empty() {
+            match std::fs::remove_file(&contracts_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => panic!("failed to remove stale interfaces.json5 fixture: {e}"),
+                Err(e) => panic!("failed to remove stale contracts.json5 fixture: {e}"),
             }
         } else {
-            let interfaces_content = serde_json::to_string_pretty(&self.interfaces)
-                .expect("failed to serialize interface cache entries");
-            std::fs::write(interfaces_path, interfaces_content)
-                .expect("failed to write interfaces.json5 fixture");
+            let contracts_content = serde_json::to_string_pretty(&self.contracts)
+                .expect("failed to serialize contract cache entries");
+            std::fs::write(contracts_path, contracts_content)
+                .expect("failed to write contracts.json5 fixture");
         }
     }
 }

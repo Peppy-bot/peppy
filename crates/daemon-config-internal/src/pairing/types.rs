@@ -1,4 +1,4 @@
-use crate::internal::interface::{Manifest, validate_named_items};
+use crate::internal::contract::{Manifest, validate_named_items};
 use config::{
     node::{MessageFormat, QoSProfile},
     runtime::Name,
@@ -10,7 +10,7 @@ use serde::{
 };
 
 /// Reject any `peppy_schema` value other than `pairing/v1` so a node,
-/// launcher, or interface document can't slip through `PeppyPairingParser`.
+/// launcher, or contract document can't slip through `PeppyPairingParser`.
 fn deserialize_pairing_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
 where
     D: Deserializer<'de>,
@@ -222,13 +222,13 @@ mod tests {
     #[test]
     fn rejects_wrong_schema_tag() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             roles: ["a", "b"],
             topics: [{ emitted_by: "a", name: "t" }]
         }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5)
-            .expect_err("interface/v1 must be rejected");
+        let err =
+            serde_json5::from_str::<PeppyPairing>(json5).expect_err("contract/v1 must be rejected");
         assert!(err.to_string().contains("pairing/v1"), "error: {err}");
     }
 
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn rejects_manifest_depends_on() {
-        // The shared interface/pairing doc Manifest is deny_unknown_fields
+        // The shared contract/pairing doc Manifest is deny_unknown_fields
         // and has no depends_on: a pairing is a passive contract.
         let json5 = r#"{
             peppy_schema: "pairing/v1",

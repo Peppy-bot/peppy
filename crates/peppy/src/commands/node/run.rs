@@ -328,7 +328,7 @@ fn pairs_to_map(
 /// - **Inert items**: one per already-running `(name, tag)` group. They
 ///   carry real `instances` (so stack-wide `instance_id` uniqueness can
 ///   fire) and real `conforms_to` (so the new instance can still match
-///   them as a producer / interface-conformant target), but their
+///   them as a producer / contract-conformant target), but their
 ///   `depends_on` is `None`. Their declared slots were already resolved
 ///   when each instance was first spawned, so re-materializing them here
 ///   (with the empty `bindings` we synthesize) would produce meaningless

@@ -36,7 +36,7 @@ pub struct ConsumedActionMessage {
 /// Identifies the `conforms_to` interface a producer artifact was pulled from.
 ///
 /// `None` on a producer variant means the artifact is the node's own (native)
-/// declaration; `Some` means it was contributed by a [`PeppyInterface`] pulled
+/// declaration; `Some` means it was contributed by a [`PeppyContract`] pulled
 /// via `interfaces.conforms_to`. The pair `(iface_name, iface_tag)` drives both
 /// the generated module nesting (`emitted_topics::{iface_name}::{iface_tag}::{topic}`)
 /// and the two extra Zenoh segments on the wire path.
@@ -127,11 +127,11 @@ pub fn ensure_no_peer_collision(
 /// Identifies a dependency a consumer pulls from. `producer_name` +
 /// `producer_tag` pin the labelled producer for codegen: a real node for
 /// `depends_on.nodes`, or the interface's `(name, tag)` when the consumer
-/// pulls in via `depends_on.interfaces` (there's no producer node in that
+/// pulls in via `depends_on.contracts` (there's no producer node in that
 /// case, but the labels still need a stable identity). `origin` is `Some`
 /// when the consumed artifact carries the `interface`-shaped wire
 /// discriminator (either because the producer node `conforms_to` an
-/// interface or because the dependency itself is an interface contract).
+/// interface or because the dependency itself is a contract document).
 ///
 /// `link_id` is the consumer manifest slot whose runtime bindings resolve
 /// this dependency's producers. In the harmonized wire model the consumer
@@ -182,7 +182,7 @@ impl DependencyContext {
         }
     }
 
-    /// Build a context for a `depends_on.interfaces` dependency. There is
+    /// Build a context for a `depends_on.contracts` dependency. There is
     /// no producer node here; `producer_name` / `producer_tag` carry the
     /// interface's `(name, tag)` so codegen labels stay readable, and
     /// `origin` is set to the same `(name, tag)` so consumer-side codegen

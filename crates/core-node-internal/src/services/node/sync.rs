@@ -4,7 +4,7 @@ mod interfaces;
 mod pairings;
 
 pub use self::codegen::{AutoSyncParams, auto_sync_if_missing, generate_peppygen_for_node};
-pub(crate) use self::interfaces::resolve_interface_doc;
+pub(crate) use self::interfaces::resolve_contract_doc;
 pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 
 use self::codegen::remove_previous_peppy_dir;

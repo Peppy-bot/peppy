@@ -1965,24 +1965,24 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
 }
 
 /// End-to-end regression for the user-reported bug: a `conforms_to` entry
-/// resolved from a git-sourced interface cache must materialize the repo
-/// checkout before reading the interface manifest. The interface cache
+/// resolved from a git-sourced contract cache must materialize the repo
+/// checkout before reading the contract manifest. The contract cache
 /// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
 /// without `ensure_checkout` the daemon would have tried to read that path
 /// from the daemon's CWD and failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_sync_resolves_git_sourced_conforms_to_interface() {
+async fn node_sync_resolves_git_sourced_conforms_to_contract() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Build a local git repo that hosts the interface manifest at the
+    // Build a local git repo that hosts the contract manifest at the
     // same repo-relative location the real `interfaces_hub` uses.
     let source_parent = tempdir().expect("source parent tempdir");
     let source_repo_dir = source_parent.path().join("interfaces_hub");
     std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
     let branch = init_local_git_repo(&source_repo_dir);
 
-    const INTERFACE_BODY: &str = r#"{
-        peppy_schema: "interface/v1",
+    const CONTRACT_BODY: &str = r#"{
+        peppy_schema: "contract/v1",
         manifest: { name: "depth_camera", tag: "v1" },
         interfaces: {
             topics: [
@@ -1994,11 +1994,11 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     std::fs::create_dir_all(source_repo_dir.join("cameras")).expect("cameras dir");
     std::fs::write(
         source_repo_dir.join("cameras/depth_camera.json5"),
-        INTERFACE_BODY,
+        CONTRACT_BODY,
     )
-    .expect("write interface file");
+    .expect("write contract file");
 
-    // Stage and commit the interface file on top of the initial empty
+    // Stage and commit the contract file on top of the initial empty
     // commit so a fresh clone sees it on the resolved ref.
     let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
     let mut index = repo.index().expect("index");
@@ -2011,25 +2011,25 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     let parent_oid = repo.head().unwrap().target().unwrap();
     let parent = repo.find_commit(parent_oid).expect("find_commit");
     let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("HEAD"), &sig, &sig, "add interface", &tree, &[&parent])
-        .expect("commit interface");
+    repo.commit(Some("HEAD"), &sig, &sig, "add contract", &tree, &[&parent])
+        .expect("commit contract");
 
     let repo_url = source_repo_dir.display().to_string();
 
     TestPackagesCache::new()
-        .interface_git_entry(
+        .contract_git_entry(
             "depth_camera",
             "v1",
             &repo_url,
             &branch,
             "cameras/depth_camera.json5",
-            INTERFACE_BODY,
+            CONTRACT_BODY,
         )
         .write(&started.peppy_dirs);
 
     // The node under sync declares `conforms_to` against the git-sourced
-    // interface. Before the fix, `handle_node_sync_request` errored here
-    // with "failed to read cached interface ... at cameras/depth_camera.json5".
+    // contract. Before the fix, `handle_node_sync_request` errored here
+    // with "failed to read cached contract ... at cameras/depth_camera.json5".
     let node_dir = tempdir().expect("node tempdir");
     write_node_config(
         node_dir.path(),
@@ -2051,11 +2051,11 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     let response = sync_with_flag(&started, node_dir.path(), true).await;
     assert!(
         response.success,
-        "sync should resolve the git-sourced conforms_to interface, got error: {}",
+        "sync should resolve the git-sourced conforms_to contract, got error: {}",
         response.error_message
     );
 
-    // The interface's checkout should exist on disk now; this proves
+    // The contract's checkout should exist on disk now; this proves
     // `ensure_checkout` ran rather than `std::fs::read` silently relying
     // on a path that happened to exist in the daemon's CWD.
     let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())

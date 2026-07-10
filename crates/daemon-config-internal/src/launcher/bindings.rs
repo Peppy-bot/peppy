@@ -4,9 +4,9 @@
 //! stack snapshot's `instance_id → (name, tag)` lookup.
 //!
 //! Every binding entry maps a declared slot to its producers: the KEY
-//! must equal a `depends_on.{nodes,interfaces}` `link_id` and each
+//! must equal a `depends_on.{nodes,contracts}` `link_id` and each
 //! target must deploy the slot's node (node slots) or conform to the
-//! slot's interface (interface slots). A declared slot with no binding
+//! slot's contract (contract slots). A declared slot with no binding
 //! entry stays unbound — the consumer's subscription for it is silent;
 //! there is no wildcard fallback and no free-form key.
 //!
@@ -15,7 +15,7 @@
 //! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
-    BindingInterfaceNotConformed, BindingTargetMismatch, BindingUnknownSlot,
+    BindingContractNotConformed, BindingTargetMismatch, BindingUnknownSlot,
     DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use config::node::{ConformsToItem, DependsOn};
@@ -35,14 +35,14 @@ pub struct BindingValidationItem<'a> {
     pub depends_on: Option<&'a DependsOn>,
     /// Producer's `interfaces.conforms_to` list, borrowed as a slice.
     /// Empty when the node declares no conformance. Used by the validator
-    /// to decide whether this node can satisfy a consumer's interface
+    /// to decide whether this node can satisfy a consumer's contract
     /// slot.
     pub conforms_to: &'a [ConformsToItem],
 }
 
 /// Per-slot metadata extracted from `depends_on` during validation.
 /// Carrying `kind` inline lets the target-matching path pick the right
-/// error (node mismatch vs interface not conformed) without re-scanning
+/// error (node mismatch vs contract not conformed) without re-scanning
 /// `depends_on` per binding.
 #[derive(Clone, Copy)]
 struct SlotMeta<'a> {
@@ -79,15 +79,15 @@ pub struct ValidatedBindings {
 ///
 /// Rules enforced:
 /// 1. Every binding `KEY` equals a declared `depends_on.{nodes,
-///    interfaces}` `link_id`. A key naming a pairing slot gets the
+///    contracts}` `link_id`. A key naming a pairing slot gets the
 ///    targeted [`ParsingError::BindingKeyIsPairingSlot`]; any other
 ///    unknown key is [`ParsingError::BindingUnknownSlot`].
 /// 2. Every target exists in the snapshot
 ///    ([`ParsingError::UnknownInstanceId`] otherwise) and satisfies the
 ///    slot: node slots match the target's `(name, tag)` identity
-///    ([`ParsingError::BindingTargetMismatch`] otherwise), interface
+///    ([`ParsingError::BindingTargetMismatch`] otherwise), contract
 ///    slots match the target's `conforms_to`
-///    ([`ParsingError::BindingInterfaceNotConformed`] otherwise).
+///    ([`ParsingError::BindingContractNotConformed`] otherwise).
 /// 3. `--bind KEY` uniqueness within one invocation is enforced by the
 ///    CLI parser and the deserializer; this validator surfaces any
 ///    residual duplicates as [`ParsingError::BindingDuplicateKey`]
@@ -113,7 +113,7 @@ pub fn validate_bindings(
         let declared_slots = collect_declared_slots(item.depends_on);
         let declared_csv = format_declared_keys(&declared_slots);
         // Pairing slots are never binding slots: `collect_declared_slots`
-        // reads only `depends_on.{nodes,interfaces}`, so a pairing link_id
+        // reads only `depends_on.{nodes,contracts}`, so a pairing link_id
         // can never match a binding key. This set exists solely to turn a
         // `--bind` on a pairing slot into a targeted "use --pair" error
         // instead of a generic `BindingUnknownSlot`.
@@ -182,13 +182,13 @@ pub fn validate_bindings(
                                     actual_tag: target_item.node_tag.to_string(),
                                 },
                             )),
-                            SlotKind::Interface => ParsingError::BindingInterfaceNotConformed(
-                                Box::new(BindingInterfaceNotConformed {
+                            SlotKind::Contract => ParsingError::BindingContractNotConformed(
+                                Box::new(BindingContractNotConformed {
                                     owner_instance_id: instance.instance_id.to_string(),
                                     binding: binding_key.clone(),
                                     target_instance_id: target_id.clone(),
-                                    interface_name: slot.name.to_string(),
-                                    interface_tag: slot.tag.to_string(),
+                                    contract_name: slot.name.to_string(),
+                                    contract_tag: slot.tag.to_string(),
                                     producer_name: target_item.node_name.to_string(),
                                     producer_tag: target_item.node_tag.to_string(),
                                 }),
@@ -280,9 +280,9 @@ fn check_stack_wide_instance_id_uniqueness(
 
 type DeclaredSlots<'a> = BTreeMap<&'a str, SlotMeta<'a>>;
 
-/// The declared binding slots: every `depends_on.{nodes,interfaces}`
+/// The declared binding slots: every `depends_on.{nodes,contracts}`
 /// entry keyed by `link_id`, with the dep's `(name, tag, kind)` so the
-/// target-matching path can branch on node-vs-interface without
+/// target-matching path can branch on node-vs-contract without
 /// re-scanning the manifest.
 fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
     let mut slots = BTreeMap::new();
@@ -297,13 +297,13 @@ fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
                 },
             );
         }
-        for dep in &deps.interfaces {
+        for dep in &deps.contracts {
             slots.insert(
                 dep.link_id.as_str(),
                 SlotMeta {
                     name: dep.name.as_str(),
                     tag: dep.tag.as_str(),
-                    kind: SlotKind::Interface,
+                    kind: SlotKind::Contract,
                 },
             );
         }
@@ -312,14 +312,14 @@ fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
 }
 
 /// Does a producer satisfy a declared slot? Node slots match by
-/// `(name, tag)` identity; interface slots match against the producer's
+/// `(name, tag)` identity; contract slots match against the producer's
 /// `conforms_to`. sha256 is not cross-checked here; each side
 /// independently verifies its own declared sha256 against the on-disk
-/// interface document at cache resolution time.
+/// contract document at cache resolution time.
 fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'_>) -> bool {
     match slot.kind {
         SlotKind::Node => producer.node_name == slot.name && producer.node_tag == slot.tag,
-        SlotKind::Interface => producer
+        SlotKind::Contract => producer
             .conforms_to
             .iter()
             .any(|item| item.name.as_str() == slot.name && item.tag.as_str() == slot.tag),
@@ -369,7 +369,7 @@ mod tests {
     }
 
     /// Like `item` but also threads a `conforms_to` slice, for tests
-    /// that exercise interface-conformance matching.
+    /// that exercise contract-conformance matching.
     fn item_with_conforms_to<'a>(
         node_name: &'a str,
         node_tag: &'a str,
@@ -589,12 +589,12 @@ mod tests {
         assert_eq!(info.target_instance_id, "actually_lidar");
     }
 
-    /// Interface bindings check the producer's `conforms_to`
+    /// Contract bindings check the producer's `conforms_to`
     /// (not just node identity). A producer with no matching
     /// `conforms_to` entry is rejected with
-    /// `BindingInterfaceNotConformed`.
+    /// `BindingContractNotConformed`.
     #[test]
-    fn interface_binding_rejects_non_conforming_producer() {
+    fn contract_binding_rejects_non_conforming_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -604,7 +604,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -618,26 +618,26 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingInterfaceNotConformed(info) = &out.errors[0] else {
+        let ParsingError::BindingContractNotConformed(info) = &out.errors[0] else {
             panic!(
-                "expected BindingInterfaceNotConformed, got {:?}",
+                "expected BindingContractNotConformed, got {:?}",
                 out.errors[0]
             );
         };
         assert_eq!(info.binding, "depth");
-        assert_eq!(info.interface_name, "depth_camera");
-        assert_eq!(info.interface_tag, "v1");
+        assert_eq!(info.contract_name, "depth_camera");
+        assert_eq!(info.contract_tag, "v1");
         assert_eq!(info.producer_name, "whatever");
         assert_eq!(info.producer_tag, "v1");
     }
 
-    /// Interface dep targets a producer whose `conforms_to` includes the
-    /// requested interface: accepted. The producer's node name is
-    /// intentionally different from the interface name so this test
+    /// Contract dep targets a producer whose `conforms_to` includes the
+    /// requested contract: accepted. The producer's node name is
+    /// intentionally different from the contract name so this test
     /// exercises the conformance path rather than a coincidental
     /// identity match.
     #[test]
-    fn interface_binding_accepts_conforming_producer() {
+    fn contract_binding_accepts_conforming_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -647,7 +647,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -669,7 +669,7 @@ mod tests {
     }
 
     /// A well-formed launcher (matching the openarm backbone shape: two
-    /// bound interface slots and one left unbound) passes with no errors
+    /// bound contract slots and one left unbound) passes with no errors
     /// and every declared slot resolves.
     #[test]
     fn openarm_style_manifest_resolves_all_slots() {
@@ -685,7 +685,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [
+                contracts: [
                     { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
                     { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
                     { name: "depth_camera", tag: "v1", link_id: "extra_cam" }
@@ -693,9 +693,9 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
-        // Producer's node name coincidentally matches the interface
+        // Producer's node name coincidentally matches the contract
         // name+tag, but the validator only honors explicit `conforms_to`
-        // claims; node-identity matching never satisfies an interface
+        // claims; node-identity matching never satisfies an contract
         // slot.
         let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
         let items = vec![
@@ -734,7 +734,7 @@ mod tests {
     /// own; it represents a node whose bindings were already resolved at
     /// spawn time. Its instances and `conforms_to` must still feed the
     /// producer-lookup index so a live consumer in the same
-    /// `validate_bindings` call can satisfy node / interface deps against
+    /// `validate_bindings` call can satisfy node / contract deps against
     /// them.
     ///
     /// This locks in the contract that
@@ -743,7 +743,7 @@ mod tests {
     /// validator snapshot without re-checking their bindings.
     #[test]
     fn inert_item_with_no_depends_on_remains_a_producer() {
-        // Live consumer with a node dep + an interface dep.
+        // Live consumer with a node dep + an contract dep.
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -753,7 +753,7 @@ mod tests {
         let cons_depends_on = parse_depends_on(
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "cam" }],
-                interfaces: [{ name: "depth_camera", tag: "v1", link_id: "depth" }]
+                contracts: [{ name: "depth_camera", tag: "v1", link_id: "depth" }]
             }"#,
         );
 
@@ -761,8 +761,8 @@ mod tests {
         // it WOULD declare deps in real life.
         let node_prod_instances = parse_instances(r#"[{ instance_id: "node_prod_inst" }]"#);
 
-        // Inert interface producer: same shape, plus a `conforms_to`
-        // entry that should still match the consumer's interface dep.
+        // Inert contract producer: same shape, plus a `conforms_to`
+        // entry that should still match the consumer's contract dep.
         let iface_prod_instances = parse_instances(r#"[{ instance_id: "iface_prod_inst" }]"#);
         let iface_prod_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
 
@@ -914,10 +914,10 @@ mod tests {
     }
 
     /// `conforms_to` matching is strict on `(name, tag)`: a producer
-    /// declaring a different tag for the same interface name is
+    /// declaring a different tag for the same contract name is
     /// rejected.
     #[test]
-    fn interface_dep_with_wrong_tag_in_conforms_to_is_rejected() {
+    fn contract_dep_with_wrong_tag_in_conforms_to_is_rejected() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -927,7 +927,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "depth"
@@ -942,19 +942,19 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingInterfaceNotConformed(info) = &out.errors[0] else {
+        let ParsingError::BindingContractNotConformed(info) = &out.errors[0] else {
             panic!(
-                "expected BindingInterfaceNotConformed, got {:?}",
+                "expected BindingContractNotConformed, got {:?}",
                 out.errors[0]
             );
         };
-        assert_eq!(info.interface_tag, "v1");
+        assert_eq!(info.contract_tag, "v1");
         assert_eq!(info.producer_name, "webcam");
     }
 
     /// A producer declaring multiple `conforms_to` entries can satisfy
     /// any of them. Two consumers (each asking for a different
-    /// interface) both successfully bind to the same producer.
+    /// contract) both successfully bind to the same producer.
     #[test]
     fn producer_with_multiple_conforms_to_can_satisfy() {
         let depth_consumer = parse_instances(
@@ -966,7 +966,7 @@ mod tests {
         let depth_deps = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "depth_camera",
                     tag: "v1",
                     link_id: "feed"
@@ -982,7 +982,7 @@ mod tests {
         let uvc_deps = parse_depends_on(
             r#"{
                 nodes: [],
-                interfaces: [{
+                contracts: [{
                     name: "uvc_camera",
                     tag: "v1",
                     link_id: "feed"

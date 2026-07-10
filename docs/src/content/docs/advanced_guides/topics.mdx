@@ -11,7 +11,7 @@ A node *emits* a topic to publish messages, and other nodes *consume* that topic
 Use topics for continuous, unidirectional data streams such as sensor readings, camera frames, state updates, or any information that flows over time.
 Multiple consumers can listen to the same topic simultaneously.
 
-Topics also underpin two higher-level constructs: [interface conformance](/advanced_guides/interface_conformance), where a topic's contract lives in a standalone interface document that producers conform to, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract. For a side-by-side decision guide across every mechanism, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+Topics also underpin two higher-level constructs: [contract conformance](/advanced_guides/contract_conformance), where a topic's contract lives in a standalone contract document that producers conform to, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract. For a side-by-side decision guide across every mechanism, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## Emitting a topic
 
@@ -180,7 +180,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 :::
 
 :::tip
-To depend on a contract instead of a specific producer node, so any conforming node can fill the slot at launch time, declare the dep under `depends_on.interfaces` rather than `depends_on.nodes`. See the [Interface conformance](/advanced_guides/interface_conformance) guide.
+To depend on a contract instead of a specific producer node, so any conforming node can fill the slot at launch time, declare the dep under `depends_on.contracts` rather than `depends_on.nodes`. See the [Contract conformance](/advanced_guides/contract_conformance) guide.
 :::
 
 ### Receiving messages
@@ -315,7 +315,7 @@ A consumer that wires two specific depth cameras to dedicated wrist slots and ke
     name: "openarm01_backbone",
     tag: "v1",
     depends_on: {
-      interfaces: [
+      contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
         { name: "depth_camera", tag: "v1", link_id: "extra_cam" },
@@ -359,8 +359,8 @@ Four contract statements follow from this manifest:
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,interfaces}` `link_id` is rejected. There are no free-form keys. A declared slot with no binding is legal; it simply stays silent.
-2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For interface slots, each target's `interfaces.conforms_to` must include the slot's `(name, tag)` (`BindingInterfaceNotConformed` otherwise); see [Interface conformance](/advanced_guides/interface_conformance) for the conformance contract.
+1. **Every `KEY` must name a declared slot.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected. There are no free-form keys. A declared slot with no binding is legal; it simply stays silent.
+2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `interfaces.conforms_to` must include the slot's `(name, tag)` (`BindingContractNotConformed` otherwise); see [Contract conformance](/advanced_guides/contract_conformance) for the conformance contract.
 3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced; a slot's producer list is given in one place (repeat `--bind KEY@…` on the CLI to accumulate, or use the array form in a launcher). A producer repeated within one slot's list is rejected as a typo.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
 5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a single-producer slot subscribes with both wire slots set, and multi-producer filters compare the full pair in-process. A producer on another core node that happens to share an `instance_id` can never feed a bound slot.

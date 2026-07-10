@@ -4,7 +4,7 @@
 //!
 //! This crate owns the config formats only the peppy daemon and CLI read or
 //! write: launcher documents (`peppy_schema: "launcher/v1"`) and their
-//! deployment sources, interface documents (`interface/v1`), the global
+//! deployment sources, contract documents (`contract/v1`), the global
 //! daemon config `peppy_config.json5` with its comment-preserving completion,
 //! the [`atomic_write::publish_atomic`] staging helper, and the
 //! [`consts::PeppyDirs`] filesystem-layout helper with the process-global
@@ -28,7 +28,7 @@ mod parsing;
 mod internal {
     pub mod atomic_write;
     pub mod consts;
-    pub mod interface;
+    pub mod contract;
     pub mod launcher;
     pub mod pairing;
     pub mod peppy_config;
@@ -76,11 +76,9 @@ pub mod launcher {
     };
 }
 
-// -- interface --
-pub mod interface {
-    pub use crate::internal::interface::{
-        Interfaces, Manifest, PeppyInterface, PeppyInterfaceParser,
-    };
+// -- contract --
+pub mod contract {
+    pub use crate::internal::contract::{Interfaces, Manifest, PeppyContract, PeppyContractParser};
 }
 
 // -- pairing --

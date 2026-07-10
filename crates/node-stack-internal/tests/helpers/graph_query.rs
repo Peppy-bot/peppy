@@ -4,8 +4,8 @@
 //! These replace the former `NodeStack::dependencies_of` / `dependents_of`
 //! accessors, which were removed as unused production surface. Tests assert
 //! dependency wiring by inspecting the serialized graph's direct edges. Only
-//! direct `depends_on.nodes` edges are considered (interface-conformance edges,
-//! tagged with `via_interface`, are excluded), matching the DAG-only semantics
+//! direct `depends_on.nodes` edges are considered (contract-conformance edges,
+//! tagged with `via_contract`, are excluded), matching the DAG-only semantics
 //! of the removed accessors.
 
 #![allow(dead_code)] // Each helper is used by a subset of the test modules.
@@ -18,7 +18,7 @@ pub fn dependency_names(stack: &NodeStack, name: &str, tag: &str) -> Vec<String>
         .to_serialized_graph()
         .edges
         .iter()
-        .filter(|edge| edge.via_interface.is_none())
+        .filter(|edge| edge.via_contract.is_none())
         .filter(|edge| edge.from.name == name && edge.from.tag == tag)
         .map(|edge| edge.to.name.clone())
         .collect()
@@ -30,7 +30,7 @@ pub fn dependency_name_tags(stack: &NodeStack, name: &str, tag: &str) -> Vec<(St
         .to_serialized_graph()
         .edges
         .iter()
-        .filter(|edge| edge.via_interface.is_none())
+        .filter(|edge| edge.via_contract.is_none())
         .filter(|edge| edge.from.name == name && edge.from.tag == tag)
         .map(|edge| (edge.to.name.clone(), edge.to.tag.clone()))
         .collect()
@@ -42,7 +42,7 @@ pub fn dependent_names(stack: &NodeStack, name: &str, tag: &str) -> Vec<String> 
         .to_serialized_graph()
         .edges
         .iter()
-        .filter(|edge| edge.via_interface.is_none())
+        .filter(|edge| edge.via_contract.is_none())
         .filter(|edge| edge.to.name == name && edge.to.tag == tag)
         .map(|edge| edge.from.name.clone())
         .collect()
