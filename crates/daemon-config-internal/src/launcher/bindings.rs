@@ -23,8 +23,8 @@
 //! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
-    BindingDeadKey, BindingInterfaceNotConformed, BindingMissingForPinnedDep,
-    BindingTargetMismatch, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
+    BindingInterfaceNotConformed, BindingMissingForPinnedDep, BindingTargetMismatch,
+    DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use config::node::{ConformsToItem, DependsOn};
 use config::runtime::{ProducerRef, SlotBinding};
@@ -132,7 +132,6 @@ pub fn validate_bindings(
 
         for instance in item.instances {
             let mut resolved: BTreeMap<String, SlotBinding> = BTreeMap::new();
-            let mut from_any_explicit: BTreeMap<String, Vec<String>> = BTreeMap::new();
             let mut seen_keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
             // Pinned link_ids whose KEY appeared in the binding map
             // (even if the resolution errored). Used to skip rule 1's
@@ -168,26 +167,18 @@ pub fn validate_bindings(
                         out.errors.push(ParsingError::BindingPinnedTakesOneTarget {
                             owner_instance_id: instance.instance_id.to_string(),
                             binding: binding_key.clone(),
-                            target_count: targets.len(),
+                            target_count: targets.targets().len(),
                         });
                         continue;
                     };
-                    let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
-                        out.errors.push(ParsingError::UnknownInstanceId {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding_key.clone(),
-                            instance_id: target_id.clone(),
-                        });
-                        continue;
-                    };
-                    if !slot_matches_producer(&slot, target_item) {
-                        out.errors.push(identity_mismatch_error(
-                            &slot,
-                            instance.instance_id.as_str(),
-                            binding_key,
-                            target_id,
-                            target_item,
-                        ));
+                    if let Err(err) = check_bound_target(
+                        &slot,
+                        instance.instance_id.as_str(),
+                        binding_key,
+                        target_id,
+                        &instance_to_item,
+                    ) {
+                        out.errors.push(err);
                         continue;
                     }
                     resolved.insert(
@@ -202,62 +193,48 @@ pub fn validate_bindings(
                 if let Some(slot) = declared_from_any.get(binding_key.as_str()).copied() {
                     // KEY matches a declared from_any link_id: every
                     // element of the (possibly empty) target set must
-                    // exist and satisfy the slot — node slots by
-                    // `(name, tag)` identity, interface slots by the
-                    // producer's `conforms_to` claim. Valid elements
-                    // accumulate into the slot's explicit bound set.
+                    // exist and satisfy the slot, checked per element by
+                    // rule 3. Valid elements become the slot's explicit
+                    // bound set; an empty or fully-rejected set falls
+                    // through to the unbound materialization below, so
+                    // `FromAnyBound { [] }` is never produced.
+                    let mut producers = Vec::new();
                     for target_id in targets.targets() {
-                        let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
-                            out.errors.push(ParsingError::UnknownInstanceId {
-                                owner_instance_id: instance.instance_id.to_string(),
-                                binding: binding_key.clone(),
-                                instance_id: target_id.clone(),
-                            });
-                            continue;
-                        };
-                        if !slot_matches_producer(&slot, target_item) {
-                            out.errors.push(identity_mismatch_error(
-                                &slot,
-                                instance.instance_id.as_str(),
-                                binding_key,
-                                target_id,
-                                target_item,
-                            ));
-                            continue;
+                        match check_bound_target(
+                            &slot,
+                            instance.instance_id.as_str(),
+                            binding_key,
+                            target_id,
+                            &instance_to_item,
+                        ) {
+                            Ok(()) => producers
+                                .push(ProducerRef::new(producer_core_node, target_id.clone())),
+                            Err(err) => out.errors.push(err),
                         }
-                        from_any_explicit
-                            .entry(binding_key.clone())
-                            .or_default()
-                            .push(target_id.clone());
+                    }
+                    if !producers.is_empty() {
+                        resolved
+                            .insert(binding_key.clone(), SlotBinding::FromAnyBound { producers });
                     }
                     continue;
                 }
 
                 // Rule 2: KEY is not a declared link_id of any kind.
-                out.errors
-                    .push(ParsingError::BindingDeadKey(Box::new(BindingDeadKey {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        binding: binding_key.clone(),
-                        declared_link_ids: declared_csv.clone(),
-                    })));
+                out.errors.push(ParsingError::BindingDeadKey {
+                    owner_instance_id: instance.instance_id.to_string(),
+                    binding: binding_key.clone(),
+                    declared_link_ids: declared_csv.clone(),
+                });
             }
 
-            // Materialize every declared from_any slot: an explicit
-            // non-empty bound set, or deliberately unbound (silent). An
-            // empty array binds nothing and must never materialize as
-            // `FromAnyBound { [] }`. Per-key element uniqueness is a
-            // parse-time rule (`BindingTargets`), so no dedupe here.
+            // Every declared from_any slot the loop above left without a
+            // bound set materializes as deliberately unbound (silent).
+            // Per-key element uniqueness is a parse-time rule
+            // (`BindingTargets`), so no dedupe here.
             for slot_link_id in declared_from_any.keys() {
-                let slot = match from_any_explicit.remove(*slot_link_id) {
-                    Some(ids) if !ids.is_empty() => SlotBinding::FromAnyBound {
-                        producers: ids
-                            .into_iter()
-                            .map(|id| ProducerRef::new(producer_core_node, id))
-                            .collect(),
-                    },
-                    _ => SlotBinding::FromAnyUnbound,
-                };
-                resolved.insert((*slot_link_id).to_string(), slot);
+                resolved
+                    .entry((*slot_link_id).to_string())
+                    .or_insert(SlotBinding::FromAnyUnbound);
             }
 
             // Rule 1: every pinned slot must be bound. Suppress when
@@ -405,10 +382,42 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
     }
 }
 
+/// Rule 3 for one bound producer, shared by the pinned path and the
+/// per-element from_any path so both enforce the same per-producer
+/// contract: the target must name a known instance (else
+/// [`ParsingError::UnknownInstanceId`]) and satisfy the slot via
+/// [`slot_matches_producer`] (else the [`identity_mismatch_error`] for
+/// the slot's kind). The caller decides what a success binds: the
+/// pinned producer, or one element of a from_any bound set.
+fn check_bound_target(
+    slot: &SlotMeta<'_>,
+    owner_instance_id: &str,
+    binding_key: &str,
+    target_id: &str,
+    instance_to_item: &BTreeMap<&str, &BindingValidationItem<'_>>,
+) -> Result<(), ParsingError> {
+    let Some(target_item) = instance_to_item.get(target_id) else {
+        return Err(ParsingError::UnknownInstanceId {
+            owner_instance_id: owner_instance_id.to_string(),
+            binding: binding_key.to_string(),
+            instance_id: target_id.to_string(),
+        });
+    };
+    if !slot_matches_producer(slot, target_item) {
+        return Err(identity_mismatch_error(
+            slot,
+            owner_instance_id,
+            binding_key,
+            target_id,
+            target_item,
+        ));
+    }
+    Ok(())
+}
+
 /// The identity-mismatch error for a bound producer that does not satisfy
 /// `slot` (rule 3): node slots report the deployed `(name, tag)` mismatch,
-/// interface slots the missing `conforms_to` claim. Shared by the pinned
-/// path and the per-element from_any path.
+/// interface slots the missing `conforms_to` claim.
 fn identity_mismatch_error(
     slot: &SlotMeta<'_>,
     owner_instance_id: &str,
@@ -554,12 +563,17 @@ mod tests {
             "expected one error, got {:?}",
             out.errors
         );
-        let ParsingError::BindingDeadKey(info) = &out.errors[0] else {
+        let ParsingError::BindingDeadKey {
+            owner_instance_id,
+            binding,
+            declared_link_ids,
+        } = &out.errors[0]
+        else {
             panic!("expected BindingDeadKey, got {:?}", out.errors[0]);
         };
-        assert_eq!(info.owner_instance_id, "cons1");
-        assert_eq!(info.binding, "stale_slot");
-        assert_eq!(info.declared_link_ids, "main");
+        assert_eq!(owner_instance_id, "cons1");
+        assert_eq!(binding, "stale_slot");
+        assert_eq!(declared_link_ids, "main");
     }
 
     /// Rule 1: pinned-unbound is a hard error.
@@ -789,7 +803,7 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        assert!(matches!(out.errors[0], ParsingError::BindingDeadKey(_)));
+        assert!(matches!(out.errors[0], ParsingError::BindingDeadKey { .. }));
         // The unmatched slot stays deliberately unbound.
         assert_eq!(
             slot_binding(&out, "cons1", "extra"),
@@ -1246,7 +1260,7 @@ mod tests {
         );
         // BindingDeadKey is emitted first (in iteration order),
         // BindingMissingForPinnedDep after.
-        assert!(matches!(out.errors[0], ParsingError::BindingDeadKey(_)));
+        assert!(matches!(out.errors[0], ParsingError::BindingDeadKey { .. }));
         assert!(matches!(
             out.errors[1],
             ParsingError::BindingMissingForPinnedDep(_)

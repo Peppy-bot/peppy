@@ -161,22 +161,6 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
-/// Payload for [`ParsingError::BindingDeadKey`]. Binding keys are the
-/// consumer's declared `depends_on` link_ids — nothing else; a key that
-/// matches no declared slot is dead regardless of what it targets.
-/// Boxed for the same `result_large_err` reason as the other binding
-/// variants.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "binding key `{binding}` on instance `{owner_instance_id}` is not a \
-     declared link_id; declared link_ids: [{declared_link_ids}]"
-)]
-pub struct BindingDeadKey {
-    pub owner_instance_id: String,
-    pub binding: String,
-    pub declared_link_ids: String,
-}
-
 /// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
 /// `--pair` link_id) that matches no declared `depends_on.pairings` slot of
 /// the instance's node.
@@ -328,10 +312,18 @@ pub enum ParsingError {
         binding: String,
     },
     /// A binding whose `KEY` matches no declared `depends_on` link_id
-    /// (pinned or `from_any`). Boxed for the same `result_large_err`
-    /// reason as the other binding variants.
-    #[error(transparent)]
-    BindingDeadKey(Box<BindingDeadKey>),
+    /// (pinned or `from_any`). Binding keys are the consumer's declared
+    /// link_ids and nothing else: a key that matches no declared slot is
+    /// dead regardless of what it targets.
+    #[error(
+        "binding key `{binding}` on instance `{owner_instance_id}` is not a \
+         declared link_id; declared link_ids: [{declared_link_ids}]"
+    )]
+    BindingDeadKey {
+        owner_instance_id: String,
+        binding: String,
+        declared_link_ids: String,
+    },
     /// A binding on a pinned (`from_any: false`) slot whose value names
     /// zero or several producers. Pinned slots bind exactly one; only
     /// `from_any` slots accept arrays.

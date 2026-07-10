@@ -266,26 +266,6 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Collapse a clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`, rejecting
-/// duplicate `KEY`s: a plain `collect()` would silently keep the last VALUE.
-/// `kind`/`flag` splice the surface-specific wording into the error.
-fn entries_to_unique_map<V: Clone>(
-    entries: &[(String, V)],
-    instance_id: &str,
-    kind: &str,
-    flag: &str,
-) -> Result<BTreeMap<String, V>> {
-    let mut map = BTreeMap::new();
-    for (key, value) in entries {
-        if map.insert(key.clone(), value.clone()).is_some() {
-            return Err(Error::ExecutionFailed(format!(
-                "duplicate {kind} key `{key}` on instance `{instance_id}` (each {flag} must be distinct)"
-            )));
-        }
-    }
-    Ok(map)
-}
-
 /// `--bind KEY@VALUE` entries as a map, accumulating repeated `KEY`s into
 /// one multi-target binding: `--bind arm_states@left --bind
 /// arm_states@right` binds both producers to the `arm_states` slot (flag
@@ -317,13 +297,22 @@ fn binds_to_map(
 }
 
 /// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
-/// most once per invocation, so a repeated LINK_ID is a hard error just
-/// like a duplicate `--bind` key.
+/// most once per invocation, so unlike `--bind` keys a repeated LINK_ID
+/// is a hard error: a plain `collect()` would silently keep the last
+/// TARGET.
 fn pairs_to_map(
     pairs: &[(String, PairTarget)],
     instance_id: &str,
 ) -> Result<BTreeMap<String, PairTarget>> {
-    entries_to_unique_map(pairs, instance_id, "pairing", "--pair LINK_ID")
+    let mut map = BTreeMap::new();
+    for (key, target) in pairs {
+        if map.insert(key.clone(), target.clone()).is_some() {
+            return Err(Error::ExecutionFailed(format!(
+                "duplicate pairing key `{key}` on instance `{instance_id}` (each --pair LINK_ID must be distinct)"
+            )));
+        }
+    }
+    Ok(map)
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via

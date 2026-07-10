@@ -562,7 +562,7 @@ pub fn build_consumed_action(
         "TARGET_NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    let send_goal_pinned_target_expr =
+    let send_goal_consumer_filter_expr =
         crate::generator::python::services::consumed_target_python_expr(dependency);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
@@ -571,7 +571,7 @@ pub fn build_consumed_action(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{send_goal_target_expr},"));
     builder.line("TARGET_ACTION_NAME,");
-    builder.line(&format!("{send_goal_pinned_target_expr},"));
+    builder.line(&format!("{send_goal_consumer_filter_expr},"));
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

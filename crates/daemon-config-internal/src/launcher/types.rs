@@ -207,14 +207,6 @@ impl BindingTargets {
     pub fn targets(&self) -> &[String] {
         &self.0
     }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
 
 impl Serialize for BindingTargets {
@@ -665,7 +657,7 @@ mod tests {
         let instance: DeploymentInstance =
             serde_json5::from_str(json5).expect("empty array binding should parse");
         let targets = instance.bindings.get("commander").expect("key present");
-        assert!(targets.is_empty());
+        assert!(targets.targets().is_empty());
     }
 
     /// Duplicate elements within one key's array are rejected at parse

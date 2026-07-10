@@ -96,7 +96,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
             &consumed_action,
             &action_messages,
             // The manifest link_id rides into codegen so the generated
-            // fire_goal resolves `consumer_filter("brain").pinned_target()`
+            // fire_goal resolves `consumer_filter("brain").call_target()`
             // at runtime instead of emitting a wildcard target.
             &generator::DependencyContext::native("brain", "v1")
                 .with_link_id(generator::WireLinkId::from_link_id("brain", false)),

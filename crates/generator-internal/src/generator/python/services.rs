@@ -331,14 +331,14 @@ pub fn build_consumed_service(
         "NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    let pinned_target_expr = consumed_target_python_expr(dependency);
+    let consumer_filter_expr = consumed_target_python_expr(dependency);
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line(&format!("{pinned_target_expr},"));
+    builder.line(&format!("{consumer_filter_expr},"));
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();
