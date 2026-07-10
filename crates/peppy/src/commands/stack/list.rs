@@ -370,19 +370,19 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// Right-hand side of a `link_id -> …` binding line: the producer the slot
 /// resolves to, rendered as `instance_id@core_node` (the full wire address
 /// every binding carries). A `from_any` slot with explicit producers lists
-/// them comma-separated; a `from_any` slot deliberately left bindless
-/// renders as `(unbound)` — the slot is silent, not listening to anyone.
-/// (The validator never materializes an empty `FromAnyBound`; render it
-/// as `(unbound)` too so the line never trails empty.)
+/// them comma-separated (the bound set is non-empty by construction, so
+/// the line never trails empty); a `from_any` slot deliberately left
+/// bindless renders as `(unbound)` — the slot is silent, not listening to
+/// anyone.
 fn format_slot_binding(binding: &SlotBinding) -> String {
     let render =
         |producer: &ProducerRef| format!("{}@{}", producer.instance_id, producer.core_node);
     match binding {
         SlotBinding::Pinned { producer } => render(producer),
-        SlotBinding::FromAnyBound { producers } if !producers.is_empty() => {
+        SlotBinding::FromAnyBound { producers } => {
             producers.iter().map(render).collect::<Vec<_>>().join(", ")
         }
-        SlotBinding::FromAnyBound { .. } | SlotBinding::FromAnyUnbound => "(unbound)".to_string(),
+        SlotBinding::FromAnyUnbound => "(unbound)".to_string(),
     }
 }
 
@@ -933,12 +933,10 @@ mod tests {
                 vec![
                     (
                         "sensors",
-                        SlotBinding::FromAnyBound {
-                            producers: vec![
-                                ProducerRef::new("core_a", "cam-1"),
-                                ProducerRef::new("core_a", "cam-2"),
-                            ],
-                        },
+                        SlotBinding::from_any(vec![
+                            ProducerRef::new("core_a", "cam-1"),
+                            ProducerRef::new("core_a", "cam-2"),
+                        ]),
                     ),
                     ("extra", SlotBinding::FromAnyUnbound),
                 ],
@@ -1057,32 +1055,6 @@ mod tests {
         assert!(
             !section.contains("BINDINGS"),
             "no bindings table should render when no instances exist:\n{out}"
-        );
-    }
-
-    #[test]
-    fn bindings_table_renders_any_for_from_any_bound_without_producers() {
-        // Defensive: a `FromAnyBound` carrying no producers (only reachable via
-        // a hand-crafted / corrupt payload) must not render a dangling
-        // `slot -> ` with an empty right-hand side.
-        let nodes = vec![binding_node(
-            "nav",
-            vec![(
-                "nav-1",
-                InstanceState::Running,
-                vec![("sensors", SlotBinding::FromAnyBound { producers: vec![] })],
-            )],
-        )];
-        let out = format_stack_list(&nodes, &[], false);
-        let section = bindings_section(&out);
-
-        assert!(
-            section.contains("sensors → (unbound)"),
-            "empty from_any bound should collapse to (unbound):\n{out}"
-        );
-        assert!(
-            !section.contains("sensors → \n") && !section.contains("sensors →  "),
-            "binding line must not trail with an empty producer:\n{out}"
         );
     }
 

@@ -1,0 +1,55 @@
+{/*
+  Single source for the "Validator rules" section of the topics, services,
+  and actions guides. These rules are launch-time checks on the binding map
+  itself, so they are identical for all three communication channels; keep
+  this file in sync with the code-side contract in the rustdoc of
+  `validate_bindings` (crates/daemon-config-internal/src/launcher/bindings.rs).
+*/}
+
+The launcher validator runs these checks before the stack starts. They apply
+to the binding map itself, so they are the same for topic, service, and
+action slots:
+
+1. **Pinned-unbound is a hard error.** Every pinned (`from_any` absent or
+   `false`) slot in `depends_on` must have a binding whose `KEY` equals the
+   slot's `link_id`, naming exactly one producer (an array on a pinned slot
+   is rejected). A `from_any` slot has **no** required-binding rule: leaving
+   it unbound is valid and yields a silent slot that opens no subscription
+   and fails service / action calls before any wire work.
+2. **Every `KEY` must be a declared `link_id`**, pinned or `from_any`. There
+   are no free-form keys: a `KEY` that matches no declared `link_id` is a
+   dead key and is rejected.
+3. **A `from_any` `KEY` binds the slot's explicit producer set**: one
+   producer, or several (an array in a launcher; repeated `--bind KEY@...`
+   flags on the CLI). The slot's traffic stays within that set: a topic slot
+   receives from all bound producers and only them, and a service / action
+   call resolves within the set. Listing the same producer twice under one
+   `KEY` is an error; an empty array is valid and deliberately leaves the
+   slot unbound.
+4. **Every bound producer must satisfy the slot**, checked per element for
+   `from_any` arrays. For node slots, the producer's `(node_name, node_tag)`
+   must equal the slot's declared pair; mismatches surface as
+   `BindingTargetMismatch`. For interface slots, the producer's
+   `interfaces.conforms_to` must include the slot's `(name, tag)`, surfacing
+   as `BindingInterfaceNotConformed`; see
+   [Interface conformance](/advanced_guides/interface_conformance) for the
+   conformance contract. Unknown `instance_id`s are rejected.
+5. **`KEY`s are unique per instance.** A launcher's `bindings` map holds each
+   key once (use the array form for several producers), and repeated CLI
+   `--bind` flags with the same `KEY` accumulate producers onto that
+   (`from_any`) slot rather than redefining the key.
+6. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be
+   unique across the entire stack, not just within a `(node_name, node_tag)`
+   group. Bindings name producers by `instance_id`, so reusing one across
+   two different node kinds would make the binding ambiguous.
+7. **Bindings are stamped with the daemon's `core_node`.** The
+   `--bind KEY@instance_id` syntax names producers by `instance_id` alone,
+   but the wire addresses producers by the full `(core_node, instance_id)`
+   pair, since `instance_id` is only unique within one stack. The validator
+   stamps the launching daemon's `core_node` into every resolved binding, so
+   the runtime never matches on `instance_id` alone: a pinned slot
+   subscribes / calls with both wire fields set, and a multi-producer
+   `from_any` slot opens one such fully-pinned subscription (and sends one
+   producer-pinned discovery probe) per bound producer. A producer on
+   another core node that happens to share an `instance_id` can never feed
+   a bound slot.

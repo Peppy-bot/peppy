@@ -5,6 +5,8 @@ sidebar:
   order: 2
 ---
 
+import ValidatorRules from './_validator_rules.mdx';
+
 Services implement a **request-response** communication pattern between nodes.
 A node *exposes* a service to handle incoming requests, and other nodes *consume* that service to send requests and receive responses.
 
@@ -329,15 +331,7 @@ If the discovered producer dies between the probe and the real request, the call
 
 ### Validator rules
 
-The launcher validator runs these checks before the stack starts:
-
-1. **Pinned-unbound is a hard error.** Every pinned slot in `depends_on` must have a binding whose `KEY` equals the slot's `link_id`, naming exactly one producer (an array on a pinned slot is rejected). A `from_any` slot has no such rule: leaving it unbound is valid and yields a silent slot whose calls fail before any wire work.
-2. **Every `KEY` must be a declared `link_id`** — pinned or `from_any`. There are no free-form keys: a `KEY` that matches no declared `link_id` is a dead key and is rejected.
-3. **A `from_any` `KEY` binds the slot's explicit producer set** — one producer, or several (an array in a launcher; repeated `--bind KEY@...` flags on the CLI). Listing the same producer twice under one `KEY` is an error; an empty array deliberately leaves the slot unbound.
-4. A bound producer whose `instance_id` deploys a different node than the slot expects is a target mismatch and is rejected — checked per element for `from_any` arrays.
-5. `KEY`s are unique per instance: a launcher's `bindings` map holds each key once (use the array form for several producers), and repeated CLI `--bind` flags with the same `KEY` accumulate producers rather than redefining the key.
-6. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings name producers by `instance_id`, so a duplicate would make the binding ambiguous.
-7. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, so generated calls (and each probe of a restricted discovery) address producers by their full pair and never match on `instance_id` alone.
+<ValidatorRules />
 
 ## Error handling
 

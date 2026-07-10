@@ -5,6 +5,8 @@ sidebar:
   order: 1
 ---
 
+import ValidatorRules from './_validator_rules.mdx';
+
 Topics implement a **publish-subscribe** communication pattern between nodes.
 A node *emits* a topic to publish messages, and other nodes *consume* that topic to receive them.
 
@@ -364,15 +366,7 @@ Four contract statements follow from this manifest and launcher:
 
 ### Validator rules
 
-The launcher validator runs these checks before the stack starts:
-
-1. **Pinned-unbound is a hard error.** Every pinned (`from_any` absent or `false`) slot in `depends_on` must have a `--bind KEY@VALUE` whose `KEY` equals the slot's `link_id`, naming exactly one producer (an array on a pinned slot is rejected). A `from_any` slot has **no** required-binding rule: leaving it unbound is valid and yields a silent slot.
-2. **Every `KEY` must be a declared `link_id`** — pinned or `from_any`. There are no free-form keys: a `KEY` that matches no declared `link_id` is a dead key and is rejected.
-3. **A `from_any` `KEY` binds the slot's explicit producer set.** The value is one producer, or several (an array in a launcher; repeated `--bind KEY@...` flags on the CLI). The slot then receives from all of them and only them. Listing the same producer twice under one `KEY` is an error, and an empty array is valid — it deliberately leaves the slot unbound.
-4. **Every bound producer must satisfy the slot**, checked per element for `from_any` arrays. For node slots, the producer's `(node_name, node_tag)` must equal the slot's declared pair; mismatches surface as `BindingTargetMismatch`. For interface slots, the producer's `interfaces.conforms_to` must include the slot's `(name, tag)`, surfacing as `BindingInterfaceNotConformed`; see [Interface conformance](/advanced_guides/interface_conformance) for the conformance contract. Unknown `instance_id`s are rejected.
-5. `KEY`s are unique per instance. In a launcher, `bindings` is a map, so a key appears once — use the array form for several producers. On the CLI, repeating `--bind` with the same `KEY` does not redefine the key; it accumulates producers onto that (`from_any`) slot.
-6. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. Bindings name producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
-7. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a pinned slot subscribes with both wire slots set, and a multi-producer (`from_any`) slot opens one such fully-pinned subscription per bound producer. A producer on another core node that happens to share an `instance_id` can never feed a bound slot.
+<ValidatorRules />
 
 ## Message format types
 

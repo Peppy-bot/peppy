@@ -186,16 +186,20 @@ pub struct BindingTargets(Vec<String>);
 impl BindingTargets {
     /// Validated constructor applying the same rules as the
     /// deserializer: no empty-string elements, no duplicate elements.
-    /// Empty vectors are accepted (deliberately unbound).
+    /// Empty vectors are accepted (deliberately unbound). Error messages
+    /// are deliberately context-free: this type cannot see which binding
+    /// key it belongs to, so each boundary names the key itself (the CLI
+    /// decorates with the offending `--bind` flag, the launcher map
+    /// deserializer prefixes ``binding `<key>` ``).
     pub fn new(targets: Vec<String>) -> Result<Self, String> {
         let mut seen: HashSet<&str> = HashSet::with_capacity(targets.len());
         for target in &targets {
             if target.trim().is_empty() {
-                return Err("binding target cannot be empty".to_string());
+                return Err("target cannot be empty".to_string());
             }
             if !seen.insert(target.as_str()) {
                 return Err(format!(
-                    "duplicate binding target `{target}` (each producer may be listed once)"
+                    "duplicate target `{target}` (each producer may be listed once)"
                 ));
             }
         }
@@ -325,7 +329,9 @@ where
 /// intentionally permitted: one producer/peer may serve multiple `link_id`
 /// slots. Value-shape rules are the value type's own concern
 /// ([`BindingTargets`] for bindings; [`deserialize_pairings`] checks its
-/// `String` targets). Sentinel-key checks live in
+/// `String` targets); a value type cannot see the key it belongs to, so
+/// the visitor prefixes value errors with ``<kind> `<key>`:`` to name the
+/// offending entry. Sentinel-key checks live in
 /// `PeppyLauncher::deserialize` where the owning `instance_id` is in
 /// scope for the structured error.
 fn deserialize_kv_entries<'de, D, V>(
@@ -336,8 +342,10 @@ where
     D: Deserializer<'de>,
     V: Deserialize<'de>,
 {
-    let entries =
-        deserializer.deserialize_map(BindingEntriesVisitor::<V>(std::marker::PhantomData))?;
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor::<V> {
+        kind,
+        _marker: std::marker::PhantomData,
+    })?;
     validate_named_items(entries.iter().map(|(k, _)| k.as_str()), kind)
         .map_err(de::Error::custom)?;
     Ok(entries)
@@ -353,7 +361,12 @@ pub fn split_pair_target(value: &str) -> (&str, Option<&str>) {
     }
 }
 
-struct BindingEntriesVisitor<V>(std::marker::PhantomData<V>);
+struct BindingEntriesVisitor<V> {
+    /// Map flavor ("binding" / "pairing") used to label value errors with
+    /// the key they belong to.
+    kind: &'static str,
+    _marker: std::marker::PhantomData<V>,
+}
 
 impl<'de, V> Visitor<'de> for BindingEntriesVisitor<V>
 where
@@ -369,8 +382,14 @@ where
     where
         A: MapAccess<'de>,
     {
+        // Keys and values are deserialized in two steps so a value error
+        // can be prefixed with its key; `next_entry` would surface the
+        // value's own message with no way to tell which entry failed.
         let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
-        while let Some((key, value)) = access.next_entry::<String, V>()? {
+        while let Some(key) = access.next_key::<String>()? {
+            let value = access
+                .next_value::<V>()
+                .map_err(|err| de::Error::custom(format!("{} `{key}`: {err}", self.kind)))?;
             entries.push((key, value));
         }
         Ok(entries)
@@ -570,6 +589,8 @@ mod tests {
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
     }
 
+    /// The value's own rules cannot see the key, so the map deserializer
+    /// must name the offending binding key in the error.
     #[test]
     fn bindings_reject_empty_value() {
         let json5 = r#"{
@@ -578,7 +599,11 @@ mod tests {
         }"#;
         let err = serde_json5::from_str::<DeploymentInstance>(json5)
             .expect_err("empty binding value must be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty") && msg.contains("torso_camera"),
+            "error must name the offending key: {msg}"
+        );
     }
 
     /// Two binding keys may point at the same producer `instance_id`:
@@ -670,9 +695,10 @@ mod tests {
         }"#;
         let err = serde_json5::from_str::<DeploymentInstance>(json5)
             .expect_err("duplicate array element must be rejected");
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("duplicate"),
-            "unexpected error: {err}"
+            msg.contains("duplicate") && msg.contains("arm_states"),
+            "error must name the offending key: {msg}"
         );
     }
 
@@ -686,7 +712,11 @@ mod tests {
         }"#;
         let err = serde_json5::from_str::<DeploymentInstance>(json5)
             .expect_err("empty array element must be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty") && msg.contains("arm_states"),
+            "error must name the offending key: {msg}"
+        );
     }
 
     /// The launcher-level unknown-instance cross-check runs per element

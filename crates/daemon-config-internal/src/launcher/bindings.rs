@@ -107,6 +107,11 @@ pub struct ValidatedBindings {
 /// 5. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
+///
+/// The user-facing copy of these rules lives in
+/// `docs/src/content/docs/advanced_guides/_validator_rules.mdx` (shared
+/// by the topics / services / actions guides); keep it in sync when
+/// validator behavior changes.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
     producer_core_node: &str,
@@ -195,9 +200,9 @@ pub fn validate_bindings(
                     // element of the (possibly empty) target set must
                     // exist and satisfy the slot, checked per element by
                     // rule 3. Valid elements become the slot's explicit
-                    // bound set; an empty or fully-rejected set falls
-                    // through to the unbound materialization below, so
-                    // `FromAnyBound { [] }` is never produced.
+                    // bound set; `SlotBinding::from_any` resolves an empty
+                    // or fully-rejected set to the unbound (silent) state,
+                    // so an empty bound set is unrepresentable.
                     let mut producers = Vec::new();
                     for target_id in targets.targets() {
                         match check_bound_target(
@@ -212,10 +217,7 @@ pub fn validate_bindings(
                             Err(err) => out.errors.push(err),
                         }
                     }
-                    if !producers.is_empty() {
-                        resolved
-                            .insert(binding_key.clone(), SlotBinding::FromAnyBound { producers });
-                    }
+                    resolved.insert(binding_key.clone(), SlotBinding::from_any(producers));
                     continue;
                 }
 
@@ -227,8 +229,8 @@ pub fn validate_bindings(
                 });
             }
 
-            // Every declared from_any slot the loop above left without a
-            // bound set materializes as deliberately unbound (silent).
+            // Every declared from_any slot with no binding entry at all
+            // materializes as deliberately unbound (silent).
             // Per-key element uniqueness is a parse-time rule
             // (`BindingTargets`), so no dedupe here.
             for slot_link_id in declared_from_any.keys() {
@@ -664,9 +666,9 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "extra"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "prod1")]
-            })
+            Some(SlotBinding::from_any(vec![ProducerRef::new(
+                TEST_CORE, "prod1",
+            )]))
         );
     }
 
@@ -699,12 +701,10 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "extra"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![
-                    ProducerRef::new(TEST_CORE, "prod2"),
-                    ProducerRef::new(TEST_CORE, "prod1"),
-                ]
-            })
+            Some(SlotBinding::from_any(vec![
+                ProducerRef::new(TEST_CORE, "prod2"),
+                ProducerRef::new(TEST_CORE, "prod1"),
+            ]))
         );
     }
 
@@ -848,9 +848,9 @@ mod tests {
         // The valid element still binds.
         assert_eq!(
             slot_binding(&out, "cons1", "extra"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "cam_ok")]
-            })
+            Some(SlotBinding::from_any(vec![ProducerRef::new(
+                TEST_CORE, "cam_ok",
+            )]))
         );
     }
 
@@ -1073,9 +1073,10 @@ mod tests {
         );
         assert_eq!(
             slot_binding(&out, "backbone_inst_1", "extra_cam"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "depth_cam_inst1")]
-            })
+            Some(SlotBinding::from_any(vec![ProducerRef::new(
+                TEST_CORE,
+                "depth_cam_inst1",
+            )]))
         );
     }
 
@@ -1299,9 +1300,10 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "extra_cam"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "webcam_inst_1")]
-            })
+            Some(SlotBinding::from_any(vec![ProducerRef::new(
+                TEST_CORE,
+                "webcam_inst_1",
+            )]))
         );
     }
 
@@ -1515,9 +1517,10 @@ mod tests {
         );
         assert_eq!(
             slot_binding(&out, "cons1", "slot_b"),
-            Some(SlotBinding::FromAnyBound {
-                producers: vec![ProducerRef::new(TEST_CORE, "multi_prod")]
-            })
+            Some(SlotBinding::from_any(vec![ProducerRef::new(
+                TEST_CORE,
+                "multi_prod",
+            )]))
         );
     }
 
