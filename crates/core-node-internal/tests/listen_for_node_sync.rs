@@ -1971,7 +1971,7 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
 /// without `ensure_checkout` the daemon would have tried to read that path
 /// from the daemon's CWD and failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_sync_resolves_git_sourced_conforms_to_interface() {
+async fn node_sync_resolves_git_sourced_conforms_to_contract() {
     let started = start_core_node_with_mock_messenger().await;
 
     // Build a local git repo that hosts the contract manifest at the

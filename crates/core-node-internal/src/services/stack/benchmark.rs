@@ -468,7 +468,7 @@ fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &
                     .or_insert_with(|| {
                         resolve_contract_doc(peppy_dirs, name, tag, None, &|_| {}).ok()
                     });
-                formats_from_interface(doc.as_ref(), edge.kind, &edge.interface)
+                formats_from_contract(doc.as_ref(), edge.kind, &edge.interface)
             }
         };
         if let Some(r) = req {
@@ -540,9 +540,9 @@ fn formats_from_node(
     }
 }
 
-/// Request/response size estimates for an interface declared in an interface
-/// contract. Same response-side convention for topics as [`formats_from_node`].
-fn formats_from_interface(
+/// Request/response size estimates for an interface declared in a contract.
+/// Same response-side convention for topics as [`formats_from_node`].
+fn formats_from_contract(
     doc: Option<&daemon_config::contract::PeppyContract>,
     kind: InterfaceKind,
     name: &str,
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_from_interface_sizes_topic_message_on_response_side() {
+    fn formats_from_contract_sizes_topic_message_on_response_side() {
         let doc = daemon_config::contract::PeppyContractParser::from_content(
             r#"{
                 peppy_schema: "contract/v1",
@@ -1283,7 +1283,7 @@ mod tests {
             }"#,
         )
         .expect("parse interface");
-        let (req, resp) = formats_from_interface(Some(&doc), InterfaceKind::Topic, "video_stream");
+        let (req, resp) = formats_from_contract(Some(&doc), InterfaceKind::Topic, "video_stream");
         assert!(req.is_none(), "a topic has no request leg");
         let resp = resp.expect("topic message sized");
         assert!(resp.bytes > 0);

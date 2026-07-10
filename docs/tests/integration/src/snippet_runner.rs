@@ -200,7 +200,7 @@ pub fn run_snippet_with_deps(
 /// with `-r`, added, built, and launched with `start_args`. The pairing
 /// snippets launch solo with `--defer-pair <slot>`: a required slot boots
 /// unpaired when explicitly deferred, with no peer present.
-pub fn run_snippet_with_interface_repo(
+pub fn run_snippet_with_contract_repo(
     snippets_root: &str,
     snippet_name: &str,
     start_args: &[&str],

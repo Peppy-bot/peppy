@@ -39,8 +39,8 @@ pub struct BindingValidationItem<'a> {
     pub depends_on: Option<&'a DependsOn>,
     /// Producer's `interfaces.conforms_to` list, borrowed as a slice.
     /// Empty when the node declares no conformance. Used by the validator
-    /// to decide whether this node can satisfy a consumer's interface
-    /// slot.
+    /// to decide whether this node can satisfy a consumer's
+    /// `SlotKind::Contract` slot.
     pub conforms_to: &'a [ConformsToItem],
 }
 
@@ -744,7 +744,7 @@ mod tests {
     /// Rule 1 (contract variant): pinned contract dep without
     /// binding fails the same way.
     #[test]
-    fn rule1_rejects_missing_binding_for_pinned_interface_dep() {
+    fn rule1_rejects_missing_binding_for_pinned_contract_dep() {
         let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
         let depends_on = parse_depends_on(
             r#"{
@@ -798,12 +798,12 @@ mod tests {
         assert_eq!(info.target_instance_id, "actually_lidar");
     }
 
-    /// Pinned interface bindings check the producer's `conforms_to`
+    /// Pinned contract bindings check the producer's `conforms_to`
     /// (not just node identity). A producer with no matching
     /// `conforms_to` entry is rejected with
     /// `BindingContractNotConformed`.
     #[test]
-    fn pinned_interface_binding_rejects_non_conforming_producer() {
+    fn pinned_contract_binding_rejects_non_conforming_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -841,12 +841,12 @@ mod tests {
     }
 
     /// Pinned contract dep targets a producer whose `conforms_to`
-    /// includes the requested interface: accepted as `SlotBinding::Pinned`.
+    /// includes the requested contract: accepted as `SlotBinding::Pinned`.
     /// The producer's node name is intentionally different from the
-    /// interface name so this test exercises the conformance path
+    /// contract name so this test exercises the conformance path
     /// rather than a coincidental identity match.
     #[test]
-    fn pinned_interface_binding_accepts_conforming_producer() {
+    fn pinned_contract_binding_accepts_conforming_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -1136,10 +1136,10 @@ mod tests {
     }
 
     /// A `from_any` contract dep accepts a producer whose
-    /// `interfaces.conforms_to` includes the requested interface, even
-    /// when the producer's node name differs from the interface name.
+    /// `interfaces.conforms_to` includes the requested contract, even
+    /// when the producer's node name differs from the contract name.
     #[test]
-    fn from_any_interface_dep_accepts_producer_via_conforms_to() {
+    fn from_any_contract_dep_accepts_producer_via_conforms_to() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -1175,10 +1175,10 @@ mod tests {
 
     /// A `from_any` contract dep rejects a producer that lacks the
     /// matching `conforms_to`, even when its node name coincidentally
-    /// equals the requested interface name+tag. Interface satisfaction
+    /// equals the requested contract name+tag. Contract satisfaction
     /// is determined solely by `conforms_to`, never by node identity.
     #[test]
-    fn from_any_interface_dep_rejects_producer_without_conforms_to() {
+    fn from_any_contract_dep_rejects_producer_without_conforms_to() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -1197,7 +1197,7 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst_1" }]"#);
-        // Producer's node identity coincidentally matches the interface
+        // Producer's node identity coincidentally matches the contract
         // name+tag, but it declares no `conforms_to`, so it must be rejected
         // (the binding's `KEY` doesn't match any pinned link_id either,
         // so this falls through to `BindingDeadKey`).
@@ -1217,10 +1217,10 @@ mod tests {
     }
 
     /// `conforms_to` matching is strict on `(name, tag)`: a producer
-    /// declaring a different tag for the same interface name is
+    /// declaring a different tag for the same contract name is
     /// rejected.
     #[test]
-    fn interface_dep_with_wrong_tag_in_conforms_to_is_rejected() {
+    fn contract_dep_with_wrong_tag_in_conforms_to_is_rejected() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",

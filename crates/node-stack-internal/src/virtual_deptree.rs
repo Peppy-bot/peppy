@@ -330,13 +330,13 @@ mod tests {
 
     /// Writes a node config that conforms to contracts and consumes
     /// service/action/topic items through contract deps, for the
-    /// caller-driven cycle tests. `iface_deps` and the consume lists are
+    /// caller-driven cycle tests. `contract_deps` and the consume lists are
     /// `(name, tag, link_id)` / `link_id` / `(link_id, topic_name)`.
     fn write_node_full(
         dir: &Path,
         name: &str,
         conforms_to: &[(&str, &str)],
-        iface_deps: &[(&str, &str, &str)],
+        contract_deps: &[(&str, &str, &str)],
         service_consumes: &[&str],
         action_consumes: &[&str],
         topic_consumes: &[(&str, &str)],
@@ -349,8 +349,8 @@ mod tests {
                 .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}" }}"#))
                 .collect(),
         );
-        let ifaces = join(
-            iface_deps
+        let contracts = join(
+            contract_deps
                 .iter()
                 .map(|(n, t, l)| format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{l}" }}"#))
                 .collect(),
@@ -379,7 +379,7 @@ mod tests {
                 manifest: {{
                     name: "{name}",
                     tag: "v1",
-                    depends_on: {{ nodes: [], contracts: [{ifaces}] }},
+                    depends_on: {{ nodes: [], contracts: [{contracts}] }},
                 }},
                 interfaces: {{
                     conforms_to: [{conforms}],
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn build_detects_mutual_service_interface_cycle() {
+    fn build_detects_mutual_service_contract_cycle() {
         let tmp = TempDir::new().unwrap();
         let a_dir = tmp.path().join("a");
         let b_dir = tmp.path().join("b");
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn build_detects_mutual_action_interface_cycle() {
+    fn build_detects_mutual_action_contract_cycle() {
         let tmp = TempDir::new().unwrap();
         let a_dir = tmp.path().join("a");
         let b_dir = tmp.path().join("b");

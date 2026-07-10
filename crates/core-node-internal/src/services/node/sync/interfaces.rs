@@ -292,11 +292,10 @@ pub(super) fn action_message_from_exposed(
 
 /// Loads a `PeppyContract` document from the local contract cache for
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
-/// against the cached fingerprint. Returns the parsed contract document
-/// alongside the cache entry's path, so callers can pass through to the
-/// `InterfaceOrigin` stamping step. Shared between [`resolve_conforms_to`]
-/// (producer side) and the `depends_on.contracts` resolution path
-/// (consumer side).
+/// against the cached fingerprint. Returns the parsed contract document,
+/// or an error string ready to surface to the client. Shared between
+/// [`resolve_conforms_to`] (producer side) and the `depends_on.contracts`
+/// resolution path (consumer side).
 pub(crate) fn resolve_contract_doc(
     peppy_dirs: &PeppyDirs,
     name: &str,
