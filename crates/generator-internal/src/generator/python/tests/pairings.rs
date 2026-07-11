@@ -93,7 +93,7 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
         assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
     }
     assert!(
-        !code.contains("bound_producers_for") && !code.contains("TopicMessenger.subscribe("),
+        !code.contains("bound_producer") && !code.contains("TopicMessenger.subscribe("),
         "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{code}"
     );
 }

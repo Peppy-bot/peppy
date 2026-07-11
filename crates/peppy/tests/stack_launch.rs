@@ -957,10 +957,10 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&bound(vec![config::runtime::ProducerRef::new(
+        Some(&config::runtime::ProducerRef::new(
             &core_node_name,
             producer_instance_id
-        )])),
+        )),
         "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
          consumer's runtime config as a Pinned slot binding stamped with the daemon's core_node",
     );
@@ -1085,12 +1085,6 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
-}
-
-/// Expected-value helper for `slot_bindings` assertions: wraps producers
-/// in the non-empty-by-construction [`config::runtime::BoundProducers`].
-fn bound(producers: Vec<config::runtime::ProducerRef>) -> config::runtime::BoundProducers {
-    config::runtime::BoundProducers::new(producers).expect("test bindings are non-empty")
 }
 
 /// Writes a minimal `peppy_schema: "contract/v1"` document at `path` with
@@ -1367,10 +1361,10 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&bound(vec![config::runtime::ProducerRef::new(
+        Some(&config::runtime::ProducerRef::new(
             &core_node_name,
             producer_instance_id
-        )])),
+        )),
         "contract dep `{link_id}` should resolve to the conforming producer's instance \
          stamped with the daemon's core_node",
     );
@@ -1911,10 +1905,10 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             .node_instance
             .slot_bindings
             .get(controller_link_id),
-        Some(&bound(vec![config::runtime::ProducerRef::new(
+        Some(&config::runtime::ProducerRef::new(
             &core_node_name,
             arm_instance_id,
-        )])),
+        )),
         "arm_controller's `{controller_link_id}` interface slot should materialize with \
          the bound producer's full wire address",
     );
@@ -1927,10 +1921,10 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     });
     assert_eq!(
         arm_config.node_instance.slot_bindings.get(arm_link_id),
-        Some(&bound(vec![config::runtime::ProducerRef::new(
+        Some(&config::runtime::ProducerRef::new(
             &core_node_name,
             controller_instance_id,
-        )])),
+        )),
         "robot_arm's `{arm_link_id}` interface slot should materialize with the bound \
          producer's full wire address",
     );

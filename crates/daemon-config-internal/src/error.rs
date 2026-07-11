@@ -162,8 +162,8 @@ pub struct BindingUnknownSlot {
 
 /// Payload for [`ParsingError::BindingSlotUnfulfilled`]. A declared
 /// `depends_on` slot with no binding entry. Every declared slot must be
-/// bound to at least one producer; unbound slots were removed together
-/// with `from_any`.
+/// bound to exactly one producer; there is no unbound state and no
+/// wildcard fallback.
 #[derive(Debug, Clone, Error)]
 #[error(
     "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
@@ -335,35 +335,21 @@ pub enum ParsingError {
     #[error(transparent)]
     BindingUnknownSlot(Box<BindingUnknownSlot>),
     /// A declared `depends_on` slot with no binding entry. Every declared
-    /// slot must be bound to at least one producer; unbound slots were
-    /// removed together with `from_any`. Boxed for the same
+    /// slot must be bound to exactly one producer; there is no unbound
+    /// state and no wildcard fallback. Boxed for the same
     /// `result_large_err` reason as the other binding variants.
     #[error(transparent)]
     BindingSlotUnfulfilled(Box<BindingSlotUnfulfilled>),
     /// Two `--bind KEY@…` entries on the same invocation share the same
-    /// `KEY`. Each `KEY` names a declared slot link_id and a slot's
-    /// producer list is given in one place, so a repeated `KEY` would
-    /// clobber.
+    /// `KEY`. Each `KEY` names a declared slot link_id and a slot binds
+    /// exactly one producer, given in one place, so a repeated `KEY`
+    /// would clobber.
     #[error(
-        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct)"
+        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct; a slot binds exactly one producer)"
     )]
     BindingDuplicateKey {
         owner_instance_id: String,
         binding: String,
-    },
-    /// One slot's binding array lists the same producer `instance_id`
-    /// more than once. The `bindings:` deserializer and the `--bind` CLI
-    /// parser both reject this at parse time; this validator-level
-    /// variant covers callers that synthesize instances directly (e.g.
-    /// `peppy node run` building a [`super::launcher::DeploymentInstance`]
-    /// from its preflight snapshot).
-    #[error(
-        "binding `{binding}` on instance `{owner_instance_id}` lists producer `{target_instance_id}` more than once"
-    )]
-    BindingDuplicateTarget {
-        owner_instance_id: String,
-        binding: String,
-        target_instance_id: String,
     },
     /// Boxed payload so this variant does not grow `ParsingError` past the
     /// `clippy::result_large_err` threshold; without the indirection, the

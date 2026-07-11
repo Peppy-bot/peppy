@@ -438,7 +438,7 @@ fn emit_topic_with_dynamic_object_array() {
 
 /// The generated subscribe splices the slot's runtime binding lookup as
 /// the `from_producers` argument:
-/// `node_runner.bound_producers_for(<link_id>)` resolves at runtime to
+/// `node_runner.bound_producer(<link_id>)` resolves at runtime to
 /// the bound producers' full `(core_node, instance_id)` tuples, so a
 /// bound topic slot only ever receives from producers the launcher bound
 /// to it.
@@ -458,10 +458,7 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(
-        &rendered,
-        &["node_runner.bound_producers_for(\"cam_left\"),"],
-    );
+    assert_contains_all(&rendered, &["node_runner.bound_producer(\"cam_left\"),"]);
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -596,14 +593,14 @@ fn consumed_topic() {
     );
 
     // Topic metadata and subscribe call: the slot's bound producers are
-    // resolved at runtime via `bound_producers_for(<link_id>)`.
+    // resolved at runtime via `bound_producer(<link_id>)`.
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
-            "topic_name,\n        node_runner.bound_producers_for(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,",
+            "topic_name,\n        node_runner.bound_producer(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,",
         ],
     );
 
@@ -825,7 +822,7 @@ fn no_user_facing_producer_identity_params() {
     // `target_instance_id` parameter is gone. `target_core_node` is never
     // exposed in the generated API, and the renamed `pinned_target_for`
     // accessor must never be emitted (the runtime helpers are
-    // `bound_producers_for` / `require_pinned_producer`).
+    // `bound_producer`).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -836,6 +833,6 @@ fn no_user_facing_producer_identity_params() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helpers are bound_producers_for / require_pinned_producer; rendered:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helper is bound_producer; rendered:\n{rendered}"
     );
 }

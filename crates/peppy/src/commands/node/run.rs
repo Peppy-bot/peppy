@@ -267,22 +267,20 @@ fn parse_value(value: &str) -> AnyType {
 }
 
 /// `--bind KEY@VALUE` entries as a map of `KEY` (a declared slot link_id)
-/// to producer targets. Repeating a `KEY` accumulates producers on the
-/// slot (the CLI form of the launcher's array binding); repeating the
-/// exact same `KEY@VALUE` pair is a typo and rejected.
-fn binds_to_map(
-    binds: &[(String, String)],
-    instance_id: &str,
-) -> Result<BTreeMap<String, Vec<String>>> {
-    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// to its one producer target. A slot binds exactly one producer, so a
+/// repeated `KEY` is a hard error (mirroring [`pairs_to_map`]): a
+/// consumer that needs several producers declares one slot per producer
+/// in its node manifest and binds each slot separately.
+fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
     for (key, value) in binds {
-        let targets = map.entry(key.clone()).or_default();
-        if targets.contains(value) {
+        if map.insert(key.clone(), value.clone()).is_some() {
             return Err(Error::ExecutionFailed(format!(
-                "duplicate binding `{key}@{value}` on instance `{instance_id}` (each --bind KEY@VALUE must be distinct)"
+                "duplicate binding key `{key}` on instance `{instance_id}` — a slot binds \
+                 exactly one producer (each --bind KEY must be distinct; a consumer that needs \
+                 several producers declares one slot per producer in its node manifest)"
             )));
         }
-        targets.push(value.clone());
     }
     Ok(map)
 }
@@ -336,7 +334,7 @@ async fn validate_binds_against_stack(
     target_name: &str,
     target_tag: &str,
     target_instance_id: &str,
-    binds: &BTreeMap<String, Vec<String>>,
+    binds: &BTreeMap<String, String>,
     pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
 ) -> Result<Option<config::runtime::SlotBindings>> {
@@ -920,32 +918,38 @@ mod tests {
         );
     }
 
-    /// Repeated `--bind KEY@…` entries accumulate producers on the slot
-    /// (the CLI form of the launcher's array binding); repeating the exact
-    /// same pair is rejected. `--pair` keys stay strictly unique.
+    /// A repeated `--bind KEY` is a hard error — a slot binds exactly one
+    /// producer, whether the targets differ or not — mirroring `--pair`
+    /// key uniqueness. Distinct keys still collect into one map.
     #[test]
-    fn repeated_bind_keys_accumulate_and_duplicate_pairs_are_rejected() {
-        let entries = vec![
+    fn repeated_bind_keys_are_rejected_and_duplicate_pairs_are_rejected() {
+        let distinct = vec![
             ("arm".to_string(), "arm_1".to_string()),
-            ("arm".to_string(), "arm_2".to_string()),
+            ("grip".to_string(), "grip_1".to_string()),
         ];
-        let map = binds_to_map(&entries, "ctrl_1").expect("repeated keys should accumulate");
-        assert_eq!(
-            map.get("arm").map(Vec::as_slice),
-            Some(["arm_1".to_string(), "arm_2".to_string()].as_slice())
-        );
+        let map = binds_to_map(&distinct, "ctrl_1").expect("distinct keys should collect");
+        assert_eq!(map.get("arm").map(String::as_str), Some("arm_1"));
+        assert_eq!(map.get("grip").map(String::as_str), Some("grip_1"));
 
-        let exact_duplicate = vec![
-            ("arm".to_string(), "arm_1".to_string()),
-            ("arm".to_string(), "arm_1".to_string()),
-        ];
-        let err =
-            binds_to_map(&exact_duplicate, "ctrl_1").expect_err("exact duplicate pair rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("duplicate binding `arm@arm_1`") && msg.contains("--bind"),
-            "unexpected error: {msg}"
-        );
+        for repeated in [
+            // Different targets on one slot: the retired fan-in form.
+            vec![
+                ("arm".to_string(), "arm_1".to_string()),
+                ("arm".to_string(), "arm_2".to_string()),
+            ],
+            // Exact duplicate pair.
+            vec![
+                ("arm".to_string(), "arm_1".to_string()),
+                ("arm".to_string(), "arm_1".to_string()),
+            ],
+        ] {
+            let err = binds_to_map(&repeated, "ctrl_1").expect_err("repeated key rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("duplicate binding key `arm`") && msg.contains("exactly one producer"),
+                "unexpected error: {msg}"
+            );
+        }
 
         let pair_entries = vec![
             ("arm".to_string(), PairTarget::new("arm_1")),

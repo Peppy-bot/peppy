@@ -369,7 +369,7 @@ fn emit_topic_with_dynamic_object_array() {
 /// slots and can never receive from a same-instance_id producer on
 /// another core node.
 #[test]
-fn consumed_topic_with_link_id_splices_runtime_consumer_filter() {
+fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -384,7 +384,7 @@ fn consumed_topic_with_link_id_splices_runtime_consumer_filter() {
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(&rendered, &[".consumer_filter(\"cam_left\")"]);
+    assert_contains_all(&rendered, &[".bound_producer(\"cam_left\")"]);
     assert_rendered!(
         !rendered.contains("ConsumerFilter::Any"),
         rendered,
@@ -467,7 +467,7 @@ fn consumed_topic() {
         &[
             "let node_name = \"uvc_camera\";",
             "peppylib::TopicMessenger::subscribe(",
-            ".consumer_filter(\"uvc_camera\")",
+            ".bound_producer(\"uvc_camera\")",
         ],
     );
 

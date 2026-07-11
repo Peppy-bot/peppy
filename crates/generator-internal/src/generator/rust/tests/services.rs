@@ -270,9 +270,9 @@ fn consumed_service() {
     // Request struct
     assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
-    // Poll function signature. The slot's single bound producer is
-    // resolved into `pinned_producer` (erroring when the slot is not
-    // bound to exactly one) and spliced at the single target slot; the
+    // Poll function signature. The slot's one bound producer is spliced
+    // inline at the single target slot (an infallible lookup: launch and
+    // startup guarantee exactly one producer per declared slot); the
     // user-facing `target_instance_id` parameter is gone.
     // `target_core_node` is never exposed in the generated API.
     assert_contains_all(
@@ -294,9 +294,9 @@ fn consumed_service() {
         &rendered,
         &[
             "root.set_enable(enable);",
-            ".require_pinned_producer(\"uvc_camera\")",
+            ".bound_producer(\"uvc_camera\")",
             "peppylib::ServiceMessenger::poll(",
-            "peppylib::messaging::ServiceTarget::Producer(pinned_producer),",
+            "peppylib::messaging::ServiceTarget::Producer(",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );

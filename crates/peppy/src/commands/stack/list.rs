@@ -367,18 +367,11 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
         .collect()
 }
 
-/// Right-hand side of a `link_id -> …` binding line: the producers the
+/// Right-hand side of a `link_id -> …` binding line: the one producer the
 /// slot is bound to, rendered as `instance_id@core_node` (the full wire
-/// address every binding carries), comma-separated for multi-producer
-/// slots. Never empty — every declared slot is bound to at least one
-/// producer, so the line never trails as `link_id -> `.
-fn format_slot_binding(producers: &config::runtime::BoundProducers) -> String {
-    producers
-        .as_slice()
-        .iter()
-        .map(|producer| format!("{}@{}", producer.instance_id, producer.core_node))
-        .collect::<Vec<_>>()
-        .join(", ")
+/// address every binding carries).
+fn format_slot_binding(producer: &config::runtime::ProducerRef) -> String {
+    format!("{}@{}", producer.instance_id, producer.core_node)
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -499,8 +492,8 @@ mod tests {
         }
     }
 
-    /// `(instance_id, state, [(slot, binding)])` rows fed to [`binding_node`].
-    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, Vec<ProducerRef>)>);
+    /// `(instance_id, state, [(slot, producer)])` rows fed to [`binding_node`].
+    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, ProducerRef)>);
 
     /// Like [`node`] but lets each instance carry slot bindings, for
     /// exercising the bindings table. Always `Ready`/`v1`.
@@ -519,13 +512,7 @@ mod tests {
                     healthy: true,
                     slot_bindings: binds
                         .into_iter()
-                        .map(|(slot, binding)| {
-                            (
-                                slot.to_string(),
-                                config::runtime::BoundProducers::new(binding)
-                                    .expect("test bindings are non-empty"),
-                            )
-                        })
+                        .map(|(slot, producer)| (slot.to_string(), producer))
                         .collect(),
                     pairing_slots: std::collections::BTreeMap::new(),
                 })
@@ -740,7 +727,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
+                vec![("arm", ProducerRef::new("core_a", "arm-1"))],
             )],
         )];
         let out = format_stack_list(&nodes, &[], false);
@@ -770,8 +757,8 @@ mod tests {
                     "br-1",
                     InstanceState::Running,
                     vec![
-                        ("camera", vec![ProducerRef::new("core_a", "cam-1")]),
-                        ("controller", vec![ProducerRef::new("core_a", "ctl-1")]),
+                        ("camera", ProducerRef::new("core_a", "cam-1")),
+                        ("controller", ProducerRef::new("core_a", "ctl-1")),
                     ],
                 )],
             ),
@@ -855,8 +842,8 @@ mod tests {
                 // Inserted out of sorted order so the assertion below fails if
                 // the BTreeMap link-id sort is ever dropped.
                 vec![
-                    ("clock", vec![ProducerRef::new("core_a", "clk-1")]),
-                    ("backbone", vec![ProducerRef::new("core_a", "bb-1")]),
+                    ("clock", ProducerRef::new("core_a", "clk-1")),
+                    ("backbone", ProducerRef::new("core_a", "bb-1")),
                 ],
             )],
         )];
@@ -901,21 +888,15 @@ mod tests {
     }
 
     #[test]
-    fn bindings_table_renders_multi_producer_slots_sorted_by_link_id() {
+    fn bindings_table_renders_slots_sorted_by_link_id() {
         let nodes = vec![binding_node(
             "nav",
             vec![(
                 "nav-1",
                 InstanceState::Running,
                 vec![
-                    (
-                        "sensors",
-                        vec![
-                            ProducerRef::new("core_a", "cam-1"),
-                            ProducerRef::new("core_a", "cam-2"),
-                        ],
-                    ),
-                    ("extra", vec![ProducerRef::new("core_a", "lidar-1")]),
+                    ("sensors", ProducerRef::new("core_a", "cam-1")),
+                    ("extra", ProducerRef::new("core_a", "lidar-1")),
                 ],
             )],
         )];
@@ -923,11 +904,11 @@ mod tests {
         let section = bindings_section(&out);
 
         let sensors_at = section
-            .find("sensors → cam-1@core_a, cam-2@core_a")
-            .expect("multi-producer slots should be comma-joined");
+            .find("sensors → cam-1@core_a")
+            .expect("a slot should render its one producer's wire address");
         let extra_at = section
             .find("extra → lidar-1@core_a")
-            .expect("a single-producer slot should render its wire address");
+            .expect("a slot should render its one producer's wire address");
         // Sorted by link id regardless of insertion order: "extra" < "sensors".
         assert!(
             extra_at < sensors_at,
@@ -1044,7 +1025,7 @@ mod tests {
                     (
                         "alpha-1",
                         InstanceState::Running,
-                        vec![("dep", vec![ProducerRef::new("core_a", "beta-1")])],
+                        vec![("dep", ProducerRef::new("core_a", "beta-1"))],
                     ),
                     // Second instance, no bindings: stays inside alpha's group
                     // with no separator before it.
@@ -1098,7 +1079,7 @@ mod tests {
             vec![(
                 "实例-uno",
                 InstanceState::Running,
-                vec![("传感器", vec![ProducerRef::new("core_a", "相机-1")])],
+                vec![("传感器", ProducerRef::new("core_a", "相机-1"))],
             )],
         )];
         // A pairing row mixes the `⇌` separator with CJK link and peer ids,
@@ -1184,7 +1165,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
+                vec![("arm", ProducerRef::new("core_a", "arm-1"))],
             )],
         )];
         let from = node("brain", "v1", NodeStage::Ready, vec![]);

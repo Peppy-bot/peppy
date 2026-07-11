@@ -441,7 +441,7 @@ fn expose_two_actions() {
 
 /// A real manifest dep (link_id present) splices the runtime binding
 /// lookup as the single `target` argument of the generated `send_goal`:
-/// `node_runner.require_pinned_producer(<link_id>)` resolves at runtime to
+/// `node_runner.bound_producer(<link_id>)` resolves at runtime to
 /// the bound producer's full `(core_node, instance_id)` tuple, so a
 /// pinned slot addresses exactly one producer with no discovery probe.
 #[test]
@@ -473,8 +473,8 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
     assert_contains_all(
         &rendered,
         &[
-            "pinned_producer = node_runner.require_pinned_producer(\"left_arm\")",
-            "pinned_producer,",
+            "bound_producer = node_runner.bound_producer(\"left_arm\")",
+            "bound_producer,",
         ],
     );
 }
@@ -609,12 +609,12 @@ fn consumed_action() {
 
     // fire_goal @classmethod with typed signature, serialization, and
     // ActionHandle construction. The slot's single bound producer is
-    // resolved into `pinned_producer` (raising when the slot is not bound
+    // resolved into `bound_producer` (an infallible lookup: launch and
     // to exactly one) and spliced at the single target slot; the
     // user-facing `target_instance_id` parameter is gone.
     // `target_core_node` is never exposed in the generated API, and the
     // renamed `pinned_target_for` accessor must never be emitted (the
-    // runtime helper is `require_pinned_producer`).
+    // startup guarantee exactly one producer per declared slot).
     assert_contains_all(
         &rendered,
         &[
@@ -627,8 +627,8 @@ fn consumed_action() {
             ") -> Self:",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
-            "pinned_producer = node_runner.require_pinned_producer(\"brain\")",
-            "TARGET_ACTION_NAME,\n            pinned_producer,\n            user_goal_payload,",
+            "bound_producer = node_runner.bound_producer(\"brain\")",
+            "TARGET_ACTION_NAME,\n            bound_producer,\n            user_goal_payload,",
             "feedback_qos,",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
@@ -648,7 +648,7 @@ fn consumed_action() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is require_pinned_producer; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helper is bound_producer; got:\n{rendered}"
     );
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.

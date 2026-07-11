@@ -133,12 +133,11 @@ pub fn ensure_no_peer_collision(
 /// discriminator (either because the producer node `conforms_to` an
 /// interface or because the dependency itself is a contract document).
 ///
-/// `link_id` is the consumer manifest slot whose runtime bindings resolve
-/// this dependency's producers. In the harmonized wire model the consumer
+/// `link_id` is the consumer manifest slot whose runtime binding resolves
+/// this dependency's one producer. In the harmonized wire model the consumer
 /// never pins by `link_id` on the wire (producers always advertise the `_`
 /// sentinel); instead the generated call sites splice
-/// `processor().consumer_filter(<link_id>)` /
-/// `processor().require_pinned_producer(<link_id>)` lookups.
+/// `processor().bound_producer(<link_id>)` lookups.
 ///
 /// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node

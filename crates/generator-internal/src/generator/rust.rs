@@ -287,12 +287,12 @@ impl RustGenerator {
         // The `to_target` matches the producer's emission shape: address the
         // dependency as an Interface if it exposes the action via
         // `conforms_to`, otherwise as its native Node identity. The `target`
-        // (the producer's full `(core_node, instance_id)`) is resolved at
-        // runtime from the consumer's binding map; the slot must be bound
-        // to exactly one producer, addressed directly with no discovery.
+        // (the producer's full `(core_node, instance_id)`) is the slot's one
+        // bound producer, resolved at runtime from the consumer's binding
+        // map and addressed directly with no discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let pinned_producer_stmt =
-            crate::generator::rust::topics::consumed_pinned_producer_statement(dependency);
+        let bound_producer_expr =
+            crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -302,14 +302,13 @@ impl RustGenerator {
             ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
-                #pinned_producer_stmt
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
                     TARGET_ACTION_NAME,
-                    Some(pinned_producer),
+                    Some(#bound_producer_expr),
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1258,10 +1257,12 @@ impl LanguageGenerator for RustGenerator {
         // dependency exposes the service via `conforms_to`, address it as the
         // interface; otherwise as the dependency's node identity. The
         // `target` (the producer's full `(core_node, instance_id)`,
-        // resolved at runtime from the consumer's binding map) must be a
-        // slot bound to exactly one producer, addressed directly with no
+        // resolved at runtime from the consumer's binding map) is the
+        // slot's one bound producer, addressed directly with no
         // discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
+        let bound_producer_expr =
+            crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
@@ -1269,7 +1270,7 @@ impl LanguageGenerator for RustGenerator {
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
                 SERVICE_NAME,
-                peppylib::messaging::ServiceTarget::Producer(pinned_producer),
+                peppylib::messaging::ServiceTarget::Producer(#bound_producer_expr),
                 request_payload,
                 timeout,
             )
@@ -1358,13 +1359,10 @@ impl LanguageGenerator for RustGenerator {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }
 
-        let pinned_producer_stmt =
-            crate::generator::rust::topics::consumed_pinned_producer_statement(dependency);
         let function_token = quote! {
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
                 #request_payload_tokens
 
-                #pinned_producer_stmt
                 #poll_tokens
 
                 #response_tokens

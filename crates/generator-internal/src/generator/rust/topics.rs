@@ -468,7 +468,7 @@ pub fn build_consumed_topic_subscription(
     )?;
 
     let from_target_expr = consumed_to_target_expression(dependency);
-    let consumer_filter_expr = consumed_consumer_filter_expression(dependency);
+    let bound_producer_expr = consumed_bound_producer_expression(dependency);
 
     let subscription_tokens = build_subscription_struct(
         quote! {
@@ -510,7 +510,7 @@ pub fn build_consumed_topic_subscription(
                 node_runner.processor().bound_instance_id(),
                 #from_target_expr,
                 topic_name,
-                #consumer_filter_expr,
+                #bound_producer_expr,
                 qos,
             )
             .await
@@ -527,38 +527,21 @@ pub fn build_consumed_topic_subscription(
     })
 }
 
-/// Returns the `&ConsumerFilter` expression spliced into a generated
-/// [`peppylib::TopicMessenger::subscribe`] call at the consumer-filter slot:
-/// `Processor::consumer_filter(<manifest link_id>)`, the slot's bound
-/// producers. The validator pre-resolves the consumer's launcher / CLI
-/// binding map into per-slot producer lists — every declared slot bound
-/// to at least one producer (unbound slots are rejected at launch) — and
-/// the runtime processor caches them as
-/// [`peppylib::messaging::ConsumerFilter`]s at startup.
-pub fn consumed_consumer_filter_expression(
+/// Returns the `&ProducerRef` expression spliced into generated
+/// [`peppylib::TopicMessenger::subscribe`],
+/// [`peppylib::ServiceMessenger::poll`], and
+/// [`peppylib::ActionMessenger::send_goal`] calls at the producer slot:
+/// `Processor::bound_producer(<manifest link_id>)`, the slot's one bound
+/// producer. The validator pre-resolves the consumer's launcher / CLI
+/// binding map — every declared slot bound to exactly one producer
+/// (anything else is rejected at launch) — and the runtime processor
+/// caches the producers at startup, so the lookup is an infallible
+/// borrow shared by every interface kind.
+pub fn consumed_bound_producer_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let literal = Literal::string(&dependency.link_id);
-    quote!(node_runner.processor().consumer_filter(#literal))
-}
-
-/// Returns a statement-position splice that resolves the slot's single
-/// bound producer into a local `let pinned_producer` for a generated
-/// [`peppylib::ActionMessenger::send_goal`] /
-/// [`peppylib::ServiceMessenger::poll`] call. Service and action calls
-/// address exactly one producer; a slot bound to several producers
-/// fails with [`peppylib::PeppyError::ServiceSlotNotPinned`] instead of
-/// falling back to wildcard discovery (zero-producer slots cannot exist
-/// — launch rejects them).
-pub fn consumed_pinned_producer_statement(
-    dependency: &crate::generator::types::DependencyContext,
-) -> TokenStream {
-    let literal = Literal::string(&dependency.link_id);
-    quote! {
-        let pinned_producer = node_runner
-            .processor()
-            .require_pinned_producer(#literal)?;
-    }
+    quote!(node_runner.processor().bound_producer(#literal))
 }
 
 /// Returns the `SenderTarget` expression spliced into a generated

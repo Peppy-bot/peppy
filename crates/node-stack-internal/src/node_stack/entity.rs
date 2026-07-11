@@ -1408,10 +1408,7 @@ mod tests {
         let mut bindings = BTreeMap::new();
         bindings.insert(
             "arm".to_string(),
-            config::runtime::BoundProducers::new(vec![config::runtime::ProducerRef::new(
-                "core_a", "arm-1",
-            )])
-            .unwrap(),
+            config::runtime::ProducerRef::new("core_a", "arm-1"),
         );
         let bound = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),

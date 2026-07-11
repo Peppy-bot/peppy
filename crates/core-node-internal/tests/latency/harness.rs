@@ -623,7 +623,7 @@ pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64)
 const DRIVER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{ConsumerFilter, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicMessenger};
+use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicMessenger};
 use peppylib::types::Payload;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -756,15 +756,15 @@ fn main() -> Result<()> {
 
         // Persistent subscription to the responder's `pong` topic, declared up
         // front so pongs are buffered from the first ping. Parked in a slot the
-        // control handler takes out for the duration of a topic run.
+        // control handler takes out for the duration of a topic run. Pinned to
+        // the responder's full wire address, as every dep-slot subscription is.
         let pong_sub = TopicMessenger::subscribe(
             node_runner.messenger(),
             &core,
             &inst,
-            Some(SenderTarget::node(RESPONDER_NODE, TAG)?),
-            false,
+            SenderTarget::node(RESPONDER_NODE, TAG)?,
             "pong",
-            &ConsumerFilter::Any,
+            &ProducerRef::new(CORE, RESPONDER_INST),
             QoSProfile::Reliable,
         )
         .await?;
@@ -822,11 +822,12 @@ fn main() -> Result<()> {
 const RESPONDER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{ConsumerFilter, SenderTarget, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, TopicMessenger};
 
 const TAG: &str = "v1";
 const CORE: &str = "bench_core";
 const DRIVER_NODE: &str = "driver";
+const DRIVER_INST: &str = "driver_inst";
 const RESPONDER_NODE: &str = "responder";
 
 /// Make a panic in any spawned task fatal. Tokio swallows task panics, which
@@ -879,10 +880,9 @@ fn main() -> Result<()> {
                     runner.messenger(),
                     &core,
                     &inst,
-                    Some(SenderTarget::node(DRIVER_NODE, TAG).expect("driver target")),
-                    false,
+                    SenderTarget::node(DRIVER_NODE, TAG).expect("driver target"),
                     "ping",
-                    &ConsumerFilter::Any,
+                    &ProducerRef::new(CORE, DRIVER_INST),
                     QoSProfile::Reliable,
                 )
                 .await
@@ -918,10 +918,12 @@ import sys
 import traceback
 
 from peppygen import NodeBuilder
-from peppylib import QoSProfile, SenderTarget, ServiceMessenger, TopicMessenger
+from peppylib import ProducerRef, QoSProfile, SenderTarget, ServiceMessenger, TopicMessenger
 
 TAG = "v1"
+CORE = "bench_core"
 DRIVER_NODE = "driver"
+DRIVER_INST = "driver_inst"
 RESPONDER_NODE = "responder"
 
 
@@ -948,7 +950,7 @@ async def echo_topic(node_runner):
         inst,
         SenderTarget.node(DRIVER_NODE, TAG),
         "ping",
-        None,
+        ProducerRef(CORE, DRIVER_INST),
         QoSProfile.Reliable,
     )
     pong = await TopicMessenger.declare_publisher(

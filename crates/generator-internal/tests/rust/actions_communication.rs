@@ -37,7 +37,7 @@ const CONSUMED_ACTION_EXAMPLE: &str = r#"
 /// Consumer node config for the bimanual capstone: unlike
 /// [`STUB_NODE_CONFIG`], the manifest declares a pinned `depends_on`
 /// slot (`link_id: "brain"`), which is what makes the runtime processor
-/// resolve `slot_bindings["brain"]` into a `ConsumerFilter::Pin` that
+/// resolve `slot_bindings["brain"]` into the bound producer that
 /// the generated `fire_goal` splices as its target.
 const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -96,8 +96,8 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
             &consumed_action,
             &action_messages,
             // The manifest link_id rides into codegen so the generated
-            // fire_goal resolves `consumer_filter("brain").pinned_target()`
-            // at runtime instead of emitting a wildcard target.
+            // fire_goal resolves `bound_producer("brain")` at runtime
+            // instead of emitting a wildcard target.
             &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();

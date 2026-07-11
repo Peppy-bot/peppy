@@ -28,18 +28,17 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Emits the statement that resolves the slot's single bound producer
-/// into a local `pinned_producer` ahead of a consumed poll / send_goal
-/// call. Service and action calls address exactly one producer;
-/// `require_pinned_producer` raises (peppylib's `ServiceSlotNotPinned`,
-/// surfaced as `RuntimeError`) when the slot is bound to zero or several,
-/// instead of falling back to wildcard discovery.
-pub(crate) fn emit_pinned_producer_lookup(
+/// Emits the statement that resolves the slot's one bound producer into
+/// a local `bound_producer` ahead of a consumed subscribe / poll /
+/// send_goal call. Every declared slot is bound to exactly one producer
+/// (launch and node startup both reject anything else), so the lookup is
+/// infallible for generated link_ids and shared by every interface kind.
+pub(crate) fn emit_bound_producer_lookup(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
     builder.line(&format!(
-        "pinned_producer = node_runner.require_pinned_producer({:?})",
+        "bound_producer = node_runner.bound_producer({:?})",
         dependency.link_id
     ));
 }
@@ -319,7 +318,7 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    emit_pinned_producer_lookup(&mut builder, dependency);
+    emit_bound_producer_lookup(&mut builder, dependency);
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
@@ -336,7 +335,7 @@ pub fn build_consumed_service(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line("pinned_producer,");
+    builder.line("bound_producer,");
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

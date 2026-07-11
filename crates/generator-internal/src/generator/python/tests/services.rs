@@ -389,13 +389,13 @@ fn consumed_service() {
     );
 
     // Poll function signature with typed params and return type. The
-    // slot's single bound producer is resolved into `pinned_producer`
+    // slot's one bound producer is resolved into `bound_producer`
     // (raising when the slot is not bound to exactly one) and spliced at
     // the single target slot; the user-facing `target_instance_id`
     // parameter is gone. `target_core_node` is never exposed in the
     // user-facing generated API, and the renamed `pinned_target_for`
     // accessor must never be emitted (the runtime helper is
-    // `require_pinned_producer`).
+    // `bound_producer`).
     assert_contains_all(
         &rendered,
         &[
@@ -416,7 +416,7 @@ fn consumed_service() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is require_pinned_producer; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helper is bound_producer; got:\n{rendered}"
     );
 
     // Request serialization
@@ -427,9 +427,9 @@ fn consumed_service() {
     assert_contains_all(
         &rendered,
         &[
-            "pinned_producer = node_runner.require_pinned_producer(\"uvc_camera\")",
+            "bound_producer = node_runner.bound_producer(\"uvc_camera\")",
             "peppylib.ServiceMessenger.poll(",
-            "SERVICE_NAME,\n        pinned_producer,\n        request_payload,",
+            "SERVICE_NAME,\n        bound_producer,\n        request_payload,",
         ],
     );
 
