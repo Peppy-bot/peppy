@@ -64,7 +64,7 @@ pub fn collect_consumed_interfaces(
     let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
     // Memoized parsed contracts for `depends_on.contracts`
     // entries, keyed by `link_id` so two entries with the same
-    // `(name, tag)` but different sha256 pin cache and resolve
+    // `(name, tag)` but different sha256 pins are cached and resolved
     // separately. `resolve_contract_doc` handles SHA-pin matching and
     // on-disk drift detection per load.
     let mut iface_dep_contracts: HashMap<String, daemon_config::contract::PeppyContract> =

@@ -690,7 +690,9 @@ if __name__ == "__main__":
     );
 }
 
-/// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that responds that connects with the consumer
+/// Two instances expose the same service; the consumer's slot binding routes
+/// the request to the bound instance, and the other instance never runs its
+/// handler.
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]
@@ -1098,27 +1100,16 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let (winner_stdout, winner_stderr, loser_stdout, loser_stderr, winner_label, loser_label) = (
-        &exposer1_stdout,
-        &exposer1_stderr,
-        &exposer2_stdout,
-        &exposer2_stderr,
-        "exposer1",
-        "exposer2",
-    );
-
     assert!(
-        winner_stdout.contains(&expected_request_log),
-        "{} is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        winner_label,
-        winner_stdout,
-        winner_stderr
+        exposer1_stdout.contains(&expected_request_log),
+        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer1_stdout,
+        exposer1_stderr
     );
     assert!(
-        !loser_stdout.contains(&expected_request_log),
-        "{} must NOT process the enable_camera request: the slot is bound to the other exposer and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
-        loser_label,
-        loser_stdout,
-        loser_stderr
+        !exposer2_stdout.contains(&expected_request_log),
+        "exposer2 must NOT process the enable_camera request: the slot is bound to exposer1 and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
+        exposer2_stdout,
+        exposer2_stderr
     );
 }

@@ -816,12 +816,11 @@ fn no_user_facing_producer_identity_params() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // The fixture's `DependencyContext::native` defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the consumed call
-    // sites splice `None` at the single target slot and the user-facing
-    // `target_instance_id` parameter is gone. `target_core_node` is never
-    // exposed in the generated API, and the renamed `pinned_target_for`
-    // accessor must never be emitted (the runtime helpers are
+    // The fixtures supply real manifest link_ids, and every consumed call
+    // site resolves its target slot through `bound_producer(<link_id>)`.
+    // The generated API exposes no targeting parameters: `target_core_node`
+    // and `target_instance_id` must not appear, and a `pinned_target_for`
+    // accessor must never be emitted (the runtime helper is
     // `bound_producer`).
     assert!(
         !rendered.contains("target_core_node"),

@@ -273,7 +273,7 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 
 Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--pair` at instance start, not by a binding.)
 
-A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` names one target producer `instance_id` or an array of them. Each binding creates a private one-way channel from those producer instances to the consumer's slot. **Every declared slot must be bound**: a launch that leaves a slot without a binding is rejected before anything starts; there is no wildcard fallback and no unbound state.
+A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` names exactly one target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to the consumer's slot. **Every declared slot must be bound, to exactly one producer**: a launch that leaves a slot without a binding is rejected before anything starts; there is no wildcard fallback, no unbound state, and no fan-in. A consumer that reads several producers declares one slot per producer.
 
 In a launcher / stack config:
 
@@ -287,17 +287,10 @@ In a launcher / stack config:
 }
 ```
 
-To bind several producers to one slot, use the array form:
-
-```json5
-    bindings: { arm_states: ["left_arm_inst", "right_arm_inst"] },
-```
-
-or, when launching a single node during development (repeating `--bind` on the same slot accumulates producers):
+or, when launching a single node during development:
 
 ```sh
 peppy node run --bind uvc_camera@my-camera-instance .
-peppy node run --bind arm_states@left_arm_inst --bind arm_states@right_arm_inst .
 ```
 
 ### Per-message routing
@@ -306,7 +299,7 @@ For every message a producer publishes, each consumer instance applies one rule 
 
 ### Worked example: `openarm01_backbone`
 
-A consumer that wires two specific depth cameras to dedicated wrist slots and keeps a third slot for an optional extra camera:
+A consumer that wires two specific depth cameras to dedicated wrist slots:
 
 ```json5
 // openarm01_backbone/peppy.json5
@@ -318,7 +311,6 @@ A consumer that wires two specific depth cameras to dedicated wrist slots and ke
       contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-        { name: "depth_camera", tag: "v1", link_id: "extra_cam" },
       ],
     },
   },
@@ -335,25 +327,22 @@ And the launcher that binds it:
     { source: { name: "depth_camera:v1" }, instances: [
       { instance_id: "left_cam" },
       { instance_id: "right_cam" },
-      { instance_id: "ceiling_cam" },
     ]},
     { source: { name: "openarm01_backbone:v1" }, instances: [
       { instance_id: "backbone_inst_1", bindings: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
-        extra_cam: "ceiling_cam",
       }},
     ]},
   ],
 }
 ```
 
-Four contract statements follow from this manifest:
+Three contract statements follow from this manifest:
 
 1. A frame from `left_cam` arrives only on the `wrist_left_camera_video_stream` slot.
 2. A frame from `right_cam` arrives only on the `wrist_right_camera_video_stream` slot.
-3. A frame from `ceiling_cam` arrives only on the `extra_cam_video_stream` slot, because the binding names it.
-4. If the `extra_cam` binding line were removed, the launch would be rejected: every declared slot must be bound. A producer named by no binding is simply ignored — but a declared slot with no binding is an error, not a silent gap.
+3. If the `wrist_right_camera` binding line were removed, the launch would be rejected: every declared slot must be bound. A producer named by no binding is simply ignored, but a declared slot with no binding is an error, not a silent gap.
 
 ### Validator rules
 
@@ -361,9 +350,9 @@ The launcher validator runs these checks before the stack starts:
 
 1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared slot the bindings leave out fails the launch with one error per unfulfilled slot.
 2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `interfaces.conforms_to` must include the slot's `(name, tag)` (`BindingContractNotConformed` otherwise); see [Contract conformance](/advanced_guides/contract_conformance) for the conformance contract.
-3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced; a slot's producer list is given in one place (repeat `--bind KEY@…` on the CLI to accumulate, or use the array form in a launcher). A producer repeated within one slot's list is rejected as a typo.
+3. **One producer per slot.** Each `KEY` appears at most once per invocation; a repeated `--bind KEY@…` (or a duplicate `bindings:` key in a launcher) is rejected, because a slot binds exactly one producer.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
-5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a single-producer slot subscribes with both wire slots set, and multi-producer filters compare the full pair in-process. A producer on another core node that happens to share an `instance_id` can never feed a bound slot.
+5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot.
 
 ## Message format types
 

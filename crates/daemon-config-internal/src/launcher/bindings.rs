@@ -685,8 +685,7 @@ mod tests {
                 instance_id: "backbone_inst_1",
                 bindings: {
                     wrist_left_camera: "depth_cam_inst1",
-                    wrist_right_camera: "depth_cam_inst1",
-                    extra_cam: "depth_cam_inst1"
+                    wrist_right_camera: "depth_cam_inst1"
                 }
             }]"#,
         );
@@ -695,8 +694,7 @@ mod tests {
                 nodes: [],
                 contracts: [
                     { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
-                    { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-                    { name: "depth_camera", tag: "v1", link_id: "extra_cam" }
+                    { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" }
                 ]
             }"#,
         );
@@ -723,7 +721,7 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
-        for link_id in ["wrist_left_camera", "wrist_right_camera", "extra_cam"] {
+        for link_id in ["wrist_left_camera", "wrist_right_camera"] {
             assert_eq!(
                 slot_binding(&out, "backbone_inst_1", link_id),
                 Some(ProducerRef::new(TEST_CORE, "depth_cam_inst1"))
@@ -731,16 +729,16 @@ mod tests {
         }
     }
 
-    /// The same openarm backbone shape with `extra_cam` left out of the
-    /// bindings map is rejected by rule 5, naming the slot's contract.
+    /// The same openarm backbone shape with `wrist_right_camera` left out
+    /// of the bindings map is rejected by rule 5, naming the slot's
+    /// contract.
     #[test]
-    fn openarm_style_manifest_rejects_unbound_extra_cam() {
+    fn openarm_style_manifest_rejects_unbound_slot() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "backbone_inst_1",
                 bindings: {
-                    wrist_left_camera: "depth_cam_inst1",
-                    wrist_right_camera: "depth_cam_inst1"
+                    wrist_left_camera: "depth_cam_inst1"
                 }
             }]"#,
         );
@@ -749,8 +747,7 @@ mod tests {
                 nodes: [],
                 contracts: [
                     { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
-                    { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-                    { name: "depth_camera", tag: "v1", link_id: "extra_cam" }
+                    { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" }
                 ]
             }"#,
         );
@@ -782,7 +779,7 @@ mod tests {
             panic!("expected BindingSlotUnfulfilled, got {:?}", out.errors[0]);
         };
         assert_eq!(info.owner_instance_id, "backbone_inst_1");
-        assert_eq!(info.link_id, "extra_cam");
+        assert_eq!(info.link_id, "wrist_right_camera");
         assert_eq!(info.slot_kind, SlotKind::Contract);
         assert_eq!(info.slot_name, "depth_camera");
         assert_eq!(info.slot_tag, "v1");

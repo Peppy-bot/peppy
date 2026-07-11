@@ -29,10 +29,11 @@ pub(crate) fn sender_target_python_expr(
 }
 
 /// Emits the statement that resolves the slot's one bound producer into
-/// a local `bound_producer` ahead of a consumed subscribe / poll /
-/// send_goal call. Every declared slot is bound to exactly one producer
+/// a local `bound_producer` ahead of a consumed poll / send_goal call
+/// (consumed topics splice the same lookup inline as a subscribe
+/// argument). Every declared slot is bound to exactly one producer
 /// (launch and node startup both reject anything else), so the lookup is
-/// infallible for generated link_ids and shared by every interface kind.
+/// infallible for generated link_ids.
 pub(crate) fn emit_bound_producer_lookup(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,

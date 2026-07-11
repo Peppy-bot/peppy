@@ -151,7 +151,7 @@ pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str])
 /// Each `(dep, dep_run_args)` entry is added, built, and started under
 /// the deterministic instance id `<dep>_1` (with `dep_run_args` appended,
 /// e.g. required `key=value` parameters), so the main node's `--bind`
-/// lines (passed via `start_args`) can name it — every declared
+/// lines (passed via `start_args`) can name it: every declared
 /// `depends_on` slot must be bound, so consumer snippets launch against
 /// live producers.
 pub fn run_snippet_with_deps(

@@ -453,7 +453,7 @@ if __name__ == "__main__":
   </TabItem>
 </Tabs>
 
-`fire_goal` takes no call-site targeting argument: the slot's launcher binding decides which producer instance the goal addresses. An action slot must be bound to exactly one producer; firing a goal on a slot bound to zero or several producers fails with `ServiceSlotNotPinned`.
+`fire_goal` takes no call-site targeting argument: the slot's launcher binding decides which producer instance the goal addresses. Every slot is bound to exactly one producer (a launch that leaves a slot unbound or binds it twice is rejected at validation), so a fired goal always has a resolved target.
 
 `fire_goal` returns an `ActionHandle` whose `data` field holds the goal response (e.g. `data.accepted`). The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 
@@ -600,7 +600,7 @@ The cancel targets only this goal; other concurrent goals are unaffected. To lea
 
 Routing for actions uses the same consumer-side model as topics and services. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the client's declared slots; the action server itself is binding-agnostic.
 
-An action slot resolves through its binding: the generated `fire_goal` reads the slot's bound producer's full `(core_node, instance_id)` wire address, and the goal, cancel, result, and feedback channels all address that one producer. Because the whole goal cycle needs exactly one server, the slot must be bound to exactly one producer; a slot bound to several fails the call with `ServiceSlotNotPinned` naming the slot (a slot bound to none cannot exist — launch rejects it).
+An action slot resolves through its binding: the generated `fire_goal` reads the slot's bound producer's full `(core_node, instance_id)` wire address, and the goal, cancel, result, and feedback channels all address that one producer. Because the whole goal cycle needs exactly one server, each slot binds exactly one producer: the binding map's shape makes several producers per slot unrepresentable, and a slot with no binding is rejected at launch validation, before anything spawns.
 
 In a launcher / stack config:
 
@@ -622,7 +622,7 @@ peppy node run --bind brain@left-arm-1 .
 
 ### Worked example: `openarm01_backbone`
 
-A client that wires three depth cameras to three dedicated slots:
+A client that wires two depth cameras to two dedicated slots:
 
 ```json5
 // openarm01_backbone/peppy.json5
@@ -634,7 +634,6 @@ A client that wires three depth cameras to three dedicated slots:
       contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-        { name: "depth_camera", tag: "v1", link_id: "extra_cam" },
       ],
     },
   },
@@ -649,13 +648,11 @@ A client that wires three depth cameras to three dedicated slots:
     { source: { name: "depth_camera:v1" }, instances: [
       { instance_id: "left_cam" },
       { instance_id: "right_cam" },
-      { instance_id: "ceiling_cam" },
     ]},
     { source: { name: "openarm01_backbone:v1" }, instances: [
       { instance_id: "backbone_inst_1", bindings: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
-        extra_cam: "ceiling_cam",
       }},
     ]},
   ],
@@ -666,7 +663,7 @@ Three contract statements follow from this manifest:
 
 1. `wrist_left_camera_<action>::fire_goal(...)` reaches `left_cam`.
 2. `wrist_right_camera_<action>::fire_goal(...)` reaches `right_cam`.
-3. `extra_cam_<action>::fire_goal(...)` reaches `ceiling_cam`. If the `extra_cam` binding line were removed, that call would fail with `ServiceSlotNotPinned`: a goal cycle has no wildcard fallback.
+3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared slot must have a binding): a goal cycle has no wildcard fallback.
 
 ### Why exactly one producer?
 
@@ -676,7 +673,7 @@ Without a single bound producer, a goal request would be broadcast to every matc
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys and no unbound slots — a declared slot with no binding entry fails the launch before anything is spawned.
+1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys and no unbound slots: a declared slot with no binding entry fails the launch before anything is spawned.
 2. **Every target must satisfy the slot.** A binding whose target `instance_id` deploys a different node than the slot expects (or one that does not conform to the requested interface) is rejected.
 3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.

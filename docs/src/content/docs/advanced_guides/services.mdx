@@ -184,7 +184,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen::consumed_services`.
-Use `poll` to send a request and wait for a response. There is no call-site targeting argument: the slot's binding determines which producer handles the call. A service slot must be bound to exactly one producer; calling `poll` on a slot bound to zero or several producers fails with `ServiceSlotNotPinned`.
+Use `poll` to send a request and wait for a response. There is no call-site targeting argument: the slot's binding determines which producer handles the call. Every slot is bound to exactly one producer (a launch that leaves a slot unbound or binds it twice is rejected at validation), so by the time `poll` runs, the route is already resolved.
 
 ```rust
 use peppygen::consumed_services::uvc_camera_enable_camera;
@@ -234,7 +234,7 @@ println!("Camera: {} {}", response.data.card_type, response.data.size);
 
 Routing for services is the same consumer-side model used by topics. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the consumer's declared slots; the producer itself doesn't know or care about bindings.
 
-A service slot resolves through its binding: the generated `poll` reads the slot's bound producer and sends the wire request directly to it, carrying the producer's full `(core_node, instance_id)` wire address. No discovery is involved. Because a request/response call needs exactly one responder, the slot must be bound to exactly one producer; a slot bound to several fails the call with `ServiceSlotNotPinned` naming the slot (a slot bound to none cannot exist — launch rejects it).
+A service slot resolves through its binding: the generated `poll` reads the slot's bound producer and sends the wire request directly to it, carrying the producer's full `(core_node, instance_id)` wire address. No discovery is involved. Because a request/response call needs exactly one responder, each slot binds exactly one producer: the binding map's shape makes several producers per slot unrepresentable, and a slot with no binding is rejected at launch validation, before anything spawns.
 
 In a launcher / stack config:
 
@@ -256,7 +256,7 @@ peppy node run --bind uvc_camera@my-camera-instance .
 
 ### Worked example: `openarm01_backbone`
 
-A consumer that wires three depth cameras to three dedicated slots:
+A consumer that wires two depth cameras to two dedicated slots:
 
 ```json5
 // openarm01_backbone/peppy.json5
@@ -268,7 +268,6 @@ A consumer that wires three depth cameras to three dedicated slots:
       contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-        { name: "depth_camera", tag: "v1", link_id: "extra_cam" },
       ],
     },
   },
@@ -283,13 +282,11 @@ A consumer that wires three depth cameras to three dedicated slots:
     { source: { name: "depth_camera:v1" }, instances: [
       { instance_id: "left_cam" },
       { instance_id: "right_cam" },
-      { instance_id: "ceiling_cam" },
     ]},
     { source: { name: "openarm01_backbone:v1" }, instances: [
       { instance_id: "backbone_inst_1", bindings: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
-        extra_cam: "ceiling_cam",
       }},
     ]},
   ],
@@ -300,7 +297,7 @@ Three contract statements follow from this manifest:
 
 1. `wrist_left_camera_<service>::poll(...)` reaches `left_cam`.
 2. `wrist_right_camera_<service>::poll(...)` reaches `right_cam`.
-3. `extra_cam_<service>::poll(...)` reaches `ceiling_cam`. If the `extra_cam` binding line were removed, that call would fail with `ServiceSlotNotPinned`: a service call has no wildcard fallback.
+3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared slot must have a binding): a service call has no wildcard fallback.
 
 ### Why exactly one producer?
 
@@ -312,7 +309,7 @@ If the bound producer dies, the call surfaces `ServiceUnreachable` and the calle
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys and no unbound slots — a declared slot with no binding entry fails the launch before anything is spawned.
+1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys and no unbound slots: a declared slot with no binding entry fails the launch before anything is spawned.
 2. **Every target must satisfy the slot.** A binding whose target `instance_id` deploys a different node than the slot expects (or one that does not conform to the requested interface) is rejected.
 3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced (no two bindings on the same consumer may share the same `KEY`).
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.

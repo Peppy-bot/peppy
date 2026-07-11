@@ -656,7 +656,9 @@ fn main() -> Result<()> {
     );
 }
 
-/// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that respond that connects with the consumer
+/// Two instances expose the same service; the consumer's slot binding routes
+/// the request to the bound instance, and the other instance never runs its
+/// handler.
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]
@@ -956,18 +958,16 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    // Do NOT wait for health on the exposers here. Under discover-then-pin
-    // only the winning exposer's `handle_next_request` returns and lets
-    // `setup_fn` complete; the loser stays parked on its queryable, so
+    // Do NOT wait for health on the exposers here. The consumer's slot is
+    // bound to exposer1, so exposer2 never receives a request: its
+    // `handle_next_request` never returns, `setup_fn` never completes, and
     // `run_post_setup_services` (which registers the health endpoint) never
-    // runs there. Probing health on the loser would now panic with a
-    // wait-timeout (post-`DEFAULT_WAIT_TIMEOUT` addition) instead of
-    // hanging, but it's still the wrong question to ask. The pre-setup
-    // shutdown queryable is up on both exposers, so the `send_shutdown`
-    // calls below land cleanly. The consumer's health probe above already
-    // implies the response round-trip completed, which guarantees the
-    // winner printed `enable_camera handler finished` before we send
-    // shutdown.
+    // runs there — probing health on exposer2 would panic with a
+    // wait-timeout. The pre-setup shutdown queryable is up on both
+    // exposers, so the `send_shutdown` calls below land cleanly. The
+    // consumer's health probe above already implies the response
+    // round-trip completed, which guarantees exposer1 printed
+    // `enable_camera handler finished` before we send shutdown.
 
     send_shutdown(
         &messenger,
