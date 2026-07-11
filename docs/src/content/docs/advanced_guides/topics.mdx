@@ -5,6 +5,8 @@ sidebar:
   order: 1
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Topics implement a **publish-subscribe** communication pattern between nodes.
 A node *emits* a topic to publish messages, and other nodes *consume* that topic to receive them.
 
@@ -18,44 +20,88 @@ Topics also underpin two higher-level constructs: [contract conformance](/advanc
 A node that publishes messages declares its topics under `interfaces.topics.emits` in its `peppy.json5`.
 Each topic defines a `name`, a `qos_profile`, and a `message_format`:
 
-```json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "uvc_camera",
-    tag: "v1",
-  },
-  interfaces: {
-    topics: {
-      emits: [
-        {
-          name: "video_stream",
-          qos_profile: "sensor_data",
-          message_format: {
-            header: {
-              $type: "object",
-              stamp: "time",
-              frame_id: "u32"
-            },
-            encoding: "string",
-            width: "u32",
-            height: "u32",
-            frame: {
-              $type: "array",
-              $items: "u8"
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "uvc_camera",
+        tag: "v1",
+      },
+      interfaces: {
+        topics: {
+          emits: [
+            {
+              name: "video_stream",
+              qos_profile: "sensor_data",
+              message_format: {
+                header: {
+                  $type: "object",
+                  stamp: "time",
+                  frame_id: "u32"
+                },
+                encoding: "string",
+                width: "u32",
+                height: "u32",
+                frame: {
+                  $type: "array",
+                  $items: "u8"
+                }
+              }
             }
-          }
-        }
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/uvc_camera"]
-  },
-}
-```
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "uvc_camera"]
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "uvc_camera",
+        tag: "v1",
+      },
+      interfaces: {
+        topics: {
+          emits: [
+            {
+              name: "video_stream",
+              qos_profile: "sensor_data",
+              message_format: {
+                header: {
+                  $type: "object",
+                  stamp: "time",
+                  frame_id: "u32"
+                },
+                encoding: "string",
+                width: "u32",
+                height: "u32",
+                frame: {
+                  $type: "array",
+                  $items: "u8"
+                }
+              }
+            }
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/uvc_camera"]
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 The `qos_profile` controls delivery guarantees. Available profiles are:
 - **`sensor_data`**: optimised for high-frequency data where occasional drops are acceptable.
@@ -65,10 +111,51 @@ The `qos_profile` controls delivery guarantees. Available profiles are:
 
 ### Publishing messages
 
-After running `peppy node sync`, the code generator creates a module for each emitted topic under `peppygen::emitted_topics`.
+After running `peppy node sync`, the code generator creates a module for each emitted topic under `peppygen.emitted_topics` (Python) / `peppygen::emitted_topics` (Rust).
 Each module exposes `declare_publisher(node_runner)`, which returns a `TopicPublisher`, and `build_message(...)`, which serializes the message fields into a payload.
 Declare the publisher once, then publish each message on it:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+import asyncio
+import time
+
+from peppygen import NodeBuilder, NodeRunner
+from peppygen.parameters import Parameters
+from peppygen.emitted_topics import video_stream
+
+
+async def emit_frames(node_runner: NodeRunner):
+    # Declare the publisher once; every publish below then reuses it.
+    publisher = await video_stream.declare_publisher(node_runner)
+    frame_id = 0
+    while True:
+        payload = video_stream.build_message(
+            video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
+            "rgb8",
+            640,
+            480,
+            bytes([1, 2, 3]),
+        )
+        await publisher.publish(payload)
+        frame_id = (frame_id + 1) % (2**32)
+        await asyncio.sleep(0.1)
+
+
+async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(emit_frames(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::emitted_topics::video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
@@ -106,9 +193,11 @@ fn main() -> Result<()> {
     })
 }
 ```
+  </TabItem>
+</Tabs>
 
-`build_message` takes each field from the `message_format` in order (no `node_runner` argument) and returns the payload that `publisher.publish` sends.
-Nested objects become generated structs (e.g. `video_stream::MessageHeader`) whose fields match the object definition.
+`build_message` takes each field from the `message_format` in order (no `node_runner` argument) and returns the payload that `publisher.publish` sends; in Rust it returns a `Result` you unwrap, in Python it returns the payload directly and raises on invalid input.
+Nested objects become generated types whose fields match the object definition: a struct in Rust (`video_stream::MessageHeader`), a dataclass in Python (`video_stream.MessageHeader`).
 
 A producer publishes a **single stream** regardless of how many consumers are listening, and it never knows about the bindings consumers use to address it.
 Starting the producer before any consumer (or after them) is equally valid; consumers attach when they show up.
@@ -125,8 +214,19 @@ For a topic with a simple message format:
 }
 ```
 
-`build_message` takes a single `String` argument:
+`build_message` takes a single string argument:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.emitted_topics import message_stream
+
+publisher = await message_stream.declare_publisher(node_runner)
+payload = message_stream.build_message("hello world")
+await publisher.publish(payload)
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::emitted_topics::message_stream;
 
@@ -134,41 +234,78 @@ let publisher = message_stream::declare_publisher(&node_runner).await?;
 let payload = message_stream::build_message("hello world".to_owned())?;
 publisher.publish(payload).await?;
 ```
+  </TabItem>
+</Tabs>
 
 ## Consuming a topic
 
 A node that receives messages declares what it consumes under `interfaces.topics.consumes`.
 Dependencies are declared in `manifest.depends_on` and referenced by `link_id` in the interface:
 
-```json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "web_video_stream",
-    tag: "v1",
-    depends_on: {
-      nodes: [
-        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
-      ]
-    },
-  },
-  interfaces: {
-    topics: {
-      consumes: [
-        {
-          link_id: "uvc_camera",  // References depends_on.nodes[].link_id
-          name: "video_stream",         // Topic name on that node
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "web_video_stream",
+        tag: "v1",
+        depends_on: {
+          nodes: [
+            { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
+          ]
         },
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/web_video_stream"]
-  },
-}
-```
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            {
+              link_id: "uvc_camera",  // References depends_on.nodes[].link_id
+              name: "video_stream",         // Topic name on that node
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "web_video_stream"]
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "web_video_stream",
+        tag: "v1",
+        depends_on: {
+          nodes: [
+            { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
+          ]
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            {
+              link_id: "uvc_camera",  // References depends_on.nodes[].link_id
+              name: "video_stream",         // Topic name on that node
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/web_video_stream"]
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 :::note
 By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated.
@@ -185,10 +322,45 @@ To depend on a contract instead of a specific producer node, so any conforming n
 
 ### Receiving messages
 
-The code generator creates a module for each consumed topic under `peppygen::consumed_topics`.
+The code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust).
 The module name is `<link_id>_<topic_name>` based on the `link_id` field; in this case `uvc_camera_video_stream`.
 Call `subscribe` once to obtain a held `Subscription`, then await `next` for each message:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+import asyncio
+
+from peppygen import NodeBuilder, NodeRunner
+from peppygen.parameters import Parameters
+from peppygen.consumed_topics import uvc_camera_video_stream
+
+
+async def receive_one_frame(node_runner: NodeRunner):
+    subscription = await uvc_camera_video_stream.subscribe(node_runner)
+
+    received = await subscription.next()
+    if received is not None:
+        producer, frame = received
+        print(
+            f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} "
+            f"from {producer.core_node}/{producer.instance_id}"
+        )
+
+
+async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(receive_one_frame(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::consumed_topics::uvc_camera_video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
@@ -208,14 +380,16 @@ fn main() -> Result<()> {
     })
 }
 ```
+  </TabItem>
+</Tabs>
 
 `subscribe` takes:
 - `node_runner`: the node runner reference.
 
 and returns a `Subscription`. Awaiting `subscription.next()` yields:
-- `Ok(Some((producer, message)))` for each message, where `producer` is a `peppylib::messaging::ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity (read straight from the message context), and `message` is the deserialized message, with fields matching the topic's `message_format`.
-- `Ok(None)` once the subscription has closed.
-- `Err(..)` if a received payload fails to deserialize.
+- a `(producer, message)` pair for each message (`Ok(Some((producer, message)))` in Rust), where `producer` is a `ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity (read straight from the message context), and `message` is the deserialized message, with fields matching the topic's `message_format`.
+- `None` (`Ok(None)` in Rust) once the subscription has closed.
+- an error if a received payload fails to deserialize: `Err(..)` in Rust, a raised exception in Python.
 
 The subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations.
 
@@ -228,6 +402,49 @@ The held subscription keeps every message in arrival order, so the loop never
 misses a message published between iterations.
 Each message is processed in a separate task so that the receive loop is not blocked:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+import asyncio
+import sys
+
+from peppygen import NodeBuilder, NodeRunner
+from peppygen.parameters import Parameters
+from peppygen.consumed_topics import uvc_camera_video_stream
+
+
+async def process_frame(producer, frame):
+    print(
+        f"got {frame.width}x{frame.height} frame "
+        f"from {producer.core_node}/{producer.instance_id}"
+    )
+
+
+async def receive_frames(node_runner: NodeRunner):
+    try:
+        subscription = await uvc_camera_video_stream.subscribe(node_runner)
+    except Exception as e:
+        print(f"Failed to subscribe: {e}", file=sys.stderr)
+        return
+
+    # The subscription is an async iterator; the loop ends when it closes.
+    async for producer, frame in subscription:
+        asyncio.create_task(process_frame(producer, frame))
+
+
+async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(receive_frames(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use std::sync::Arc;
 use peppygen::consumed_topics::uvc_camera_video_stream;
@@ -268,6 +485,10 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
     }
 }
 ```
+  </TabItem>
+</Tabs>
+
+In Python the `Subscription` is also an async iterator: `async for producer, message in subscription` is equivalent to looping on `next` and stops cleanly once the subscription closes.
 
 ## Bindings and routing
 
@@ -358,26 +579,26 @@ The launcher validator runs these checks before the stack starts:
 
 The `message_format` supports the following field types:
 
-| Type       | Rust type              |
-|------------|------------------------|
-| `"bool"`   | `bool`                 |
-| `"u8"`     | `u8`                   |
-| `"u16"`    | `u16`                  |
-| `"u32"`    | `u32`                  |
-| `"u64"`    | `u64`                  |
-| `"i8"`     | `i8`                   |
-| `"i16"`    | `i16`                  |
-| `"i32"`    | `i32`                  |
-| `"i64"`    | `i64`                  |
-| `"f32"`    | `f32`                  |
-| `"f64"`    | `f64`                  |
-| `"string"` | `String`               |
-| `"bytes"`  | `Vec<u8>`              |
-| `"time"`   | `std::time::SystemTime`|
+| Type       | Rust type              | Python type                      |
+|------------|------------------------|----------------------------------|
+| `"bool"`   | `bool`                 | `bool`                           |
+| `"u8"`     | `u8`                   | `int`                            |
+| `"u16"`    | `u16`                  | `int`                            |
+| `"u32"`    | `u32`                  | `int`                            |
+| `"u64"`    | `u64`                  | `int`                            |
+| `"i8"`     | `i8`                   | `int`                            |
+| `"i16"`    | `i16`                  | `int`                            |
+| `"i32"`    | `i32`                  | `int`                            |
+| `"i64"`    | `i64`                  | `int`                            |
+| `"f32"`    | `f32`                  | `float`                          |
+| `"f64"`    | `f64`                  | `float`                          |
+| `"string"` | `String`               | `str`                            |
+| `"bytes"`  | `Vec<u8>`              | `bytes`                          |
+| `"time"`   | `std::time::SystemTime`| `float` (Unix epoch seconds)     |
 
 Fields can also use complex types:
 
-- **Object**: a nested struct:
+- **Object**: a nested struct in Rust, a generated dataclass in Python:
   ```json5
   header: {
     $type: "object",
@@ -385,14 +606,14 @@ Fields can also use complex types:
     frame_id: "u32"
   }
   ```
-- **Array**: a variable-length list:
+- **Array**: a variable-length list (`Vec<T>` in Rust, `list[T]` in Python; an array of `u8` maps to `Vec<u8>` / `bytes`):
   ```json5
   frame: {
     $type: "array",
     $items: "u8"
   }
   ```
-- **Fixed-length array**: an array with a known size:
+- **Fixed-length array**: an array with a known size (`[T; N]` in Rust, a `list[T]` that must hold exactly `N` items in Python):
   ```json5
   position: {
     $type: "array",
@@ -400,7 +621,7 @@ Fields can also use complex types:
     $length: 3
   }
   ```
-- **Optional**: a field that may be absent:
+- **Optional**: a field that may be absent (`Option<T>` in Rust, `T | None` in Python):
   ```json5
   error_msg: {
     $type: "string",

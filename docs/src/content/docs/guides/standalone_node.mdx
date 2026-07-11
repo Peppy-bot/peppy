@@ -87,7 +87,14 @@ Now if you try to run the node:
 These parameters are usually provided during `peppy node run`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
 We can define our parameters in a `params.json` file at the root of the project:
 
-<Code code={standaloneRustParams} lang="json" title="params.json" />
+<Tabs>
+  <TabItem label="Python">
+    <Code code={standalonePythonParams} lang="json" title="params.json" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={standaloneRustParams} lang="json" title="params.json" />
+  </TabItem>
+</Tabs>
 
 Then modify the source file to read from this file:
 

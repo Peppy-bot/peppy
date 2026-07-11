@@ -24,7 +24,7 @@ The store also records, for each key, the `instance_id` of the node that last wr
 
 They are available from Rust as `peppylib::datastore::{store, get, list, remove, StoredValue, DatastoreEntry, Encoding}`, and from Python as `from peppylib.datastore import store, get, list, remove, StoredValue, DatastoreEntry, Encoding`. Like the other core node helpers, they are not re-exported by `peppygen`; import them from `peppylib::datastore` directly.
 
-Each takes a `NodeRunner`, the same handle your node receives from `NodeBuilder::new().run(...)` (see the [services guide](/advanced_guides/services/) for a typical setup), and talks to the node's bound core node.
+Each takes a `NodeRunner`, the same handle your node receives from `NodeBuilder().run(...)` in Python / `NodeBuilder::new().run(...)` in Rust (see the [services guide](/advanced_guides/services/) for a typical setup), and talks to the node's bound core node.
 
 ## When to use this
 
@@ -255,5 +255,5 @@ The second argument is the same response timeout as above.
 - **Keys are arbitrary strings.** A key rides inside the request payload, not as a Zenoh keyexpr, so any character is allowed: slashes, spaces, `*`, `{}`, anything. `"robot/state**{1}"` is a perfectly valid key.
 - **Store is an upsert; last writer wins.** A later store under an existing key overwrites the value, the encoding, and the recorded writer. The store records the storing node's `instance_id` on every write and surfaces it as `last_modified_by` on `get` and `list`. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race; design keys so a single writer owns each one when that matters.
 - **`list` is a metadata snapshot.** It returns every key's `encoding` and `last_modified_by` but never the value bytes (fetch those with `get`), in unspecified order, reflecting the store at the moment it was answered.
-- **The encoding tag is yours to interpret.** The store treats it as an opaque label and returns it unchanged. Reach for the `Encoding` constants for the common tags and pass any string for the rest (the Zenoh-style MIME-like tags are a good default), then have readers branch on it when you store more than one value type. A tag read back from `StoredValue.encoding` compares equal to its `Encoding` member, so `stored.encoding == Encoding.APPLICATION_JSON` works.
+- **The encoding tag is yours to interpret.** The store treats it as an opaque label and returns it unchanged. Reach for the `Encoding` constants for the common tags and pass any string for the rest (the Zenoh-style MIME-like tags are a good default), then have readers branch on it when you store more than one value type. A tag read back from `StoredValue.encoding` compares equal to its `Encoding` member, so `stored.encoding == Encoding.APPLICATION_JSON` (Python) / `stored.encoding == Encoding::APPLICATION_JSON` (Rust) works.
 - **Default timeout is 10 seconds.** Pass an explicit timeout from a latency-sensitive path so a slow or unreachable core node does not stall your node.

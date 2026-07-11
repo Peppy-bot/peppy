@@ -42,66 +42,132 @@ Client                              Server
 A node that handles action goals declares its actions under `interfaces.actions.exposes` in its `peppy.json5`.
 Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`:
 
-```json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "brain",
-    tag: "v1",
-  },
-  interfaces: {
-    actions: {
-      exposes: [
-        {
-          name: "move_arm",
-          goal_service: {
-            request_message_format: {
-              arm_id: "u16",
-              desired_position: {
-                $type: "array",
-                $items: "i32",
-                $length: 3
-              }
-            },
-            response_message_format: {
-              accepted: "bool"
-            }
-          },
-          feedback_topic: {
-            qos_profile: "sensor_data",
-            message_format: {
-              new_position: {
-                $type: "array",
-                $items: "i32",
-                $length: 3
-              }
-            }
-          },
-          result_service: {
-            response_message_format: {
-              success: "bool",
-              error_msg: {
-                $type: "string",
-                $optional: true
+<Tabs>
+  <TabItem label="Rust">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "brain",
+        tag: "v1",
+      },
+      interfaces: {
+        actions: {
+          exposes: [
+            {
+              name: "move_arm",
+              goal_service: {
+                request_message_format: {
+                  arm_id: "u16",
+                  desired_position: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 3
+                  }
+                },
+                response_message_format: {
+                  accepted: "bool"
+                }
               },
-              final_position: {
-                $type: "array",
-                $items: "i32",
-                $length: 3
+              feedback_topic: {
+                qos_profile: "sensor_data",
+                message_format: {
+                  new_position: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 3
+                  }
+                }
+              },
+              result_service: {
+                response_message_format: {
+                  success: "bool",
+                  error_msg: {
+                    $type: "string",
+                    $optional: true
+                  },
+                  final_position: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 3
+                  }
+                }
               }
             }
-          }
-        }
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/brain"]
-  },
-}
-```
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/brain"]
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "brain",
+        tag: "v1",
+      },
+      interfaces: {
+        actions: {
+          exposes: [
+            {
+              name: "move_arm",
+              goal_service: {
+                request_message_format: {
+                  arm_id: "u16",
+                  desired_position: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 3
+                  }
+                },
+                response_message_format: {
+                  accepted: "bool"
+                }
+              },
+              feedback_topic: {
+                qos_profile: "sensor_data",
+                message_format: {
+                  new_position: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 3
+                  }
+                }
+              },
+              result_service: {
+                response_message_format: {
+                  success: "bool",
+                  error_msg: {
+                    $type: "string",
+                    $optional: true
+                  },
+                  final_position: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 3
+                  }
+                }
+              }
+            }
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "brain"]
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 Every payload on `goal_service` and `result_service` is optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, `result_service.request_message_format`, and `result_service.response_message_format` can be omitted (or set to `{}`) when the corresponding payload is empty. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only needs to signal completion can omit `request_message_format`.
 
@@ -353,35 +419,70 @@ Cancellation is **auto-acknowledged** by the framework: the client's `cancel_goa
 A node that sends goals declares what it consumes under `interfaces.actions.consumes`.
 Dependencies are declared in `manifest.depends_on` and referenced by `link_id` in the interface:
 
-```json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "controller",
-    tag: "v1",
-    depends_on: {
-      nodes: [
-        { name: "brain", tag: "v1", link_id: "brain" },
-      ]
-    },
-  },
-  interfaces: {
-    actions: {
-      consumes: [
-        {
-          link_id: "brain",  // References depends_on.nodes[].link_id
-          name: "move_arm",        // Action name on that node
+<Tabs>
+  <TabItem label="Rust">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "controller",
+        tag: "v1",
+        depends_on: {
+          nodes: [
+            { name: "brain", tag: "v1", link_id: "brain" },
+          ]
         },
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/controller"]
-  },
-}
-```
+      },
+      interfaces: {
+        actions: {
+          consumes: [
+            {
+              link_id: "brain",  // References depends_on.nodes[].link_id
+              name: "move_arm",        // Action name on that node
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/controller"]
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "controller",
+        tag: "v1",
+        depends_on: {
+          nodes: [
+            { name: "brain", tag: "v1", link_id: "brain" },
+          ]
+        },
+      },
+      interfaces: {
+        actions: {
+          consumes: [
+            {
+              link_id: "brain",  // References depends_on.nodes[].link_id
+              name: "move_arm",        // Action name on that node
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "controller"]
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 :::note
 By default, the `node add` and `node sync` commands require every dependency node to already be in the node stack so the proper interfaces can be generated. When a dependency node is not present in the stack, pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back to the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) for dependencies that aren't in the stack.
@@ -661,8 +762,8 @@ A client that wires two depth cameras to two dedicated slots:
 
 Three contract statements follow from this manifest:
 
-1. `wrist_left_camera_<action>::fire_goal(...)` reaches `left_cam`.
-2. `wrist_right_camera_<action>::fire_goal(...)` reaches `right_cam`.
+1. `fire_goal` on the `wrist_left_camera_<action>` module reaches `left_cam`.
+2. `fire_goal` on the `wrist_right_camera_<action>` module reaches `right_cam`.
 3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared slot must have a binding): a goal cycle has no wildcard fallback.
 
 ### Why exactly one producer?

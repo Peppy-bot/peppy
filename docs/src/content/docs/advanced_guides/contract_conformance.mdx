@@ -60,26 +60,52 @@ After `peppy repo refresh`, the contract is cached and addressable by `(name, ta
 
 A producer node declares conformance with an `interfaces.conforms_to` list. Each entry names a contract by `(name, tag)`. The producer does not re-declare the contract's topics, services, or actions; it inherits them by reference:
 
-```json5
-// realsense_d405/peppy.json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "realsense_d405",
-    tag: "v1",
-  },
-  interfaces: {
-    conforms_to: [
-      { name: "depth_camera", tag: "v1" },
-    ],
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/realsense_d405"],
-  },
-}
-```
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // realsense_d405/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "realsense_d405",
+        tag: "v1",
+      },
+      interfaces: {
+        conforms_to: [
+          { name: "depth_camera", tag: "v1" },
+        ],
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "realsense_d405"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // realsense_d405/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "realsense_d405",
+        tag: "v1",
+      },
+      interfaces: {
+        conforms_to: [
+          { name: "depth_camera", tag: "v1" },
+        ],
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/realsense_d405"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `conforms_to` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the contract directly would get.
 
@@ -89,36 +115,72 @@ A single node can conform to multiple contracts (e.g. `[{depth_camera, v1}, {uvc
 
 A consumer references a contract through `manifest.depends_on.contracts` rather than `depends_on.nodes`. Every contract dep carries a `link_id` (exactly like a node dep), but its `(name, tag)` names the contract instead of a concrete producer:
 
-```json5
-// video_reconstruction/peppy.json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "video_reconstruction",
-    tag: "v1",
-    depends_on: {
-      contracts: [
-        { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
-      ],
-    },
-  },
-  interfaces: {
-    topics: {
-      consumes: [
-        {
-          name: "video_stream",
-          link_id: "rear_camera",
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
+          ],
         },
-      ],
-    },
-  },
-  execution: {
-    language: "python",
-    build_cmd: ["uv", "sync"],
-    run_cmd: ["uv", "run", "video_reconstruction"],
-  },
-}
-```
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            {
+              name: "video_stream",
+              link_id: "rear_camera",
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            {
+              name: "video_stream",
+              link_id: "rear_camera",
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 The consumer never names a producer node. It names the contract, and the launcher does the matchmaking.
 
@@ -181,37 +243,74 @@ Each binding key names its slot's `link_id` directly, and every bound producer m
 
 A common case is several instances of the same conforming node (say, three `realsense_d405:v1` cameras plugged into the same robot). Each camera gets a slot of its own: the consumer declares one contract dep per camera and consumes each camera's topic through that slot's `link_id`:
 
-```json5
-// video_reconstruction/peppy.json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "video_reconstruction",
-    tag: "v1",
-    depends_on: {
-      contracts: [
-        { name: "depth_camera", tag: "v1", link_id: "front" },
-        { name: "depth_camera", tag: "v1", link_id: "back_left" },
-        { name: "depth_camera", tag: "v1", link_id: "back_right" },
-      ],
-    },
-  },
-  interfaces: {
-    topics: {
-      consumes: [
-        { name: "video_stream", link_id: "front" },
-        { name: "video_stream", link_id: "back_left" },
-        { name: "video_stream", link_id: "back_right" },
-      ],
-    },
-  },
-  execution: {
-    language: "python",
-    build_cmd: ["uv", "sync"],
-    run_cmd: ["uv", "run", "video_reconstruction"],
-  },
-}
-```
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "front" },
+            { name: "depth_camera", tag: "v1", link_id: "back_left" },
+            { name: "depth_camera", tag: "v1", link_id: "back_right" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            { name: "video_stream", link_id: "front" },
+            { name: "video_stream", link_id: "back_left" },
+            { name: "video_stream", link_id: "back_right" },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "front" },
+            { name: "depth_camera", tag: "v1", link_id: "back_left" },
+            { name: "depth_camera", tag: "v1", link_id: "back_right" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            { name: "video_stream", link_id: "front" },
+            { name: "video_stream", link_id: "back_left" },
+            { name: "video_stream", link_id: "back_right" },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 Then the launcher binds each slot to its producer instance:
 
@@ -433,61 +532,122 @@ Two service contracts, one provided by each node:
 
 `localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the contract it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
 
-```json5
-// localizer/peppy.json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "localizer",
-    tag: "v1",
-    depends_on: {
-      contracts: [
-        { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
-      ],
-    },
-  },
-  interfaces: {
-    conforms_to: [{ name: "pose_service", tag: "v1" }], // provides current_pose
-    services: {
-      consumes: [
-        { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/localizer"],
-  },
-}
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // localizer/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "localizer",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
+          ],
+        },
+      },
+      interfaces: {
+        conforms_to: [{ name: "pose_service", tag: "v1" }], // provides current_pose
+        services: {
+          consumes: [
+            { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "localizer"],
+      },
+    }
 
-// mapper/peppy.json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "mapper",
-    tag: "v1",
-    depends_on: {
-      contracts: [
-        { name: "pose_service", tag: "v1", link_id: "pose" },
-      ],
-    },
-  },
-  interfaces: {
-    conforms_to: [{ name: "obstacle_service", tag: "v1" }], // provides nearest_obstacle
-    services: {
-      consumes: [
-        { name: "current_pose", link_id: "pose" }, // calls localizer
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/mapper"],
-  },
-}
-```
+    // mapper/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "mapper",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "pose_service", tag: "v1", link_id: "pose" },
+          ],
+        },
+      },
+      interfaces: {
+        conforms_to: [{ name: "obstacle_service", tag: "v1" }], // provides nearest_obstacle
+        services: {
+          consumes: [
+            { name: "current_pose", link_id: "pose" }, // calls localizer
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "mapper"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // localizer/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "localizer",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
+          ],
+        },
+      },
+      interfaces: {
+        conforms_to: [{ name: "pose_service", tag: "v1" }], // provides current_pose
+        services: {
+          consumes: [
+            { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/localizer"],
+      },
+    }
+
+    // mapper/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "mapper",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "pose_service", tag: "v1", link_id: "pose" },
+          ],
+        },
+      },
+      interfaces: {
+        conforms_to: [{ name: "obstacle_service", tag: "v1" }], // provides nearest_obstacle
+        services: {
+          consumes: [
+            { name: "current_pose", link_id: "pose" }, // calls localizer
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/mapper"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 The two caller-driven edges close a cycle:
 

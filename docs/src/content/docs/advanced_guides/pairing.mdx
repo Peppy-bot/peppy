@@ -222,7 +222,7 @@ peppy node run --instance-id cmd_1 two_arm_commander:v1 \
   --pair left_arm@arm_l --pair right_arm@arm_r
 ```
 
-The generated code addresses each arm through its slot module (`pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands`), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
+The generated code addresses each arm through its slot module (`pairings.left_arm.joint_commands` vs `pairings.right_arm.joint_commands` in Python, `pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands` in Rust), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
 
 ## Why topics only?
 
