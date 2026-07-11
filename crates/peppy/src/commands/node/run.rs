@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(map.get("grip").map(String::as_str), Some("grip_1"));
 
         for repeated in [
-            // Different targets on one slot: the retired fan-in form.
+            // Different targets on one slot.
             vec![
                 ("arm".to_string(), "arm_1".to_string()),
                 ("arm".to_string(), "arm_2".to_string()),

@@ -459,8 +459,8 @@ mod tests {
         assert_eq!(info.declared_link_ids, "main");
     }
 
-    /// Rule 5: a declared slot with no binding entry is rejected — the
-    /// unbound state was removed together with `from_any`.
+    /// Rule 5: a declared slot with no binding entry is rejected — there
+    /// is no unbound state.
     #[test]
     fn unbound_slot_is_rejected() {
         let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);

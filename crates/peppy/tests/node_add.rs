@@ -1233,10 +1233,10 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
             git_ref: None,
             sync: false,
             build: true,
-            run: true, // chain run, the path that used to bypass validation
+            run: true, // chain run: binding validation must hold on this path too
             args: Vec::new(),
             instance_id: None,
-            // The bug: an invalid binding used to silently succeed here.
+            // A binding on an undeclared slot must be rejected.
             binds: vec![("stale_slot".to_string(), "ghost_producer".to_string())],
             idle_timeout: 60,
             max_timeout: 3600,

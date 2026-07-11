@@ -169,11 +169,11 @@ pub struct DeploymentInstance {
 /// `depends_on.{nodes,contracts}` and each value names exactly one
 /// producer `instance_id` defined elsewhere in the launcher. Keys are
 /// validated for non-emptiness and intra-collection duplicates via
-/// [`validate_named_items`]; targets must be non-empty. An array value —
-/// the retired multi-producer form — is rejected with an actionable
-/// message: a slot binds exactly one producer, and a consumer that needs
-/// several producers declares one slot per producer in its node
-/// manifest. The reserved producer-default sentinel
+/// [`validate_named_items`]; targets must be non-empty. An array value
+/// is rejected with an actionable message: a slot binds exactly one
+/// producer, and a consumer that needs several producers declares one
+/// slot per producer in its node manifest. The reserved producer-default
+/// sentinel
 /// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
 /// launcher cannot redundantly "bind" to the default. Each target's
 /// existence as an `instance_id` is checked later at the
@@ -186,9 +186,9 @@ where
     D: Deserializer<'de>,
 {
     /// One binding value: a single producer `instance_id` string. A
-    /// custom visitor (rather than plain `String::deserialize`) so the
-    /// retired array form fails with the one-producer-per-slot rule
-    /// instead of serde's generic "invalid type" message.
+    /// custom visitor (rather than plain `String::deserialize`) so an
+    /// array value fails with the one-producer-per-slot rule instead of
+    /// serde's generic "invalid type" message.
     struct BindingTarget(String);
 
     impl<'de> Deserialize<'de> for BindingTarget {
@@ -471,12 +471,11 @@ mod tests {
         );
     }
 
-    /// An array value — the retired multi-producer form — is a parse
-    /// error naming the slot and the one-producer-per-slot rule. A slot
-    /// binds exactly one producer; a consumer that needs several
-    /// producers declares one slot per producer in its node manifest.
-    /// Even a single-element or empty array is rejected: the shape
-    /// itself is retired.
+    /// An array value is a parse error naming the slot and the
+    /// one-producer-per-slot rule. A slot binds exactly one producer; a
+    /// consumer that needs several producers declares one slot per
+    /// producer in its node manifest. Even a single-element or empty
+    /// array is rejected: a binding value is a single producer string.
     #[test]
     fn bindings_reject_producer_arrays() {
         for producers in [
