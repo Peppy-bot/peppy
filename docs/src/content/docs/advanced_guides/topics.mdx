@@ -428,8 +428,13 @@ async def receive_frames(node_runner: NodeRunner):
         return
 
     # The subscription is an async iterator; the loop ends when it closes.
+    # Hold a reference to each task until it finishes, otherwise the event
+    # loop may garbage-collect it mid-flight.
+    tasks: set[asyncio.Task] = set()
     async for producer, frame in subscription:
-        asyncio.create_task(process_frame(producer, frame))
+        task = asyncio.create_task(process_frame(producer, frame))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
 
 async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:

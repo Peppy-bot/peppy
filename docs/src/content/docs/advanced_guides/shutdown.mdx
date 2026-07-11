@@ -90,9 +90,11 @@ Long-running work still belongs in spawned tasks that watch the token:
   </TabItem>
   <TabItem label="Rust">
     ```rust
-    tokio::select! {
-        _ = token.cancelled() => break, // stop working; cleanup happens in hooks
-        _ = interval.tick() => { /* do work */ }
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => break, // stop working; cleanup happens in hooks
+            _ = interval.tick() => { /* do work */ }
+        }
     }
     ```
   </TabItem>
