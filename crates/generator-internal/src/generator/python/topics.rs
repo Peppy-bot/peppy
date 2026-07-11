@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::{consumed_target_python_expr, sender_target_python_expr};
+use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
@@ -431,21 +431,13 @@ pub fn build_consumed_topic(
     );
     builder.line(&format!("{from_target},"));
     builder.line("topic_name,");
-    let from_producer = consumed_target_python_expr(dependency);
-    builder.line(&format!("{from_producer},"));
-    builder.line("peppylib.QoSProfile.Standard,");
-    // `is_from_any: true` for `from_any: true` slots gates the
-    // messenger's per-`(name, tag)` reservation. Pinned slots
-    // (and the test-fixture wildcard with no manifest dep) pass
-    // `false`.
-    let is_from_any = matches!(
-        dependency.link_id,
-        crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
-    );
+    // The slot's one bound producer — a declared slot with no binding
+    // fails node startup before any subscribe runs.
     builder.line(&format!(
-        "is_from_any={},",
-        if is_from_any { "True" } else { "False" }
+        "node_runner.bound_producer({:?}),",
+        dependency.link_id
     ));
+    builder.line("peppylib.QoSProfile.Standard,");
     builder.dedent();
     builder.line(")");
     builder.line("return Subscription(inner)");

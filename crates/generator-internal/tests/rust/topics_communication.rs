@@ -1,7 +1,8 @@
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
-    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
-    wait_for_child, wait_for_health_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
+    consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
+    send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
 use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -51,12 +52,15 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_proj2, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_proj2,
+            &consumer_stub_node_config(UVC_CAMERA_NODE_NAME, "v1", "uvc_camera"),
+        );
     generator
         .add_consumed_topic(
             &consumed_topic,
             subscribed_format,
-            &generator::DependencyContext::native("uvc_camera", "v1"),
+            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);
@@ -78,6 +82,12 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let receiver_runtime_config = bind_slot(
+        receiver_runtime_config,
+        "uvc_camera",
+        TEST_CORE_NODE,
+        EMITTER_INSTANCE_ID,
+    );
     let receiver_runtime_config = crate::helpers::apply_mode(receiver_runtime_config, mode);
     let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
     receiver_runtime_config

@@ -239,20 +239,20 @@ A pairing's two directions are two independent one-way streams: each side publis
 
 If two paired nodes also need a bounded request-response exchange, keep the continuous streams in the pairing and model the bounded job as an [action](/advanced_guides/actions) in one direction (the client depends on the server, no cycle).
 
-## Pairing vs. contracts (`from_any`)
+## Pairing vs. contracts
 
 Pairing and [contract conformance](/advanced_guides/contract_conformance) both decouple nodes from each other through a shared contract. They answer different questions:
 
-| | Pairing | Contract (`from_any`) |
+| | Pairing | Contract |
 |---|---|---|
-| Cardinality | Exactly 1:1 per slot, exclusive | Any number of conforming producers |
+| Cardinality | Exactly 1:1 per slot, exclusive | One conforming producer per slot; a consumer that wants several declares several slots |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |
-| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Implicit: any conforming producer that publishes is received |
+| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Explicit (`--bind` / `bindings:`), at instance start |
 | Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |
 | Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | Producers come and go freely |
-| Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry fan-in, monitoring, swappable many-to-one sources |
+| Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry, monitoring, swappable sources (one slot per producer) |
 
-Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **contracts** when any number of loosely-coupled producers should feed a consumer, like every arm on the floor publishing diagnostics to one observer. The two compose: `robot_arm` can be paired with its controller *and* conform to a one-way `joint_state_source` contract so dashboards can watch it.
+Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **contracts** when several loosely-coupled producers should feed a consumer, like every arm on the floor publishing diagnostics to one observer (one observer slot per arm). The two compose: `robot_arm` can be paired with its controller *and* conform to a one-way `joint_state_source` contract so dashboards can watch it.
 
 ## Pairing vs. actions
 

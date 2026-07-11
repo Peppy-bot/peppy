@@ -96,13 +96,13 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
             service: front_service,
             request_format: parse_fmt(FRONT_REQUEST_FORMAT),
             response_format: parse_fmt(FRONT_RESPONSE_FORMAT),
-            dependency: DependencyContext::native("uvc_camera", "v1"),
+            dependency: DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedService {
             service: rear_service,
             request_format: parse_fmt(REAR_REQUEST_FORMAT),
             response_format: parse_fmt(REAR_RESPONSE_FORMAT),
-            dependency: DependencyContext::native("rtsp_camera", "v1"),
+            dependency: DependencyContext::native("rtsp_camera", "v1", "rtsp_camera"),
         }),
     ];
 

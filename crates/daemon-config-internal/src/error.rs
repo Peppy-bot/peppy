@@ -82,22 +82,6 @@ impl core::fmt::Display for SlotKind {
     }
 }
 
-/// Payload for [`ParsingError::BindingMissingForPinnedDep`]. Boxed in the
-/// variant so the five `String` fields do not inflate `ParsingError` past
-/// the `clippy::result_large_err` threshold.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{owner_instance_id}`: slot `{link_id}` is unbound \
-     (expected {kind} `{expected_name}:{expected_tag}`)"
-)]
-pub struct BindingMissingForPinnedDep {
-    pub owner_instance_id: String,
-    pub link_id: String,
-    pub kind: SlotKind,
-    pub expected_name: String,
-    pub expected_tag: String,
-}
-
 /// Payload for [`ParsingError::BindingTargetMismatch`]. Kept as a separate
 /// struct (and boxed in the variant) so the seven `String` fields do not
 /// inflate `ParsingError` past the `clippy::result_large_err` threshold.
@@ -161,23 +145,39 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
-/// Payload for [`ParsingError::BindingDeadKey`]. Boxed for the same
-/// `result_large_err` reason as the other binding variants; the six
-/// `String` fields push the enum past the lint threshold otherwise.
+/// Payload for [`ParsingError::BindingUnknownSlot`]. A `bindings:` key (or
+/// `--bind KEY`) that names no declared `depends_on.{nodes,interfaces}`
+/// slot of the instance's node. Every binding key must be a declared slot
+/// link_id; there are no free-form keys.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "binding `{binding}` on instance `{owner_instance_id}` matches no \
-     declared slot, and no `from_any` slot accepts target \
-     `{target_instance_id}` (deploys `{producer_name}:{producer_tag}`); \
-     declared link_ids: [{declared_link_ids}]"
+    "binding `{binding}` on instance `{owner_instance_id}` names no \
+     declared slot; declared link_ids: [{declared_link_ids}]"
 )]
-pub struct BindingDeadKey {
+pub struct BindingUnknownSlot {
     pub owner_instance_id: String,
     pub binding: String,
-    pub target_instance_id: String,
-    pub producer_name: String,
-    pub producer_tag: String,
     pub declared_link_ids: String,
+}
+
+/// Payload for [`ParsingError::BindingSlotUnfulfilled`]. A declared
+/// `depends_on` slot with no binding entry. Every declared slot must be
+/// bound to exactly one producer; there is no unbound state and no
+/// wildcard fallback.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
+     `{slot_name}:{slot_tag}`) unfulfilled: every declared depends_on slot \
+     must be bound; add `bindings: {{ {link_id}: \"<producer_instance_id>\" }}` \
+     (or `--bind {link_id}@<producer_instance_id>`) or remove the dependency \
+     from the node manifest"
+)]
+pub struct BindingSlotUnfulfilled {
+    pub owner_instance_id: String,
+    pub link_id: String,
+    pub slot_kind: SlotKind,
+    pub slot_name: String,
+    pub slot_tag: String,
 }
 
 /// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
@@ -330,30 +330,27 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
-    /// `--bind KEY@VALUE` whose `KEY` neither matches a declared pinned
-    /// `link_id` nor a declared `from_any` slot for VALUE's `(name, tag)`.
-    /// Boxed for the same `result_large_err` reason as the other binding
-    /// variants.
+    /// A `--bind KEY@VALUE` / `bindings:` key that names no declared
+    /// `depends_on.{nodes,interfaces}` slot link_id.
     #[error(transparent)]
-    BindingDeadKey(Box<BindingDeadKey>),
+    BindingUnknownSlot(Box<BindingUnknownSlot>),
+    /// A declared `depends_on` slot with no binding entry. Every declared
+    /// slot must be bound to exactly one producer; there is no unbound
+    /// state and no wildcard fallback. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
+    #[error(transparent)]
+    BindingSlotUnfulfilled(Box<BindingSlotUnfulfilled>),
     /// Two `--bind KEY@…` entries on the same invocation share the same
-    /// `KEY`. Each `KEY` is the binding's label (pinned KEYs match a
-    /// declared link_id; `from_any` KEYs are free-form) and must be
-    /// distinct so the validator can resolve each to a slot
-    /// unambiguously.
+    /// `KEY`. Each `KEY` names a declared slot link_id and a slot binds
+    /// exactly one producer, given in one place, so a repeated `KEY`
+    /// would clobber.
     #[error(
-        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct)"
+        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct; a slot binds exactly one producer)"
     )]
     BindingDuplicateKey {
         owner_instance_id: String,
         binding: String,
     },
-    /// Boxed payload for the same reason as
-    /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
-    /// String-heavy struct from inflating `ParsingError`'s size past the
-    /// `clippy::result_large_err` threshold.
-    #[error(transparent)]
-    BindingMissingForPinnedDep(Box<BindingMissingForPinnedDep>),
     /// Boxed payload so this variant does not grow `ParsingError` past the
     /// `clippy::result_large_err` threshold; without the indirection, the
     /// seven `String` fields would inflate every `Result<_, _>` that
@@ -361,7 +358,7 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
-    /// Pinned `--bind` targets an interface slot but the producer doesn't
+    /// A `--bind` targets an interface slot but the producer doesn't
     /// declare conformance to the requested interface. Boxed for the same
     /// `result_large_err` reason as the other binding variants.
     #[error(transparent)]

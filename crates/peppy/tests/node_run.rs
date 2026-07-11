@@ -1139,17 +1139,16 @@ async fn install_node_services(
 
 // ─── --bind binding-driven-routing integration tests ───────────────────────
 
-/// Consumer manifest declares two pinned `link_id`s. Running the
-/// consumer without `--bind` for either of them is a hard error
-/// (rule 1: pinned-unbound rejection). The error names every missing
-/// link_id and the spawn must not happen.
+/// Consumer manifest declares two `link_id` slots. Running the consumer
+/// without `--bind` for either of them fails the preflight: every
+/// declared slot must be bound, and the error names each unfulfilled
+/// slot before any spawn side-effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_bind_rejects_pinned_unbound() {
+async fn node_run_rejects_unbound_slots() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
 
     let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_bind_reject_producer";
@@ -1179,10 +1178,6 @@ async fn node_run_bind_rejects_pinned_unbound() {
     )
     .await;
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _services =
-        install_node_services(&node_messenger, &core_node_name, consumer_name, instance_id).await;
-
     let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
@@ -1200,32 +1195,27 @@ async fn node_run_bind_rejects_pinned_unbound() {
     }
     .execute(&node_ctx);
 
-    let err = result.expect_err("node run must fail when pinned deps are unbound");
-    let err_msg = err.to_string();
+    let msg = result
+        .expect_err("node run must fail when declared slots are left unbound")
+        .to_string();
     assert!(
-        err_msg.contains("is unbound"),
-        "error should report each slot as unbound. Got: {err_msg}"
-    );
-    assert!(
-        err_msg.contains("wrist_left"),
-        "error should name missing link_id 'wrist_left'. Got: {err_msg}"
-    );
-    assert!(
-        err_msg.contains("wrist_right"),
-        "error should name missing link_id 'wrist_right'. Got: {err_msg}"
+        msg.contains("unfulfilled")
+            && msg.contains("leaves slot `wrist_left`")
+            && msg.contains("leaves slot `wrist_right`"),
+        "preflight should report one unfulfilled-slot error per declared slot. Got: {msg}"
     );
 
     let logs = log_capture.logs();
     assert!(
         !logs.contains("Started node instance"),
-        "run must NOT complete when a pinned dep is unbound. Logs:\n{logs}"
+        "a rejected run must not spawn anything. Logs:\n{logs}"
     );
 }
 
 /// `--bind` with a KEY that isn't declared in the consumer's
-/// `depends_on` is a hard error (dead-binding). The launcher's
-/// `validate_bindings` already raises it as `BindingDeadKey`; the CLI
-/// surfaces the message and aborts the run before any spawn side-effect.
+/// `depends_on` is a hard error. The launcher's `validate_bindings`
+/// raises it as `BindingUnknownSlot`; the CLI surfaces the message and
+/// aborts the run before any spawn side-effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_bind_rejects_dead_key() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1666,19 +1656,19 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     );
 }
 
-/// Rule 1 (`BindingMissingForPinnedDep`) fires for the new instance's
-/// missing pinned binds, scoped to that instance only. Inert items for
-/// already-running consumers participate in producer lookup and
-/// stack-wide `instance_id` uniqueness but never contribute slots to
-/// Rule 1.
+/// A new instance launched with no `--bind` fails on ITS OWN declared
+/// slot only: inert items for already-running consumers participate in
+/// producer lookup and stack-wide `instance_id` uniqueness without
+/// contributing slots of their own, so the unfulfilled-slot error names
+/// the new instance's slot and never the running consumer's.
 ///
 /// Setup: producer `cam` is built, plus consumer `cons_a` (running
-/// with both pins bound) and consumer `cons_b` (a second consumer
-/// with one pinned `link_id`). Launching `cons_b` with no `--bind`
-/// must be rejected with an error naming `cons_b`'s missing link_id
-/// only, never `cons_a`'s.
+/// with both slots bound) and consumer `cons_b` (a second consumer
+/// with one declared `link_id`). Launching `cons_b` with no `--bind`
+/// must fail naming `second_consumer_pin`, without dragging `cons_a`'s
+/// already-satisfied slots into the error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_clean() {
+async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1780,9 +1770,9 @@ async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_c
     .execute(&node_ctx)
     .expect("consumer_a run with both pins bound should succeed");
 
-    // cons_b has a pinned dep but we deliberately omit --bind. Rule 1
-    // must fire for cons_b's slot, NOT for cons_a's already-satisfied
-    // slots.
+    // cons_b has a declared slot but we deliberately omit --bind: the
+    // preflight must reject the run naming cons_b's own slot, and only
+    // that slot — cons_a's bound slots are inert items here.
     let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
@@ -1800,23 +1790,16 @@ async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_c
     }
     .execute(&node_ctx);
 
-    let err = result.expect_err("cons_b with no --bind must be rejected by Rule 1");
-    let msg = err.to_string();
+    let msg = result
+        .expect_err("cons_b with no --bind must fail its unfulfilled-slot preflight")
+        .to_string();
     assert!(
-        msg.contains("second_consumer_pin"),
-        "Rule 1 must still name cons_b's missing link_id. Got: {msg}"
-    );
-    assert!(
-        msg.contains(consumer_b_instance_id),
-        "Rule 1 error should name the new instance ('{consumer_b_instance_id}'). Got: {msg}"
+        msg.contains("leaves slot `second_consumer_pin`") && msg.contains(consumer_b_instance_id),
+        "error should name cons_b's own unfulfilled slot. Got: {msg}"
     );
     assert!(
         !msg.contains("wrist_left") && !msg.contains("wrist_right"),
-        "Rule 1 must NOT report cons_a's already-satisfied pins as unbound. Got: {msg}"
-    );
-    assert!(
-        !msg.contains(consumer_a_instance_id),
-        "Rule 1 error must not implicate cons_a's instance_id. Got: {msg}"
+        "inert running consumers must not be dragged into the new instance's error. Got: {msg}"
     );
 }
 
@@ -1824,8 +1807,8 @@ async fn node_run_still_rejects_pinned_unbound_on_new_instance_when_others_run_c
 /// splits the synthesized new instance into its own validator group:
 /// existing instances of the same node are inert under per-instance
 /// rules, and only the new instance's bindings are checked. A second
-/// instance launched with valid `--bind`s succeeds; one launched with
-/// missing `--bind`s fails naming only itself.
+/// instance launched with valid `--bind`s succeeds; one launched with a
+/// mismatched `--bind` target fails naming only itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_target_already_in_stack_validates_only_new_instance() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1954,10 +1937,11 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .execute(&node_ctx)
     .expect("second consumer instance must succeed when its own binds are valid");
 
-    // Third consumer instance with deliberately missing binds. The
-    // error must name only cons_inst_3, never cons_inst_1 or
-    // cons_inst_2 (whose binds were already validated at their own
-    // spawn time).
+    // Third consumer instance with a deliberately mismatched bind: the
+    // target deploys the consumer node, not the producer the slot
+    // expects. The error must name only cons_inst_3's binding, never
+    // cons_inst_1 or cons_inst_2 (whose binds were already validated at
+    // their own spawn time).
     let result = NodeCommand {
         command: NodeCommands::Run {
             node_ref: None,
@@ -1965,7 +1949,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_inst_3_bad.to_string()),
-            binds: Vec::new(),
+            binds: vec![("wrist_left".to_string(), consumer_inst_1.to_string())],
             pairs: Vec::new(),
             defer_pairs: Vec::new(),
             idle_timeout: 60,
@@ -1975,14 +1959,15 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     }
     .execute(&node_ctx);
 
-    let err = result.expect_err("third consumer instance with no --bind must be rejected");
+    let err =
+        result.expect_err("third consumer instance with a mismatched --bind must be rejected");
     let msg = err.to_string();
     assert!(
         msg.contains(consumer_inst_3_bad),
         "error should name the new instance ('{consumer_inst_3_bad}'). Got: {msg}"
     );
     assert!(
-        !msg.contains(consumer_inst_1) && !msg.contains(consumer_inst_2),
+        !msg.contains(consumer_inst_2),
         "error must not implicate the already-running consumer instances. Got: {msg}"
     );
 }

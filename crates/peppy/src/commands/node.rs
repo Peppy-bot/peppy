@@ -214,9 +214,10 @@ pub enum NodeCommands {
         #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
         /// Pin a `link_id` from this consumer's `depends_on` to a specific
-        /// producer `instance_id`: `KEY@VALUE`. Repeatable
+        /// producer `instance_id`: `KEY@VALUE`. Repeatable across slots
         /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`). Only valid alongside `--run`: without a
+        /// (`--bind a@p1,b@p2`); each KEY may appear once — a slot binds
+        /// exactly one producer. Only valid alongside `--run`: without a
         /// chained run there is no instance to apply the bindings to, so
         /// `requires = "run"` rejects the combination at parse time.
         /// Validation is shared with `peppy node run`; see
@@ -314,11 +315,12 @@ pub enum NodeCommands {
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
         /// Pin a `link_id` from this consumer's `depends_on` to a specific
-        /// producer `instance_id`: `KEY@VALUE`. Repeatable
+        /// producer `instance_id`: `KEY@VALUE`. Repeatable across slots
         /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`). KEY must be a `link_id` declared in this
+        /// (`--bind a@p1,b@p2`); each KEY may appear once — a slot binds
+        /// exactly one producer. KEY must be a `link_id` declared in this
         /// node's manifest; VALUE is the producer's `instance_id`
-        /// (see `peppy node list`). Missing bindings for pinned deps are
+        /// (see `peppy node list`). Missing bindings for declared deps are
         /// treated as validation errors and will abort the run.
         #[arg(
             long = "bind",

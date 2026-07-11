@@ -28,7 +28,12 @@ fn standalone_node() {
 // Combine both tests into one since they depend on each other and doing so avoids parallelism issues
 #[test]
 fn hello_world_param_and_hello_receiver() {
-    run_snippet_with_deps(SNIPPETS_ROOT, "hello_receiver", &[], &["hello_world_param"]);
+    run_snippet_with_deps(
+        SNIPPETS_ROOT,
+        "hello_receiver",
+        &["--bind", "hello_world_param@hello_world_param_1"],
+        &[("hello_world_param", &["name=planet"])],
+    );
 }
 
 // The paired duo from the "Pairing" guide. Each side declares one required

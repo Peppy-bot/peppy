@@ -1,6 +1,7 @@
 use crate::helpers::{
     CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
-    EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE,
+    EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE, bind_slot,
+    python_consumer_stub_node_config,
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
@@ -71,13 +72,16 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
     let consumed_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
+        );
     generator
         .add_consumed_service(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1"),
+            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -99,6 +103,12 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "uvc_camera",
+        TEST_CORE_NODE,
+        "the_exposer",
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -392,13 +402,16 @@ async fn services_communication_exposed_service_without_request_body(
     let consumed_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
+        );
     generator
         .add_consumed_service(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1"),
+            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -420,6 +433,12 @@ async fn services_communication_exposed_service_without_request_body(
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "uvc_camera",
+        TEST_CORE_NODE,
+        "the_exposer",
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -671,12 +690,14 @@ if __name__ == "__main__":
     );
 }
 
-/// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that responds that connects with the consumer
+/// Two instances expose the same service; the consumer's slot binding routes
+/// the request to the bound instance, and the other instance never runs its
+/// handler.
 #[rstest::rstest]
 #[case::peer(crate::helpers::Mode::Peer)]
 #[case::router(crate::helpers::Mode::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_multiple_exposed_instances_same_service_no_target_instance_id(
+async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_bound_one(
     #[case] mode: crate::helpers::Mode,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -694,13 +715,16 @@ async fn services_communication_multiple_exposed_instances_same_service_no_targe
     let consumed_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
+        );
     generator
         .add_consumed_service(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1"),
+            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -722,6 +746,13 @@ async fn services_communication_multiple_exposed_instances_same_service_no_targe
         TEST_CORE_NODE,
     )
     .unwrap();
+    // Bind the slot to exposer1: only the bound instance may serve the call.
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "uvc_camera",
+        TEST_CORE_NODE,
+        "exposer1_instance",
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -969,25 +1000,20 @@ if __name__ == "__main__":
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    // Do NOT wait for health on the exposers here. Under discover-then-pin
-    // only the winning exposer's `handle_next_request` returns and lets
-    // `setup` complete; the loser stays parked on its queryable, so
-    // `run_post_setup_services` (which registers the health endpoint) never
-    // runs there. Probing health on the loser would now panic with a
-    // wait-timeout (post-`DEFAULT_WAIT_TIMEOUT` addition) instead of
-    // hanging, but it's still the wrong question to ask. The pre-setup
-    // shutdown queryable is up on both exposers, so the `send_shutdown`
-    // calls below land cleanly. The `wait_for_stdout_contains` below
-    // guarantees the winner already produced the response that the
-    // consumer's poll observed.
+    // Do NOT wait for health on the exposers here. Only the bound
+    // exposer's `handle_next_request` returns and lets `setup` complete;
+    // the unbound one stays parked on its queryable, so
+    // `run_post_setup_services` (which registers the health endpoint)
+    // never runs there. Probing health on it would panic with a
+    // wait-timeout instead of hanging, but it's still the wrong question
+    // to ask. The pre-setup shutdown queryable is up on both exposers, so
+    // the `send_shutdown` calls below land cleanly. The
+    // `wait_for_stdout_contains` below guarantees the bound exposer
+    // already produced the response that the consumer's poll observed.
 
     // Consumer's poll runs as a background task created in `setup`. Wait
     // for the result line to appear in its stdout before sending shutdown,
     // otherwise the event loop can stop mid-poll and the print is lost.
-    // Either exposer can win the discover-then-pin race (probes are
-    // auto-handled before the user handler runs, so exposer2's in-handler
-    // sleep doesn't bias the probe response); the test asserts the loser
-    // didn't run its handler, regardless of which exposer won.
     let response_prefix = "enable_camera result: enabled=True error=handled";
     consumer.wait_for_stdout_contains(
         response_prefix,
@@ -1053,13 +1079,12 @@ if __name__ == "__main__":
     let exposer2_stdout = String::from_utf8_lossy(&exposer_output2.stdout).into_owned();
     let exposer2_stderr = String::from_utf8_lossy(&exposer_output2.stderr).into_owned();
 
-    // Under discover-then-pin, the consumer sends a lightweight probe and
-    // pins to whichever producer responds first; the real request is
-    // delivered only to that producer's handler. The loser must NOT run its
-    // handler; that's the load-bearing safety guarantee of the wildcard
-    // flow. Either exposer can win the probe race; identify the winner by
-    // the response marker the consumer printed (exposer1 emits
-    // `error=handled`, exposer2 emits `error=handled_by_exposer2`).
+    // The consumer's slot is bound to exposer1, so exposer1 must serve
+    // the request and exposer2 must NEVER run its handler; that's the
+    // load-bearing safety guarantee of explicit bindings (no discovery
+    // race, no wildcard fallback). Identify the responder by the response
+    // marker the consumer printed (exposer1 emits `error=handled`,
+    // exposer2 emits `error=handled_by_exposer2`).
     let expected_request_log = format!(
         "received enable_camera request for {}: True",
         consumer_instance_id
@@ -1069,45 +1094,22 @@ if __name__ == "__main__":
         .lines()
         .any(|line| line.trim_end() == "enable_camera result: enabled=True error=handled");
     assert!(
-        consumer_saw_exposer1 ^ consumer_saw_exposer2,
-        "consumer must have received exactly one response.\nstdout:\n{}\nstderr:\n{}",
+        consumer_saw_exposer1 && !consumer_saw_exposer2,
+        "consumer must have received its response from the bound exposer1 only.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
     );
 
-    let (winner_stdout, winner_stderr, loser_stdout, loser_stderr, winner_label, loser_label) =
-        if consumer_saw_exposer1 {
-            (
-                &exposer1_stdout,
-                &exposer1_stderr,
-                &exposer2_stdout,
-                &exposer2_stderr,
-                "exposer1",
-                "exposer2",
-            )
-        } else {
-            (
-                &exposer2_stdout,
-                &exposer2_stderr,
-                &exposer1_stdout,
-                &exposer1_stderr,
-                "exposer2",
-                "exposer1",
-            )
-        };
-
     assert!(
-        winner_stdout.contains(&expected_request_log),
-        "{} won the discover-then-pin race but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        winner_label,
-        winner_stdout,
-        winner_stderr
+        exposer1_stdout.contains(&expected_request_log),
+        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer1_stdout,
+        exposer1_stderr
     );
     assert!(
-        !loser_stdout.contains(&expected_request_log),
-        "{} must NOT process the enable_camera request: discover-then-pin pins the consumer to the first responder before the real request is sent.\nstdout:\n{}\nstderr:\n{}",
-        loser_label,
-        loser_stdout,
-        loser_stderr
+        !exposer2_stdout.contains(&expected_request_log),
+        "exposer2 must NOT process the enable_camera request: the slot is bound to exposer1 and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
+        exposer2_stdout,
+        exposer2_stderr
     );
 }

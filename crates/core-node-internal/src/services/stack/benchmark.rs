@@ -37,7 +37,7 @@ use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
-    ConcurrentAction, ConsumerFilter, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
+    ConcurrentAction, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{
@@ -1004,14 +1004,12 @@ async fn measure_topic_delivery(
         }
     };
 
-    let mut subscription = match TopicMessenger::subscribe(
+    let mut subscription = match TopicMessenger::subscribe_target_scoped(
         &ctx.messenger,
         &ctx.bound_core_node,
         &ctx.core_instance_id,
-        Some(target),
-        false,
+        target,
         &edge.interface,
-        &ConsumerFilter::Any,
         edge.qos.clone(),
     )
     .await

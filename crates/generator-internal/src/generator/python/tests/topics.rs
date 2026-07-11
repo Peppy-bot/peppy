@@ -436,12 +436,12 @@ fn emit_topic_with_dynamic_object_array() {
     );
 }
 
-/// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the `from_producer` argument of the generated subscribe:
-/// `node_runner.pinned_producer_for(<link_id>)` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)` tuple, so a
-/// pinned topic slot sets both wire slots and can never receive from a
-/// same-instance_id producer on another core node.
+/// The generated subscribe splices the slot's runtime binding lookup as
+/// the `from_producers` argument:
+/// `node_runner.bound_producer(<link_id>)` resolves at runtime to
+/// the bound producers' full `(core_node, instance_id)` tuples, so a
+/// bound topic slot only ever receives from producers the launcher bound
+/// to it.
 #[test]
 fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -452,17 +452,13 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1")
-                .with_link_id(crate::WireLinkId::from_link_id("cam_left", false)),
+            &crate::DependencyContext::native("uvc_camera", "v1", "cam_left"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(
-        &rendered,
-        &["node_runner.pinned_producer_for(\"cam_left\"),"],
-    );
+    assert_contains_all(&rendered, &["node_runner.bound_producer(\"cam_left\"),"]);
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -477,7 +473,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -596,17 +592,15 @@ fn consumed_topic() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Topic metadata and subscribe call. The fixture's
-    // `DependencyContext::native` defaults to `WireLinkId::wildcard()` (no
-    // manifest link_id), so the subscribe call splices `None` at the
-    // from_producer slot.
+    // Topic metadata and subscribe call: the slot's bound producers are
+    // resolved at runtime via `bound_producer(<link_id>)`.
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
-            "topic_name,\n        None,\n        peppylib.QoSProfile.Standard,",
+            "topic_name,\n        node_runner.bound_producer(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,",
         ],
     );
 
@@ -661,7 +655,7 @@ fn consumed_topic_escapes_python_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("keyword_source", "v1"),
+            &crate::DependencyContext::native("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -693,14 +687,14 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &sound_topic,
             sound_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -789,7 +783,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -797,14 +791,14 @@ fn no_user_facing_producer_identity_params() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &action,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
@@ -822,13 +816,12 @@ fn no_user_facing_producer_identity_params() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // The fixture's `DependencyContext::native` defaults to
-    // `WireLinkId::wildcard()` (no manifest link_id), so the consumed call
-    // sites splice `None` at the single target slot and the user-facing
-    // `target_instance_id` parameter is gone. `target_core_node` is never
-    // exposed in the generated API, and the renamed `pinned_target_for`
+    // The fixtures supply real manifest link_ids, and every consumed call
+    // site resolves its target slot through `bound_producer(<link_id>)`.
+    // The generated API exposes no targeting parameters: `target_core_node`
+    // and `target_instance_id` must not appear, and a `pinned_target_for`
     // accessor must never be emitted (the runtime helper is
-    // `pinned_producer_for`).
+    // `bound_producer`).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -839,6 +832,6 @@ fn no_user_facing_producer_identity_params() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is pinned_producer_for; rendered:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helper is bound_producer; rendered:\n{rendered}"
     );
 }

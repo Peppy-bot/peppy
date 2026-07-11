@@ -37,7 +37,7 @@ mod internal {
 
 // -- error --
 pub use error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateInstanceIdAcrossStack,
+    BindingTargetMismatch, BindingUnknownSlot, DuplicateInstanceIdAcrossStack,
     Error as DaemonConfigError, ParsingError, SlotKind, format_bulleted,
 };
 

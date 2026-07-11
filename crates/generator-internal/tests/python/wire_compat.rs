@@ -29,7 +29,7 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, WaitContext, init_python_project_venv, init_python_user_node,
+    DEFAULT_WAIT_TIMEOUT, WaitContext, bind_slot, init_python_project_venv, init_python_user_node,
     send_shutdown, spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
@@ -89,6 +89,12 @@ fn build_runtime_config(
         TEST_CORE_NODE,
     )
     .unwrap();
+    // Consumers declare their dep at link_id "producer"; bind it to the
+    // producer instance so the generated call sites resolve their pinned
+    // target (producers ignore the extra entry: their manifests declare
+    // no such slot and the runtime only reads bindings for declared
+    // slots).
+    let cfg = bind_slot(cfg, "producer", TEST_CORE_NODE, PRODUCER_INSTANCE_ID);
     cfg.save_json5_launch_config(runtime_config_path).unwrap();
 }
 
@@ -286,7 +292,11 @@ if __name__ == "__main__":
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: consumed_action_messages,
-        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
+        dependency: generator::DependencyContext::native(
+            PRODUCER_NODE_NAME,
+            "v1",
+            PRODUCER_NODE_NAME,
+        ),
     });
 
     generate_peppygen_lib(
@@ -656,7 +666,11 @@ if __name__ == "__main__":
             .response_message_format
             .clone()
             .unwrap_or_default(),
-        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
+        dependency: generator::DependencyContext::native(
+            PRODUCER_NODE_NAME,
+            "v1",
+            PRODUCER_NODE_NAME,
+        ),
     });
 
     generate_peppygen_lib(
@@ -1005,7 +1019,11 @@ if __name__ == "__main__":
             .message_format
             .clone()
             .expect("emitted topic has a message format"),
-        dependency: generator::DependencyContext::native(PRODUCER_NODE_NAME, "v1"),
+        dependency: generator::DependencyContext::native(
+            PRODUCER_NODE_NAME,
+            "v1",
+            PRODUCER_NODE_NAME,
+        ),
     });
 
     generate_peppygen_lib(

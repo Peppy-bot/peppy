@@ -124,59 +124,6 @@ pub fn ensure_no_peer_collision(
     Ok(())
 }
 
-/// What the generator should splice into the consumer's subscribe / poll /
-/// send_goal call for the `(from_link_id, from_instance_id)` pair.
-///
-/// In the harmonized wire model the consumer never pins by `link_id` (producers
-/// always advertise the `_` sentinel); instead it pins by `from_instance_id`
-/// looked up at runtime from `Processor::binding_for(<link_id>)`. The codegen
-/// still needs the manifest `link_id` even for `from_any: true` deps so the
-/// binding lookup can resolve them.
-#[derive(Debug, Clone)]
-pub enum WireLinkId {
-    /// Pinned dep: `depends_on` declared `link_id` and `from_any: false`.
-    /// The launcher / CLI validators require a matching binding (or fire a
-    /// warning); the codegen splices `binding_for(link_id)` for the pin.
-    Pinned(String),
-    /// Wildcard dep. `link_id: Some` carries the manifest link_id for
-    /// `from_any: true` deps so an optional binding can still pin them;
-    /// `link_id: None` is reserved for synthetic generator-test fixtures
-    /// that don't model a manifest dep.
-    Wildcard { link_id: Option<String> },
-}
-
-impl WireLinkId {
-    /// `Pinned(link_id)` when `from_any` is false, `Wildcard { link_id:
-    /// Some(link_id) }` when true. The link_id is kept either way so the
-    /// runtime binding lookup can resolve `from_any: true` deps too.
-    pub fn from_link_id(link_id: impl Into<String>, from_any: bool) -> Self {
-        let link_id = link_id.into();
-        if from_any {
-            Self::Wildcard {
-                link_id: Some(link_id),
-            }
-        } else {
-            Self::Pinned(link_id)
-        }
-    }
-
-    /// Wildcard with no manifest link_id. Used by generator-test fixtures
-    /// that exercise the codegen without modeling a consumer dep.
-    pub fn wildcard() -> Self {
-        Self::Wildcard { link_id: None }
-    }
-
-    /// The manifest link_id literal, present for `Pinned` and for `Wildcard`
-    /// deps that came from a real `depends_on` entry. `None` only for the
-    /// test-fixture sentinel.
-    pub fn link_id(&self) -> Option<&str> {
-        match self {
-            Self::Pinned(s) => Some(s.as_str()),
-            Self::Wildcard { link_id } => link_id.as_deref(),
-        }
-    }
-}
-
 /// Identifies a dependency a consumer pulls from. `producer_name` +
 /// `producer_tag` pin the labelled producer for codegen: a real node for
 /// `depends_on.nodes`, or the interface's `(name, tag)` when the consumer
@@ -186,9 +133,11 @@ impl WireLinkId {
 /// discriminator (either because the producer node `conforms_to` an
 /// interface or because the dependency itself is a contract document).
 ///
-/// `link_id` carries the wire-slot intent: `Pinned(s)` for a specific
-/// consumer link_id, `Wildcard` when `from_any: true` or when no link_id is
-/// declared (the test-fixture default).
+/// `link_id` is the consumer manifest slot whose runtime binding resolves
+/// this dependency's one producer. In the harmonized wire model the consumer
+/// never pins by `link_id` on the wire (producers always advertise the `_`
+/// sentinel); instead the generated call sites splice
+/// `processor().bound_producer(<link_id>)` lookups.
 ///
 /// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
@@ -197,19 +146,22 @@ pub struct DependencyContext {
     pub producer_name: String,
     pub producer_tag: String,
     pub origin: Option<InterfaceOrigin>,
-    pub link_id: WireLinkId,
+    pub link_id: String,
 }
 
 impl DependencyContext {
     /// Build a context for a node dependency that emits natively (no
-    /// `conforms_to`). Defaults `link_id` to [`WireLinkId::Wildcard`]; use
-    /// [`Self::with_link_id`] to pin a value.
-    pub fn native(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
+    /// `conforms_to`).
+    pub fn native(
+        node_name: impl Into<String>,
+        node_tag: impl Into<String>,
+        link_id: impl Into<String>,
+    ) -> Self {
         Self {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
             origin: None,
-            link_id: WireLinkId::wildcard(),
+            link_id: link_id.into(),
         }
     }
 
@@ -219,12 +171,13 @@ impl DependencyContext {
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
         origin: InterfaceOrigin,
+        link_id: impl Into<String>,
     ) -> Self {
         Self {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
             origin: Some(origin),
-            link_id: WireLinkId::wildcard(),
+            link_id: link_id.into(),
         }
     }
 
@@ -233,7 +186,11 @@ impl DependencyContext {
     /// interface's `(name, tag)` so codegen labels stay readable, and
     /// `origin` is set to the same `(name, tag)` so consumer-side codegen
     /// reuses the existing `SenderTarget::Interface` path.
-    pub fn interface(iface_name: impl Into<String>, iface_tag: impl Into<String>) -> Self {
+    pub fn interface(
+        iface_name: impl Into<String>,
+        iface_tag: impl Into<String>,
+        link_id: impl Into<String>,
+    ) -> Self {
         let iface_name = iface_name.into();
         let iface_tag = iface_tag.into();
         Self {
@@ -243,22 +200,8 @@ impl DependencyContext {
                 iface_name,
                 iface_tag,
             }),
-            link_id: WireLinkId::wildcard(),
+            link_id: link_id.into(),
         }
-    }
-
-    /// Set the wire-slot binding. Generator code reads `link_id.link_id()`
-    /// to splice the binding lookup at the `from_instance_id` slot.
-    pub fn with_link_id(mut self, link_id: WireLinkId) -> Self {
-        self.link_id = link_id;
-        self
-    }
-
-    /// Returns the manifest link_id literal, when known. Used by codegen
-    /// to splice `processor().binding_for(<link_id>)` at the consumer's
-    /// `from_instance_id` wire slot.
-    pub fn wire_link_id(&self) -> Option<&str> {
-        self.link_id.link_id()
     }
 }
 
@@ -772,55 +715,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wire_link_id_state_machine() {
-        // Pinned: `from_any == false`.
-        let pinned = WireLinkId::from_link_id("cam_left", false);
-        assert!(matches!(pinned, WireLinkId::Pinned(ref s) if s == "cam_left"));
-        assert_eq!(pinned.link_id(), Some("cam_left"));
-
-        // Wildcard carrying a manifest link_id: `from_any == true`.
-        let from_any = WireLinkId::from_link_id("cam_left", true);
-        assert!(matches!(
-            from_any,
-            WireLinkId::Wildcard { link_id: Some(ref s) } if s == "cam_left"
-        ));
-        assert_eq!(from_any.link_id(), Some("cam_left"));
-
-        // Pure wildcard sentinel (test fixtures / no manifest dep).
-        let wildcard = WireLinkId::wildcard();
-        assert!(matches!(wildcard, WireLinkId::Wildcard { link_id: None }));
-        assert_eq!(wildcard.link_id(), None);
-    }
-
-    #[test]
-    fn dependency_context_constructors_set_origin_and_defaults() {
-        // native: no origin, defaults to a pure wildcard link_id.
-        let native = DependencyContext::native("uvc_camera", "v1");
+    fn dependency_context_constructors_set_origin_and_link_id() {
+        // native: no origin.
+        let native = DependencyContext::native("uvc_camera", "v1", "cam_left");
         assert_eq!(native.producer_name, "uvc_camera");
         assert_eq!(native.producer_tag, "v1");
         assert!(native.origin.is_none());
-        assert_eq!(native.wire_link_id(), None);
+        assert_eq!(native.link_id, "cam_left");
 
         // conformed: producer node identity plus an interface origin.
         let origin = InterfaceOrigin {
             iface_name: "camera_iface".to_string(),
             iface_tag: "v2".to_string(),
         };
-        let conformed = DependencyContext::conformed("uvc_camera", "v1", origin.clone());
+        let conformed =
+            DependencyContext::conformed("uvc_camera", "v1", origin.clone(), "cam_left");
         assert_eq!(conformed.producer_name, "uvc_camera");
         assert_eq!(conformed.producer_tag, "v1");
         assert_eq!(conformed.origin, Some(origin.clone()));
+        assert_eq!(conformed.link_id, "cam_left");
 
         // interface: no producer node; (name, tag) double as producer identity and origin.
-        let iface = DependencyContext::interface("camera_iface", "v2");
+        let iface = DependencyContext::interface("camera_iface", "v2", "cam_left");
         assert_eq!(iface.producer_name, "camera_iface");
         assert_eq!(iface.producer_tag, "v2");
         assert_eq!(iface.origin, Some(origin));
-
-        // with_link_id overrides the default wildcard.
-        let pinned = DependencyContext::native("uvc_camera", "v1")
-            .with_link_id(WireLinkId::from_link_id("cam_left", false));
-        assert_eq!(pinned.wire_link_id(), Some("cam_left"));
+        assert_eq!(iface.link_id, "cam_left");
     }
 
     #[test]

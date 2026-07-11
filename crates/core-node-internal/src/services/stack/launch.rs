@@ -486,10 +486,7 @@ async fn start_node_instances(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
-    resolved_slot_bindings: &std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, config::runtime::SlotBinding>,
-    >,
+    resolved_slot_bindings: &std::collections::BTreeMap<String, config::runtime::SlotBindings>,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
