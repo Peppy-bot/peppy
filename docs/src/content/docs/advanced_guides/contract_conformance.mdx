@@ -292,11 +292,12 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
     let mut back_right = back_right_video_stream::subscribe(&node_runner).await?;
 
     loop {
-        let (producer, frame) = tokio::select! {
-            next = front.next() => match next? { Some(pair) => pair, None => break },
-            next = back_left.next() => match next? { Some(pair) => pair, None => break },
-            next = back_right.next() => match next? { Some(pair) => pair, None => break },
+        let next = tokio::select! {
+            next = front.next() => next?,
+            next = back_left.next() => next?,
+            next = back_right.next() => next?,
         };
+        let Some((producer, frame)) = next else { break };
         // Key by the returned producer identity; do not compare against a
         // hard-coded name.
         frames_by_producer.insert(producer, frame);
