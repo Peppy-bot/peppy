@@ -63,8 +63,10 @@ fn resolve_pairing_doc_cached(
 ///
 /// No tag-collision rule applies here: pairing slots are addressed by
 /// `link_id` everywhere (module paths, wire segments), and link_id
-/// uniqueness is enforced at parse time; the tag only surfaces as an
-/// informational constant in generated code.
+/// uniqueness is enforced at parse time. The tag identifies the resolved
+/// pairing artifact instead: with the name and sha256 pin it forms the
+/// `(name, tag, sha256)` key each slot's document is looked up and cached
+/// under.
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,

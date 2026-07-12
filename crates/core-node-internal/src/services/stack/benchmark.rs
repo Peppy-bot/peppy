@@ -389,6 +389,11 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
     edges
 }
 
+/// Contract documents resolved once per `(contract_name, contract_tag)` and
+/// shared across the QoS and probe-size passes of one benchmark run. A `None`
+/// entry records a resolution failure so it is not retried.
+type ContractDocCache = HashMap<(String, String), Option<daemon_config::contract::PeppyContract>>;
+
 /// Fill in topic QoS for contract-implementation edges from the contract
 /// document. A contract-backed entry carries no inline QoS, so it lives in
 /// the `(contract_name, contract_tag)` document. On any cache miss / parse
@@ -396,11 +401,10 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
 /// best-effort basis rather than aborting the benchmark.
 fn resolve_contract_topic_qos(
     edges: &mut [Edge],
+    cache: &mut ContractDocCache,
     peppy_dirs: &PeppyDirs,
     tx: &UnboundedSender<StackBenchmarkFeedback>,
 ) {
-    let mut cache: HashMap<(String, String), Option<daemon_config::contract::PeppyContract>> =
-        HashMap::new();
     for edge in edges.iter_mut() {
         if edge.kind != InterfaceKind::Topic {
             continue;
@@ -447,15 +451,16 @@ fn resolve_contract_topic_qos(
 /// node config (direct deps) or contract document (contract deps), then a
 /// lower-bound serialized size is estimated. Leaves an edge at `0` (empty
 /// probe) when the schema can't be resolved, and never aborts.
-fn resolve_probe_sizes(edges: &mut [Edge], configs: &[NodeConfig], peppy_dirs: &PeppyDirs) {
+fn resolve_probe_sizes(
+    edges: &mut [Edge],
+    configs: &[NodeConfig],
+    contract_cache: &mut ContractDocCache,
+    peppy_dirs: &PeppyDirs,
+) {
     let by_key: HashMap<(&str, &str), &NodeConfig> = configs
         .iter()
         .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
         .collect();
-    let mut contract_cache: HashMap<
-        (String, String),
-        Option<daemon_config::contract::PeppyContract>,
-    > = HashMap::new();
 
     for edge in edges.iter_mut() {
         let (req, resp) = match &edge.origin {
@@ -636,8 +641,9 @@ async fn run_benchmark(
         .map(|h| h.read().config().clone())
         .collect();
     let mut edges = enumerate_edges(&configs);
-    resolve_contract_topic_qos(&mut edges, &ctx.peppy_dirs, tx);
-    resolve_probe_sizes(&mut edges, &configs, &ctx.peppy_dirs);
+    let mut contract_cache = ContractDocCache::new();
+    resolve_contract_topic_qos(&mut edges, &mut contract_cache, &ctx.peppy_dirs, tx);
+    resolve_probe_sizes(&mut edges, &configs, &mut contract_cache, &ctx.peppy_dirs);
 
     let topics = edges
         .iter()

@@ -1,7 +1,8 @@
-//! Generator-level test that a node exposing the same action `move` both
-//! natively and via two contract-backed interfaces (`arm:v1`, `arm:v2`) produces
-//! distinct generated files AND each `ActionMessenger::expose` call inside
-//! those files passes the matching `iface_name`/`iface_tag` literals.
+//! Generator-level test that a node exposing the same action `move_arm` both
+//! natively and via two contract-backed slots (`arm:v1`, `arm:v2`, each with a
+//! `ContractOrigin`) produces distinct generated files AND each
+//! `ActionMessenger::expose` call inside those files passes the matching
+//! `contract_name`/`contract_tag` literals.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
@@ -68,11 +69,11 @@ const NODE_CONFIG: &str = r#"{
 }
 "#;
 
-/// One native `move` action plus two contract-backed `arm:v1`/`arm:v2` slots
-/// each exposing an action named `move`. Verifies:
-///   1. Conformed artifacts nest under
-///      `exposed_actions/{iface_name}/{iface_tag}/move_arm.rs` while the native
-///      artifact stays flat at `exposed_actions/move_arm.rs`.
+/// One native `move_arm` action plus two contract-backed `arm:v1`/`arm:v2`
+/// slots each exposing an action named `move_arm`. Verifies:
+///   1. Contract-backed artifacts nest under
+///      `exposed_actions/{contract_name}/{contract_tag}/move_arm.rs` while the
+///      native artifact stays flat at `exposed_actions/move_arm.rs`.
 ///   2. The category `exposed_actions.rs` lists the native leaf and one
 ///      module entry per implemented contract.
 ///   3. Each leaf calls `peppylib::ActionMessenger::expose` with the matching
@@ -146,6 +147,10 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
+        arm_v1_src.contains("SenderTarget::contract("),
+        "arm v1 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{arm_v1_src}",
+    );
+    assert!(
         arm_v1_src.contains("\"arm\"") && arm_v1_src.contains("\"v1\""),
         "arm v1 leaf should pass `arm`,`v1`:\n{arm_v1_src}",
     );
@@ -155,6 +160,10 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
+    assert!(
+        arm_v2_src.contains("SenderTarget::contract("),
+        "arm v2 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{arm_v2_src}",
+    );
     assert!(
         arm_v2_src.contains("\"arm\"") && arm_v2_src.contains("\"v2\""),
         "arm v2 leaf should pass `arm`,`v2`:\n{arm_v2_src}",

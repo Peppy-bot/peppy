@@ -1,8 +1,8 @@
 //! Python mirror of `tests/rust/topics_implements.rs`: same realsense_d435
 //! scenario, but verifying the Python generator emits the corresponding
-//! `peppygen/emitted_topics/{iface_name}/{iface_tag}/{topic}.py` files with
-//! the right `__init__.py` chains and the matching `iface_name` / `iface_tag`
-//! strings inside each declare_publisher call.
+//! `peppygen/emitted_topics/{contract_name}/{contract_tag}/{topic}.py` files
+//! with the right `__init__.py` chains and the matching `contract_name` /
+//! `contract_tag` strings inside each declare_publisher call.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
@@ -66,9 +66,9 @@ const NODE_CONFIG: &str = r#"{
 /// `video_stream` publisher plus three resolved contract-backed interfaces
 /// (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`) each shaped as
 /// `video_stream` with a distinguishing marker field. Verifies that:
-///   1. Conformed artifacts nest under
-///      `emitted_topics/{iface_name}/{iface_tag}/{topic}.py` while the native
-///      artifact stays flat at `emitted_topics/{topic}.py`.
+///   1. Contract-backed artifacts nest under
+///      `emitted_topics/{contract_name}/{contract_tag}/{topic}.py` while the
+///      native artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
 ///   3. Each leaf's declare_publisher body passes the matching sender target to
 ///      the messenger: `peppylib.SenderTarget.contract(...)` for contract-backed
@@ -111,8 +111,8 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
         "native video_stream.py should exist at {native_path:?}",
     );
 
-    // Conformed artifacts nest one level deeper than the rust scaffold:
-    // category dir, then iface_name, then iface_tag.
+    // Contract-backed artifacts nest one level deeper than the rust scaffold:
+    // category dir, then contract_name, then contract_tag.
     let depth_v1 = emit_dir.join("depth_camera/v1/video_stream.py");
     let depth_v2 = emit_dir.join("depth_camera/v2/video_stream.py");
     let uvc_v1 = emit_dir.join("uvc_camera/v1/video_stream.py");
@@ -152,19 +152,19 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");
     assert!(
         depth_v1_src.contains("peppylib.SenderTarget.contract(\"depth_camera\", \"v1\")"),
-        "depth_v1 source missing SenderTarget.interface literal:\n{depth_v1_src}",
+        "depth_v1 source missing SenderTarget.contract literal:\n{depth_v1_src}",
     );
 
     let depth_v2_src = fs::read_to_string(&depth_v2).expect("read depth v2");
     assert!(
         depth_v2_src.contains("peppylib.SenderTarget.contract(\"depth_camera\", \"v2\")"),
-        "depth_v2 source missing SenderTarget.interface literal:\n{depth_v2_src}",
+        "depth_v2 source missing SenderTarget.contract literal:\n{depth_v2_src}",
     );
 
     let uvc_v1_src = fs::read_to_string(&uvc_v1).expect("read uvc v1");
     assert!(
         uvc_v1_src.contains("peppylib.SenderTarget.contract(\"uvc_camera\", \"v1\")"),
-        "uvc_v1 source missing SenderTarget.interface literal:\n{uvc_v1_src}",
+        "uvc_v1 source missing SenderTarget.contract literal:\n{uvc_v1_src}",
     );
 
     // Distinguishing message-format markers should still be present in their
@@ -178,7 +178,7 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     // which is independent of the calling file's depth. This regressed once
     // when the loader used `_PKG_DIR = Path(__file__).parent.parent` (fine
     // for the flat native path but two levels short for nested contract-backed
-    // artifacts at `peppygen/<category>/<iface>/<tag>/<leaf>.py`), which made
+    // artifacts at `peppygen/<category>/<contract>/<tag>/<leaf>.py`), which made
     // `capnp.load()` raise silently inside the asyncio loop and hung the
     // consumer. All four files (native + three contract-backed) should now produce
     // the same loader form.
@@ -201,7 +201,7 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     }
 }
 
-/// Exercises hyphen-to-underscore normalization in the `iface_tag` for the
+/// Exercises hyphen-to-underscore normalization in the `contract_tag` for the
 /// Python generator: a tag `v1-beta` becomes the directory `v1_beta` (Python
 /// identifiers can't carry hyphens) while the literal `"v1-beta"` is still
 /// embedded in the declare_publisher body; the messaging layer normalizes hyphens

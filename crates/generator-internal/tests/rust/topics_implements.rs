@@ -177,21 +177,33 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
 
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");
     assert!(
+        depth_v1_src.contains("SenderTarget::contract("),
+        "depth_v1 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{depth_v1_src}",
+    );
+    assert!(
         depth_v1_src.contains("\"depth_camera\""),
-        "depth_v1 leaf should pass iface_name `depth_camera`:\n{depth_v1_src}",
+        "depth_v1 leaf should pass contract_name `depth_camera`:\n{depth_v1_src}",
     );
     assert!(
         depth_v1_src.contains("\"v1\""),
-        "depth_v1 leaf should pass iface_tag `v1`:\n{depth_v1_src}",
+        "depth_v1 leaf should pass contract_tag `v1`:\n{depth_v1_src}",
     );
 
     let depth_v2_src = fs::read_to_string(&depth_v2).expect("read depth v2");
+    assert!(
+        depth_v2_src.contains("SenderTarget::contract("),
+        "depth_v2 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{depth_v2_src}",
+    );
     assert!(
         depth_v2_src.contains("\"depth_camera\"") && depth_v2_src.contains("\"v2\""),
         "depth_v2 leaf should pass `depth_camera`,`v2`:\n{depth_v2_src}",
     );
 
     let uvc_v1_src = fs::read_to_string(&uvc_v1).expect("read uvc v1");
+    assert!(
+        uvc_v1_src.contains("SenderTarget::contract("),
+        "uvc_v1 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{uvc_v1_src}",
+    );
     assert!(
         uvc_v1_src.contains("\"uvc_camera\"") && uvc_v1_src.contains("\"v1\""),
         "uvc_v1 leaf should pass `uvc_camera`,`v1`:\n{uvc_v1_src}",

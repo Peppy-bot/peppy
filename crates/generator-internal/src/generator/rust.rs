@@ -284,12 +284,13 @@ impl RustGenerator {
             }
         };
 
-        // The `to_target` matches the producer's emission shape: address the
-        // dependency as an Interface if it exposes the action via
-        // a contract, otherwise as its native Node identity. The `target`
-        // (the producer's full `(core_node, instance_id)`) is the slot's one
-        // bound producer, resolved at runtime from the consumer's binding
-        // map and addressed directly with no discovery.
+        // The `to_target` matches the producer's emission shape: a dependency
+        // with a `ContractOrigin` is addressed as
+        // `SenderTarget::contract(...)`, otherwise as its native node
+        // identity. The `target` (the producer's full
+        // `(core_node, instance_id)`) is the slot's one bound producer,
+        // resolved at runtime from the consumer's binding map and addressed
+        // directly with no discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
         let bound_producer_expr =
             crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
