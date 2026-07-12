@@ -23,9 +23,9 @@ and must not be read side by side:
 It covers **both** ways a node can depend on another:
 
 - **direct** dependencies (`depends_on.nodes`), drawn with a light arrow `→`; and
-- dependencies resolved through **contract conformance** (`depends_on.contracts`
-  matched by a producer's `interfaces.conforms_to`), drawn with a heavy arrow `➔`.
-  See [Contract conformance](/advanced_guides/contract_conformance/).
+- dependencies resolved through **contract implementation** (`depends_on.contracts`
+  matched by a producer's `manifest.implements`), drawn with a heavy arrow `➔`.
+  See [Contract implementation](/advanced_guides/contract_implementation/).
 
 Use it to answer questions like "is this service round-trip as fast as I expect?",
 "how long does a frame take to reach its consumer?", or "did my last change make a
@@ -100,7 +100,7 @@ Real traffic: observe-only one-way delivery of live topic messages (200 samples/
 - **edge**: the dependency, wrapped over three lines: the **consumer**, then the
   kind arrow + **producer**, then the consumed `/interface` (topic, service, or
   action name). `→` is a direct `depends_on.nodes` edge; `➔` is one resolved
-  through contract conformance (the `note` names the contract).
+  through contract implementation (the `note` names the contract).
 - **binding**: the dependency binding (`link_id`) this edge was measured through.
   A node can consume the same interface from one producer via several bindings;
   this column tells those rows apart.
@@ -124,7 +124,7 @@ A legend repeating all of this prints beneath the tables:
 ```
 Legend:
   edge       →  direct dependency (depends_on.nodes)
-             ➔  resolved through contract conformance (the note names the contract)
+             ➔  resolved through contract implementation (the note names the contract)
   synthetic  round-trips on a single clock; the producer's framework replies and
              handlers never run, with payloads sized from the message schema
              svc-probe   round-trip to the service

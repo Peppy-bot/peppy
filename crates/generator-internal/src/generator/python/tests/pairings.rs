@@ -4,7 +4,7 @@
 //! binding-slot involvement.
 
 use super::*;
-use config::node::EmittedTopic;
+use config::node::NativeEmittedTopic;
 
 const JOINT_STATES: &str = r#"
 {
@@ -25,7 +25,7 @@ fn peer_context() -> crate::generator::types::PeerContext {
     }
 }
 
-fn parse_topic(example: &str) -> EmittedTopic {
+fn parse_topic(example: &str) -> NativeEmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -62,7 +62,7 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
         assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
     }
     assert!(
-        !code.contains("SenderTarget.node(") && !code.contains("SenderTarget.interface("),
+        !code.contains("SenderTarget.node(") && !code.contains("SenderTarget.contract("),
         "peer topics must use the pairing target only:\n{code}"
     );
 }
@@ -100,7 +100,7 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
 
 #[test]
 fn peer_consumed_topic_requires_a_message_format() {
-    let topic: EmittedTopic =
+    let topic: NativeEmittedTopic =
         serde_json5::from_str(r#"{ name: "opaque", qos_profile: "reliable" }"#).unwrap();
     let mut generator = PythonGenerator::new();
     let err = generator

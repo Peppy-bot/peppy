@@ -1,4 +1,4 @@
-//! Python mirror of `tests/rust/conforms_to.rs`: same realsense_d435
+//! Python mirror of `tests/rust/topics_implements.rs`: same realsense_d435
 //! scenario, but verifying the Python generator emits the corresponding
 //! `peppygen/emitted_topics/{iface_name}/{iface_tag}/{topic}.py` files with
 //! the right `__init__.py` chains and the matching `iface_name` / `iface_tag`
@@ -6,34 +6,34 @@
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    EmittedTopic, MessageFormat, PeppygenLanguage, QoSProfile, SchemaType, TypeToken,
+    MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TypeToken,
 };
 use generator::{
-    CrateDeployMode, DeploymentInterface, InterfaceOrigin, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
 use tempfile::TempDir;
 
-fn make_topic(distinguishing_field: &str) -> EmittedTopic {
+fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
     let mut fields: IndexMap<String, SchemaType> = IndexMap::new();
     fields.insert(
         distinguishing_field.to_string(),
         SchemaType::Type(TypeToken::U32),
     );
-    EmittedTopic {
+    NativeEmittedTopic {
         name: "video_stream".to_string(),
         qos_profile: QoSProfile::SensorData,
         message_format: Some(MessageFormat(fields)),
     }
 }
 
-fn conformed(name: &str, tag: &str, topic: EmittedTopic) -> DeploymentInterface {
+fn contract_backed(name: &str, tag: &str, topic: NativeEmittedTopic) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::EmittedTopic {
         topic,
-        origin: Some(InterfaceOrigin {
-            iface_name: name.to_string(),
-            iface_tag: tag.to_string(),
+        origin: Some(ContractOrigin {
+            contract_name: name.to_string(),
+            contract_tag: tag.to_string(),
         }),
     })
 }
@@ -63,7 +63,7 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 /// Realsense_d435 scenario for the Python generator: one native
-/// `video_stream` publisher plus three resolved conformed interfaces
+/// `video_stream` publisher plus three resolved contract-backed interfaces
 /// (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`) each shaped as
 /// `video_stream` with a distinguishing marker field. Verifies that:
 ///   1. Conformed artifacts nest under
@@ -71,20 +71,20 @@ const NODE_CONFIG: &str = r#"{
 ///      artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
 ///   3. Each leaf's declare_publisher body passes the matching sender target to
-///      the messenger: `peppylib.SenderTarget.interface(...)` for conformed
+///      the messenger: `peppylib.SenderTarget.contract(...)` for contract-backed
 ///      leaves and `peppylib.SenderTarget.node(...)` for the native leaf.
 ///   4. The per-interface marker fields land in their own files, proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
-fn nests_conformed_topics_under_iface_name_and_tag() {
+fn nests_contract_backed_topics_under_contract_name_and_tag() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        conformed("depth_camera", "v1", make_topic("depth_v1_marker")),
-        conformed("depth_camera", "v2", make_topic("depth_v2_marker")),
-        conformed("uvc_camera", "v1", make_topic("uvc_v1_marker")),
+        contract_backed("depth_camera", "v1", make_topic("depth_v1_marker")),
+        contract_backed("depth_camera", "v2", make_topic("depth_v2_marker")),
+        contract_backed("uvc_camera", "v1", make_topic("uvc_v1_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -117,7 +117,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     let depth_v2 = emit_dir.join("depth_camera/v2/video_stream.py");
     let uvc_v1 = emit_dir.join("uvc_camera/v1/video_stream.py");
     for path in [&depth_v1, &depth_v2, &uvc_v1] {
-        assert!(path.exists(), "expected conformed topic at {path:?}");
+        assert!(path.exists(), "expected contract-backed topic at {path:?}");
     }
 
     // __init__.py chain: each intermediate directory imports its children.
@@ -141,8 +141,8 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     );
 
     // Each leaf's declare_publisher body passes a matching `peppylib.SenderTarget`
-    // expression to the messenger. Native gets `SenderTarget.node(...)`; conformed leaves
-    // pass `SenderTarget.interface("<name>", "<tag>")` with the producer's segments.
+    // expression to the messenger. Native gets `SenderTarget.node(...)`; contract-backed leaves
+    // pass `SenderTarget.contract("<name>", "<tag>")` with the producer's segments.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
         native_src.contains("peppylib.SenderTarget.node("),
@@ -151,19 +151,19 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
 
     let depth_v1_src = fs::read_to_string(&depth_v1).expect("read depth v1");
     assert!(
-        depth_v1_src.contains("peppylib.SenderTarget.interface(\"depth_camera\", \"v1\")"),
+        depth_v1_src.contains("peppylib.SenderTarget.contract(\"depth_camera\", \"v1\")"),
         "depth_v1 source missing SenderTarget.interface literal:\n{depth_v1_src}",
     );
 
     let depth_v2_src = fs::read_to_string(&depth_v2).expect("read depth v2");
     assert!(
-        depth_v2_src.contains("peppylib.SenderTarget.interface(\"depth_camera\", \"v2\")"),
+        depth_v2_src.contains("peppylib.SenderTarget.contract(\"depth_camera\", \"v2\")"),
         "depth_v2 source missing SenderTarget.interface literal:\n{depth_v2_src}",
     );
 
     let uvc_v1_src = fs::read_to_string(&uvc_v1).expect("read uvc v1");
     assert!(
-        uvc_v1_src.contains("peppylib.SenderTarget.interface(\"uvc_camera\", \"v1\")"),
+        uvc_v1_src.contains("peppylib.SenderTarget.contract(\"uvc_camera\", \"v1\")"),
         "uvc_v1 source missing SenderTarget.interface literal:\n{uvc_v1_src}",
     );
 
@@ -177,10 +177,10 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
     // which is independent of the calling file's depth. This regressed once
     // when the loader used `_PKG_DIR = Path(__file__).parent.parent` (fine
-    // for the flat native path but two levels short for nested conformed
+    // for the flat native path but two levels short for nested contract-backed
     // artifacts at `peppygen/<category>/<iface>/<tag>/<leaf>.py`), which made
     // `capnp.load()` raise silently inside the asyncio loop and hung the
-    // consumer. All four files (native + three conformed) should now produce
+    // consumer. All four files (native + three contract-backed) should now produce
     // the same loader form.
     let expected_loader = "files(\"peppygen\") / \"capnp\" /";
     for (label, src) in [
@@ -212,7 +212,7 @@ fn hyphenated_tag_lands_in_underscore_directory() {
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
-    let extras = vec![conformed(
+    let extras = vec![contract_backed(
         "depth_camera",
         "v1-beta",
         make_topic("hyphen_marker"),
@@ -241,7 +241,7 @@ fn hyphenated_tag_lands_in_underscore_directory() {
     );
     let src = fs::read_to_string(&leaf).expect("read leaf");
     assert!(
-        src.contains("peppylib.SenderTarget.interface(\"depth_camera\", \"v1-beta\")"),
+        src.contains("peppylib.SenderTarget.contract(\"depth_camera\", \"v1-beta\")"),
         "generator should pass the raw tag (messaging normalizes hyphens):\n{src}",
     );
 }

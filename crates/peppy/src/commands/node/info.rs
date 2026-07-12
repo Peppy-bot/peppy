@@ -221,7 +221,23 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Emitted Topics:");
                 for topic in topics {
-                    let _ = writeln!(out, "  - {} (qos: {:?})", topic.name, topic.qos_profile);
+                    match topic.as_native() {
+                        Some(native) => {
+                            let _ = writeln!(
+                                out,
+                                "  - {} (qos: {:?})",
+                                native.name, native.qos_profile
+                            );
+                        }
+                        None => {
+                            let _ = writeln!(
+                                out,
+                                "  - {} (via implements slot: {})",
+                                topic.name(),
+                                topic.link_id().unwrap_or_default()
+                            );
+                        }
+                    }
                 }
             }
 
@@ -234,7 +250,18 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    let _ = writeln!(out, "  - {}", service.name);
+                    match service.link_id() {
+                        Some(link_id) => {
+                            let _ = writeln!(
+                                out,
+                                "  - {} (via implements slot: {link_id})",
+                                service.name()
+                            );
+                        }
+                        None => {
+                            let _ = writeln!(out, "  - {}", service.name());
+                        }
+                    }
                 }
             }
 
@@ -247,7 +274,18 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    let _ = writeln!(out, "  - {}", action.name);
+                    match action.link_id() {
+                        Some(link_id) => {
+                            let _ = writeln!(
+                                out,
+                                "  - {} (via implements slot: {link_id})",
+                                action.name()
+                            );
+                        }
+                        None => {
+                            let _ = writeln!(out, "  - {}", action.name());
+                        }
+                    }
                 }
             }
         }

@@ -15,15 +15,15 @@ mod type_mapping;
 
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, goal_action_response_format, non_empty_message_format,
+    CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
+    InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
     scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
-    MessageFormat,
+    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    NativeExposedAction, NativeExposedService,
 };
 use encoding::MessageFormatMapper;
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ impl PythonGenerator {
     fn make_artifact(
         &self,
         leaf_name: &str,
-        origin: Option<&InterfaceOrigin>,
+        origin: Option<&ContractOrigin>,
         kind: InterfaceKind,
         code_output: String,
     ) -> InterfaceArtifact {
@@ -131,8 +131,8 @@ impl PythonGenerator {
 impl LanguageGenerator for PythonGenerator {
     fn add_emitted_topic(
         &mut self,
-        topic: &EmittedTopic,
-        origin: Option<&InterfaceOrigin>,
+        topic: &NativeEmittedTopic,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         let scoped_key = scoped_schema_key(origin, &topic.name);
         let schema_info = topic
@@ -153,8 +153,8 @@ impl LanguageGenerator for PythonGenerator {
 
     fn add_exposed_service(
         &mut self,
-        service: &ExposedService,
-        origin: Option<&InterfaceOrigin>,
+        service: &NativeExposedService,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         let request_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_request", service.name)),
@@ -182,8 +182,8 @@ impl LanguageGenerator for PythonGenerator {
 
     fn add_exposed_action(
         &mut self,
-        action: &ExposedAction,
-        origin: Option<&InterfaceOrigin>,
+        action: &NativeExposedAction,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         let goal_request_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_goal_request", action.name)),
@@ -300,7 +300,7 @@ impl LanguageGenerator for PythonGenerator {
 
     fn add_peer_emitted_topic(
         &mut self,
-        topic: &EmittedTopic,
+        topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
         let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
@@ -328,7 +328,7 @@ impl LanguageGenerator for PythonGenerator {
 
     fn add_peer_consumed_topic(
         &mut self,
-        topic: &EmittedTopic,
+        topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
         let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);

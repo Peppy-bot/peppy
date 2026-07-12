@@ -9,7 +9,6 @@ pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
-use config::node::{EmittedTopic, ExposedAction, ExposedService};
 use config::{
     consts::NODE_CONFIG_FILE,
     node::{NodeConfigParser, PeppygenLanguage},
@@ -128,91 +127,64 @@ pub fn generate_peppygen_lib(
     Ok(())
 }
 
-/// Collects all exposed interfaces from a NodeConfig into DeploymentInterface instances.
+/// Collects the node's own NATIVE exposed interfaces from a NodeConfig into
+/// DeploymentInterface instances. Contract-backed entries are skipped here:
+/// their shapes live in the contract documents, which the daemon resolves
+/// (with the Tier B coverage check) into the pre-resolved interface vec this
+/// function's output is merged with.
 fn collect_exposed_interfaces(
     config: &config::node::NodeConfig,
     extra_capacity: usize,
 ) -> Vec<DeploymentInterface> {
-    let mut interfaces =
-        Vec::with_capacity(count_exposed_interfaces(config).saturating_add(extra_capacity));
+    let mut interfaces = Vec::with_capacity(extra_capacity);
 
-    push_interfaces(
-        &mut interfaces,
-        config
-            .interfaces
-            .topics
-            .as_ref()
-            .and_then(|topics| topics.emits.as_deref()),
-        |topic: EmittedTopic| InterfaceVariant::EmittedTopic {
-            topic,
-            origin: None,
-        },
-    );
-    push_interfaces(
-        &mut interfaces,
-        config
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|services| services.exposes.as_deref()),
-        |service: ExposedService| InterfaceVariant::ExposedService {
-            service,
-            origin: None,
-        },
-    );
-    push_interfaces(
-        &mut interfaces,
-        config
-            .interfaces
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.exposes.as_deref()),
-        |action: ExposedAction| InterfaceVariant::ExposedAction {
-            action,
-            origin: None,
-        },
-    );
-
-    interfaces
-}
-
-fn count_exposed_interfaces(config: &config::node::NodeConfig) -> usize {
-    config
+    if let Some(emits) = config
         .interfaces
         .topics
         .as_ref()
-        .and_then(|topics| topics.emits.as_ref())
-        .map_or(0, Vec::len)
-        + config
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|services| services.exposes.as_ref())
-            .map_or(0, Vec::len)
-        + config
-            .interfaces
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.exposes.as_ref())
-            .map_or(0, Vec::len)
-}
+        .and_then(|topics| topics.emits.as_deref())
+    {
+        interfaces.extend(emits.iter().filter_map(|entry| {
+            entry.as_native().map(|topic| {
+                DeploymentInterface::new(InterfaceVariant::EmittedTopic {
+                    topic: topic.clone(),
+                    origin: None,
+                })
+            })
+        }));
+    }
+    if let Some(exposes) = config
+        .interfaces
+        .services
+        .as_ref()
+        .and_then(|services| services.exposes.as_deref())
+    {
+        interfaces.extend(exposes.iter().filter_map(|entry| {
+            entry.as_native().map(|service| {
+                DeploymentInterface::new(InterfaceVariant::ExposedService {
+                    service: service.clone(),
+                    origin: None,
+                })
+            })
+        }));
+    }
+    if let Some(exposes) = config
+        .interfaces
+        .actions
+        .as_ref()
+        .and_then(|actions| actions.exposes.as_deref())
+    {
+        interfaces.extend(exposes.iter().filter_map(|entry| {
+            entry.as_native().map(|action| {
+                DeploymentInterface::new(InterfaceVariant::ExposedAction {
+                    action: action.clone(),
+                    origin: None,
+                })
+            })
+        }));
+    }
 
-fn push_interfaces<T, F>(interfaces: &mut Vec<DeploymentInterface>, items: Option<&[T]>, wrap: F)
-where
-    T: Clone,
-    F: Fn(T) -> InterfaceVariant,
-{
-    let Some(items) = items else {
-        return;
-    };
-
-    interfaces.extend(
-        items
-            .iter()
-            .cloned()
-            .map(wrap)
-            .map(DeploymentInterface::new),
-    );
+    interfaces
 }
 
 fn generate_with_backend<B>(

@@ -38,12 +38,12 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
     out
 }
 
-/// Sanitizes an `iface_tag` for use as a generated module segment and as a
+/// Sanitizes a contract tag for use as a generated module segment and as a
 /// Zenoh wire-path segment. Currently this is just a hyphen→underscore
 /// conversion; the rest of [`sanitize_component`]'s heuristics would lose
 /// information (e.g. case) without buying us anything, since interface tags
 /// are already constrained to letters/digits/underscores/hyphens.
-pub(crate) fn sanitize_iface_tag(raw: &str) -> String {
+pub(crate) fn sanitize_contract_tag(raw: &str) -> String {
     raw.replace('-', "_")
 }
 

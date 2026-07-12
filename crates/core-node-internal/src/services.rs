@@ -303,6 +303,7 @@ impl CoreNode {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),
                 labels: None,
+                implements: Vec::new(),
                 depends_on: None,
             },
             execution: Execution {

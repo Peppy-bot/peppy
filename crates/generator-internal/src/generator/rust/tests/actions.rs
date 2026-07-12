@@ -1,6 +1,6 @@
 use super::*;
 
-use config::node::{ConsumedAction, ExposedAction};
+use config::node::{ConsumedAction, NativeExposedAction};
 use std::{collections::HashMap, fs};
 
 // --- Exposes examples
@@ -192,7 +192,7 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 
 #[test]
 fn exposed_action() {
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
@@ -295,7 +295,7 @@ fn exposed_action() {
 
 #[test]
 fn expose_action_without_request_body() {
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
@@ -348,7 +348,7 @@ fn expose_action_without_request_body() {
 fn exposed_action_rejects_reserved_message_field_name() {
     use crate::error::Error;
 
-    let action: ExposedAction =
+    let action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -373,7 +373,7 @@ fn expose_feedback_only_action() {
     // A feedback-only action is still goal-driven: the client fires a goal, the
     // server accepts it and publishes feedback through the GoalContext. The goal
     // has no request/response payload and there is no completion (no result).
-    let action: ExposedAction = serde_json5::from_str(
+    let action: NativeExposedAction = serde_json5::from_str(
         r#"
         {
           name: "blink_led",
@@ -428,8 +428,8 @@ fn expose_feedback_only_action() {
 
 #[test]
 fn expose_two_actions() {
-    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action1: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action1, None).unwrap();
@@ -956,7 +956,7 @@ fn consumed_action_without_feedback() {
 #[test]
 fn clippy_single_exposed_action_empty_goal_request() {
     let temp_dir = TempDir::new().unwrap();
-    let action: ExposedAction =
+    let action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST).unwrap();
 
     let consumed_action1: ConsumedAction =
@@ -1042,8 +1042,8 @@ fn clippy_single_exposed_action_empty_goal_request() {
 #[test]
 fn compile_lib_with_exposed_and_consumed_actions() {
     let temp_dir = TempDir::new().unwrap();
-    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action1: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();

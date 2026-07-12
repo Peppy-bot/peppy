@@ -13,7 +13,7 @@ A node *emits* a topic to publish messages, and other nodes *consume* that topic
 Use topics for continuous, unidirectional data streams such as sensor readings, camera frames, state updates, or any information that flows over time.
 Multiple consumers can listen to the same topic simultaneously.
 
-Topics also underpin two higher-level constructs: [contract conformance](/advanced_guides/contract_conformance), where a topic's contract lives in a standalone contract document that producers conform to, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract. For a side-by-side decision guide across every mechanism, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+Topics also underpin two higher-level constructs: [contract implementation](/advanced_guides/contract_implementation), where a topic's contract lives in a standalone contract document that producers implement, and [pairing](/advanced_guides/pairing), where two node instances exchange topics 1:1 in both directions over a two-role contract. For a side-by-side decision guide across every mechanism, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## Emitting a topic
 
@@ -317,7 +317,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 :::
 
 :::tip
-To depend on a contract instead of a specific producer node, so any conforming node can fill the slot at launch time, declare the dep under `depends_on.contracts` rather than `depends_on.nodes`. See the [Contract conformance](/advanced_guides/contract_conformance) guide.
+To depend on a contract instead of a specific producer node, so any implementing node can fill the slot at launch time, declare the dep under `depends_on.contracts` rather than `depends_on.nodes`. See the [Contract implementation](/advanced_guides/contract_implementation) guide.
 :::
 
 ### Receiving messages
@@ -575,7 +575,7 @@ Three contract statements follow from this manifest:
 The launcher validator runs these checks before the stack starts:
 
 1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared slot the bindings leave out fails the launch with one error per unfulfilled slot.
-2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `interfaces.conforms_to` must include the slot's `(name, tag)` (`BindingContractNotConformed` otherwise); see [Contract conformance](/advanced_guides/contract_conformance) for the conformance contract.
+2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `manifest.implements` must include the slot's `(name, tag)` (`BindingContractNotImplemented` otherwise); see [Contract implementation](/advanced_guides/contract_implementation) for the implementation rules.
 3. **One producer per slot.** Each `KEY` appears at most once per invocation; a repeated `--bind KEY@…` (or a duplicate `bindings:` key in a launcher) is rejected, because a slot binds exactly one producer.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
 5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot.

@@ -163,9 +163,9 @@ mod tests {
 
     #[test]
     fn wrap_ansi_breaks_on_width_keeping_colored_token_whole() {
-        let wrapped = wrap_ansi("via \x1b[36muvc_camera:v1\x1b[0m conformance", 18);
-        // "via uvc_camera:v1" is 17 visible cols; "conformance" then wraps.
-        assert_eq!(wrapped, "via \x1b[36muvc_camera:v1\x1b[0m\nconformance");
+        let wrapped = wrap_ansi("via \x1b[36muvc_camera:v1\x1b[0m implemented", 18);
+        // "via uvc_camera:v1" is 17 visible cols; "implemented" then wraps.
+        assert_eq!(wrapped, "via \x1b[36muvc_camera:v1\x1b[0m\nimplemented");
     }
 
     #[test]

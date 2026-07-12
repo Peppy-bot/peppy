@@ -12,14 +12,14 @@ use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
 
-/// Build an interface-consuming node. `conforms_to` is the interface this node
-/// provides; `dep_iface`/`link_id` is the interface it depends on; `consumes`
-/// is the raw `interfaces` consume block (service/action/topic) referencing
-/// `link_id`.
-fn interface_node(
+/// Build a contract-consuming node. `implements` is the contract this node
+/// provides; `dep_contract`/`link_id` is the contract it depends on;
+/// `consumes` is the raw `interfaces` consume block (service/action/topic)
+/// referencing `link_id`.
+fn contract_node(
     name: &str,
-    conforms_to: &str,
-    dep_iface: &str,
+    implements: &str,
+    dep_contract: &str,
     link_id: &str,
     consumes: &str,
 ) -> config::node::NodeConfig {
@@ -29,12 +29,12 @@ fn interface_node(
             manifest: {{
                 name: "{name}",
                 tag: "v1",
+                implements: [{{ name: "{implements}", tag: "v1", link_id: "impl" }}],
                 depends_on: {{
-                    contracts: [{{ name: "{dep_iface}", tag: "v1", link_id: "{link_id}" }}]
+                    contracts: [{{ name: "{dep_contract}", tag: "v1", link_id: "{link_id}" }}]
                 }},
             }},
             interfaces: {{
-                conforms_to: [{{ name: "{conforms_to}", tag: "v1" }}],
                 {consumes}
             }},
             execution: {{ language: "rust", run_cmd: ["{name}"] }},
@@ -48,16 +48,16 @@ fn new_stack() -> NodeStack {
 }
 
 #[test]
-fn mutual_service_through_interfaces_rejected_when_second_node_added() {
+fn mutual_service_through_contracts_rejected_when_second_node_added() {
     let stack = new_stack();
 
-    // `a` depends on `iface_b` for a service and conforms to `iface_b`'s
-    // counterpart `iface_a`. No provider for `iface_b` exists yet, so this adds
+    // `a` depends on `contract_b` for a service and implements `contract_b`'s
+    // counterpart `contract_a`. No provider for `contract_b` exists yet, so this adds
     // cleanly.
-    let a = interface_node(
+    let a = contract_node(
         "a",
-        "iface_a",
-        "iface_b",
+        "contract_a",
+        "contract_b",
         "to_b",
         r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
     );
@@ -66,12 +66,12 @@ fn mutual_service_through_interfaces_rejected_when_second_node_added() {
         .expect("first node adds with no provider present yet");
     assert_eq!(stack.len(), 2, "core + a");
 
-    // `b` closes the cycle: it conforms to `iface_b` (so it provides what `a`
-    // consumes) and consumes a service from `iface_a` (which `a` provides).
-    let b = interface_node(
+    // `b` closes the cycle: it implements `contract_b` (so it provides what `a`
+    // consumes) and consumes a service from `contract_a` (which `a` provides).
+    let b = contract_node(
         "b",
-        "iface_b",
-        "iface_a",
+        "contract_b",
+        "contract_a",
         "to_a",
         r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
     );
@@ -88,17 +88,17 @@ fn mutual_service_through_interfaces_rejected_when_second_node_added() {
 }
 
 #[test]
-fn mutual_service_through_interfaces_rejected_on_permissive_add() {
+fn mutual_service_through_contracts_rejected_on_permissive_add() {
     // `node add` pushes with `allow_missing_dependencies = true`, which skips
     // the dependency check. That must NOT skip the cycle check: a permissive
     // add that closes a service/action cycle has to be rejected just like a
     // strict one.
     let stack = new_stack();
 
-    let a = interface_node(
+    let a = contract_node(
         "a",
-        "iface_a",
-        "iface_b",
+        "contract_a",
+        "contract_b",
         "to_b",
         r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
     );
@@ -107,10 +107,10 @@ fn mutual_service_through_interfaces_rejected_on_permissive_add() {
         .expect("first node adds permissively with no provider present yet");
     assert_eq!(stack.len(), 2, "core + a");
 
-    let b = interface_node(
+    let b = contract_node(
         "b",
-        "iface_b",
-        "iface_a",
+        "contract_b",
+        "contract_a",
         "to_a",
         r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
     );
@@ -127,13 +127,13 @@ fn mutual_service_through_interfaces_rejected_on_permissive_add() {
 }
 
 #[test]
-fn mutual_action_through_interfaces_rejected_when_second_node_added() {
+fn mutual_action_through_contracts_rejected_when_second_node_added() {
     let stack = new_stack();
 
-    let a = interface_node(
+    let a = contract_node(
         "a",
-        "iface_a",
-        "iface_b",
+        "contract_a",
+        "contract_b",
         "to_b",
         r#"actions: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
     );
@@ -141,10 +141,10 @@ fn mutual_action_through_interfaces_rejected_when_second_node_added() {
         .push_config(a, false, PathBuf::from("/tmp"))
         .expect("first node adds with no provider present yet");
 
-    let b = interface_node(
+    let b = contract_node(
         "b",
-        "iface_b",
-        "iface_a",
+        "contract_b",
+        "contract_a",
         "to_a",
         r#"actions: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
     );
@@ -160,13 +160,13 @@ fn mutual_action_through_interfaces_rejected_when_second_node_added() {
 }
 
 #[test]
-fn bidirectional_topics_through_interfaces_allowed() {
+fn bidirectional_topics_through_contracts_allowed() {
     let stack = new_stack();
 
-    let a = interface_node(
+    let a = contract_node(
         "a",
-        "iface_a",
-        "iface_b",
+        "contract_a",
+        "contract_b",
         "to_b",
         r#"topics: { consumes: [{ link_id: "to_b", name: "telemetry" }] }"#,
     );
@@ -174,10 +174,10 @@ fn bidirectional_topics_through_interfaces_allowed() {
         .push_config(a, false, PathBuf::from("/tmp"))
         .expect("first topic consumer adds cleanly");
 
-    let b = interface_node(
+    let b = contract_node(
         "b",
-        "iface_b",
-        "iface_a",
+        "contract_b",
+        "contract_a",
         "to_a",
         r#"topics: { consumes: [{ link_id: "to_a", name: "telemetry" }] }"#,
     );
@@ -190,17 +190,19 @@ fn bidirectional_topics_through_interfaces_allowed() {
 }
 
 #[test]
-fn one_directional_service_through_interface_allowed() {
+fn one_directional_service_through_contract_allowed() {
     let stack = new_stack();
 
-    // Provider `b` conforms to `iface_b` and consumes nothing back.
+    // Provider `b` implements `contract_b` and consumes nothing back.
     let provider = serde_json5::from_str::<config::node::NodeConfig>(
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "b", tag: "v1" },
+            manifest: {
+                name: "b", tag: "v1",
+                implements: [{ name: "contract_b", tag: "v1", link_id: "impl" }],
+            },
             interfaces: {
-                conforms_to: [{ name: "iface_b", tag: "v1" }],
-                services: { exposes: [{ name: "do_b" }] },
+                services: { exposes: [{ link_id: "impl", name: "do_b" }] },
             },
             execution: { language: "rust", run_cmd: ["b"] },
         }"#,
@@ -210,11 +212,11 @@ fn one_directional_service_through_interface_allowed() {
         .push_config(provider, false, PathBuf::from("/tmp"))
         .expect("provider adds cleanly");
 
-    // Consumer `a` calls `b`'s service through the interface; no back-edge.
-    let a = interface_node(
+    // Consumer `a` calls `b`'s service through the contract; no back-edge.
+    let a = contract_node(
         "a",
-        "iface_a",
-        "iface_b",
+        "contract_a",
+        "contract_b",
         "to_b",
         r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
     );

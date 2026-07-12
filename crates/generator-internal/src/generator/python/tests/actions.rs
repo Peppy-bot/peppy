@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ConsumedAction, ExposedAction, MessageFormat};
+use config::node::{ConsumedAction, MessageFormat, NativeExposedAction};
 use std::collections::HashMap;
 
 // --- Exposes examples
@@ -157,7 +157,7 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 
 #[test]
 fn exposed_action() {
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
@@ -289,7 +289,7 @@ fn exposed_action() {
 
 #[test]
 fn expose_action_without_request_body() {
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
@@ -341,7 +341,7 @@ fn expose_action_without_request_body() {
 
 #[test]
 fn exposed_action_feedback_emits_nested_types() {
-    let action: ExposedAction =
+    let action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
@@ -376,8 +376,8 @@ fn exposed_action_feedback_emits_nested_types() {
 
 #[test]
 fn expose_two_actions() {
-    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action1: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_action(&action1, None).unwrap();

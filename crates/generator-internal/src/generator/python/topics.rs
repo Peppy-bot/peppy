@@ -5,7 +5,7 @@ use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
+use config::node::{ConsumedTopic, MessageFormat, NativeEmittedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -16,8 +16,8 @@ pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
 ///
 /// Schemas are resolved via `importlib.resources.files("peppygen")` so the
 /// lookup is independent of where the calling file lives in the package
-/// tree: native artifacts at `peppygen/{category}/{leaf}.py` and conformed
-/// ones nested under `peppygen/{category}/{iface}/{tag}/{leaf}.py` share
+/// tree: native artifacts at `peppygen/{category}/{leaf}.py` and contract-backed
+/// ones nested under `peppygen/{category}/{contract}/{tag}/{leaf}.py` share
 /// the same loader body.
 pub(crate) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
     builder.add_import("import capnp");
@@ -135,9 +135,9 @@ fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str) {
 
 /// Generates Python code for an emitted (publishing) topic.
 pub fn build_emitted_topic(
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
-    origin: Option<&crate::generator::types::InterfaceOrigin>,
+    origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -240,7 +240,7 @@ fn emit_peer_module_header(
 /// `build_message` plus a slot-scoped `declare_publisher` (pairing wire
 /// target, producer-side link_id = this node's own slot link_id).
 pub fn build_peer_emitted_topic(
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
     peer: &crate::generator::types::PeerContext,
 ) -> Result<String> {
@@ -300,7 +300,7 @@ pub fn build_peer_emitted_topic(
 /// slot's live pin — silent while unpaired, only the paired peer while
 /// paired.
 pub fn build_peer_consumed_topic(
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
     peer: &crate::generator::types::PeerContext,

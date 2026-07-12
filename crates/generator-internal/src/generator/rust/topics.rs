@@ -2,7 +2,7 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
-use config::node::{ConsumedTopic, EmittedTopic, QoSProfile};
+use config::node::{ConsumedTopic, NativeEmittedTopic, QoSProfile};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
@@ -115,9 +115,9 @@ pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
 pub fn build_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     label: &str,
-    origin: Option<&crate::generator::types::InterfaceOrigin>,
+    origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
@@ -423,18 +423,18 @@ fn build_subscription_struct(
 
 /// Returns the `SenderTarget` constructor expression to splice into a
 /// generated emit call. When `origin` is `Some` (the topic is declared via
-/// `interfaces.conforms_to`), emit as `SenderTarget::interface(name, tag)`.
+/// a `manifest.implements` slot), emit as `SenderTarget::contract(name, tag)`.
 /// Otherwise emit as `SenderTarget::node(node_name, node_tag)` using the
 /// runtime's own identity. Both forms are fallible because segment validation
 /// runs at construction.
 pub fn sender_target_expression(
-    origin: Option<&crate::generator::types::InterfaceOrigin>,
+    origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
     match origin {
         Some(o) => {
-            let name = Literal::string(&o.iface_name);
-            let tag = Literal::string(&o.iface_tag);
-            quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
+            let name = Literal::string(&o.contract_name);
+            let tag = Literal::string(&o.contract_tag);
+            quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
         }
         None => quote!(peppylib::messaging::SenderTarget::node(
             node_runner.processor().node_name(),
@@ -547,16 +547,16 @@ pub fn consumed_bound_producer_expression(
 /// Returns the `SenderTarget` expression spliced into a generated
 /// `TopicMessenger::subscribe` / `ServiceMessenger::poll` /
 /// `ActionMessenger::send_goal` call. When the dependency emits via
-/// `conforms_to`, the consumer matches on `Interface(name, tag)`; otherwise
+/// a contract, the consumer matches on `Contract(name, tag)`; otherwise
 /// on `Node(node_name, node_tag)`.
 pub fn consumed_to_target_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     match &dependency.origin {
         Some(origin) => {
-            let name = Literal::string(&origin.iface_name);
-            let tag = Literal::string(&origin.iface_tag);
-            quote!(peppylib::messaging::SenderTarget::interface(#name, #tag)?)
+            let name = Literal::string(&origin.contract_name);
+            let tag = Literal::string(&origin.contract_tag);
+            quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
         }
         None => {
             let node_name = Literal::string(&dependency.producer_name);

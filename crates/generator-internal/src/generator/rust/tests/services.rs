@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ConsumedService, ExposedService, PeppygenLanguage};
+use config::node::{ConsumedService, NativeExposedService, PeppygenLanguage};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -91,7 +91,7 @@ const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 /// In the case of a service, an "exposed" service is an entity that accept incoming messages
 #[test]
 fn expose_service() {
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service, None).unwrap();
@@ -156,7 +156,7 @@ fn expose_service() {
 
 #[test]
 fn expose_service_without_request_body() {
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+    let service: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service, None).unwrap();
@@ -197,8 +197,8 @@ fn expose_service_without_request_body() {
 
 #[test]
 fn expose_two_services() {
-    let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+    let service1: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service2: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service1, None).unwrap();
@@ -302,30 +302,30 @@ fn consumed_service() {
     );
 }
 
-/// A consumed service pulled via a `conforms_to` interface (or a
-/// `depends_on.contracts` dependency) addresses the producer as an
-/// *interface* rather than a node: the `to_target` becomes
-/// `SenderTarget::interface(iface_name, iface_tag)` instead of
-/// `SenderTarget::node(...)`. This is the consumer-side complement to the
-/// producer-side `conforms_to` tests, exercising the
-/// `DependencyContext::interface` / `::conformed` constructors that only the
-/// external consumer drives in production.
+/// A consumed service pulled via a `depends_on.contracts` dependency
+/// addresses the producer as a *contract* rather than a node: the
+/// `to_target` becomes `SenderTarget::contract(contract_name, contract_tag)`
+/// instead of `SenderTarget::node(...)`. This is the consumer-side
+/// complement to the producer-side implements tests, exercising the
+/// `DependencyContext::contract` constructor that only the external
+/// consumer drives in production. (Node dependencies expose native
+/// interfaces only, so there is no node-dep contract-addressed shape.)
 #[test]
-fn consumed_service_via_contract_origin_targets_interface() {
+fn consumed_service_via_contract_origin_targets_contract() {
     let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
-    // `::interface`: no producer node; the interface (name, tag) carries identity.
+    // `::contract`: no producer node; the contract (name, tag) carries identity.
     let mut generator = RustGenerator::new();
     generator
         .add_consumed_service(
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::interface("camera_iface", "v2", "camera_iface"),
+            &crate::DependencyContext::contract("camera_contract", "v2", "camera_contract"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -334,44 +334,12 @@ fn consumed_service_via_contract_origin_targets_interface() {
         .expect("artifact is present");
     assert_contains_all(
         &rendered,
-        &["SenderTarget::interface(", "\"camera_iface\"", "\"v2\""],
+        &["SenderTarget::contract(", "\"camera_contract\"", "\"v2\""],
     );
     assert_rendered!(
         !rendered.contains("SenderTarget::node"),
         rendered,
-        "an interface-origin dep must address the producer as an interface, not a node",
-    );
-
-    // `::conformed`, a real producer node exposing the service via `conforms_to`:
-    // the wire target is still the interface, while NODE_NAME stays the producer.
-    let mut generator = RustGenerator::new();
-    generator
-        .add_consumed_service(
-            &service,
-            &request_format,
-            &response_format,
-            &crate::DependencyContext::conformed(
-                "uvc_camera",
-                "v1",
-                crate::InterfaceOrigin {
-                    iface_name: "camera_iface".to_string(),
-                    iface_tag: "v2".to_string(),
-                },
-                "uvc_camera",
-            ),
-        )
-        .unwrap();
-    let rendered = render_artifacts(generator.into_artifacts())
-        .into_iter()
-        .next()
-        .expect("artifact is present");
-    assert_contains_all(
-        &rendered,
-        &[
-            "SenderTarget::interface(",
-            "\"camera_iface\"",
-            "const NODE_NAME: &str = \"uvc_camera\";",
-        ],
+        "a contract-origin dep must address the producer as a contract, not a node",
     );
 }
 
@@ -499,7 +467,8 @@ fn consumed_service_rejects_optional_scalar_response_field() {
 #[test]
 fn clippy_single_exposed_service_without_request_body() {
     let temp_dir = TempDir::new().unwrap();
-    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+    let exposed_service: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
@@ -576,8 +545,10 @@ fn clippy_single_exposed_service_without_request_body() {
 #[test]
 fn compile_lib_with_exposed_and_consumed_services() {
     let temp_dir = TempDir::new().unwrap();
-    let exposed_service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+    let exposed_service1: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service2: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let consumed_service1: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();

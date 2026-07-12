@@ -9,14 +9,14 @@ Repositories tell peppy where to look for nodes, launchers, contracts, and pairi
 
 - **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
-- **Contracts**, identified by content: every `.json5` file whose body declares `peppy_schema: "contract/v1"` is treated as a contract, regardless of its filename. A contract is a reusable declaration of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes reference contracts by `name:tag` to declare conformance.
+- **Contracts**, identified by content: every `.json5` file whose body declares `peppy_schema: "contract/v1"` is treated as a contract, regardless of its filename. A contract is a reusable declaration of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes claim contracts by `name:tag` in `manifest.implements`.
 - **Pairings**, identified by content: every `.json5` file whose body declares `peppy_schema: "pairing/v1"` is treated as a pairing, regardless of its filename. A pairing is a two-role, topics-only contract that two node instances pair 1:1 over, keyed by the `name:tag` declared in its manifest; see [Pairing](/advanced_guides/pairing/).
 
 Out of the box, four repositories are configured:
 
 - **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`): a curated collection of ready-to-use nodes.
 - **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`): community launch files that compose nodes from the hubs.
-- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`): shared contract definitions that nodes reference by `name:tag` to declare conformance.
+- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
 - **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`): nodes specific to the OpenArm01 robot.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.

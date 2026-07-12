@@ -1,0 +1,40 @@
+<entry>
+  <title>v0.16.0</title>
+  <id>https://docs.peppy.bot/releases/v0-16-0/</id>
+  <updated>2026-07-12T00:00:00Z</updated>
+
+  <summary>Breaking: interfaces.conforms_to is replaced by manifest.implements with explicit per-member entries, and the wire discriminator renames from interface to contract. Every node must be migrated and every fleet resynced.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.16.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Breaking: &lt;code&gt;interfaces.conforms_to&lt;/code&gt; is replaced by &lt;code&gt;manifest.implements&lt;/code&gt; with explicit per-member entries, and the wire discriminator renames from &lt;code&gt;interface&lt;/code&gt; to &lt;code&gt;contract&lt;/code&gt;. Every node must be migrated and every fleet resynced.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 12, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Contract implementation replaces contract conformance (breaking)&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The &lt;code&gt;interfaces.conforms_to&lt;/code&gt; field is removed from &lt;code&gt;node/v1&lt;/code&gt;. A manifest still carrying it fails to parse with the plain unknown-field error.&lt;/li&gt;
+&lt;li&gt;Contract claims now live in &lt;code&gt;manifest.implements&lt;/code&gt;: one entry per contract with &lt;code&gt;{ name, tag, link_id, sha256? }&lt;/code&gt;. The &lt;code&gt;link_id&lt;/code&gt; shares one flat namespace with &lt;code&gt;depends_on&lt;/code&gt; link_ids.&lt;/li&gt;
+&lt;li&gt;Every member of an implemented contract must be listed explicitly in the node's &lt;code&gt;interfaces&lt;/code&gt; section as a contract-backed entry &lt;code&gt;{ link_id, name }&lt;/code&gt; under &lt;code&gt;topics.emits&lt;/code&gt;, &lt;code&gt;services.exposes&lt;/code&gt;, or &lt;code&gt;actions.exposes&lt;/code&gt;. Shape and QoS come from the contract document; inline shape fields on a contract-backed entry are rejected.&lt;/li&gt;
+&lt;li&gt;Full coverage is mandatory and enforced at &lt;code&gt;node add&lt;/code&gt; / &lt;code&gt;node sync&lt;/code&gt;: missing, unknown, duplicated, and wrong-kind entries are reported in one aggregated diff per implements slot.&lt;/li&gt;
+&lt;li&gt;Node dependencies now expose native interfaces only: a consumed entry whose &lt;code&gt;link_id&lt;/code&gt; names a &lt;code&gt;depends_on.nodes&lt;/code&gt; slot resolves exclusively against the producer's native declarations. Contract-backed interfaces are consumable solely through &lt;code&gt;depends_on.contracts&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The launcher's binding predicate is unchanged in shape but reads &lt;code&gt;manifest.implements&lt;/code&gt;; the mismatch error renamed from &lt;code&gt;BindingContractNotConformed&lt;/code&gt; to &lt;code&gt;BindingContractNotImplemented&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;See the rewritten &lt;a href="/advanced_guides/contract_implementation/"&gt;Contract implementation&lt;/a&gt; guide (previously "Contract conformance").&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Wire format rename (breaking)&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The keyexpr discriminator segment for contract-addressed traffic renames from &lt;code&gt;interface&lt;/code&gt; to &lt;code&gt;contract&lt;/code&gt;. Old and new nodes cannot interoperate on contract-addressed topics, services, or actions.&lt;/li&gt;
+&lt;li&gt;Generated code and peppylib rename accordingly: &lt;code&gt;SenderTarget::interface(..)&lt;/code&gt; is now &lt;code&gt;SenderTarget::contract(..)&lt;/code&gt; (Rust) and &lt;code&gt;SenderTarget.contract(..)&lt;/code&gt; (Python).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Migration runbook&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;For each node with &lt;code&gt;interfaces.conforms_to&lt;/code&gt;: move every entry to &lt;code&gt;manifest.implements&lt;/code&gt; and mint a semantic &lt;code&gt;link_id&lt;/code&gt; per slot (e.g. &lt;code&gt;cam&lt;/code&gt;, &lt;code&gt;moves&lt;/code&gt;, &lt;code&gt;hw_ready&lt;/code&gt;).&lt;/li&gt;
+&lt;li&gt;Add one explicit contract-backed entry &lt;code&gt;{ link_id, name }&lt;/code&gt; per contract member to the node's &lt;code&gt;interfaces&lt;/code&gt; section: contract topics under &lt;code&gt;topics.emits&lt;/code&gt;, contract services under &lt;code&gt;services.exposes&lt;/code&gt;, contract actions under &lt;code&gt;actions.exposes&lt;/code&gt;. Coverage must be complete.&lt;/li&gt;
+&lt;li&gt;Run &lt;code&gt;peppy repo refresh&lt;/code&gt;, then &lt;code&gt;peppy node sync&lt;/code&gt; every node (or re-add). The wire rename means partially-migrated fleets do not interoperate: resync and restart everything in one coordinated pass.&lt;/li&gt;
+&lt;li&gt;Regenerate all peppygen output; stale generated code referencing &lt;code&gt;SenderTarget::interface&lt;/code&gt; will not compile against the new peppylib.&lt;/li&gt;
+&lt;li&gt;Python nodes: rebuild the peppylib extension (&lt;code&gt;uv sync --reinstall&lt;/code&gt; or equivalent) so the &lt;code&gt;.so&lt;/code&gt; matches the new wire format.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/article&gt;</content>
+</entry>

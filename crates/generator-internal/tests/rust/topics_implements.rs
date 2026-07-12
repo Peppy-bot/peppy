@@ -1,26 +1,26 @@
-//! Reproduces the realsense_d435 example from the conforms_to spec: a node
-//! that emits its own `video_stream` topic and also conforms to three
-//! interfaces (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`), each
+//! Reproduces the realsense_d435 example from the implements spec: a node
+//! that emits its own `video_stream` topic and also implements three
+//! contracts (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`), each
 //! of which exposes a `video_stream` topic with a distinct shape.
 //!
 //! We feed the resolved `DeploymentInterface`s directly to
 //! `generate_peppygen_lib` (the cache-loading side is exercised by the sync
 //! unit tests in `core-node-internal`), and verify:
-//!   1. The generated file layout nests conformed artifacts under
+//!   1. The generated file layout nests contract-backed artifacts under
 //!      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while keeping the
 //!      native artifact at `emitted_topics/{topic}.rs`.
 //!   2. Each `mod.rs` declares the right children.
 //!   3. The rendered declare_publisher inside each leaf passes the matching
-//!      sender target (`SenderTarget::interface("name", "tag")?` for conformed,
+//!      sender target (`SenderTarget::contract("name", "tag")?` for contract-backed,
 //!      `SenderTarget::node("name", "tag")?` for native) to
 //!      `peppylib::TopicMessenger::declare_publisher`.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    EmittedTopic, MessageFormat, PeppygenLanguage, QoSProfile, SchemaType, TypeToken,
+    MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TypeToken,
 };
 use generator::{
-    CrateDeployMode, DeploymentInterface, InterfaceOrigin, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
@@ -28,25 +28,25 @@ use tempfile::TempDir;
 
 /// Minimal `video_stream`-shaped topic with one distinguishing field per
 /// interface tag so we can tell the generated files apart at a glance.
-fn make_topic(distinguishing_field: &str) -> EmittedTopic {
+fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
     let mut fields: IndexMap<String, SchemaType> = IndexMap::new();
     fields.insert(
         distinguishing_field.to_string(),
         SchemaType::Type(TypeToken::U32),
     );
-    EmittedTopic {
+    NativeEmittedTopic {
         name: "video_stream".to_string(),
         qos_profile: QoSProfile::SensorData,
         message_format: Some(MessageFormat(fields)),
     }
 }
 
-fn conformed(name: &str, tag: &str, topic: EmittedTopic) -> DeploymentInterface {
+fn contract_backed(name: &str, tag: &str, topic: NativeEmittedTopic) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::EmittedTopic {
         topic,
-        origin: Some(InterfaceOrigin {
-            iface_name: name.to_string(),
-            iface_tag: tag.to_string(),
+        origin: Some(ContractOrigin {
+            contract_name: name.to_string(),
+            contract_tag: tag.to_string(),
         }),
     })
 }
@@ -76,7 +76,7 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 /// Realsense_d435 scenario for the Rust generator: one native `video_stream`
-/// publisher plus three resolved conformed interfaces (`depth_camera:v1`,
+/// publisher plus three resolved contract-backed interfaces (`depth_camera:v1`,
 /// `depth_camera:v2`, `uvc_camera:v1`) each shaped as `video_stream` with a
 /// distinguishing marker field. Verifies that:
 ///   1. Conformed artifacts nest under
@@ -84,22 +84,22 @@ const NODE_CONFIG: &str = r#"{
 ///      artifact stays flat at `emitted_topics/{topic}.rs`.
 ///   2. Each container `mod.rs` declares its direct child modules, and the
 ///      top-level `emitted_topics.rs` lists the native leaf plus one entry per
-///      conforming interface directory.
+///      implemented contract directory.
 ///   3. Each leaf calls `peppylib::TopicMessenger::declare_publisher` with the
-///      matching sender target: `SenderTarget::interface("name", "tag")?` for
-///      conformed leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
+///      matching sender target: `SenderTarget::contract("name", "tag")?` for
+///      contract-backed leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
 ///   4. The per-interface marker fields land in their own files, proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
-fn nests_conformed_topics_under_iface_name_and_tag() {
+fn nests_contract_backed_topics_under_contract_name_and_tag() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        conformed("depth_camera", "v1", make_topic("depth_v1_marker")),
-        conformed("depth_camera", "v2", make_topic("depth_v2_marker")),
-        conformed("uvc_camera", "v1", make_topic("uvc_v1_marker")),
+        contract_backed("depth_camera", "v1", make_topic("depth_v1_marker")),
+        contract_backed("depth_camera", "v2", make_topic("depth_v2_marker")),
+        contract_backed("uvc_camera", "v1", make_topic("uvc_v1_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -131,7 +131,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
     let depth_v2 = emit_dir.join("depth_camera/v2/video_stream.rs");
     let uvc_v1 = emit_dir.join("uvc_camera/v1/video_stream.rs");
     for path in [&depth_v1, &depth_v2, &uvc_v1] {
-        assert!(path.exists(), "expected conformed topic at {path:?}");
+        assert!(path.exists(), "expected contract-backed topic at {path:?}");
     }
 
     // The container mod.rs files declare every direct child module.
@@ -163,7 +163,7 @@ fn nests_conformed_topics_under_iface_name_and_tag() {
 
     // Each leaf calls `peppylib::TopicMessenger::declare_publisher(...)` with the
     // sender target threaded through. Conformed leaves splice in
-    // `SenderTarget::interface("name", "tag")?` while the native leaf passes
+    // `SenderTarget::contract("name", "tag")?` while the native leaf passes
     // `SenderTarget::node("name", "tag")?`.
     let native_src = fs::read_to_string(&native_path).expect("read native");
     assert!(
@@ -229,7 +229,7 @@ fn hyphenated_tag_lands_in_underscore_directory() {
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
-    let extras = vec![conformed(
+    let extras = vec![contract_backed(
         "depth_camera",
         "v1-beta",
         make_topic("hyphen_marker"),

@@ -1964,14 +1964,14 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     );
 }
 
-/// End-to-end regression for the user-reported bug: a `conforms_to` entry
-/// resolved from a git-sourced contract cache must materialize the repo
+/// End-to-end regression for the user-reported bug: a `manifest.implements`
+/// slot resolved from a git-sourced contract cache must materialize the repo
 /// checkout before reading the contract manifest. The contract cache
 /// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
 /// without `ensure_checkout` the daemon would have tried to read that path
 /// from the daemon's CWD and failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_sync_resolves_git_sourced_conforms_to_contract() {
+async fn node_sync_resolves_git_sourced_implements_contract() {
     let started = start_core_node_with_mock_messenger().await;
 
     // Build a local git repo that hosts the contract manifest at the
@@ -2027,22 +2027,22 @@ async fn node_sync_resolves_git_sourced_conforms_to_contract() {
         )
         .write(&started.peppy_dirs);
 
-    // The node under sync declares `conforms_to` against the git-sourced
-    // contract. Before the fix, `handle_node_sync_request` errored here
+    // The node under sync implements the git-sourced contract. Before the
+    // fix, `handle_node_sync_request` errored here
     // with "failed to read cached contract ... at cameras/depth_camera.json5".
     let node_dir = tempdir().expect("node tempdir");
     write_node_config(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "depth_publisher", tag: "v1" },
-            interfaces: {
-                topics: { emits: [], consumes: [] },
-                services: { exposes: [] },
-                actions: { exposes: [] },
-                conforms_to: [
-                    { name: "depth_camera", tag: "v1" }
+            manifest: {
+                name: "depth_publisher", tag: "v1",
+                implements: [
+                    { name: "depth_camera", tag: "v1", link_id: "depth" }
                 ],
+            },
+            interfaces: {
+                topics: { emits: [{ link_id: "depth", name: "video_stream" }], consumes: [] },
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#,
@@ -2051,7 +2051,7 @@ async fn node_sync_resolves_git_sourced_conforms_to_contract() {
     let response = sync_with_flag(&started, node_dir.path(), true).await;
     assert!(
         response.success,
-        "sync should resolve the git-sourced conforms_to contract, got error: {}",
+        "sync should resolve the git-sourced implemented contract, got error: {}",
         response.error_message
     );
 

@@ -6,17 +6,17 @@
 //! one means "I will actively invoke the provider". Two nodes that each invoke
 //! the other form a request/response cycle that deadlocks at runtime.
 //!
-//! The static dependency graph deliberately drops interface edges (that is what
+//! The static dependency graph deliberately drops contract edges (that is what
 //! makes bidirectional communication through contracts possible), so a
 //! service/action cycle routed through contracts is invisible to the node-dep
 //! DAG check. This module rebuilds the *caller-driven* edges only, resolving
-//! interface dependencies to their providers via `conforms_to`, and reports any
-//! cycle so callers can reject it.
+//! contract dependencies to their providers via `manifest.implements`, and
+//! reports any cycle so callers can reject it.
 //!
 //! Detection is type-level: it reasons about node identities and their declared
-//! `conforms_to` / consumes, not about resolved per-instance bindings. When an
-//! interface has several conforming providers and only some of them close a
-//! cycle, every conforming provider gets an edge, so a config that a specific
+//! `implements` / consumes, not about resolved per-instance bindings. When a
+//! contract has several implementing providers and only some of them close a
+//! cycle, every implementing provider gets an edge, so a config that a specific
 //! binding would keep acyclic can still be rejected. That is intentional: it is
 //! conservative-safe (it never lets a real deadlock through) and it catches the
 //! cycle the moment the second node is declared, even when the two nodes are
@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use config::node::{InterfaceKind, Interfaces, NodeConfig, node_conforms_to};
+use config::node::{InterfaceKind, Interfaces, NodeConfig, node_implements};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 
@@ -45,16 +45,16 @@ pub(crate) struct ServiceActionCycle {
     /// reporting.
     pub nodes: Vec<String>,
     /// The `name:tag` of the dependency whose caller-driven edge closes the
-    /// cycle. This is an interface for an interface-routed edge, or a direct
+    /// cycle. This is a contract for a contract-routed edge, or a direct
     /// node identity for a direct `depends_on.nodes` edge; hence the neutral
-    /// name rather than `interface`.
+    /// name rather than `contract`.
     pub closing_dependency: String,
     /// Whether the closing edge is a service or an action dependency.
     pub kind: InterfaceKind,
 }
 
 /// One caller-driven edge `from -> to` (caller depends on provider), tagged
-/// with the interface/node it routes through so a detected cycle can name it.
+/// with the contract/node it routes through so a detected cycle can name it.
 struct Edge {
     from: usize,
     to: usize,
@@ -69,9 +69,9 @@ struct Edge {
 /// direction-agnostic but the convention is kept consistent):
 /// - For every link a node consumes as a service or action, its matching
 ///   `depends_on.contracts` entry adds an edge to every in-set node that
-///   `conforms_to` that contract, and its matching `depends_on.nodes` entry
+///   implements that contract, and its matching `depends_on.nodes` entry
 ///   adds an edge to the in-set node with that identity (the mixed direct +
-///   interface case).
+///   contract case).
 /// - Links consumed only as topics add no edge, so bidirectional topics stay
 ///   acyclic by construction.
 pub(crate) fn find_service_action_cycle(
@@ -124,15 +124,15 @@ fn build_caller_driven_edges(
             let Some(&kind) = caller_driven.get(dep.link_id.as_str()) else {
                 continue;
             };
-            let iface_name = dep.name.as_str();
-            let iface_tag = dep.tag.as_str();
+            let contract_name = dep.name.as_str();
+            let contract_tag = dep.tag.as_str();
             for (provider_idx, provider) in nodes.iter().enumerate() {
-                if node_conforms_to(provider.config, iface_name, iface_tag) {
+                if node_implements(provider.config, contract_name, contract_tag) {
                     edges.push(Edge {
                         from: caller_idx,
                         to: provider_idx,
                         kind,
-                        label: format!("{iface_name}:{iface_tag}"),
+                        label: format!("{contract_name}:{contract_tag}"),
                     });
                 }
             }
@@ -241,8 +241,8 @@ mod tests {
     /// pieces relevant to a test are set, the rest stay empty.
     struct NodeSpec {
         name: String,
-        conforms_to: Vec<(String, String)>,
-        iface_deps: Vec<(String, String, String)>,
+        implements: Vec<(String, String)>,
+        contract_deps: Vec<(String, String, String)>,
         node_deps: Vec<(String, String, String)>,
         service_consumes: Vec<String>,
         action_consumes: Vec<String>,
@@ -253,8 +253,8 @@ mod tests {
         fn new(name: &str) -> Self {
             Self {
                 name: name.to_owned(),
-                conforms_to: Vec::new(),
-                iface_deps: Vec::new(),
+                implements: Vec::new(),
+                contract_deps: Vec::new(),
                 node_deps: Vec::new(),
                 service_consumes: Vec::new(),
                 action_consumes: Vec::new(),
@@ -262,13 +262,13 @@ mod tests {
             }
         }
 
-        fn conforms(mut self, name: &str, tag: &str) -> Self {
-            self.conforms_to.push((name.to_owned(), tag.to_owned()));
+        fn implements(mut self, name: &str, tag: &str) -> Self {
+            self.implements.push((name.to_owned(), tag.to_owned()));
             self
         }
 
-        fn iface_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
-            self.iface_deps
+        fn contract_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
+            self.contract_deps
                 .push((name.to_owned(), tag.to_owned(), link_id.to_owned()));
             self
         }
@@ -296,10 +296,10 @@ mod tests {
         }
 
         fn build(&self) -> NodeConfig {
-            let conforms = join(&self.conforms_to, |(n, t)| {
-                format!(r#"{{ name: "{n}", tag: "{t}" }}"#)
+            let implements = join_indexed(&self.implements, |idx, (n, t)| {
+                format!(r#"{{ name: "{n}", tag: "{t}", link_id: "impl_{idx}" }}"#)
             });
-            let iface_deps = join(&self.iface_deps, |(n, t, l)| {
+            let contract_deps = join(&self.contract_deps, |(n, t, l)| {
                 format!(r#"{{ name: "{n}", tag: "{t}", link_id: "{l}" }}"#)
             });
             let node_deps = join(&self.node_deps, |(n, t, l)| {
@@ -322,10 +322,10 @@ mod tests {
                     manifest: {{
                         name: "{name}",
                         tag: "v1",
-                        depends_on: {{ nodes: [{node_deps}], contracts: [{iface_deps}] }},
+                        implements: [{implements}],
+                        depends_on: {{ nodes: [{node_deps}], contracts: [{contract_deps}] }},
                     }},
                     interfaces: {{
-                        conforms_to: [{conforms}],
                         services: {{ consumes: [{services}] }},
                         actions: {{ consumes: [{actions}] }},
                         topics: {{ consumes: [{topics}] }},
@@ -340,6 +340,15 @@ mod tests {
 
     fn join<T>(items: &[T], render: impl Fn(&T) -> String) -> String {
         items.iter().map(render).collect::<Vec<_>>().join(", ")
+    }
+
+    fn join_indexed<T>(items: &[T], render: impl Fn(usize, &T) -> String) -> String {
+        items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| render(idx, item))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn view(configs: &[NodeConfig]) -> Vec<CycleCheckNode<'_>> {
@@ -360,13 +369,13 @@ mod tests {
     #[test]
     fn mutual_service_via_contracts_is_cycle() {
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_b", "v1", "to_b")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
         let b = NodeSpec::new("b")
-            .conforms("iface_b", "v1")
-            .iface_dep("iface_a", "v1", "to_a")
+            .implements("contract_b", "v1")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
 
@@ -379,13 +388,13 @@ mod tests {
     #[test]
     fn mutual_action_via_contracts_is_cycle() {
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_b", "v1", "to_b")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_action("to_b")
             .build();
         let b = NodeSpec::new("b")
-            .conforms("iface_b", "v1")
-            .iface_dep("iface_a", "v1", "to_a")
+            .implements("contract_b", "v1")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_action("to_a")
             .build();
 
@@ -396,13 +405,13 @@ mod tests {
     #[test]
     fn bidirectional_topic_via_contracts_is_not_cycle() {
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_b", "v1", "to_b")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_topic("to_b", "telemetry")
             .build();
         let b = NodeSpec::new("b")
-            .conforms("iface_b", "v1")
-            .iface_dep("iface_a", "v1", "to_a")
+            .implements("contract_b", "v1")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_topic("to_a", "telemetry")
             .build();
 
@@ -415,18 +424,18 @@ mod tests {
     #[test]
     fn three_node_service_cycle_detected() {
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_b", "v1", "to_b")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
         let b = NodeSpec::new("b")
-            .conforms("iface_b", "v1")
-            .iface_dep("iface_c", "v1", "to_c")
+            .implements("contract_b", "v1")
+            .contract_dep("contract_c", "v1", "to_c")
             .consumes_service("to_c")
             .build();
         let c = NodeSpec::new("c")
-            .conforms("iface_c", "v1")
-            .iface_dep("iface_a", "v1", "to_a")
+            .implements("contract_c", "v1")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
 
@@ -435,12 +444,12 @@ mod tests {
     }
 
     #[test]
-    fn one_directional_service_interface_dep_is_ok() {
+    fn one_directional_service_contract_dep_is_ok() {
         let a = NodeSpec::new("a")
-            .iface_dep("iface_b", "v1", "to_b")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
-        let b = NodeSpec::new("b").conforms("iface_b", "v1").build();
+        let b = NodeSpec::new("b").implements("contract_b", "v1").build();
 
         assert!(
             find_cycle(&[a, b]).is_none(),
@@ -449,61 +458,61 @@ mod tests {
     }
 
     #[test]
-    fn mixed_node_dep_and_interface_dep_service_cycle_detected() {
-        // a -> b via a direct node-dep service call; b -> a via an interface
-        // service call. Neither the node-dep DAG check nor an interface-only
+    fn mixed_node_dep_and_contract_dep_service_cycle_detected() {
+        // a -> b via a direct node-dep service call; b -> a via a contract
+        // service call. Neither the node-dep DAG check nor a contract-only
         // check would catch this on its own.
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
+            .implements("contract_a", "v1")
             .node_dep("b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
         let b = NodeSpec::new("b")
-            .iface_dep("iface_a", "v1", "to_a")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
 
-        let cycle = find_cycle(&[a, b]).expect("mixed node+interface service cycle");
+        let cycle = find_cycle(&[a, b]).expect("mixed node+contract service cycle");
         assert_eq!(cycle.kind, InterfaceKind::Service);
     }
 
     #[test]
-    fn provider_without_conforms_to_adds_no_edge() {
-        // The would-be provider's node name equals the interface name, but it
-        // does not declare `conforms_to`, so it never satisfies the dep.
+    fn provider_without_implements_adds_no_edge() {
+        // The would-be provider's node name equals the contract name, but it
+        // does not declare `manifest.implements`, so it never satisfies the dep.
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_b", "v1", "to_b")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
-        let b = NodeSpec::new("iface_b")
-            .iface_dep("iface_a", "v1", "to_a")
+        let b = NodeSpec::new("contract_b")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
 
         assert!(
             find_cycle(&[a, b]).is_none(),
-            "interface providers match by conforms_to, never node-name identity"
+            "contract providers match by manifest.implements, never node-name identity"
         );
     }
 
     #[test]
     fn multi_provider_over_approximation_is_rejected() {
-        // A consumes iface_b; both b1 and b2 conform. Only b1 closes a cycle
+        // A consumes contract_b; both b1 and b2 implement it. Only b1 closes a cycle
         // back to A. A specific binding could pick b2 and stay acyclic, but the
         // conservative type-level check rejects regardless. This locks in the
         // documented over-approximation.
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_b", "v1", "to_b")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
         let b1 = NodeSpec::new("b1")
-            .conforms("iface_b", "v1")
-            .iface_dep("iface_a", "v1", "to_a")
+            .implements("contract_b", "v1")
+            .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
-        let b2 = NodeSpec::new("b2").conforms("iface_b", "v1").build();
+        let b2 = NodeSpec::new("b2").implements("contract_b", "v1").build();
 
         let cycle = find_cycle(&[a, b1, b2]).expect("conservative check rejects multi-provider");
         assert!(cycle.nodes.contains(&"a:v1".to_owned()));
@@ -513,8 +522,8 @@ mod tests {
     #[test]
     fn self_service_consume_is_cycle() {
         let a = NodeSpec::new("a")
-            .conforms("iface_a", "v1")
-            .iface_dep("iface_a", "v1", "to_self")
+            .implements("contract_a", "v1")
+            .contract_dep("contract_a", "v1", "to_self")
             .consumes_service("to_self")
             .build();
 
@@ -525,10 +534,10 @@ mod tests {
     #[test]
     fn independent_nodes_have_no_cycle() {
         let a = NodeSpec::new("a")
-            .iface_dep("iface_b", "v1", "to_b")
+            .contract_dep("contract_b", "v1", "to_b")
             .consumes_service("to_b")
             .build();
-        let b = NodeSpec::new("b").conforms("iface_b", "v1").build();
+        let b = NodeSpec::new("b").implements("contract_b", "v1").build();
         let c = NodeSpec::new("c").build();
 
         assert!(find_cycle(&[a, b, c]).is_none());

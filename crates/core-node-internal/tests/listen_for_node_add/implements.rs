@@ -1,13 +1,13 @@
-//! Regression tests for `node_add` with `interfaces.conforms_to`.
+//! Regression tests for `node_add` with `manifest.implements`.
 //!
 //! `node_add` copies the source to a temp working dir and *regenerates*
 //! peppygen there before handing off to `node_build`. An earlier version
 //! of the add path called only `collect_consumed_interfaces` (which
-//! handles `depends_on`) and skipped `resolve_conforms_to`, so the
-//! generator never saw the conformed contract's topics/services. The
+//! handles `depends_on`) and skipped the produced-side contract resolution, so the
+//! generator never saw the contract-backed's topics/services. The
 //! resulting peppygen had a flat layout (`emitted_topics.rs` was empty)
 //! and any node code importing nested paths like
-//! `peppygen::emitted_topics::<iface>::<tag>::<topic>` failed to compile
+//! `peppygen::emitted_topics::<contract>::<tag>::<topic>` failed to compile
 //! inside the container. `sync` did this correctly, which is why a sync
 //! followed by build was enough to mask the bug on a developer's
 //! workstation but the daemon-driven path produced broken artifacts.
@@ -33,11 +33,19 @@ const CONTRACT_BODY: &str = r#"{
 
 const NODE_BODY: &str = r#"{
     peppy_schema: "node/v1",
-    manifest: { name: "fake_uvc_camera", tag: "v1" },
-    interfaces: {
-        conforms_to: [
-            { name: "uvc_camera", tag: "v1" }
+    manifest: {
+        name: "fake_uvc_camera", tag: "v1",
+        implements: [
+            { name: "uvc_camera", tag: "v1", link_id: "cam" }
         ]
+    },
+    interfaces: {
+        topics: {
+            emits: [ { link_id: "cam", name: "video_stream" } ]
+        },
+        services: {
+            exposes: [ { link_id: "cam", name: "video_stream_info" } ]
+        }
     },
     execution: {
         language: "rust",
@@ -45,26 +53,26 @@ const NODE_BODY: &str = r#"{
     }
 }"#;
 
-/// `node_add` must resolve `conforms_to` and pass the conformed
-/// topics/services to the generator so the staged peppygen nests
-/// artifacts under `{category}/{iface_name}/{iface_tag}/`. Before the
+/// `node_add` must resolve the contract-backed entries and pass the
+/// resolved topics/services to the generator so the staged peppygen nests
+/// artifacts under `{category}/{contract_name}/{contract_tag}/`. Before the
 /// fix, the working dir's `emitted_topics.rs` and
 /// `exposed_services.rs` were empty for a node whose only contributions
-/// came through `conforms_to`.
+/// came through an implemented contract.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_add_generates_conformed_interface_modules_in_working_dir() {
+async fn node_add_generates_contract_backed_modules_in_working_dir() {
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
     let peppy_dirs = started.peppy_dirs.clone();
 
     // Stage the contract on disk plus an fs-backed cache entry so
-    // `resolve_conforms_to` can find it.
-    let iface_dir = TempDir::new().expect("iface tempdir");
-    let iface_path = iface_dir.path().join("uvc_camera.json5");
-    std::fs::write(&iface_path, CONTRACT_BODY).expect("write contract");
+    // `resolve_implements` can find it.
+    let contract_dir = TempDir::new().expect("contract tempdir");
+    let contract_path = contract_dir.path().join("uvc_camera.json5");
+    std::fs::write(&contract_path, CONTRACT_BODY).expect("write contract");
 
     TestPackagesCache::new()
-        .contract_fs_entry("uvc_camera", "v1", &iface_path, CONTRACT_BODY)
+        .contract_fs_entry("uvc_camera", "v1", &contract_path, CONTRACT_BODY)
         .write(&peppy_dirs);
 
     let node_dir = TempDir::new().expect("node tempdir");
@@ -83,7 +91,7 @@ async fn node_add_generates_conformed_interface_modules_in_working_dir() {
 
     assert!(
         add_result.success,
-        "node_add should resolve conforms_to and succeed, got error: {:?}",
+        "node_add should resolve implements and succeed, got error: {:?}",
         add_result.error_message
     );
 
@@ -108,7 +116,7 @@ async fn node_add_generates_conformed_interface_modules_in_working_dir() {
         .expect("emitted_topics.rs should exist in staged peppygen");
     assert!(
         emitted_topics.contains("pub mod uvc_camera;"),
-        "emitted_topics.rs should declare the conformed interface module \
+        "emitted_topics.rs should declare the implemented contract module \
          `uvc_camera`; got:\n{emitted_topics}"
     );
     assert!(
@@ -124,7 +132,7 @@ async fn node_add_generates_conformed_interface_modules_in_working_dir() {
         .expect("exposed_services.rs should exist in staged peppygen");
     assert!(
         exposed_services.contains("pub mod uvc_camera;"),
-        "exposed_services.rs should declare the conformed interface module \
+        "exposed_services.rs should declare the implemented contract module \
          `uvc_camera`; got:\n{exposed_services}"
     );
     assert!(

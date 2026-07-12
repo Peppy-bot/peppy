@@ -12,7 +12,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    node::{ConsumedAction, ExposedAction, ExposedService, MessageFormat},
+    node::{ConsumedAction, MessageFormat, NativeExposedAction, NativeExposedService},
     runtime::{Name, RuntimeConfig},
 };
 use generator::{ConsumedActionMessage, LanguageGenerator};
@@ -102,7 +102,7 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
             &temp_dir_consumer,
             &python_consumer_stub_node_config("brain", "v1", "brain"),
         );
-    let flow_done_service: ExposedService =
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
@@ -187,7 +187,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -443,7 +444,7 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
             &temp_dir_consumer,
             &python_consumer_stub_node_config("brain", "v1", "brain"),
         );
-    let flow_done_service: ExposedService =
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
@@ -524,7 +525,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -766,7 +768,7 @@ async fn actions_communication_async_goal_decider(#[case] mode: crate::helpers::
             &temp_dir_consumer,
             &python_consumer_stub_node_config("brain", "v1", "brain"),
         );
-    let flow_done_service: ExposedService =
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_IN_HANDLER_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
@@ -853,7 +855,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1118,7 +1121,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
             &temp_dir_consumer,
             &python_consumer_stub_node_config("brain", "v1", "brain"),
         );
-    let flow_done_service: ExposedService =
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
@@ -1207,7 +1210,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1481,7 +1485,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
             &temp_dir_consumer,
             &python_consumer_stub_node_config("brain", "v1", "brain"),
         );
-    let flow_done_service: ExposedService =
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
@@ -1580,7 +1584,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1864,7 +1869,7 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
             &temp_dir_consumer,
             &python_consumer_stub_node_config("brain", "v1", "brain"),
         );
-    let flow_done_service: ExposedService =
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
@@ -1959,7 +1964,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -2314,7 +2320,8 @@ if __name__ == "__main__":
     // --- Exposer (server) project
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();

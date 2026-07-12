@@ -1,36 +1,36 @@
 //! Generator-level test that a node exposing the same service `control` both
-//! natively and via two conformed interfaces (`camera:v1`, `arm:v2`) produces
+//! natively and via two contract-backed interfaces (`camera:v1`, `arm:v2`) produces
 //! distinct generated files AND each `ServiceMessenger::listen` call inside
-//! those files passes the matching target: `SenderTarget::interface("name", "tag")?`
-//! for conformed leaves and `SenderTarget::node(...)` for the native one.
+//! those files passes the matching target: `SenderTarget::contract("name", "tag")?`
+//! for contract-backed leaves and `SenderTarget::node(...)` for the native one.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{ExposedService, MessageFormat, PeppygenLanguage, SchemaType, TypeToken};
+use config::node::{MessageFormat, NativeExposedService, PeppygenLanguage, SchemaType, TypeToken};
 use generator::{
-    CrateDeployMode, DeploymentInterface, InterfaceOrigin, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
 use tempfile::TempDir;
 
-fn make_service(marker: &str) -> ExposedService {
+fn make_service(marker: &str) -> NativeExposedService {
     let mut request_fields: IndexMap<String, SchemaType> = IndexMap::new();
     request_fields.insert(marker.to_string(), SchemaType::Type(TypeToken::Bool));
     let mut response_fields: IndexMap<String, SchemaType> = IndexMap::new();
     response_fields.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    ExposedService {
+    NativeExposedService {
         name: "control".to_string(),
         request_message_format: Some(MessageFormat(request_fields)),
         response_message_format: Some(MessageFormat(response_fields)),
     }
 }
 
-fn conformed(name: &str, tag: &str, service: ExposedService) -> DeploymentInterface {
+fn contract_backed(name: &str, tag: &str, service: NativeExposedService) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedService {
         service,
-        origin: Some(InterfaceOrigin {
-            iface_name: name.to_string(),
-            iface_tag: tag.to_string(),
+        origin: Some(ContractOrigin {
+            contract_name: name.to_string(),
+            contract_tag: tag.to_string(),
         }),
     })
 }
@@ -59,26 +59,26 @@ const NODE_CONFIG: &str = r#"{
 }
 "#;
 
-/// One native `control` service plus two conformed interfaces
+/// One native `control` service plus two contract-backed interfaces
 /// (`camera:v1`, `arm:v2`) each exposing a service named `control`. Verifies:
 ///   1. Conformed artifacts nest under
 ///      `exposed_services/{iface_name}/{iface_tag}/control.rs` while the
 ///      native artifact stays flat at `exposed_services/control.rs`.
 ///   2. The category `exposed_services.rs` declares the native leaf and one
-///      module entry per conforming interface.
+///      module entry per implemented contract.
 ///   3. Each leaf calls `peppylib::ServiceMessenger::listen` with the matching
-///      target: `SenderTarget::interface("name", "tag")?` for conformed leaves
+///      target: `SenderTarget::contract("name", "tag")?` for contract-backed leaves
 ///      and `SenderTarget::node(...)` for the native leaf.
 ///   4. Per-interface marker fields land in the right file (no cross-wiring).
 #[test]
-fn nests_conformed_services_under_iface_name_and_tag() {
+fn nests_contract_backed_services_under_contract_name_and_tag() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        conformed("camera", "v1", make_service("camera_v1_marker")),
-        conformed("arm", "v2", make_service("arm_v2_marker")),
+        contract_backed("camera", "v1", make_service("camera_v1_marker")),
+        contract_backed("arm", "v2", make_service("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();

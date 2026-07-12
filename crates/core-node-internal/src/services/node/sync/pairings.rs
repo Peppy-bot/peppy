@@ -61,7 +61,7 @@ fn resolve_pairing_doc_cached(
 /// - the declared `role` must be one of the doc's two roles (the error
 ///   names them);
 /// - two entries must not collide after tag normalization (same rule as
-///   `conforms_to`; exact duplicates of `(name, tag, role, link_id)` are
+///   `manifest.implements`; exact duplicates of `(name, tag, role, link_id)` are
 ///   already impossible because link_ids are unique).
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
@@ -144,7 +144,7 @@ pub fn collect_pairing_interfaces(
             pairing_tag: dep.tag.clone(),
         };
         for topic in &doc.topics {
-            let emitted = config::node::EmittedTopic {
+            let emitted = config::node::NativeEmittedTopic {
                 name: topic.name.clone(),
                 qos_profile: topic.qos_profile.clone(),
                 message_format: topic.message_format.clone(),

@@ -1,6 +1,8 @@
 use super::*;
 use crate::error::Error;
-use config::node::{ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, MessageFormat};
+use config::node::{
+    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -92,7 +94,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 }
 "#;
 
-fn parse_emitted_topic(example: &str) -> EmittedTopic {
+fn parse_emitted_topic(example: &str) -> NativeEmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 

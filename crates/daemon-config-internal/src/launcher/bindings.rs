@@ -5,7 +5,7 @@
 //!
 //! Every binding entry maps a declared slot to its one producer: the KEY
 //! must equal a `depends_on.{nodes,contracts}` `link_id` and the target
-//! must deploy the slot's node (node slots) or conform to the slot's
+//! must deploy the slot's node (node slots) or implement the slot's
 //! contract (contract slots). Every declared slot must have a binding
 //! entry — an unfulfilled slot fails validation before anything is
 //! spawned; there is no wildcard fallback, no free-form key, no unbound
@@ -17,10 +17,10 @@
 //! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
-    BindingContractNotConformed, BindingSlotUnfulfilled, BindingTargetMismatch, BindingUnknownSlot,
-    DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
+    BindingContractNotImplemented, BindingSlotUnfulfilled, BindingTargetMismatch,
+    BindingUnknownSlot, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
-use config::node::{ConformsToItem, DependsOn};
+use config::node::{DependsOn, ImplementsEntry};
 use config::runtime::{ProducerRef, SlotBindings};
 use std::collections::BTreeMap;
 
@@ -35,16 +35,16 @@ pub struct BindingValidationItem<'a> {
     pub node_tag: &'a str,
     pub instances: &'a [DeploymentInstance],
     pub depends_on: Option<&'a DependsOn>,
-    /// Producer's `interfaces.conforms_to` list, borrowed as a slice.
-    /// Empty when the node declares no conformance. Used by the validator
+    /// Producer's `manifest.implements` list, borrowed as a slice.
+    /// Empty when the node implements no contract. Used by the validator
     /// to decide whether this node can satisfy a consumer's contract
     /// slot.
-    pub conforms_to: &'a [ConformsToItem],
+    pub implements: &'a [ImplementsEntry],
 }
 
 /// Per-slot metadata extracted from `depends_on` during validation.
 /// Carrying `kind` inline lets the target-matching path pick the right
-/// error (node mismatch vs contract not conformed) without re-scanning
+/// error (node mismatch vs contract not implemented) without re-scanning
 /// `depends_on` per binding.
 #[derive(Clone, Copy)]
 struct SlotMeta<'a> {
@@ -89,8 +89,8 @@ pub struct ValidatedBindings {
 ///    ([`ParsingError::UnknownInstanceId`] otherwise) and satisfies the
 ///    slot: node slots match the target's `(name, tag)` identity
 ///    ([`ParsingError::BindingTargetMismatch`] otherwise), contract
-///    slots match the target's `conforms_to`
-///    ([`ParsingError::BindingContractNotConformed`] otherwise).
+///    slots match the target's `manifest.implements`
+///    ([`ParsingError::BindingContractNotImplemented`] otherwise).
 ///    Multiplicity never reaches this validator — the launcher
 ///    deserializer and the `--bind` CLI parser both reject a slot
 ///    naming more than one producer, and the binding map's value type
@@ -186,8 +186,8 @@ pub fn validate_bindings(
                                 actual_tag: target_item.node_tag.to_string(),
                             }))
                         }
-                        SlotKind::Contract => ParsingError::BindingContractNotConformed(Box::new(
-                            BindingContractNotConformed {
+                        SlotKind::Contract => ParsingError::BindingContractNotImplemented(
+                            Box::new(BindingContractNotImplemented {
                                 owner_instance_id: instance.instance_id.to_string(),
                                 binding: binding_key.clone(),
                                 target_instance_id: target_id.clone(),
@@ -195,8 +195,8 @@ pub fn validate_bindings(
                                 contract_tag: slot.tag.to_string(),
                                 producer_name: target_item.node_name.to_string(),
                                 producer_tag: target_item.node_tag.to_string(),
-                            },
-                        )),
+                            }),
+                        ),
                     });
                     continue;
                 }
@@ -327,14 +327,14 @@ fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
 
 /// Does a producer satisfy a declared slot? Node slots match by
 /// `(name, tag)` identity; contract slots match against the producer's
-/// `conforms_to`. sha256 is not cross-checked here; each side
+/// `manifest.implements`. sha256 is not cross-checked here; each side
 /// independently verifies its own declared sha256 against the on-disk
 /// contract document at cache resolution time.
 fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'_>) -> bool {
     match slot.kind {
         SlotKind::Node => producer.node_name == slot.name && producer.node_tag == slot.tag,
         SlotKind::Contract => producer
-            .conforms_to
+            .implements
             .iter()
             .any(|item| item.name.as_str() == slot.name && item.tag.as_str() == slot.tag),
     }
@@ -361,8 +361,8 @@ mod tests {
         serde_json5::from_str(json5).expect("depends_on fixture should parse")
     }
 
-    fn parse_conforms_to(json5: &str) -> Vec<ConformsToItem> {
-        serde_json5::from_str(json5).expect("conforms_to fixture should parse")
+    fn parse_implements(json5: &str) -> Vec<ImplementsEntry> {
+        serde_json5::from_str(json5).expect("implements fixture should parse")
     }
 
     /// Convenience: build a `BindingValidationItem` whose lifetimes
@@ -378,25 +378,25 @@ mod tests {
             node_tag,
             instances,
             depends_on,
-            conforms_to: &[],
+            implements: &[],
         }
     }
 
-    /// Like `item` but also threads a `conforms_to` slice, for tests
-    /// that exercise contract-conformance matching.
-    fn item_with_conforms_to<'a>(
+    /// Like `item` but also threads an `implements` slice, for tests
+    /// that exercise contract-implementation matching.
+    fn item_with_implements<'a>(
         node_name: &'a str,
         node_tag: &'a str,
         instances: &'a [DeploymentInstance],
         depends_on: Option<&'a DependsOn>,
-        conforms_to: &'a [ConformsToItem],
+        implements: &'a [ImplementsEntry],
     ) -> BindingValidationItem<'a> {
         BindingValidationItem {
             node_name,
             node_tag,
             instances,
             depends_on,
-            conforms_to,
+            implements,
         }
     }
 
@@ -596,12 +596,12 @@ mod tests {
         assert_eq!(info.target_instance_id, "actually_lidar");
     }
 
-    /// Contract bindings check the producer's `conforms_to`
+    /// Contract bindings check the producer's `manifest.implements`
     /// (not just node identity). A producer with no matching
-    /// `conforms_to` entry is rejected with
-    /// `BindingContractNotConformed`.
+    /// `implements` entry is rejected with
+    /// `BindingContractNotImplemented`.
     #[test]
-    fn contract_binding_rejects_non_conforming_producer() {
+    fn contract_binding_rejects_non_implementing_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -625,9 +625,9 @@ mod tests {
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingContractNotConformed(info) = &out.errors[0] else {
+        let ParsingError::BindingContractNotImplemented(info) = &out.errors[0] else {
             panic!(
-                "expected BindingContractNotConformed, got {:?}",
+                "expected BindingContractNotImplemented, got {:?}",
                 out.errors[0]
             );
         };
@@ -638,13 +638,13 @@ mod tests {
         assert_eq!(info.producer_tag, "v1");
     }
 
-    /// Contract dep targets a producer whose `conforms_to` includes the
+    /// Contract dep targets a producer whose `manifest.implements` includes the
     /// requested contract: accepted. The producer's node name is
     /// intentionally different from the contract name so this test
-    /// exercises the conformance path rather than a coincidental
+    /// exercises the implements path rather than a coincidental
     /// identity match.
     #[test]
-    fn contract_binding_accepts_conforming_producer() {
+    fn contract_binding_accepts_implementing_producer() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -662,10 +662,11 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "webcam_inst_1" }]"#);
-        let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
+        let producer_implements =
+            parse_implements(r#"[{ name: "depth_camera", tag: "v1", link_id: "cam" }]"#);
         let items = vec![
             item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item_with_conforms_to("webcam", "v1", &prod_instances, None, &producer_conforms),
+            item_with_implements("webcam", "v1", &prod_instances, None, &producer_implements),
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
@@ -700,10 +701,11 @@ mod tests {
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
         // Producer's node name coincidentally matches the contract
-        // name+tag, but the validator only honors explicit `conforms_to`
+        // name+tag, but the validator only honors explicit `manifest.implements`
         // claims; node-identity matching never satisfies an contract
         // slot.
-        let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
+        let producer_implements =
+            parse_implements(r#"[{ name: "depth_camera", tag: "v1", link_id: "cam" }]"#);
         let items = vec![
             item(
                 "openarm01_backbone",
@@ -711,12 +713,12 @@ mod tests {
                 &cons_instances,
                 Some(&depends_on),
             ),
-            item_with_conforms_to(
+            item_with_implements(
                 "depth_camera",
                 "v1",
                 &prod_instances,
                 None,
-                &producer_conforms,
+                &producer_implements,
             ),
         ];
         let out = validate_bindings(&items, TEST_CORE);
@@ -752,7 +754,8 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "depth_cam_inst1" }]"#);
-        let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
+        let producer_implements =
+            parse_implements(r#"[{ name: "depth_camera", tag: "v1", link_id: "cam" }]"#);
         let items = vec![
             item(
                 "openarm01_backbone",
@@ -760,12 +763,12 @@ mod tests {
                 &cons_instances,
                 Some(&depends_on),
             ),
-            item_with_conforms_to(
+            item_with_implements(
                 "depth_camera",
                 "v1",
                 &prod_instances,
                 None,
-                &producer_conforms,
+                &producer_implements,
             ),
         ];
         let out = validate_bindings(&items, TEST_CORE);
@@ -787,7 +790,7 @@ mod tests {
 
     /// An "inert" item (`depends_on: None`) contributes no slots of its
     /// own; it represents a node whose bindings were already resolved at
-    /// spawn time. Its instances and `conforms_to` must still feed the
+    /// spawn time. Its instances and `implements` must still feed the
     /// producer-lookup index so a live consumer in the same
     /// `validate_bindings` call can satisfy node / contract deps against
     /// them.
@@ -802,7 +805,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { cam: "node_prod_inst", depth: "iface_prod_inst" }
+                bindings: { cam: "node_prod_inst", depth: "contract_prod_inst" }
             }]"#,
         );
         let cons_depends_on = parse_depends_on(
@@ -816,21 +819,22 @@ mod tests {
         // it WOULD declare deps in real life.
         let node_prod_instances = parse_instances(r#"[{ instance_id: "node_prod_inst" }]"#);
 
-        // Inert contract producer: same shape, plus a `conforms_to`
+        // Inert contract producer: same shape, plus an `implements`
         // entry that should still match the consumer's contract dep.
-        let iface_prod_instances = parse_instances(r#"[{ instance_id: "iface_prod_inst" }]"#);
-        let iface_prod_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v1" }]"#);
+        let contract_prod_instances = parse_instances(r#"[{ instance_id: "contract_prod_inst" }]"#);
+        let contract_prod_implements =
+            parse_implements(r#"[{ name: "depth_camera", tag: "v1", link_id: "cam" }]"#);
 
         let items = vec![
             item("cons", "v1", &cons_instances, Some(&cons_depends_on)),
             // Inert items: depends_on intentionally `None`.
             item("camera", "v1", &node_prod_instances, None),
-            item_with_conforms_to(
+            item_with_implements(
                 "webcam",
                 "v1",
-                &iface_prod_instances,
+                &contract_prod_instances,
                 None,
-                &iface_prod_conforms,
+                &contract_prod_implements,
             ),
         ];
         let out = validate_bindings(&items, TEST_CORE);
@@ -841,7 +845,7 @@ mod tests {
         );
         assert_eq!(
             slot_binding(&out, "cons1", "depth"),
-            Some(ProducerRef::new(TEST_CORE, "iface_prod_inst"))
+            Some(ProducerRef::new(TEST_CORE, "contract_prod_inst"))
         );
     }
 
@@ -968,11 +972,11 @@ mod tests {
         assert!(matches!(out.errors[1], ParsingError::BindingUnknownSlot(_)));
     }
 
-    /// `conforms_to` matching is strict on `(name, tag)`: a producer
+    /// `implements` matching is strict on `(name, tag)`: a producer
     /// declaring a different tag for the same contract name is
     /// rejected.
     #[test]
-    fn contract_dep_with_wrong_tag_in_conforms_to_is_rejected() {
+    fn contract_dep_with_wrong_tag_in_implements_is_rejected() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -990,16 +994,17 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "webcam_inst_1" }]"#);
-        let producer_conforms = parse_conforms_to(r#"[{ name: "depth_camera", tag: "v2" }]"#);
+        let producer_implements =
+            parse_implements(r#"[{ name: "depth_camera", tag: "v2", link_id: "cam" }]"#);
         let items = vec![
             item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item_with_conforms_to("webcam", "v1", &prod_instances, None, &producer_conforms),
+            item_with_implements("webcam", "v1", &prod_instances, None, &producer_implements),
         ];
         let out = validate_bindings(&items, TEST_CORE);
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingContractNotConformed(info) = &out.errors[0] else {
+        let ParsingError::BindingContractNotImplemented(info) = &out.errors[0] else {
             panic!(
-                "expected BindingContractNotConformed, got {:?}",
+                "expected BindingContractNotImplemented, got {:?}",
                 out.errors[0]
             );
         };
@@ -1007,11 +1012,11 @@ mod tests {
         assert_eq!(info.producer_name, "webcam");
     }
 
-    /// A producer declaring multiple `conforms_to` entries can satisfy
+    /// A producer declaring multiple `implements` entries can satisfy
     /// any of them. Two consumers (each asking for a different
     /// contract) both successfully bind to the same producer.
     #[test]
-    fn producer_with_multiple_conforms_to_can_satisfy() {
+    fn producer_with_multiple_implements_can_satisfy() {
         let depth_consumer = parse_instances(
             r#"[{
                 instance_id: "depth_cons",
@@ -1045,21 +1050,21 @@ mod tests {
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "multi_prod" }]"#);
-        let producer_conforms = parse_conforms_to(
+        let producer_implements = parse_implements(
             r#"[
-                { name: "depth_camera", tag: "v1" },
-                { name: "uvc_camera", tag: "v1" }
+                { name: "depth_camera", tag: "v1", link_id: "depth" },
+                { name: "uvc_camera", tag: "v1", link_id: "uvc" }
             ]"#,
         );
         let items = vec![
             item("depth_cons_node", "v1", &depth_consumer, Some(&depth_deps)),
             item("uvc_cons_node", "v1", &uvc_consumer, Some(&uvc_deps)),
-            item_with_conforms_to(
+            item_with_implements(
                 "multi_camera",
                 "v1",
                 &prod_instances,
                 None,
-                &producer_conforms,
+                &producer_implements,
             ),
         ];
         let out = validate_bindings(&items, TEST_CORE);

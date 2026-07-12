@@ -1,15 +1,15 @@
 ---
-title: Contract conformance
-description: Declare reusable message contracts and let nodes conform to them, so consumers can bind any conforming producer at launch time
+title: Contract implementation
+description: Declare reusable message contracts and let nodes implement them explicitly, so consumers can bind any implementing producer at launch time
 sidebar:
   order: 5
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-A peppy node can either declare its `topics`, `services` and `actions` directly in its own `peppy.json5`, or it can claim conformance to a separately-defined **contract**. A contract is a standalone document with its own `peppy_schema: "contract/v1"` that names a set of topics, services and actions. Producers conform to the contract; consumers depend on the contract. Both sides cite the contract by `(name, tag)`, and the launcher binds a conforming producer to the consumer at launch time.
+A peppy node can either declare its `topics`, `services` and `actions` natively in its own `peppy.json5`, or it can implement a separately-defined **contract**. A contract is a standalone document with its own `peppy_schema: "contract/v1"` that names a set of topics, services and actions. Producers implement the contract; consumers depend on the contract. Both sides cite the contract by `(name, tag)`, and the launcher binds an implementing producer to the consumer at launch time.
 
-Contract conformance is the abstraction you reach for when several nodes implement the same contract. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without conformance, every consumer would have to hard-code one of those producer names. With conformance, the consumer asks for the `depth_camera:v1` contract and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how conformance compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+Contract implementation is the abstraction you reach for when several nodes provide the same capability. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without contracts, every consumer would have to hard-code one of those producer names. With contracts, the consumer asks for the `depth_camera:v1` contract and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how contract implementation compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## The three pieces
 
@@ -56,9 +56,9 @@ A contract lives in its own file under a repository peppy scans (see [Repositori
 
 After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies a `contract/v1` document by its `peppy_schema` field.
 
-### 2. A producer that conforms
+### 2. A producer that implements the contract
 
-A producer node declares conformance with an `interfaces.conforms_to` list. Each entry names a contract by `(name, tag)`. The producer does not re-declare the contract's topics, services, or actions; it inherits them by reference:
+A producer node claims a contract in `manifest.implements`. Each entry names a contract by `(name, tag)` and mints a `link_id` for the slot. The producer then lists **every** member of the contract as an explicit contract-backed entry in its `interfaces` section, referencing the slot via that `link_id`:
 
 <Tabs>
   <TabItem label="Python">
@@ -69,11 +69,21 @@ A producer node declares conformance with an `interfaces.conforms_to` list. Each
       manifest: {
         name: "realsense_d405",
         tag: "v1",
+        implements: [
+          { name: "depth_camera", tag: "v1", link_id: "cam" },
+        ],
       },
       interfaces: {
-        conforms_to: [
-          { name: "depth_camera", tag: "v1" },
-        ],
+        topics: {
+          emits: [
+            { link_id: "cam", name: "video_stream" },
+          ],
+        },
+        services: {
+          exposes: [
+            { link_id: "cam", name: "video_stream_info" },
+          ],
+        },
       },
       execution: {
         language: "python",
@@ -91,11 +101,21 @@ A producer node declares conformance with an `interfaces.conforms_to` list. Each
       manifest: {
         name: "realsense_d405",
         tag: "v1",
+        implements: [
+          { name: "depth_camera", tag: "v1", link_id: "cam" },
+        ],
       },
       interfaces: {
-        conforms_to: [
-          { name: "depth_camera", tag: "v1" },
-        ],
+        topics: {
+          emits: [
+            { link_id: "cam", name: "video_stream" },
+          ],
+        },
+        services: {
+          exposes: [
+            { link_id: "cam", name: "video_stream_info" },
+          ],
+        },
       },
       execution: {
         language: "rust",
@@ -107,9 +127,34 @@ A producer node declares conformance with an `interfaces.conforms_to` list. Each
   </TabItem>
 </Tabs>
 
-The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `conforms_to` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the contract directly would get.
+A contract-backed entry is exactly `{link_id, name}`. The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
 
-A single node can conform to multiple contracts (e.g. `[{depth_camera, v1}, {uvc_camera, v1}]`), and then satisfies any consumer slot that asks for either.
+The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the contract's identity (`emitted_topics/depth_camera/v1/video_stream`).
+
+#### Full coverage is mandatory
+
+The set of contract-backed entries referencing a slot must cover every member of its contract, exactly once, with no extras. A partial implementation is rejected at `node add` / `node sync` with one aggregated diff per broken slot, listing every missing, unknown, duplicated, and wrong-kind entry at once:
+
+```
+contract `uvc_camera:v1` (implements slot `cam`) is not fully implemented: every
+contract member needs exactly one contract-backed entry in `interfaces`
+referencing link_id `cam`; missing: [video_stream_info (service), set_contrast (service)]
+```
+
+This is the point of the explicit-entry design: the node's `peppy.json5` shows what the node actually emits and exposes, and the daemon enforces that the listing is complete.
+
+#### link_id rules
+
+Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings}` link_ids; a collision is rejected at parse time. Direction matters:
+
+- A produced entry (`topics.emits`, `services.exposes`, `actions.exposes`) may only reference a `manifest.implements` slot.
+- A consumed entry (`*.consumes`) may only reference a `depends_on.{nodes,contracts}` slot.
+
+Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready`, `moves`), matching the consumer-side style, rather than echoing the contract name.
+
+A single node can implement multiple contracts (e.g. `depth_camera:v1` and `uvc_camera:v1` under distinct link_ids) and then satisfies any consumer slot that asks for either. A node may implement each contract `(name, tag)` at most once; several instances of one capability are the job of node instances and [pairings](/advanced_guides/pairing), not repeated implements entries. A node may also implement a contract *and* depend on the same contract under a different link_id (the relay shape).
+
+A native entry and a contract-backed entry may share a name on the same producer: the two are namespaced apart in generated modules, schema keys, and wire keys.
 
 ### 3. A consumer that depends on the contract
 
@@ -184,13 +229,17 @@ A consumer references a contract through `manifest.depends_on.contracts` rather 
 
 The consumer never names a producer node. It names the contract, and the launcher does the matchmaking.
 
-## Binding a conforming producer
+#### Node dependencies expose native interfaces only
 
-The matching predicate at binding time is: *a producer satisfies a contract slot if its `interfaces.conforms_to` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that `conforms_to: [{ depth_camera, v1 }]` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that conforms.
+A consumed entry whose `link_id` names a `depends_on.nodes` slot resolves exclusively against the producer's **native** (no-`link_id`) entries. A contract-backed interface is consumable solely through a `depends_on.contracts` slot. The two namespaces cannot overlap, so there is no precedence rule to learn: consuming a name the producer provides only contract-backed fails with an error pointing at the contract dependency to declare instead. This keeps the wire addressing unambiguous: node-dep consumption is always node-addressed, contract-dep consumption is always contract-addressed.
+
+## Binding an implementing producer
+
+The matching predicate at binding time is: *a producer satisfies a contract slot if its `manifest.implements` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that implements `depth_camera:v1` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that implements it.
 
 ### Binding a contract slot
 
-A contract slot is bound with `--bind link_id@producer_instance_id` (or a launcher `bindings:` entry) whose value points at an instance whose node conforms to the requested contract:
+A contract slot is bound with `--bind link_id@producer_instance_id` (or a launcher `bindings:` entry) whose value points at an instance whose node implements the requested contract:
 
 ```json5
 // peppy_launcher.json5
@@ -219,11 +268,11 @@ peppy node run --instance-id=depth_cam_inst1 realsense_d405:v1
 peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 video_reconstruction:v1
 ```
 
-If `depth_cam_inst1` were instead an instance of a node with no `conforms_to`, the launcher rejects the binding with a `BindingContractNotConformed` error citing the expected contract and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `conforms_to: [{ depth_camera, v1 }]` is treated like any other non-conforming node.
+If `depth_cam_inst1` were instead an instance of a node with no `implements`, the launcher rejects the binding with a `BindingContractNotImplemented` error citing the expected contract and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `implements: [{ depth_camera, v1, link_id }]` is treated like any other non-implementing node.
 
-### One slot per conforming producer
+### One slot per implementing producer
 
-A slot binds exactly one producer. A consumer that reads from several conforming producers declares one contract slot per producer and binds each separately. That keeps contract slots the natural shape for many-to-one consumption whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+A slot binds exactly one producer. A consumer that reads from several implementing producers declares one contract slot per producer and binds each separately. That keeps contract slots the natural shape for many-to-one consumption whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {
@@ -237,11 +286,11 @@ manifest: {
 }
 ```
 
-Each binding key names its slot's `link_id` directly, and every bound producer must conform. The same routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
+Each binding key names its slot's `link_id` directly, and every bound producer must implement the contract. The same routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
 
 #### Multiple producer instances under the same node identity
 
-A common case is several instances of the same conforming node (say, three `realsense_d405:v1` cameras plugged into the same robot). Each camera gets a slot of its own: the consumer declares one contract dep per camera and consumes each camera's topic through that slot's `link_id`:
+A common case is several instances of the same implementing node (say, three `realsense_d405:v1` cameras plugged into the same robot). Each camera gets a slot of its own: the consumer declares one contract dep per camera and consumes each camera's topic through that slot's `link_id`:
 
 <Tabs>
   <TabItem label="Python">
@@ -346,7 +395,7 @@ Then the launcher binds each slot to its producer instance:
 
 The three bindings feed the three slots, and the consumer receives the streams through the generated `front_video_stream`, `back_left_video_stream`, and `back_right_video_stream` modules. A fourth camera launched without a slot of its own would reach no consumer at all: only bound producers feed a slot.
 
-Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.) when merging its slots into one aggregate, so the launcher can re-point a slot at a different conforming instance with no consumer code change.
+Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.) when merging its slots into one aggregate, so the launcher can re-point a slot at a different implementing instance with no consumer code change.
 
 <Tabs>
   <TabItem label="Python">
@@ -406,7 +455,7 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
   </TabItem>
 </Tabs>
 
-The same applies when the producers are a mix of node identities, as long as each conforms to `depth_camera:v1`: a launcher can bind `front` to a `realsense_d405:v1` instance and `back_left` to a `zed_2i:v1` instance, since the matching predicate is conformance, not node identity. The `(core_node, instance_id)` identity returned with each message still pinpoints the exact producer, regardless of which node implementation it came from.
+The same applies when the producers are a mix of node identities, as long as each implements `depth_camera:v1`: a launcher can bind `front` to a `realsense_d405:v1` instance and `back_left` to a `zed_2i:v1` instance, since the matching predicate is the implements claim, not node identity. The `(core_node, instance_id)` identity returned with each message still pinpoints the exact producer, regardless of which node implementation it came from.
 
 ## sha256 pinning
 
@@ -419,8 +468,8 @@ depends_on: {
 }
 
 // producer side
-interfaces: {
-  conforms_to: [{ name: "depth_camera", tag: "v1", sha256: "aaaa…" }],
+manifest: {
+  implements: [{ name: "depth_camera", tag: "v1", sha256: "aaaa…", link_id: "cam" }],
 }
 ```
 
@@ -435,9 +484,9 @@ Combining the pieces above, a typical setup looks like this:
 │   topics: [video_stream]
 │   services: [video_stream_info]
 │
-├─ realsense_d405:v1         (node)  conforms_to: [{depth_camera, v1}]
-├─ zed_2i:v1                 (node)  conforms_to: [{depth_camera, v1}]
-└─ mujoco_depth_camera_sim:v1 (node) conforms_to: [{depth_camera, v1}]
+├─ realsense_d405:v1          (node)  implements: [{depth_camera, v1, link_id: cam}]
+├─ zed_2i:v1                  (node)  implements: [{depth_camera, v1, link_id: cam}]
+└─ mujoco_depth_camera_sim:v1 (node)  implements: [{depth_camera, v1, link_id: cam}]
 
 video_reconstruction:v1 (consumer)
    depends_on.contracts: [
@@ -447,7 +496,7 @@ video_reconstruction:v1 (consumer)
    ]
 ```
 
-A launcher can wire the three slots to any mix of conforming producers:
+A launcher can wire the three slots to any mix of implementing producers:
 
 ```json5
 {
@@ -483,17 +532,17 @@ A launcher can wire the three slots to any mix of conforming producers:
 }
 ```
 
-Every binding key names its slot's `link_id`, and the launcher checks each target conforms to `depth_camera:v1`: `rs_left` and `rs_right` do via the `realsense_d405:v1` producer node, and `zed_overhead` does via `zed_2i:v1`. Node identity never matters, only conformance.
+Every binding key names its slot's `link_id`, and the launcher checks each target implements `depth_camera:v1`: `rs_left` and `rs_right` do via the `realsense_d405:v1` producer node, and `zed_overhead` does via `zed_2i:v1`. Node identity never matters, only the implements claim.
 
-Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers conform to the same contract and the binding works unchanged.
+Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers implement the same contract and the binding works unchanged.
 
-Once the stack is running, these conformance-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 contract conformance)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a conformance edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
+Once the stack is running, these contract-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 contract implementation)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a contract-implementation edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
 
 ## Caller-driven cycles are rejected
 
 A contract dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's contracts without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
 
-**Services and actions are different.** Consuming a service or action contract means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through contracts hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each contract dep to its conforming providers via `conforms_to`, and rejects any service/action cycle it finds.
+**Services and actions are different.** Consuming a service or action contract means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through contracts hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each contract dep to its implementing providers via `manifest.implements`, and rejects any service/action cycle it finds.
 
 ### An example that is rejected
 
@@ -530,7 +579,7 @@ Two service contracts, one provided by each node:
 }
 ```
 
-`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node conforms to the contract it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
+`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node implements the contract it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
 
 <Tabs>
   <TabItem label="Python">
@@ -541,6 +590,9 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "localizer",
         tag: "v1",
+        implements: [
+          { name: "pose_service", tag: "v1", link_id: "pose_out" }, // provides current_pose
+        ],
         depends_on: {
           contracts: [
             { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
@@ -548,8 +600,10 @@ Two service contracts, one provided by each node:
         },
       },
       interfaces: {
-        conforms_to: [{ name: "pose_service", tag: "v1" }], // provides current_pose
         services: {
+          exposes: [
+            { link_id: "pose_out", name: "current_pose" },
+          ],
           consumes: [
             { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
           ],
@@ -568,6 +622,9 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "mapper",
         tag: "v1",
+        implements: [
+          { name: "obstacle_service", tag: "v1", link_id: "obstacles_out" }, // provides nearest_obstacle
+        ],
         depends_on: {
           contracts: [
             { name: "pose_service", tag: "v1", link_id: "pose" },
@@ -575,8 +632,10 @@ Two service contracts, one provided by each node:
         },
       },
       interfaces: {
-        conforms_to: [{ name: "obstacle_service", tag: "v1" }], // provides nearest_obstacle
         services: {
+          exposes: [
+            { link_id: "obstacles_out", name: "nearest_obstacle" },
+          ],
           consumes: [
             { name: "current_pose", link_id: "pose" }, // calls localizer
           ],
@@ -598,6 +657,9 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "localizer",
         tag: "v1",
+        implements: [
+          { name: "pose_service", tag: "v1", link_id: "pose_out" }, // provides current_pose
+        ],
         depends_on: {
           contracts: [
             { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
@@ -605,8 +667,10 @@ Two service contracts, one provided by each node:
         },
       },
       interfaces: {
-        conforms_to: [{ name: "pose_service", tag: "v1" }], // provides current_pose
         services: {
+          exposes: [
+            { link_id: "pose_out", name: "current_pose" },
+          ],
           consumes: [
             { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
           ],
@@ -625,6 +689,9 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "mapper",
         tag: "v1",
+        implements: [
+          { name: "obstacle_service", tag: "v1", link_id: "obstacles_out" }, // provides nearest_obstacle
+        ],
         depends_on: {
           contracts: [
             { name: "pose_service", tag: "v1", link_id: "pose" },
@@ -632,8 +699,10 @@ Two service contracts, one provided by each node:
         },
       },
       interfaces: {
-        conforms_to: [{ name: "obstacle_service", tag: "v1" }], // provides nearest_obstacle
         services: {
+          exposes: [
+            { link_id: "obstacles_out", name: "nearest_obstacle" },
+          ],
           consumes: [
             { name: "current_pose", link_id: "pose" }, // calls localizer
           ],
@@ -667,7 +736,7 @@ The same rejection applies however you wire it: directly through `depends_on.nod
 
 ### Two properties of the check
 
-- **It is conservative (type-level).** The check reasons about node identities and their declared `conforms_to`, not about which producer a specific `--bind` resolves to. If a service or action contract has several conforming providers and only one of them closes a cycle, the configuration is still rejected, because *any* conforming provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
+- **It is conservative (type-level).** The check reasons about node identities and their declared `implements`, not about which producer a specific `--bind` resolves to. If a service or action contract has several implementing providers and only one of them closes a cycle, the configuration is still rejected, because *any* implementing provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
 - **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing) relies on.
 
 ### How to fix it
@@ -679,8 +748,8 @@ If the two nodes genuinely need to exchange data, model it without a caller-driv
 
 See [Why topics only?](/advanced_guides/pairing/#why-topics-only) for the full rationale behind the topic/service/action distinction.
 
-## What conformance is not
+## What contract implementation is not
 
-- **Conformance is explicit.** A node that natively emits `video_stream` but does not declare `conforms_to: [{ depth_camera, v1 }]` does **not** satisfy a `depth_camera:v1` contract slot, even if every field matches. The contract is the explicit `conforms_to` claim, not structural duck typing.
-- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal a contract's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `conforms_to`. The reverse is also true: a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it declares conformance.
-- **Conformance does not flow through node deps.** `depends_on.nodes` still names a specific producer node by `(name, tag)`; `depends_on.contracts` is what introduces conformance-based matching. The two coexist on the same consumer.
+- **Implementation is explicit.** A node that natively emits `video_stream` but does not declare `implements: [{ depth_camera, v1, link_id }]` does **not** satisfy a `depth_camera:v1` contract slot, even if every field matches. The contract is the explicit `implements` claim plus the explicit per-member entries, not structural duck typing.
+- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal a contract's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `implements`. The reverse is also true: a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it implements the contract.
+- **Implementation does not flow through node deps.** `depends_on.nodes` still names a specific producer node by `(name, tag)` and exposes only that node's *native* interfaces; `depends_on.contracts` is what introduces implementation-based matching and contract-addressed consumption. The two coexist on the same consumer.

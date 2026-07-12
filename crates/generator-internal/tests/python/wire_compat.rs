@@ -267,7 +267,11 @@ if __name__ == "__main__":
         .actions
         .as_ref()
         .and_then(|a| a.exposes.as_ref())
-        .and_then(|v| v.iter().find(|a| a.name == ACTION_NAME))
+        .and_then(|v| {
+            v.iter()
+                .filter_map(|a| a.as_native())
+                .find(|a| a.name == ACTION_NAME)
+        })
         .cloned()
         .expect("exposed action present in producer config");
 
@@ -648,7 +652,11 @@ if __name__ == "__main__":
         .services
         .as_ref()
         .and_then(|s| s.exposes.as_ref())
-        .and_then(|v| v.iter().find(|s| s.name == SERVICE_NAME))
+        .and_then(|v| {
+            v.iter()
+                .filter_map(|s| s.as_native())
+                .find(|s| s.name == SERVICE_NAME)
+        })
         .cloned()
         .expect("exposed service present in producer config");
 
@@ -1005,7 +1013,11 @@ if __name__ == "__main__":
         .topics
         .as_ref()
         .and_then(|t| t.emits.as_ref())
-        .and_then(|v| v.iter().find(|t| t.name == TOPIC_NAME))
+        .and_then(|v| {
+            v.iter()
+                .filter_map(|t| t.as_native())
+                .find(|t| t.name == TOPIC_NAME)
+        })
         .cloned()
         .expect("emitted topic present in producer config");
 

@@ -703,7 +703,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             .and_then(|services| services.exposes.as_ref())
             .is_some_and(|exposes: &Vec<config::node::ExposedService>| exposes
                 .iter()
-                .any(|s| s.name == "calibrate")),
+                .any(|s| s.name() == "calibrate")),
         "entity should have updated interfaces from the overwritten config"
     );
 }
