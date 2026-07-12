@@ -17,7 +17,7 @@ use daemon_config::consts::PeppyDirs;
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, io::ErrorKind, path::Path};
-use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
+use types::{DeploymentInterface, LanguageGenerator};
 
 /// Generate an interface library for the given language from a node directory.
 ///
@@ -145,12 +145,9 @@ fn collect_exposed_interfaces(
         .and_then(|topics| topics.emits.as_deref())
     {
         interfaces.extend(emits.iter().filter_map(|entry| {
-            entry.as_native().map(|topic| {
-                DeploymentInterface::new(InterfaceVariant::EmittedTopic {
-                    topic: topic.clone(),
-                    origin: None,
-                })
-            })
+            entry
+                .as_native()
+                .map(|topic| DeploymentInterface::emitted_topic(topic.clone(), None))
         }));
     }
     if let Some(exposes) = config
@@ -160,12 +157,9 @@ fn collect_exposed_interfaces(
         .and_then(|services| services.exposes.as_deref())
     {
         interfaces.extend(exposes.iter().filter_map(|entry| {
-            entry.as_native().map(|service| {
-                DeploymentInterface::new(InterfaceVariant::ExposedService {
-                    service: service.clone(),
-                    origin: None,
-                })
-            })
+            entry
+                .as_native()
+                .map(|service| DeploymentInterface::exposed_service(service.clone(), None))
         }));
     }
     if let Some(exposes) = config
@@ -175,12 +169,9 @@ fn collect_exposed_interfaces(
         .and_then(|actions| actions.exposes.as_deref())
     {
         interfaces.extend(exposes.iter().filter_map(|entry| {
-            entry.as_native().map(|action| {
-                DeploymentInterface::new(InterfaceVariant::ExposedAction {
-                    action: action.clone(),
-                    origin: None,
-                })
-            })
+            entry
+                .as_native()
+                .map(|action| DeploymentInterface::exposed_action(action.clone(), None))
         }));
     }
 

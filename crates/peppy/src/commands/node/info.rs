@@ -230,12 +230,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
                             );
                         }
                         None => {
-                            let _ = writeln!(
-                                out,
-                                "  - {} (via implements slot: {})",
-                                topic.name(),
-                                topic.link_id().unwrap_or_default()
-                            );
+                            let _ = writeln!(out, "  - {}{}", topic.name(), via_slot(topic.link_id()));
                         }
                     }
                 }
@@ -250,18 +245,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    match service.link_id() {
-                        Some(link_id) => {
-                            let _ = writeln!(
-                                out,
-                                "  - {} (via implements slot: {link_id})",
-                                service.name()
-                            );
-                        }
-                        None => {
-                            let _ = writeln!(out, "  - {}", service.name());
-                        }
-                    }
+                    let _ = writeln!(out, "  - {}{}", service.name(), via_slot(service.link_id()));
                 }
             }
 
@@ -274,18 +258,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    match action.link_id() {
-                        Some(link_id) => {
-                            let _ = writeln!(
-                                out,
-                                "  - {} (via implements slot: {link_id})",
-                                action.name()
-                            );
-                        }
-                        None => {
-                            let _ = writeln!(out, "  - {}", action.name());
-                        }
-                    }
+                    let _ = writeln!(out, "  - {}{}", action.name(), via_slot(action.link_id()));
                 }
             }
         }
@@ -375,6 +348,14 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     }
 
     let _ = writeln!(out);
+}
+
+/// Suffix naming the `manifest.implements` slot a contract-backed produced
+/// entry resolves through; empty for a native entry.
+fn via_slot(link_id: Option<&str>) -> String {
+    link_id
+        .map(|link_id| format!(" (via implements slot: {link_id})"))
+        .unwrap_or_default()
 }
 
 /// Render a parameter declaration: a primitive shows its type and optional

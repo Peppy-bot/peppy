@@ -175,29 +175,6 @@ pub(super) fn build_dependency_lookup(
     out
 }
 
-/// Builds a [`generator::DependencyContext`] for a `depends_on.nodes`
-/// resolution path. Node dependencies expose native interfaces only, so
-/// the context is always node-addressed.
-pub(super) fn build_dependency_context_for_node(
-    dep_name: &str,
-    dep_tag: &str,
-    link_id: &str,
-) -> generator::DependencyContext {
-    generator::DependencyContext::native(dep_name, dep_tag, link_id)
-}
-
-/// Builds a [`generator::DependencyContext`] for a
-/// `depends_on.contracts` resolution path. `producer_name` /
-/// `producer_tag` carry the contract's `(name, tag)` here (no producer
-/// node is involved).
-pub(super) fn build_dependency_context_for_contract(
-    contract_name: &str,
-    contract_tag: &str,
-    link_id: &str,
-) -> generator::DependencyContext {
-    generator::DependencyContext::contract(contract_name, contract_tag, link_id)
-}
-
 /// What a single node dependency can provide to consumers: its NATIVE
 /// emits/exposes only. Contract-backed entries never enter these tables;
 /// the two namespaces cannot overlap, so no precedence rule exists.

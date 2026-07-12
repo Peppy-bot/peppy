@@ -1,7 +1,6 @@
 use super::deps::{
-    DependencyKind, DependencyLookupEntry, DependencyOfferings,
-    build_dependency_context_for_contract, build_dependency_context_for_node,
-    build_dependency_lookup, build_dependency_offerings,
+    DependencyKind, DependencyLookupEntry, DependencyOfferings, build_dependency_lookup,
+    build_dependency_offerings,
 };
 use crate::services::repo::cache as repo_cache;
 use config::ContractCoverageMismatch;
@@ -218,7 +217,7 @@ fn resolve_consumed_offering<T>(
             let extracted = extract_from_node(offerings, lookup_name)?;
             Some((
                 extracted,
-                build_dependency_context_for_node(&entry.name, &entry.tag, link_id),
+                generator::DependencyContext::native(&entry.name, &entry.tag, link_id),
             ))
         }
         DependencyKind::Contract => {
@@ -226,7 +225,7 @@ fn resolve_consumed_offering<T>(
             let extracted = extract_from_contract(parsed, lookup_name)?;
             Some((
                 extracted,
-                build_dependency_context_for_contract(&entry.name, &entry.tag, link_id),
+                generator::DependencyContext::contract(&entry.name, &entry.tag, link_id),
             ))
         }
     }
@@ -291,47 +290,35 @@ pub(crate) fn resolve_contract_doc(
 fn contract_backed_entries(
     interfaces_cfg: &config::node::Interfaces,
 ) -> Vec<(String, InterfaceKind, String)> {
-    let mut out = Vec::new();
-    if let Some(emits) = interfaces_cfg
+    let emits = interfaces_cfg
         .topics
         .as_ref()
         .and_then(|t| t.emits.as_deref())
-    {
-        for entry in emits.iter().filter_map(|e| e.as_contract()) {
-            out.push((
-                entry.link_id.clone(),
-                InterfaceKind::Topic,
-                entry.name.clone(),
-            ));
-        }
-    }
-    if let Some(exposes) = interfaces_cfg
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| e.as_contract())
+        .map(|e| (e, InterfaceKind::Topic));
+    let services = interfaces_cfg
         .services
         .as_ref()
         .and_then(|s| s.exposes.as_deref())
-    {
-        for entry in exposes.iter().filter_map(|e| e.as_contract()) {
-            out.push((
-                entry.link_id.clone(),
-                InterfaceKind::Service,
-                entry.name.clone(),
-            ));
-        }
-    }
-    if let Some(exposes) = interfaces_cfg
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| e.as_contract())
+        .map(|e| (e, InterfaceKind::Service));
+    let actions = interfaces_cfg
         .actions
         .as_ref()
         .and_then(|a| a.exposes.as_deref())
-    {
-        for entry in exposes.iter().filter_map(|e| e.as_contract()) {
-            out.push((
-                entry.link_id.clone(),
-                InterfaceKind::Action,
-                entry.name.clone(),
-            ));
-        }
-    }
-    out
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| e.as_contract())
+        .map(|e| (e, InterfaceKind::Action));
+    emits
+        .chain(services)
+        .chain(actions)
+        .map(|(entry, kind)| (entry.link_id.clone(), kind, entry.name.clone()))
+        .collect()
 }
 
 /// Per-slot Tier B coverage bookkeeping: which contract members the manifest
@@ -372,9 +359,16 @@ pub fn resolve_implements(
         return Ok(Vec::new());
     }
 
-    // Resolve each slot's contract document once. Parse-time validation
+    // Resolve each slot's contract document once, keeping the slot alongside
+    // so entry resolution recovers both with one lookup. Parse-time validation
     // already rejected duplicate link_ids and duplicate (name, tag) pairs.
-    let mut docs: HashMap<&str, daemon_config::contract::PeppyContract> = HashMap::new();
+    let mut docs: HashMap<
+        &str,
+        (
+            &config::node::ImplementsEntry,
+            daemon_config::contract::PeppyContract,
+        ),
+    > = HashMap::new();
     for slot in &manifest.implements {
         let parsed = resolve_contract_doc(
             peppy_dirs,
@@ -383,14 +377,14 @@ pub fn resolve_implements(
             slot.sha256.as_deref(),
             on_feedback,
         )?;
-        docs.insert(slot.link_id.as_str(), parsed);
+        docs.insert(slot.link_id.as_str(), (slot, parsed));
     }
 
     let mut out: Vec<DeploymentInterface> = Vec::new();
     let mut coverage: HashMap<&str, SlotCoverage> = HashMap::new();
 
     for (link_id, kind, name) in contract_backed_entries(interfaces_cfg) {
-        let Some((slot_link_id, doc)) = docs.get_key_value(link_id.as_str()) else {
+        let Some((slot, doc)) = docs.get(link_id.as_str()) else {
             // Parse-time validation guarantees every produced entry's
             // link_id names an implements slot; reaching this means the
             // config bypassed the parser.
@@ -399,16 +393,11 @@ pub fn resolve_implements(
                  `manifest.implements` slot"
             ));
         };
-        let slot = manifest
-            .implements
-            .iter()
-            .find(|s| s.link_id == *slot_link_id)
-            .expect("docs keys come from manifest.implements");
         let origin = ContractOrigin {
             contract_name: slot.name.as_str().to_string(),
             contract_tag: slot.tag.clone(),
         };
-        let slot_coverage = coverage.entry(slot_link_id).or_default();
+        let slot_coverage = coverage.entry(slot.link_id.as_str()).or_default();
 
         let resolved = match kind {
             InterfaceKind::Topic => doc
@@ -440,10 +429,9 @@ pub fn resolve_implements(
                     .or_insert(0) += 1;
             }
             None => {
-                let other_kind_match = member_kinds(doc, &name)
-                    .into_iter()
-                    .find(|member_kind| *member_kind != kind);
-                match other_kind_match {
+                // The entry's name was not found under `kind`, so any kind
+                // this returns is necessarily a different one.
+                match member_kind(doc, &name) {
                     Some(member_kind) => slot_coverage.wrong_kind.push(format!(
                         "{name} (declared as {kind}, contract declares {member_kind})"
                     )),
@@ -457,7 +445,7 @@ pub fn resolve_implements(
     // members and the visited entries, aggregated into one diff per slot.
     let mut broken: Vec<String> = Vec::new();
     for slot in &manifest.implements {
-        let doc = &docs[slot.link_id.as_str()];
+        let (_, doc) = &docs[slot.link_id.as_str()];
         let empty = SlotCoverage::default();
         let slot_coverage = coverage.get(slot.link_id.as_str()).unwrap_or(&empty);
 
@@ -520,19 +508,20 @@ pub fn resolve_implements(
     Ok(out)
 }
 
-/// The kinds under which a contract declares a member named `name`.
-fn member_kinds(doc: &daemon_config::contract::PeppyContract, name: &str) -> Vec<InterfaceKind> {
-    let mut kinds = Vec::new();
+/// The first kind under which a contract declares a member named `name`.
+fn member_kind(
+    doc: &daemon_config::contract::PeppyContract,
+    name: &str,
+) -> Option<InterfaceKind> {
     if doc.interfaces.topics.iter().any(|t| t.name == name) {
-        kinds.push(InterfaceKind::Topic);
+        Some(InterfaceKind::Topic)
+    } else if doc.interfaces.services.iter().any(|s| s.name == name) {
+        Some(InterfaceKind::Service)
+    } else if doc.interfaces.actions.iter().any(|a| a.name == name) {
+        Some(InterfaceKind::Action)
+    } else {
+        None
     }
-    if doc.interfaces.services.iter().any(|s| s.name == name) {
-        kinds.push(InterfaceKind::Service);
-    }
-    if doc.interfaces.actions.iter().any(|a| a.name == name) {
-        kinds.push(InterfaceKind::Action);
-    }
-    kinds
 }
 
 /// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
