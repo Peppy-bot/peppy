@@ -5,6 +5,8 @@ sidebar:
   order: 2
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Services implement a **request-response** communication pattern between nodes.
 A node *exposes* a service to handle incoming requests, and other nodes *consume* that service to send requests and receive responses.
 
@@ -16,58 +18,145 @@ For long-running work that needs progress feedback or cancellation, use an [acti
 A node that handles service requests declares its services under `interfaces.services.exposes` in its `peppy.json5`.
 Each service defines a `name`, an optional `request_message_format`, and an optional `response_message_format`:
 
-```json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "uvc_camera",
-    tag: "v1",
-  },
-  interfaces: {
-    services: {
-      exposes: [
-        {
-          name: "enable_camera",
-          request_message_format: {
-            enable: "bool",
-          },
-          response_message_format: {
-            enabled: "bool",
-            error_msg: {
-              $type: "string",
-              $optional: true
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "uvc_camera",
+        tag: "v1",
+      },
+      interfaces: {
+        services: {
+          exposes: [
+            {
+              name: "enable_camera",
+              request_message_format: {
+                enable: "bool",
+              },
+              response_message_format: {
+                enabled: "bool",
+                error_msg: {
+                  $type: "string",
+                  $optional: true
+                },
+              },
             },
-          },
+            {
+              // A service without a request body; the caller just needs the response.
+              name: "get_camera_info",
+              response_message_format: {
+                card_type: "string",
+                size: "string",
+                interval: "string"
+              },
+            },
+          ],
         },
-        {
-          // A service without a request body; the caller just needs the response.
-          name: "get_camera_info",
-          response_message_format: {
-            card_type: "string",
-            size: "string",
-            interval: "string"
-          },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "uvc_camera"]
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "uvc_camera",
+        tag: "v1",
+      },
+      interfaces: {
+        services: {
+          exposes: [
+            {
+              name: "enable_camera",
+              request_message_format: {
+                enable: "bool",
+              },
+              response_message_format: {
+                enabled: "bool",
+                error_msg: {
+                  $type: "string",
+                  $optional: true
+                },
+              },
+            },
+            {
+              // A service without a request body; the caller just needs the response.
+              name: "get_camera_info",
+              response_message_format: {
+                card_type: "string",
+                size: "string",
+                interval: "string"
+              },
+            },
+          ],
         },
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/uvc_camera"]
-  },
-}
-```
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/uvc_camera"]
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 Both `request_message_format` and `response_message_format` are optional.
 A service with no request body acts like a simple getter, and a service with no response body acts like a fire-and-forget trigger.
 
 ### Handling requests
 
-After running `peppy node sync`, the code generator creates a module for each exposed service under `peppygen::exposed_services`.
+After running `peppy node sync`, the code generator creates a module for each exposed service under `peppygen.exposed_services` (Python) / `peppygen::exposed_services` (Rust).
 Use `handle_next_request` to process incoming requests.
 Each request is handled in a separate task so that the main async block is not blocked:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+import asyncio
+
+from peppygen import NodeBuilder, NodeRunner
+from peppygen.parameters import Parameters
+from peppygen.exposed_services import enable_camera
+
+
+async def handle_requests(node_runner: NodeRunner):
+    def handler(request):
+        print(
+            f"enable_camera request from {request.instance_id}: "
+            f"enable = {request.data.enable}"
+        )
+        return enable_camera.Response(
+            enabled=request.data.enable,
+            error_msg="ok",
+        )
+
+    await enable_camera.handle_next_request(node_runner, handler)
+
+
+async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+    The handler may be a plain function or an `async def`; an async handler is awaited before the response is sent.
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::exposed_services::enable_camera;
 use peppygen::{NodeBuilder, Parameters, Result};
@@ -95,6 +184,8 @@ fn main() -> Result<()> {
     })
 }
 ```
+  </TabItem>
+</Tabs>
 
 The `request` argument contains:
 - `instance_id`: the consumer instance that sent the request, read straight from the request context. The producer is binding-agnostic; it doesn't know which slot on the consumer this call is heading to.
@@ -103,6 +194,19 @@ The `request` argument contains:
 `handle_next_request` processes a single request and returns.
 To serve requests continuously, call it in a loop inside a spawned task:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+async def serve_requests(node_runner: NodeRunner):
+    while True:
+        await enable_camera.handle_next_request(node_runner, handler)
+
+
+# in setup:
+return [asyncio.create_task(serve_requests(node_runner))]
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 tokio::spawn(async move {
     loop {
@@ -113,9 +217,30 @@ tokio::spawn(async move {
     }
 });
 ```
+  </TabItem>
+</Tabs>
 
 For a service without a request body, the handler receives a `Request` with only the `instance_id`:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.exposed_services import get_camera_info
+
+
+async def handle_info_requests(node_runner: NodeRunner):
+    def handler(request):
+        print(f"get_camera_info request from {request.instance_id}")
+        return get_camera_info.Response(
+            card_type="UVC Webcam",
+            size="1920x1080",
+            interval="30fps",
+        )
+
+    await get_camera_info.handle_next_request(node_runner, handler)
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::exposed_services::get_camera_info;
 
@@ -134,6 +259,8 @@ tokio::spawn(async move {
     .await
 });
 ```
+  </TabItem>
+</Tabs>
 
 A producer exposes its service exactly once and serves any consumer that calls it. Starting the producer before any consumer (or after them) is equally valid.
 
@@ -142,35 +269,70 @@ A producer exposes its service exactly once and serves any consumer that calls i
 A node that calls a service declares what it consumes under `interfaces.services.consumes`.
 Dependencies are declared in `manifest.depends_on` and referenced by `link_id` in the interface:
 
-```json5
-{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "robot_brain",
-    tag: "v1",
-    depends_on: {
-      nodes: [
-        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
-      ]
-    },
-  },
-  interfaces: {
-    services: {
-      consumes: [
-        {
-          link_id: "uvc_camera",  // References depends_on.nodes[].link_id
-          name: "enable_camera",        // Service name on that node
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "robot_brain",
+        tag: "v1",
+        depends_on: {
+          nodes: [
+            { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
+          ]
         },
-      ],
-    },
-  },
-  execution: {
-    language: "rust",
-    build_cmd: ["cargo", "build", "--release"],
-    run_cmd: ["./target/release/robot_brain"]
-  },
-}
-```
+      },
+      interfaces: {
+        services: {
+          consumes: [
+            {
+              link_id: "uvc_camera",  // References depends_on.nodes[].link_id
+              name: "enable_camera",        // Service name on that node
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "robot_brain"]
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "robot_brain",
+        tag: "v1",
+        depends_on: {
+          nodes: [
+            { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
+          ]
+        },
+      },
+      interfaces: {
+        services: {
+          consumes: [
+            {
+              link_id: "uvc_camera",  // References depends_on.nodes[].link_id
+              name: "enable_camera",        // Service name on that node
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/robot_brain"]
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
 
 :::note
 By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated.
@@ -183,9 +345,47 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 
 ### Calling a service
 
-The code generator creates a module for each consumed service under `peppygen::consumed_services`.
+The code generator creates a module for each consumed service under `peppygen.consumed_services` (Python) / `peppygen::consumed_services` (Rust).
 Use `poll` to send a request and wait for a response. There is no call-site targeting argument: the slot's binding determines which producer handles the call. Every slot is bound to exactly one producer (a launch that leaves a slot unbound or binds it twice is rejected at validation), so by the time `poll` runs, the route is already resolved.
 
+<Tabs>
+  <TabItem label="Python">
+```python
+import asyncio
+
+from peppygen import NodeBuilder, NodeRunner
+from peppygen.parameters import Parameters
+from peppygen.consumed_services import uvc_camera_enable_camera
+
+
+async def call_service(node_runner: NodeRunner):
+    request = uvc_camera_enable_camera.Request(enable=True)
+    response = await uvc_camera_enable_camera.poll(
+        node_runner,
+        request,
+        5.0,  # timeout (seconds)
+    )
+
+    error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
+    print(
+        f"enable_camera result: instance={response.instance_id} "
+        f"enabled={response.data.enabled} error={error_msg}"
+    )
+
+
+async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(call_service(node_runner))]
+
+
+def main():
+    NodeBuilder().run(setup)
+
+
+if __name__ == "__main__":
+    main()
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::consumed_services::uvc_camera_enable_camera;
 use peppygen::{NodeBuilder, Parameters, Result};
@@ -212,6 +412,8 @@ fn main() -> Result<()> {
     })
 }
 ```
+  </TabItem>
+</Tabs>
 
 The response contains:
 - `instance_id`: the producer instance that handled the request, read from the response context.
@@ -219,6 +421,17 @@ The response contains:
 
 For a service without a request body, `poll` simply takes no request:
 
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.consumed_services import uvc_camera_get_camera_info
+
+response = await uvc_camera_get_camera_info.poll(node_runner, 5.0)
+
+print(f"Camera: {response.data.card_type} {response.data.size}")
+```
+  </TabItem>
+  <TabItem label="Rust">
 ```rust
 use peppygen::consumed_services::uvc_camera_get_camera_info;
 
@@ -229,6 +442,8 @@ let response = uvc_camera_get_camera_info::poll(
 
 println!("Camera: {} {}", response.data.card_type, response.data.size);
 ```
+  </TabItem>
+</Tabs>
 
 ## Bindings and routing
 
@@ -295,15 +510,15 @@ A consumer that wires two depth cameras to two dedicated slots:
 
 Three contract statements follow from this manifest:
 
-1. `wrist_left_camera_<service>::poll(...)` reaches `left_cam`.
-2. `wrist_right_camera_<service>::poll(...)` reaches `right_cam`.
+1. `poll` on the `wrist_left_camera_<service>` module reaches `left_cam`.
+2. `poll` on the `wrist_right_camera_<service>` module reaches `right_cam`.
 3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared slot must have a binding): a service call has no wildcard fallback.
 
 ### Why exactly one producer?
 
 The underlying Zenoh transport would broadcast an untargeted service query to every matching producer (`QueryTarget::All`), and every producer's user handler would run even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. Requiring the slot to resolve to a single bound producer removes that hazard by construction: the binding carries the producer's full `(core_node, instance_id)` wire address, so the call addresses exactly one producer with no probe round-trip and no discovery race.
 
-If the bound producer dies, the call surfaces `ServiceUnreachable` and the caller can retry once the producer is back.
+If the bound producer dies, the call surfaces `ServiceUnreachable` (a `ConnectionError` in Python) and the caller can retry once the producer is back.
 
 ### Validator rules
 
@@ -318,9 +533,9 @@ The launcher validator runs these checks before the stack starts:
 ## Error handling
 
 Service calls can fail with three error types:
-- **ServiceUnreachable**: no instance is listening for that service.
-- **ServiceTimeout**: no response was received within the timeout.
-- **ServiceError**: the handler returned an error, which is propagated back to the caller.
+- **ServiceUnreachable** (`ConnectionError` in Python): no instance is listening for that service.
+- **ServiceTimeout** (`TimeoutError` in Python): no response was received within the timeout.
+- **ServiceError** (`RuntimeError` in Python): the handler returned an error, which is propagated back to the caller.
 
-If the service handler returns an `Err`, the error is forwarded to the caller rather than silently timing out.
+If the service handler returns an `Err` in Rust or raises an exception in Python, the error is forwarded to the caller rather than silently timing out.
 This means a failing handler does not block the service from continuing to accept new requests.

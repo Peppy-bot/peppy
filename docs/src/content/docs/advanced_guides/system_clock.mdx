@@ -38,8 +38,8 @@ If unsure, start with `synchronize`; it gives you both numbers and you can call 
 
 `synchronize` performs the standard NTP 4-timestamp exchange against the core node's `CLOCK` service: the helper stamps `t0` before sending, the core node stamps `t1` on receive and `t2` before responding, and the helper stamps `t3` on receive. It returns a `ClockSync` with three fields:
 
-- `offset_ns` (`i64`): signed nanoseconds. `local + offset_ns ≈ core_node`. Negative means the local clock leads the core node.
-- `round_trip_delay_ns` (`u64`): the round-trip delay observed on this exchange.
+- `offset_ns` (`i64` in Rust, `int` in Python): signed nanoseconds. `local + offset_ns ≈ core_node`. Negative means the local clock leads the core node.
+- `round_trip_delay_ns` (`u64` in Rust, `int` in Python): the round-trip delay observed on this exchange.
 - `raw`: the wire response with `server_recv_time` (t1), `server_send_time` (t2), and the echoed `client_send_time` (t0), exposed for callers that want to do their own analysis.
 
 The second argument is a response timeout. Rust accepts `Option<Duration>`; Python accepts `float | None` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
@@ -108,7 +108,7 @@ Call `on_next_tick` in a loop to receive each tick; it returns `None` when the s
 
 The core node publishes ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`.
 
-Each `ClockTick` carries a single field, `time` (`u64`): nanoseconds since the Unix epoch, stamped by the core node at emission. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
+Each `ClockTick` carries a single field, `time` (`u64` in Rust, `int` in Python): nanoseconds since the Unix epoch, stamped by the core node at emission. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
 
 <Tabs>
   <TabItem label="Python">
@@ -214,9 +214,9 @@ Subscribers see the same shape either way.
 
 Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemon default. Setting `use_sim_time: false` on an instance forces wall mode even when the daemon flag is `--clock-source=sim`.
 
-### `PeppyClock` and `peppygen::clock`
+### `PeppyClock` and the generated `clock` module
 
-For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` (in `peppylib::clock`) and the generator emits a pre-bound `peppygen::clock` module:
+For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` (in `peppylib.clock` / `peppylib::clock`) and the generator emits a pre-bound clock module (`peppygen.clock` in Python, `peppygen::clock` in Rust):
 
 - `init(node_runner)`: async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent. Call it once at the top of your setup function.
 - `now_ns()`: sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
@@ -279,4 +279,4 @@ For hot-path code that just wants "what time is it now" without caring whether t
   </TabItem>
 </Tabs>
 
-Prefer `synchronize` over `PeppyClock` when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe` is the right pick if you want every raw tick. For everything else, reach for `peppygen::clock::now_ns`.
+Prefer `synchronize` over `PeppyClock` when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe` is the right pick if you want every raw tick. For everything else, reach for the generated clock module's `now_ns` (`peppygen.clock.now_ns` in Python, `peppygen::clock::now_ns` in Rust).
