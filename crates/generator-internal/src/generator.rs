@@ -137,44 +137,24 @@ fn collect_exposed_interfaces(
     extra_capacity: usize,
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::with_capacity(extra_capacity);
-
-    if let Some(emits) = config
-        .interfaces
-        .topics
-        .as_ref()
-        .and_then(|topics| topics.emits.as_deref())
-    {
-        interfaces.extend(emits.iter().filter_map(|entry| {
-            entry
-                .as_native()
-                .map(|topic| DeploymentInterface::emitted_topic(topic.clone(), None))
-        }));
-    }
-    if let Some(exposes) = config
-        .interfaces
-        .services
-        .as_ref()
-        .and_then(|services| services.exposes.as_deref())
-    {
-        interfaces.extend(exposes.iter().filter_map(|entry| {
-            entry
-                .as_native()
-                .map(|service| DeploymentInterface::exposed_service(service.clone(), None))
-        }));
-    }
-    if let Some(exposes) = config
-        .interfaces
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.exposes.as_deref())
-    {
-        interfaces.extend(exposes.iter().filter_map(|entry| {
-            entry
-                .as_native()
-                .map(|action| DeploymentInterface::exposed_action(action.clone(), None))
-        }));
-    }
-
+    interfaces.extend(
+        config
+            .interfaces
+            .native_emits()
+            .map(|topic| DeploymentInterface::emitted_topic(topic.clone(), None)),
+    );
+    interfaces.extend(
+        config
+            .interfaces
+            .native_service_exposes()
+            .map(|service| DeploymentInterface::exposed_service(service.clone(), None)),
+    );
+    interfaces.extend(
+        config
+            .interfaces
+            .native_action_exposes()
+            .map(|action| DeploymentInterface::exposed_action(action.clone(), None)),
+    );
     interfaces
 }
 

@@ -285,40 +285,35 @@ pub(crate) fn resolve_contract_doc(
     )
 }
 
-/// One contract-backed produced entry `(kind, name)` pulled out of the
-/// manifest's `interfaces` section, grouped by implements link_id.
-fn contract_backed_entries(
-    interfaces_cfg: &config::node::Interfaces,
-) -> Vec<(String, InterfaceKind, String)> {
-    let emits = interfaces_cfg
-        .topics
-        .as_ref()
-        .and_then(|t| t.emits.as_deref())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|e| e.as_contract())
-        .map(|e| (e, InterfaceKind::Topic));
-    let services = interfaces_cfg
-        .services
-        .as_ref()
-        .and_then(|s| s.exposes.as_deref())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|e| e.as_contract())
-        .map(|e| (e, InterfaceKind::Service));
-    let actions = interfaces_cfg
-        .actions
-        .as_ref()
-        .and_then(|a| a.exposes.as_deref())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|e| e.as_contract())
-        .map(|e| (e, InterfaceKind::Action));
-    emits
-        .chain(services)
-        .chain(actions)
-        .map(|(entry, kind)| (entry.link_id.clone(), kind, entry.name.clone()))
-        .collect()
+/// Error from [`resolve_implements`]. Tier B coverage failures keep their
+/// per-slot [`ContractCoverageMismatch`] payloads so callers can render or
+/// match each slot's diff individually; every other failure is a plain
+/// message, matching the sync module's string error contract.
+#[derive(Debug)]
+pub enum ImplementsError {
+    /// One aggregated set-diff per broken slot.
+    Coverage(Vec<ContractCoverageMismatch>),
+    Other(String),
+}
+
+impl std::fmt::Display for ImplementsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Coverage(mismatches) => {
+                let rendered: Vec<String> = mismatches.iter().map(ToString::to_string).collect();
+                f.write_str(&rendered.join("; "))
+            }
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ImplementsError {}
+
+impl From<String> for ImplementsError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
 }
 
 /// Per-slot Tier B coverage bookkeeping: which contract members the manifest
@@ -354,7 +349,7 @@ pub fn resolve_implements(
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<Vec<DeploymentInterface>, String> {
+) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
         return Ok(Vec::new());
     }
@@ -383,15 +378,17 @@ pub fn resolve_implements(
     let mut out: Vec<DeploymentInterface> = Vec::new();
     let mut coverage: HashMap<&str, SlotCoverage> = HashMap::new();
 
-    for (link_id, kind, name) in contract_backed_entries(interfaces_cfg) {
-        let Some((slot, doc)) = docs.get(link_id.as_str()) else {
+    for (kind, entry) in interfaces_cfg.contract_backed_entries() {
+        let name = entry.name.as_str();
+        let Some((slot, doc)) = docs.get(entry.link_id.as_str()) else {
             // Parse-time validation guarantees every produced entry's
             // link_id names an implements slot; reaching this means the
             // config bypassed the parser.
-            return Err(format!(
-                "produced entry `{name}` references link_id `{link_id}`, which matches no \
-                 `manifest.implements` slot"
-            ));
+            return Err(ImplementsError::Other(format!(
+                "produced entry `{name}` references link_id `{}`, which matches no \
+                 `manifest.implements` slot",
+                entry.link_id
+            )));
         };
         let origin = ContractOrigin {
             contract_name: slot.name.as_str().to_string(),
@@ -425,17 +422,17 @@ pub fn resolve_implements(
                 out.push(interface);
                 *slot_coverage
                     .visited
-                    .entry((kind, name.clone()))
+                    .entry((kind, name.to_string()))
                     .or_insert(0) += 1;
             }
             None => {
                 // The entry's name was not found under `kind`, so any kind
                 // this returns is necessarily a different one.
-                match member_kind(doc, &name) {
+                match member_kind(doc, name) {
                     Some(member_kind) => slot_coverage.wrong_kind.push(format!(
                         "{name} (declared as {kind}, contract declares {member_kind})"
                     )),
-                    None => slot_coverage.unknown.push(name.clone()),
+                    None => slot_coverage.unknown.push(name.to_string()),
                 }
             }
         }
@@ -443,7 +440,7 @@ pub fn resolve_implements(
 
     // Tier B coverage: per (slot x kind) set equality between the contract's
     // members and the visited entries, aggregated into one diff per slot.
-    let mut broken: Vec<String> = Vec::new();
+    let mut broken: Vec<ContractCoverageMismatch> = Vec::new();
     for slot in &manifest.implements {
         let (_, doc) = &docs[slot.link_id.as_str()];
         let empty = SlotCoverage::default();
@@ -488,31 +485,25 @@ pub fn resolve_implements(
         {
             continue;
         }
-        broken.push(
-            ContractCoverageMismatch {
-                contract_name: slot.name.as_str().to_string(),
-                contract_tag: slot.tag.clone(),
-                link_id: slot.link_id.clone(),
-                missing,
-                unknown: slot_coverage.unknown.clone(),
-                duplicated,
-                wrong_kind: slot_coverage.wrong_kind.clone(),
-            }
-            .to_string(),
-        );
+        broken.push(ContractCoverageMismatch {
+            contract_name: slot.name.as_str().to_string(),
+            contract_tag: slot.tag.clone(),
+            link_id: slot.link_id.clone(),
+            missing,
+            unknown: slot_coverage.unknown.clone(),
+            duplicated,
+            wrong_kind: slot_coverage.wrong_kind.clone(),
+        });
     }
     if !broken.is_empty() {
-        return Err(broken.join("; "));
+        return Err(ImplementsError::Coverage(broken));
     }
 
     Ok(out)
 }
 
 /// The first kind under which a contract declares a member named `name`.
-fn member_kind(
-    doc: &daemon_config::contract::PeppyContract,
-    name: &str,
-) -> Option<InterfaceKind> {
+fn member_kind(doc: &daemon_config::contract::PeppyContract, name: &str) -> Option<InterfaceKind> {
     if doc.interfaces.topics.iter().any(|t| t.name == name) {
         Some(InterfaceKind::Topic)
     } else if doc.interfaces.services.iter().any(|s| s.name == name) {
@@ -686,6 +677,11 @@ mod implements_tests {
 
         let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
             .expect_err("partial coverage must error");
+        let ImplementsError::Coverage(mismatches) = &err else {
+            panic!("coverage failure must carry structured mismatches, got {err:?}");
+        };
+        assert_eq!(mismatches.len(), 1, "one broken slot, one mismatch");
+        let err = err.to_string();
         assert!(
             err.contains("uvc_camera:v1") && err.contains("cam"),
             "error should name the contract and slot, got: {err}"
@@ -714,7 +710,8 @@ mod implements_tests {
         );
 
         let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
-            .expect_err("wrong-kind entry must error");
+            .expect_err("wrong-kind entry must error")
+            .to_string();
         assert!(
             err.contains("video_stream") && err.contains("wrong kind"),
             "error should flag the wrong-kind entry, got: {err}"
@@ -748,7 +745,8 @@ mod implements_tests {
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
         let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
-            .expect_err("broken slot must error");
+            .expect_err("broken slot must error")
+            .to_string();
         assert!(
             err.contains("imu:v1") && err.contains("motion") && err.contains("orientation"),
             "error should name the broken slot and its missing member, got: {err}"
@@ -787,7 +785,8 @@ mod implements_tests {
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
 
         let err = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
-            .expect_err("miss must error");
+            .expect_err("miss must error")
+            .to_string();
         assert!(
             err.contains("`depth_camera:v1`") && err.contains("peppy repo refresh"),
             "missing-from-cache error should name the entry and suggest refresh, got: {err}"
@@ -871,7 +870,8 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
         let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
-            .expect_err("drift must error");
+            .expect_err("drift must error")
+            .to_string();
         assert!(
             err.contains("drifted") && err.contains("peppy repo refresh"),
             "drift error should mention drift + refresh, got: {err}"
@@ -1013,7 +1013,8 @@ mod implements_tests {
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
         let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
-            .expect_err("git-sourced drift must error");
+            .expect_err("git-sourced drift must error")
+            .to_string();
         assert!(
             err.contains("drifted") && err.contains("peppy repo refresh"),
             "drift error should mention drift + refresh, got: {err}"

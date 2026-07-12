@@ -230,7 +230,8 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
                             );
                         }
                         None => {
-                            let _ = writeln!(out, "  - {}{}", topic.name(), via_slot(topic.link_id()));
+                            let _ =
+                                writeln!(out, "  - {}{}", topic.name(), via_slot(topic.link_id()));
                         }
                     }
                 }

@@ -196,39 +196,27 @@ pub(super) fn build_dependency_offerings(
         HashMap::new();
     let mut actions: HashMap<String, ConsumedActionMessage> = HashMap::new();
 
-    if let Some(topic_ifaces) = &dep_config.interfaces.topics
-        && let Some(emits) = &topic_ifaces.emits
-    {
-        for emitted in emits.iter().filter_map(|entry| entry.as_native()) {
-            if let Some(fmt) = &emitted.message_format {
-                topics
-                    .entry(emitted.name.trim().to_string())
-                    .or_insert_with(|| fmt.clone());
-            }
+    for emitted in dep_config.interfaces.native_emits() {
+        if let Some(fmt) = &emitted.message_format {
+            topics
+                .entry(emitted.name.trim().to_string())
+                .or_insert_with(|| fmt.clone());
         }
     }
-    if let Some(service_ifaces) = &dep_config.interfaces.services
-        && let Some(exposes) = &service_ifaces.exposes
-    {
-        for exposed in exposes.iter().filter_map(|entry| entry.as_native()) {
-            services
-                .entry(exposed.name.trim().to_string())
-                .or_insert_with(|| {
-                    (
-                        exposed.request_message_format.clone().unwrap_or_default(),
-                        exposed.response_message_format.clone().unwrap_or_default(),
-                    )
-                });
-        }
+    for exposed in dep_config.interfaces.native_service_exposes() {
+        services
+            .entry(exposed.name.trim().to_string())
+            .or_insert_with(|| {
+                (
+                    exposed.request_message_format.clone().unwrap_or_default(),
+                    exposed.response_message_format.clone().unwrap_or_default(),
+                )
+            });
     }
-    if let Some(action_ifaces) = &dep_config.interfaces.actions
-        && let Some(exposes) = &action_ifaces.exposes
-    {
-        for exposed in exposes.iter().filter_map(|entry| entry.as_native()) {
-            actions
-                .entry(exposed.name.trim().to_string())
-                .or_insert_with(|| action_message_from_exposed(exposed));
-        }
+    for exposed in dep_config.interfaces.native_action_exposes() {
+        actions
+            .entry(exposed.name.trim().to_string())
+            .or_insert_with(|| action_message_from_exposed(exposed));
     }
 
     DependencyOfferings {

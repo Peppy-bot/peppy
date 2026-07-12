@@ -59,10 +59,12 @@ fn resolve_pairing_doc_cached(
 /// link_id (ready for the codegen collection step):
 ///
 /// - the declared `role` must be one of the doc's two roles (the error
-///   names them);
-/// - two entries must not collide after tag normalization (same rule as
-///   `manifest.implements`; exact duplicates of `(name, tag, role, link_id)` are
-///   already impossible because link_ids are unique).
+///   names them).
+///
+/// No tag-collision rule applies here: pairing slots are addressed by
+/// `link_id` everywhere (module paths, wire segments), and link_id
+/// uniqueness is enforced at parse time; the tag only surfaces as an
+/// informational constant in generated code.
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,

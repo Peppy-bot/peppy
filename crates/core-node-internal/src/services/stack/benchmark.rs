@@ -318,14 +318,7 @@ fn resolve_link(
 /// [`QoSProfile::Standard`]. Node-dep edges resolve native entries only.
 fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSProfile {
     producer
-        .and_then(|c| c.interfaces.topics.as_ref())
-        .and_then(|t| t.emits.as_ref())
-        .and_then(|emits| {
-            emits
-                .iter()
-                .filter_map(|e| e.as_native())
-                .find(|e| e.name == topic_name)
-        })
+        .and_then(|c| c.interfaces.native_emits().find(|e| e.name == topic_name))
         .map(|e| e.qos_profile.clone())
         .unwrap_or_default()
 }
@@ -507,14 +500,8 @@ fn formats_from_node(
         InterfaceKind::Service => {
             let svc = node
                 .interfaces
-                .services
-                .as_ref()
-                .and_then(|s| s.exposes.as_ref())
-                .and_then(|v| {
-                    v.iter()
-                        .filter_map(|e| e.as_native())
-                        .find(|e| e.name == name)
-                });
+                .native_service_exposes()
+                .find(|e| e.name == name);
             (
                 svc.and_then(|s| s.request_message_format.as_ref())
                     .map(estimate_serialized_size),
@@ -525,14 +512,8 @@ fn formats_from_node(
         InterfaceKind::Action => {
             let goal = node
                 .interfaces
-                .actions
-                .as_ref()
-                .and_then(|a| a.exposes.as_ref())
-                .and_then(|v| {
-                    v.iter()
-                        .filter_map(|e| e.as_native())
-                        .find(|e| e.name == name)
-                })
+                .native_action_exposes()
+                .find(|e| e.name == name)
                 .and_then(|a| a.goal_service.as_ref());
             (
                 goal.and_then(|g| g.request_message_format.as_ref())
@@ -542,16 +523,7 @@ fn formats_from_node(
             )
         }
         InterfaceKind::Topic => {
-            let topic = node
-                .interfaces
-                .topics
-                .as_ref()
-                .and_then(|t| t.emits.as_ref())
-                .and_then(|v| {
-                    v.iter()
-                        .filter_map(|e| e.as_native())
-                        .find(|e| e.name == name)
-                });
+            let topic = node.interfaces.native_emits().find(|e| e.name == name);
             (
                 None,
                 topic
