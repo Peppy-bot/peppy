@@ -26,8 +26,7 @@ rstest = "0.26"
 # `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
 # path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
 # crate follows the repo's default branch (`main`); the resolved revision is
-# recorded in Cargo.lock and moved forward with the superproject's
-# `scripts/sync-locks.sh` (`cargo update` under the hood). `config` and
+# recorded in Cargo.lock and moved forward with `cargo update`. `config` and
 # `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
 # and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
 # directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
@@ -56,12 +55,11 @@ node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
 # NOTE: there is intentionally no [patch] here. These git deps are the source of truth
-# for standalone clones and CI, which build the revision pinned in Cargo.lock with no
-# edits. Inside the superproject, the committed .cargo/config.toml one level above this
-# repo permanently patches them to the sibling public-peppy-libs checkout, so local
-# builds always use the in-tree crates and this Cargo.lock drifts to path-form (never
-# commit it in that state). Before committing a lock change, run the superproject's
-# scripts/sync-locks.sh to re-pin the git deps and regenerate a committable lock.
+# for everyone: standalone clones and CI build the pinned revision with no edits, and
+# Cargo.lock stays git-resolved. For LOCAL co-development of public-peppy-libs, the
+# superproject can opt in to redirecting them to the in-tree checkout via
+# `<superproject-root>/scripts/local-libs.sh on` (a gitignored [patch] in the
+# superproject's .cargo/config.toml, one level above this repo); off by default.
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]
