@@ -300,8 +300,13 @@ impl std::fmt::Display for ImplementsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Coverage(mismatches) => {
-                let rendered: Vec<String> = mismatches.iter().map(ToString::to_string).collect();
-                f.write_str(&rendered.join("; "))
+                for (idx, mismatch) in mismatches.iter().enumerate() {
+                    if idx > 0 {
+                        f.write_str("; ")?;
+                    }
+                    write!(f, "{mismatch}")?;
+                }
+                Ok(())
             }
             Self::Other(message) => f.write_str(message),
         }
@@ -321,7 +326,7 @@ impl From<String> for ImplementsError {
 /// right kind.
 #[derive(Default)]
 struct SlotCoverage {
-    visited: HashMap<(InterfaceKind, String), u32>,
+    visited: HashMap<InterfaceKind, HashMap<String, u32>>,
     unknown: Vec<String>,
     wrong_kind: Vec<String>,
 }
@@ -422,7 +427,9 @@ pub fn resolve_implements(
                 out.push(interface);
                 *slot_coverage
                     .visited
-                    .entry((kind, name.to_string()))
+                    .entry(kind)
+                    .or_default()
+                    .entry(name.to_string())
                     .or_insert(0) += 1;
             }
             None => {
@@ -466,12 +473,13 @@ pub fn resolve_implements(
                     .map(|a| (InterfaceKind::Action, a.name.as_str())),
             );
         for (kind, member_name) in members {
-            match slot_coverage
+            let visits = slot_coverage
                 .visited
-                .get(&(kind, member_name.to_string()))
+                .get(&kind)
+                .and_then(|members| members.get(member_name))
                 .copied()
-                .unwrap_or(0)
-            {
+                .unwrap_or(0);
+            match visits {
                 0 => missing.push(format!("{member_name} ({kind})")),
                 1 => {}
                 _ => duplicated.push(format!("{member_name} ({kind})")),
