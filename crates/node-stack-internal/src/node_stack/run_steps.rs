@@ -353,14 +353,22 @@ pub(super) async fn build_container_command(
     //     so an unintended mkdir is still visible to the operator.
     ensure_bind_sources(&binds[1..], log_file, feedback_tx)?;
 
-    // Ensure host paths outside $HOME are accessible in the Lima VM.
-    // Skip binds[0] (runtime config); it's always under $HOME.
-    if binds.len() > 1 {
-        let src_paths: Vec<&str> = binds[1..].iter().map(|b| b.src.as_str()).collect();
-        apptainer
-            .ensure_host_mounts(&src_paths)
-            .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
-    }
+    // Ensure host paths outside $HOME are accessible in the Lima VM. The
+    // peppy data root is always included: the SIF image, the instance
+    // working dir, and the runtime config (binds[0]) all live under it, and
+    // it sits outside `$HOME` in dev (rooted at `$TMPDIR/.peppy`).
+    // `ensure_host_mounts` filters home-relative paths and is a no-op on the
+    // native (Linux) backend.
+    let peppy_root = peppy_dirs
+        .root()
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("peppy root path is not valid UTF-8"))?;
+    let mut src_paths: Vec<&str> = vec![peppy_root];
+    // Skip binds[0] (runtime config); it's under the peppy root added above.
+    src_paths.extend(binds[1..].iter().map(|b| b.src.as_str()));
+    apptainer
+        .ensure_host_mounts(&src_paths)
+        .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
 
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are

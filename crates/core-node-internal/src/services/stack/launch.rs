@@ -316,16 +316,32 @@ async fn prepare_container_host_mounts(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
 ) -> std::result::Result<(), LaunchResult> {
-    let mount_sources = match collect_container_mount_sources(ordered, planned_by_key) {
+    let mut mount_sources = match collect_container_mount_sources(ordered, planned_by_key) {
         Ok(paths) => paths,
         Err(reason) => return Err(fail_and_clear_stack(ctx, reason).await),
     };
-    if mount_sources.is_empty() {
-        return Ok(());
-    }
 
     if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
         return Err(fail_and_clear_stack(ctx, reason).await);
+    }
+
+    // The peppy data root hosts the container build working dirs (`tmp/`),
+    // built images (`built_nodes/`), and instance dirs. When it sits outside
+    // `$HOME` (dev roots at `$TMPDIR/.peppy`) the Lima guest cannot see it,
+    // so register it here whenever the stack has container nodes. Doing it in
+    // this step front-loads the one-time VM restart a new mount triggers,
+    // instead of paying it mid-build. Added after `ensure_launch_bind_sources`
+    // on purpose: the root always exists and must not hit the auto-create
+    // warning path. `external_lima_mount_sources` filters it out on Linux and
+    // for home-relative roots (prod).
+    if stack_has_container_nodes(ordered, planned_by_key) {
+        match ctx.peppy_dirs.root().to_str() {
+            Some(root) => mount_sources.push(root.to_owned()),
+            None => {
+                let reason = "peppy root path is not valid UTF-8".to_string();
+                return Err(fail_and_clear_stack(ctx, reason).await);
+            }
+        }
     }
 
     let lima_mount_sources = external_lima_mount_sources(&mount_sources);
@@ -360,6 +376,17 @@ async fn prepare_container_host_mounts(
     }
 
     Ok(())
+}
+
+fn stack_has_container_nodes(
+    ordered: &[NodeKey],
+    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+) -> bool {
+    ordered.iter().any(|key| {
+        planned_by_key
+            .get(key)
+            .is_some_and(|item| item.config.execution.container.is_some())
+    })
 }
 
 fn collect_container_mount_sources(

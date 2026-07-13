@@ -528,6 +528,7 @@ impl NodeEntity {
                     lima_shell_extra_args,
                     feedback_tx: ctx.feedback_tx,
                     log_file: Arc::clone(&ctx.log_file),
+                    peppy_dirs: ctx.peppy_dirs,
                     cancel_token: &ctx.cancel_token,
                 })
                 .await
