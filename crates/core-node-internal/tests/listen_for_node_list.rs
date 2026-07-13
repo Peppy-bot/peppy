@@ -5,7 +5,7 @@ use common::{
     write_peppy_json5,
 };
 use core_node_api::encoding::StackListRequest;
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -52,7 +52,7 @@ async fn listen_for_node_list_returns_succeeds() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -146,7 +146,7 @@ async fn listen_for_node_list_returns_dot_graph() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(true),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,

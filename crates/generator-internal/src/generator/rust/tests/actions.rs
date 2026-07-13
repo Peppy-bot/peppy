@@ -1,6 +1,6 @@
 use super::*;
 
-use config::node::{ConsumedAction, ExposedAction};
+use config::node::{ConsumedAction, NativeExposedAction};
 use std::{collections::HashMap, fs};
 
 // --- Exposes examples
@@ -192,7 +192,7 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 
 #[test]
 fn exposed_action() {
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
@@ -295,7 +295,7 @@ fn exposed_action() {
 
 #[test]
 fn expose_action_without_request_body() {
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
@@ -348,7 +348,7 @@ fn expose_action_without_request_body() {
 fn exposed_action_rejects_reserved_message_field_name() {
     use crate::error::Error;
 
-    let action: ExposedAction =
+    let action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -373,7 +373,7 @@ fn expose_feedback_only_action() {
     // A feedback-only action is still goal-driven: the client fires a goal, the
     // server accepts it and publishes feedback through the GoalContext. The goal
     // has no request/response payload and there is no completion (no result).
-    let action: ExposedAction = serde_json5::from_str(
+    let action: NativeExposedAction = serde_json5::from_str(
         r#"
         {
           name: "blink_led",
@@ -428,8 +428,8 @@ fn expose_feedback_only_action() {
 
 #[test]
 fn expose_two_actions() {
-    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action1: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action1, None).unwrap();
@@ -502,7 +502,7 @@ fn consumed_action() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -588,9 +588,10 @@ fn consumed_action() {
         &["pub struct FeedbackMessage", "pub new_position: [i32; 3]"],
     );
 
-    // fire_goal method (constructor). The fixture's `DependencyContext::native`
-    // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
-    // send_goal call splices a typed `None` at its single target slot.
+    // fire_goal method (constructor). The slot's one bound producer is
+    // spliced inline at the single target slot (an infallible lookup:
+    // launch and startup guarantee exactly one producer per declared
+    // slot).
     assert_contains_all(
         &rendered,
         &[
@@ -599,7 +600,7 @@ fn consumed_action() {
             "feedback_qos: peppylib::config::QoSProfile",
             "-> crate::Result<Self>",
             "peppylib::ActionMessenger::send_goal",
-            "Option::<&peppylib::messaging::ProducerRef>::None,",
+            "Some(node_runner.processor().bound_producer(\"brain\")),",
             "node_runner.messenger().clone()",
         ],
     );
@@ -685,14 +686,14 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &move_arm_action,
             &move_arm_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &rotate_action,
             &rotate_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
 
@@ -803,11 +804,10 @@ fn consumed_two_actions_same_node() {
     );
 }
 
-/// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the single `target` argument of the generated `send_goal`:
-/// `consumer_filter(<link_id>).pinned_target()` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)`, so a pinned
-/// slot addresses exactly one producer with no discovery probe.
+/// The generated `send_goal` resolves the slot's one bound producer
+/// via `bound_producer(<link_id>)` into its full
+/// `(core_node, instance_id)`, so the goal addresses exactly one
+/// producer with no discovery probe.
 #[test]
 fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -828,8 +828,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1")
-                .with_link_id(crate::WireLinkId::from_link_id("left_arm", false)),
+            &crate::DependencyContext::native("brain", "v1", "left_arm"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -837,7 +836,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
 
     assert_contains_all(
         &rendered,
-        &[".consumer_filter(\"left_arm\")", ".pinned_target()"],
+        &["Some(node_runner.processor().bound_producer(\"left_arm\")),"],
     );
     assert_rendered!(
         !rendered.contains("Option::<&peppylib::messaging::ProducerRef>::None"),
@@ -865,7 +864,7 @@ fn consumed_action_without_response_payload() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -916,7 +915,7 @@ fn consumed_action_without_feedback() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -957,7 +956,7 @@ fn consumed_action_without_feedback() {
 #[test]
 fn clippy_single_exposed_action_empty_goal_request() {
     let temp_dir = TempDir::new().unwrap();
-    let action: ExposedAction =
+    let action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST).unwrap();
 
     let consumed_action1: ConsumedAction =
@@ -992,14 +991,14 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .add_consumed_action(
             &consumed_action1,
             &consumed_action1_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &consumed_action2_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -1043,8 +1042,8 @@ fn clippy_single_exposed_action_empty_goal_request() {
 #[test]
 fn compile_lib_with_exposed_and_consumed_actions() {
     let temp_dir = TempDir::new().unwrap();
-    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+    let action1: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
     let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -1079,14 +1078,14 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         .add_consumed_action(
             &consumed_action1,
             &consumed_action1_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &consumed_action2_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -1192,7 +1191,7 @@ fn clippy_consumed_action_empty_goal_request() {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &crate::DependencyContext::native("robot", "v1"),
+            &crate::DependencyContext::native("robot", "v1", "robot"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

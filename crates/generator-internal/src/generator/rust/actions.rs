@@ -24,7 +24,7 @@ pub fn build_action_handle_struct() -> TokenStream {
 
 pub fn build_action_expose_method(
     has_feedback: bool,
-    origin: Option<&crate::generator::types::InterfaceOrigin>,
+    origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
     let target_expr = super::topics::sender_target_expression(origin);
     let has_feedback_lit = if has_feedback {

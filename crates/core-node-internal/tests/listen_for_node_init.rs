@@ -8,7 +8,7 @@ use core_node_api::encoding::NodeInitRequest;
 use daemon_config::consts::{
     DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH,
 };
-use peppylib::core_node::transport::poll_node_init;
+use peppylib::core_node::transport::poll;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -23,7 +23,7 @@ async fn listen_for_node_init_rust_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = poll_node_init(
+    let response = poll(
         &NodeInitRequest::new(
             nodes_root.path(),
             NODE_NAME,
@@ -122,7 +122,7 @@ async fn listen_for_node_init_rust_container_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = poll_node_init(
+    let response = poll(
         &NodeInitRequest::new(
             nodes_root.path(),
             NODE_NAME,
@@ -241,7 +241,7 @@ async fn listen_for_node_init_python_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = poll_node_init(
+    let response = poll(
         &NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", false, Toolchain::Uv),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -353,7 +353,7 @@ async fn listen_for_node_init_python_container_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = poll_node_init(
+    let response = poll(
         &NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", true, Toolchain::Uv),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -503,7 +503,7 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         "precondition: peppygen output should not exist"
     );
 
-    let response = poll_node_init(
+    let response = poll(
         &NodeInitRequest::new(
             nodes_root.path(),
             NODE_NAME,

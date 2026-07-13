@@ -1,5 +1,5 @@
 use config::{
-    node::{EmittedTopic, ExposedAction, ExposedService},
+    node::{NativeEmittedTopic, NativeExposedAction, NativeExposedService},
     runtime::Name,
     schema::PeppySchema,
 };
@@ -9,31 +9,32 @@ use serde::{
 };
 use std::collections::HashSet;
 
-/// Reject any `peppy_schema` value other than `interface/v1` so a node or
-/// launcher document can't slip through `PeppyInterfaceParser`.
-fn deserialize_interface_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
+/// Reject any `peppy_schema` value other than `contract/v1` so a node or
+/// launcher document can't slip through `PeppyContractParser`.
+fn deserialize_contract_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
 where
     D: Deserializer<'de>,
 {
-    PeppySchema::deserialize_expecting(deserializer, PeppySchema::InterfaceV1)
+    PeppySchema::deserialize_expecting(deserializer, PeppySchema::ContractV1)
 }
 
 /// A reusable contract describing the topics, services, and actions a node
-/// claims to expose. Interface documents are stand-alone JSON5 files identified
-/// by `peppy_schema: "interface/v1"`; nodes reference them by name/tag to
-/// declare conformance.
+/// claims to expose. Contract documents are stand-alone JSON5 files identified
+/// by `peppy_schema: "contract/v1"`; nodes claim them by name/tag in
+/// `manifest.implements` and list every member as an explicit contract-backed
+/// entry in their `interfaces` section.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PeppyInterface {
-    #[serde(deserialize_with = "deserialize_interface_v1_schema")]
+pub struct PeppyContract {
+    #[serde(deserialize_with = "deserialize_contract_v1_schema")]
     pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
     pub interfaces: Interfaces,
 }
 
-/// Identity of an interface document. Interfaces do not have build/runtime
+/// Identity of a contract document. Contracts do not have build/runtime
 /// concerns, so the manifest is narrower than a node manifest: `depends_on`
-/// is rejected because an interface is a passive contract. `labels` are
+/// is rejected because a contract is passive. `labels` are
 /// allowed as descriptive metadata to help discovery and filtering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -46,7 +47,7 @@ pub struct Manifest {
 }
 
 /// Enforce the repo-ID tag contract on the manifest tag at parse time, reusing
-/// the shared rules from `repo_node_id` so a `name`/`tag` pair from an interface
+/// the shared rules from `repo_node_id` so a `name`/`tag` pair from a contract
 /// document matches node dependencies the same way everywhere.
 fn deserialize_tag<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
@@ -57,10 +58,11 @@ where
     Ok(tag)
 }
 
-/// The body of an interface document. Each section is a flat list of items;
-/// there is no `emits`/`consumes` split because an interface describes the
-/// provider side only. Conformance for the consumer side is checked separately
-/// against the node's declared interfaces.
+/// The body of a contract document. Each section is a flat list of items;
+/// there is no `emits`/`consumes` split because a contract describes the
+/// provider side only. Members use the native (inline-shape) item types
+/// directly: a contract member is the source of shape, so the contract-backed
+/// `{link_id, name}` entry form node manifests use cannot appear here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
@@ -69,54 +71,54 @@ pub struct Interfaces {
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_topics"
     )]
-    pub topics: Vec<EmittedTopic>,
+    pub topics: Vec<NativeEmittedTopic>,
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_services"
     )]
-    pub services: Vec<ExposedService>,
+    pub services: Vec<NativeExposedService>,
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_actions"
     )]
-    pub actions: Vec<ExposedAction>,
+    pub actions: Vec<NativeExposedAction>,
 }
 
-fn deserialize_topics<'de, D>(deserializer: D) -> Result<Vec<EmittedTopic>, D::Error>
+fn deserialize_topics<'de, D>(deserializer: D) -> Result<Vec<NativeEmittedTopic>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<EmittedTopic>::deserialize(deserializer)?;
+    let items = Vec::<NativeEmittedTopic>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|t| t.name.as_str()), "topic")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ExposedService>, D::Error>
+fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<NativeExposedService>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<ExposedService>::deserialize(deserializer)?;
+    let items = Vec::<NativeExposedService>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|s| s.name.as_str()), "service")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<ExposedAction>, D::Error>
+fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<NativeExposedAction>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<ExposedAction>::deserialize(deserializer)?;
+    let items = Vec::<NativeExposedAction>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|a| a.name.as_str()), "action")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-/// Rejects empty/whitespace names and duplicates within a single list. Both
-/// states would otherwise survive parsing because the underlying item types
-/// default `name` to `""` for ergonomics in node configs.
+/// Rejects empty/whitespace names and duplicates within a single list, with
+/// contract-flavored messages (the shared item types report generic serde
+/// errors for a missing `name`; this catches the explicit-empty case).
 pub(crate) fn validate_named_items<'a>(
     names: impl Iterator<Item = &'a str>,
     kind: &'static str,
@@ -145,7 +147,7 @@ mod tests {
     #[test]
     fn parses_depth_camera_example() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: {
                 name: "depth_camera",
                 tag: "v1"
@@ -197,10 +199,10 @@ mod tests {
             }
         }"#;
 
-        let parsed: PeppyInterface =
+        let parsed: PeppyContract =
             serde_json5::from_str(json5).expect("depth_camera example should parse");
 
-        assert_eq!(parsed.peppy_schema, PeppySchema::InterfaceV1);
+        assert_eq!(parsed.peppy_schema, PeppySchema::ContractV1);
         assert_eq!(parsed.manifest.name.as_str(), "depth_camera");
         assert_eq!(parsed.manifest.tag, "v1");
 
@@ -234,14 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn minimal_interface_with_only_manifest_parses() {
+    fn minimal_contract_with_only_manifest_parses() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "empty_iface", tag: "v1" },
             interfaces: {}
         }"#;
 
-        let parsed: PeppyInterface = serde_json5::from_str(json5).expect("should parse");
+        let parsed: PeppyContract = serde_json5::from_str(json5).expect("should parse");
         assert!(parsed.interfaces.topics.is_empty());
         assert!(parsed.interfaces.services.is_empty());
         assert!(parsed.interfaces.actions.is_empty());
@@ -250,7 +252,7 @@ mod tests {
     #[test]
     fn actions_can_be_declared() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "arm", tag: "v1" },
             interfaces: {
                 actions: [
@@ -268,7 +270,7 @@ mod tests {
             }
         }"#;
 
-        let parsed: PeppyInterface = serde_json5::from_str(json5).expect("should parse");
+        let parsed: PeppyContract = serde_json5::from_str(json5).expect("should parse");
         assert_eq!(parsed.interfaces.actions.len(), 1);
         let action = &parsed.interfaces.actions[0];
         assert_eq!(action.name, "move_arm");
@@ -278,8 +280,8 @@ mod tests {
     }
 
     /// The schema field is the source of truth: a node-shaped document
-    /// must not be accepted by the interface parser, even if no
-    /// interface-specific field is present.
+    /// must not be accepted by the contract parser, even if no
+    /// contract-specific field is present.
     #[test]
     fn rejects_wrong_schema_tag() {
         let json5 = r#"{
@@ -288,9 +290,9 @@ mod tests {
             interfaces: {}
         }"#;
         let err =
-            serde_json5::from_str::<PeppyInterface>(json5).expect_err("node/v1 must be rejected");
+            serde_json5::from_str::<PeppyContract>(json5).expect_err("node/v1 must be rejected");
         assert!(
-            err.to_string().contains("interface/v1"),
+            err.to_string().contains("contract/v1"),
             "error should mention expected schema, got: {err}"
         );
     }
@@ -298,30 +300,30 @@ mod tests {
     #[test]
     fn rejects_unknown_top_level_fields() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {},
             execution: { language: "rust" }
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
     }
 
     #[test]
     fn rejects_unknown_interfaces_fields() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: { mystery: [] }
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
     }
 
-    /// Interface manifests intentionally drop `depends_on`: an interface
-    /// is a passive contract and cannot depend on other nodes.
+    /// Contract manifests intentionally drop `depends_on`: a contract
+    /// is passive and cannot depend on other nodes.
     #[test]
     fn rejects_manifest_depends_on() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: {
                 name: "x",
                 tag: "v1",
@@ -329,16 +331,16 @@ mod tests {
             },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
     }
 
     /// `labels` are descriptive metadata on the manifest, accepted so
-    /// catalog tooling can filter interfaces (e.g., `vendor`, `domain`)
+    /// catalog tooling can filter contracts (e.g., `vendor`, `domain`)
     /// without changing the contract itself.
     #[test]
     fn accepts_manifest_labels() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: {
                 name: "x",
                 tag: "v1",
@@ -346,7 +348,7 @@ mod tests {
             },
             interfaces: {}
         }"#;
-        let parsed: PeppyInterface =
+        let parsed: PeppyContract =
             serde_json5::from_str(json5).expect("labels should be accepted");
         assert_eq!(
             parsed.manifest.labels.as_deref(),
@@ -357,11 +359,11 @@ mod tests {
     #[test]
     fn rejects_invalid_manifest_name() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "bad/name", tag: "v1" },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
     }
 
     /// The manifest tag must satisfy the same repo-ID rules as node
@@ -370,11 +372,11 @@ mod tests {
     #[test]
     fn rejects_invalid_manifest_tag() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "1bad" },
             interfaces: {}
         }"#;
-        let err = serde_json5::from_str::<PeppyInterface>(json5)
+        let err = serde_json5::from_str::<PeppyContract>(json5)
             .expect_err("invalid tag must be rejected");
         assert!(
             err.to_string().contains("must start with an ASCII letter"),
@@ -385,21 +387,21 @@ mod tests {
     #[test]
     fn rejects_empty_topic_name() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
-                topics: [ { qos_profile: "standard" } ]
+                topics: [ { name: " ", qos_profile: "standard" } ]
             }
         }"#;
-        let err = serde_json5::from_str::<PeppyInterface>(json5)
-            .expect_err("empty name must be rejected");
+        let err =
+            serde_json5::from_str::<PeppyContract>(json5).expect_err("empty name must be rejected");
         assert!(err.to_string().contains("empty"), "error: {err}");
     }
 
     #[test]
     fn rejects_duplicate_topic_names() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 topics: [
@@ -408,7 +410,7 @@ mod tests {
                 ]
             }
         }"#;
-        let err = serde_json5::from_str::<PeppyInterface>(json5)
+        let err = serde_json5::from_str::<PeppyContract>(json5)
             .expect_err("duplicate topic name must be rejected");
         assert!(err.to_string().contains("duplicate"), "error: {err}");
     }
@@ -416,7 +418,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_service_names() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 services: [
@@ -425,13 +427,13 @@ mod tests {
                 ]
             }
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
     }
 
     #[test]
     fn rejects_duplicate_action_names() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 actions: [
@@ -440,16 +442,16 @@ mod tests {
                 ]
             }
         }"#;
-        assert!(serde_json5::from_str::<PeppyInterface>(json5).is_err());
+        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
     }
 
     /// A topic with the same name as a service is allowed: the daemon
-    /// addresses them through distinct namespaces, so an interface can
+    /// addresses them through distinct namespaces, so a contract can
     /// reasonably emit `/status` while also exposing a `status` service.
     #[test]
     fn allows_same_name_across_kinds() {
         let json5 = r#"{
-            peppy_schema: "interface/v1",
+            peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 topics: [ { name: "ping" } ],
@@ -457,7 +459,7 @@ mod tests {
                 actions: [ { name: "ping" } ]
             }
         }"#;
-        let parsed: PeppyInterface =
+        let parsed: PeppyContract =
             serde_json5::from_str(json5).expect("cross-kind name collisions are allowed");
         assert_eq!(parsed.interfaces.topics.len(), 1);
         assert_eq!(parsed.interfaces.services.len(), 1);
@@ -468,15 +470,15 @@ mod tests {
     /// back to a form that re-parses to the same AST.
     #[test]
     fn round_trips_through_serde() {
-        let original = PeppyInterface {
-            peppy_schema: PeppySchema::InterfaceV1,
+        let original = PeppyContract {
+            peppy_schema: PeppySchema::ContractV1,
             manifest: Manifest {
                 name: Name::new("camera").unwrap(),
                 tag: "v123".to_string(),
                 labels: Some(vec!["vendor".to_string(), "sensor".to_string()]),
             },
             interfaces: Interfaces {
-                topics: vec![EmittedTopic {
+                topics: vec![NativeEmittedTopic {
                     name: "stream".to_string(),
                     qos_profile: QoSProfile::SensorData,
                     message_format: Some(MessageFormat(
@@ -491,7 +493,7 @@ mod tests {
         };
 
         let serialized = serde_json5::to_string(&original).expect("serialize");
-        let reparsed: PeppyInterface = serde_json5::from_str(&serialized).expect("re-parse");
+        let reparsed: PeppyContract = serde_json5::from_str(&serialized).expect("re-parse");
         assert_eq!(original, reparsed);
     }
 }

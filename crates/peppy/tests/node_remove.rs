@@ -12,7 +12,7 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 
 use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -95,7 +95,7 @@ fn node_remove_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -137,7 +137,7 @@ fn node_remove_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -282,7 +282,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -435,7 +435,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,

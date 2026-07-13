@@ -1,8 +1,9 @@
 use crate::Result;
-use crate::names;
 use crate::services::node::teardown_all_instances;
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeResetRequest, NodeResetResponse};
+use core_node_api::names;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -24,7 +25,7 @@ pub async fn listen_for_stack_reset(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::STACK_RESET,
+        ServiceId::StackReset.name(),
     )
     .await?;
 

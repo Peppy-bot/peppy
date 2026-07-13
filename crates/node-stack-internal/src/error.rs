@@ -118,18 +118,18 @@ pub enum Error {
 
     // -- caller-driven (service/action) cycle errors
     /// A service or action dependency forms a cycle, whether routed directly
-    /// or through an interface. Caller-driven request/response cycles deadlock
+    /// or through a contract. Caller-driven request/response cycles deadlock
     /// at runtime, so only topics may be bidirectional. Detection is
-    /// type-level, so a service/action interface with several conforming
+    /// type-level, so a service/action contract with several implementing
     /// providers can be rejected even when a specific binding would avoid the
-    /// cycle: pin the binding or split the interface.
+    /// cycle: pin the binding or split the contract.
     #[error(
-        "{kind} dependency cycle through interfaces involving {} (closing dependency `{closing_dependency}`). \
+        "{kind} dependency cycle through contracts involving {} (closing dependency `{closing_dependency}`). \
          {kind} request/response cycles deadlock and are not allowed; only topics may be bidirectional. \
-         If these providers are not actually cross-bound, pin the binding or split the interface.",
+         If these providers are not actually cross-bound, pin the binding or split the contract.",
         .nodes.join(" -> ")
     )]
-    ServiceActionInterfaceCycle {
+    ServiceActionContractCycle {
         nodes: Vec<String>,
         closing_dependency: String,
         kind: String,

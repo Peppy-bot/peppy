@@ -97,6 +97,11 @@ pub(super) struct ContainerBuildInputs<'a> {
     pub lima_shell_extra_args: &'a [String],
     pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     pub log_file: Arc<StdMutex<File>>,
+    /// Needed to register the peppy data root as a Lima mount: `working_dir`
+    /// lives under `tmp_dir()`, which sits outside `$HOME` whenever the root
+    /// does (dev builds root at `$TMPDIR/.peppy`), and the guest VM cannot
+    /// see it otherwise.
+    pub peppy_dirs: &'a PeppyDirs,
     /// Fired when a `--force` build supersedes this one. On Linux the
     /// host process-group SIGKILL is enough; on macOS the guest-side apptainer
     /// (and its `%post` children) live in a separate kernel and are killed via
@@ -133,10 +138,31 @@ pub(super) async fn build_container_image(
         });
     }
 
-    let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
+    let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
         .await
         .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
         .map_err(|e| format!("Failed to initialize Apptainer runtime: {}", e))?;
+
+    // The build's working dir (def file, `%files` sources, output .sif) lives
+    // under the peppy data root. When that root is outside `$HOME` (dev roots
+    // at `$TMPDIR/.peppy`), the Lima guest cannot see it unless it is
+    // registered as an explicit mount; `ensure_host_mounts` is a no-op for
+    // home-relative roots and on the native (Linux) backend. Runs on the
+    // blocking pool because a first-time mount registration restarts the VM.
+    let peppy_root = inputs
+        .peppy_dirs
+        .root()
+        .to_str()
+        .ok_or_else(|| "peppy root path is not valid UTF-8".to_string())?
+        .to_owned();
+    let apptainer = tokio::task::spawn_blocking(move || {
+        apptainer
+            .ensure_host_mounts(&[&peppy_root])
+            .map(|()| apptainer)
+    })
+    .await
+    .map_err(|e| format!("Host mount registration task failed: {}", e))?
+    .map_err(|e| format!("Failed to ensure peppy root is mounted in the VM: {}", e))?;
 
     let sif_name = format!("{}_{}.sif", inputs.node_name, inputs.node_tag);
     let output_path = inputs.working_dir.join(&sif_name);
@@ -155,7 +181,15 @@ pub(super) async fn build_container_image(
         .and_then(|n| n.to_str())
         .map(str::to_owned);
 
-    let mut cmd_builder = apptainer.build(&output_path, &def_path);
+    // The working dir must go through the facade (not `Command::current_dir`)
+    // so `%files . /opt/{name}` in the .def file copies from the node's source
+    // directory on both backends: under Lima the facade `cd`s inside the guest
+    // and aborts if the directory is not mounted, where a host-side
+    // `current_dir` would be canonicalized by `limactl shell`, miss the mount,
+    // and silently fall back to the guest home directory.
+    let mut cmd_builder = apptainer
+        .build(&output_path, &def_path)
+        .working_dir(inputs.working_dir);
     if let Some(key) = &build_key {
         cmd_builder = cmd_builder.cancel_pgid(key);
     }
@@ -169,9 +203,6 @@ pub(super) async fn build_container_image(
         .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
 
     let mut cmd = tokio::process::Command::from(std_cmd);
-    // Set the working directory so `%files . /opt/{name}` in the .def file
-    // copies from the node's source directory, not the daemon's cwd.
-    cmd.current_dir(inputs.working_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
@@ -373,6 +404,7 @@ mod tests {
             tempfile::tempfile().expect("tempfile should succeed"),
         ));
         let cancel_token = CancellationToken::new();
+        let peppy_dirs = PeppyDirs::new("/nonexistent-peppy-test-root");
         let err = build_container_image(ContainerBuildInputs {
             working_dir,
             node_name: "sensor",
@@ -382,6 +414,7 @@ mod tests {
             lima_shell_extra_args: &[],
             feedback_tx: &feedback_tx,
             log_file,
+            peppy_dirs: &peppy_dirs,
             cancel_token: &cancel_token,
         })
         .await

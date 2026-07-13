@@ -2,10 +2,10 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::services::{consumed_target_python_expr, sender_target_python_expr};
+use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
+use config::node::{ConsumedTopic, MessageFormat, NativeEmittedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -16,8 +16,8 @@ pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
 ///
 /// Schemas are resolved via `importlib.resources.files("peppygen")` so the
 /// lookup is independent of where the calling file lives in the package
-/// tree: native artifacts at `peppygen/{category}/{leaf}.py` and conformed
-/// ones nested under `peppygen/{category}/{iface}/{tag}/{leaf}.py` share
+/// tree: native artifacts at `peppygen/{category}/{leaf}.py` and contract-backed
+/// ones nested under `peppygen/{category}/{contract}/{tag}/{leaf}.py` share
 /// the same loader body.
 pub(crate) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
     builder.add_import("import capnp");
@@ -135,9 +135,9 @@ fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str) {
 
 /// Generates Python code for an emitted (publishing) topic.
 pub fn build_emitted_topic(
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
-    origin: Option<&crate::generator::types::InterfaceOrigin>,
+    origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -240,7 +240,7 @@ fn emit_peer_module_header(
 /// `build_message` plus a slot-scoped `declare_publisher` (pairing wire
 /// target, producer-side link_id = this node's own slot link_id).
 pub fn build_peer_emitted_topic(
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
     peer: &crate::generator::types::PeerContext,
 ) -> Result<String> {
@@ -300,7 +300,7 @@ pub fn build_peer_emitted_topic(
 /// slot's live pin — silent while unpaired, only the paired peer while
 /// paired.
 pub fn build_peer_consumed_topic(
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
     peer: &crate::generator::types::PeerContext,
@@ -431,21 +431,13 @@ pub fn build_consumed_topic(
     );
     builder.line(&format!("{from_target},"));
     builder.line("topic_name,");
-    let from_producer = consumed_target_python_expr(dependency);
-    builder.line(&format!("{from_producer},"));
-    builder.line("peppylib.QoSProfile.Standard,");
-    // `is_from_any: true` for `from_any: true` slots gates the
-    // messenger's per-`(name, tag)` reservation. Pinned slots
-    // (and the test-fixture wildcard with no manifest dep) pass
-    // `false`.
-    let is_from_any = matches!(
-        dependency.link_id,
-        crate::generator::types::WireLinkId::Wildcard { link_id: Some(_) }
-    );
+    // The slot's one bound producer — a declared slot with no binding
+    // fails node startup before any subscribe runs.
     builder.line(&format!(
-        "is_from_any={},",
-        if is_from_any { "True" } else { "False" }
+        "node_runner.bound_producer({:?}),",
+        dependency.link_id
     ));
+    builder.line("peppylib.QoSProfile.Standard,");
     builder.dedent();
     builder.line(")");
     builder.line("return Subscription(inner)");

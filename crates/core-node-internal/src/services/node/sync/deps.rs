@@ -3,7 +3,7 @@ use crate::services::node::cache as node_cache;
 use crate::services::repo::cache as repo_cache;
 use core_node_api::encoding::RepoResolvedEntry;
 use daemon_config::consts::PeppyDirs;
-use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
+use generator::ConsumedActionMessage;
 use node_stack::NodeStack;
 use std::collections::{HashMap, HashSet};
 
@@ -120,28 +120,27 @@ pub(super) async fn materialize_repo_deps(
 
 /// Discriminator carried by [`DependencyLookupEntry`] so the resolver knows
 /// whether a `link_id` resolves to a `depends_on.nodes` entry (load
-/// offerings from the producer node config) or a `depends_on.interfaces`
-/// entry (load the contract directly from the interface cache).
+/// offerings from the producer node config) or a `depends_on.contracts`
+/// entry (load the contract directly from the contract cache).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DependencyKind {
     Node,
-    Interface,
+    Contract,
 }
 
-/// Resolved `(name, tag, link_id, from_any, kind)` for a single dependency
-/// referenced by a consumer's `interfaces.topics.consumes`,
+/// Resolved `(name, tag, kind)` for a single dependency referenced by a
+/// consumer's `interfaces.topics.consumes`,
 /// `interfaces.services.consumes`, or `interfaces.actions.consumes`.
 #[derive(Debug, Clone)]
 pub(crate) struct DependencyLookupEntry {
     pub name: String,
     pub tag: String,
     pub sha256: Option<String>,
-    pub from_any: bool,
     pub kind: DependencyKind,
 }
 
 /// Builds a lookup from `link_id` → [`DependencyLookupEntry`] using the
-/// node's `depends_on.nodes` and `depends_on.interfaces`. Parse-time
+/// node's `depends_on.nodes` and `depends_on.contracts`. Parse-time
 /// validation has already guaranteed uniqueness of `link_id` across both
 /// lists, so insertion-order is preserved.
 pub(super) fn build_dependency_lookup(
@@ -158,171 +157,66 @@ pub(super) fn build_dependency_lookup(
                 name: node.name.as_str().to_string(),
                 tag: node.tag.clone(),
                 sha256: None,
-                from_any: node.from_any,
                 kind: DependencyKind::Node,
             },
         );
     }
-    for iface in &depends_on.interfaces {
+    for contract in &depends_on.contracts {
         out.insert(
-            iface.link_id.clone(),
+            contract.link_id.clone(),
             DependencyLookupEntry {
-                name: iface.name.as_str().to_string(),
-                tag: iface.tag.clone(),
-                sha256: iface.sha256.clone(),
-                from_any: iface.from_any,
-                kind: DependencyKind::Interface,
+                name: contract.name.as_str().to_string(),
+                tag: contract.tag.clone(),
+                sha256: contract.sha256.clone(),
+                kind: DependencyKind::Contract,
             },
         );
     }
     out
 }
 
-/// Builds a [`generator::DependencyContext`] for a `depends_on.nodes`
-/// resolution path. `origin` carries the optional `(iface_name,
-/// iface_tag)` when the producer node `conforms_to` an interface; `None`
-/// means the producer emits natively.
-pub(super) fn build_dependency_context_for_node(
-    dep_name: &str,
-    dep_tag: &str,
-    origin: Option<generator::InterfaceOrigin>,
-    link_id: &str,
-    from_any: bool,
-) -> generator::DependencyContext {
-    let ctx = match origin {
-        Some(o) => generator::DependencyContext::conformed(dep_name, dep_tag, o),
-        None => generator::DependencyContext::native(dep_name, dep_tag),
-    };
-    ctx.with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
-}
-
-/// Builds a [`generator::DependencyContext`] for a
-/// `depends_on.interfaces` resolution path. `node_name` / `node_tag`
-/// carry the interface's `(name, tag)` here (no producer node is
-/// involved).
-pub(super) fn build_dependency_context_for_interface(
-    iface_name: &str,
-    iface_tag: &str,
-    link_id: &str,
-    from_any: bool,
-) -> generator::DependencyContext {
-    generator::DependencyContext::interface(iface_name, iface_tag)
-        .with_link_id(generator::WireLinkId::from_link_id(link_id, from_any))
-}
-
-/// What a single dependency can provide to consumers: its native
-/// emits/exposes merged with the topics/services/actions it pulls in via
-/// `conforms_to`. Native entries store `None` as origin; conformed entries
-/// carry the `(iface_name, iface_tag)` origin so the consumer can address the
-/// producer via `SenderTarget::Interface`. Keys are trimmed names, matching
-/// the consumer side's `.trim()` comparisons.
+/// What a single node dependency can provide to consumers: its NATIVE
+/// emits/exposes only. Contract-backed entries never enter these tables;
+/// the two namespaces cannot overlap, so no precedence rule exists.
+/// Contract-backed interfaces are consumable solely through
+/// `depends_on.contracts`. Keys are trimmed names, matching the consumer
+/// side's `.trim()` comparisons.
 pub(super) struct DependencyOfferings {
-    pub(super) topics: HashMap<
-        String,
-        (
-            config::node::MessageFormat,
-            Option<generator::InterfaceOrigin>,
-        ),
-    >,
-    pub(super) services: HashMap<
-        String,
-        (
-            config::node::MessageFormat,
-            config::node::MessageFormat,
-            Option<generator::InterfaceOrigin>,
-        ),
-    >,
-    pub(super) actions:
-        HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)>,
+    pub(super) topics: HashMap<String, config::node::MessageFormat>,
+    pub(super) services:
+        HashMap<String, (config::node::MessageFormat, config::node::MessageFormat)>,
+    pub(super) actions: HashMap<String, ConsumedActionMessage>,
 }
 
 pub(super) fn build_dependency_offerings(
     dep_config: &config::node::NodeConfig,
-    conformed: &[DeploymentInterface],
 ) -> DependencyOfferings {
-    let mut topics: HashMap<
-        String,
-        (
-            config::node::MessageFormat,
-            Option<generator::InterfaceOrigin>,
-        ),
-    > = HashMap::new();
-    let mut services: HashMap<
-        String,
-        (
-            config::node::MessageFormat,
-            config::node::MessageFormat,
-            Option<generator::InterfaceOrigin>,
-        ),
-    > = HashMap::new();
-    let mut actions: HashMap<String, (ConsumedActionMessage, Option<generator::InterfaceOrigin>)> =
+    let mut topics: HashMap<String, config::node::MessageFormat> = HashMap::new();
+    let mut services: HashMap<String, (config::node::MessageFormat, config::node::MessageFormat)> =
         HashMap::new();
+    let mut actions: HashMap<String, ConsumedActionMessage> = HashMap::new();
 
-    // Native side first; native entries win on key collision.
-    if let Some(topic_ifaces) = &dep_config.interfaces.topics
-        && let Some(emits) = &topic_ifaces.emits
-    {
-        for emitted in emits {
-            if let Some(fmt) = &emitted.message_format {
-                topics
-                    .entry(emitted.name.trim().to_string())
-                    .or_insert_with(|| (fmt.clone(), None));
-            }
+    for emitted in dep_config.interfaces.native_emits() {
+        if let Some(fmt) = &emitted.message_format {
+            topics
+                .entry(emitted.name.trim().to_string())
+                .or_insert_with(|| fmt.clone());
         }
     }
-    if let Some(service_ifaces) = &dep_config.interfaces.services
-        && let Some(exposes) = &service_ifaces.exposes
-    {
-        for exposed in exposes {
-            services
-                .entry(exposed.name.trim().to_string())
-                .or_insert_with(|| {
-                    (
-                        exposed.request_message_format.clone().unwrap_or_default(),
-                        exposed.response_message_format.clone().unwrap_or_default(),
-                        None,
-                    )
-                });
-        }
+    for exposed in dep_config.interfaces.native_service_exposes() {
+        services
+            .entry(exposed.name.trim().to_string())
+            .or_insert_with(|| {
+                (
+                    exposed.request_message_format.clone().unwrap_or_default(),
+                    exposed.response_message_format.clone().unwrap_or_default(),
+                )
+            });
     }
-    if let Some(action_ifaces) = &dep_config.interfaces.actions
-        && let Some(exposes) = &action_ifaces.exposes
-    {
-        for exposed in exposes {
-            actions
-                .entry(exposed.name.trim().to_string())
-                .or_insert_with(|| (action_message_from_exposed(exposed), None));
-        }
-    }
-
-    // Conformed side fills only the gaps left by native.
-    for iface in conformed {
-        match iface.interface() {
-            InterfaceVariant::EmittedTopic { topic, origin } => {
-                if let Some(fmt) = &topic.message_format {
-                    topics
-                        .entry(topic.name.trim().to_string())
-                        .or_insert_with(|| (fmt.clone(), origin.clone()));
-                }
-            }
-            InterfaceVariant::ExposedService { service, origin } => {
-                services
-                    .entry(service.name.trim().to_string())
-                    .or_insert_with(|| {
-                        (
-                            service.request_message_format.clone().unwrap_or_default(),
-                            service.response_message_format.clone().unwrap_or_default(),
-                            origin.clone(),
-                        )
-                    });
-            }
-            InterfaceVariant::ExposedAction { action, origin } => {
-                actions
-                    .entry(action.name.trim().to_string())
-                    .or_insert_with(|| (action_message_from_exposed(action), origin.clone()));
-            }
-            _ => {}
-        }
+    for exposed in dep_config.interfaces.native_action_exposes() {
+        actions
+            .entry(exposed.name.trim().to_string())
+            .or_insert_with(|| action_message_from_exposed(exposed));
     }
 
     DependencyOfferings {

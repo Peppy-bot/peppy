@@ -3,18 +3,18 @@ mod common;
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
 use core_node::{
-    interfaces_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
+    contracts_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
     pairings_repo_cache_path, repositories_list_path,
 };
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
-use peppylib::core_node::transport::poll_repo_remove;
+use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
 async fn send_repo_remove(
     started: &StartedCoreNode,
     request: &RepoRemoveRequest,
 ) -> RepoRemoveResponse {
-    poll_repo_remove(
+    poll(
         request,
         &started.caller_handle,
         &started.core_node_name,
@@ -91,7 +91,7 @@ async fn remove_fs_repo_succeeds() {
     for cache_path in [
         nodes_repo_cache_path(&started.peppy_dirs),
         launchers_repo_cache_path(&started.peppy_dirs),
-        interfaces_repo_cache_path(&started.peppy_dirs),
+        contracts_repo_cache_path(&started.peppy_dirs),
         pairings_repo_cache_path(&started.peppy_dirs),
     ] {
         assert!(

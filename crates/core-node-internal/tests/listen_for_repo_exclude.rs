@@ -2,14 +2,14 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse};
-use peppylib::core_node::transport::poll_repo_exclude;
+use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
 async fn send_repo_exclude(
     started: &StartedCoreNode,
     request: &RepoExcludeRequest,
 ) -> RepoExcludeResponse {
-    poll_repo_exclude(
+    poll(
         request,
         &started.caller_handle,
         &started.core_node_name,

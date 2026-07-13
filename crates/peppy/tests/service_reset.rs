@@ -13,7 +13,7 @@ use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};
 use peppy::context::AppContext;
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(
@@ -126,7 +126,7 @@ async fn service_reset_command_resets_node_stack() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,
@@ -155,7 +155,7 @@ async fn service_reset_command_resets_node_stack() {
     .execute(&ctx)
     .expect("service reset command should succeed");
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(false),
         messenger_handle,
         &core_node_name,

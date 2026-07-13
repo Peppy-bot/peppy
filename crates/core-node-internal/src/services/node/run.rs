@@ -3,13 +3,14 @@ use super::gate::ConcurrencyGate;
 use super::pairing::{PairingCoordinator, plan_requested_pairs};
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
-use crate::names;
 use config::peppy_config::PeerConfig;
 use config::runtime::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
+use core_node_api::ActionId;
 use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::{Mode, PeppyConfig};
 use futures::FutureExt;
@@ -179,7 +180,7 @@ pub async fn listen_for_node_run(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_RUN_ACTION,
+        ActionId::NodeRun.name(),
         true,
     )
     .await?;

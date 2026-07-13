@@ -1,6 +1,6 @@
 use crate::helpers::{
     CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
-    EXPOSED_ACTION_EXAMPLE,
+    EXPOSED_ACTION_EXAMPLE, bind_slot, python_consumer_stub_node_config,
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
@@ -12,7 +12,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    node::{ConsumedAction, ExposedAction, ExposedService, MessageFormat},
+    node::{ConsumedAction, MessageFormat, NativeExposedAction, NativeExposedService},
     runtime::{Name, RuntimeConfig},
 };
 use generator::{ConsumedActionMessage, LanguageGenerator};
@@ -98,14 +98,17 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
-    let flow_done_service: ExposedService =
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -130,6 +133,12 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -178,7 +187,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -430,14 +440,17 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
-    let flow_done_service: ExposedService =
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -462,6 +475,12 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -506,7 +525,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -744,14 +764,17 @@ async fn actions_communication_async_goal_decider(#[case] mode: crate::helpers::
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
-    let flow_done_service: ExposedService =
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_IN_HANDLER_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -776,6 +799,12 @@ async fn actions_communication_async_goal_decider(#[case] mode: crate::helpers::
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -826,7 +855,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1087,14 +1117,17 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
-    let flow_done_service: ExposedService =
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -1119,6 +1152,12 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -1171,7 +1210,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1441,14 +1481,17 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
-    let flow_done_service: ExposedService =
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -1473,6 +1516,12 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -1535,7 +1584,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1815,14 +1865,17 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
-    let flow_done_service: ExposedService =
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
+    let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -1847,6 +1900,12 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -1905,7 +1964,8 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -2163,12 +2223,15 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_consumer,
+            &python_consumer_stub_node_config("brain", "v1", "brain"),
+        );
     generator
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1"),
+            &generator::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -2190,6 +2253,12 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
         TEST_CORE_NODE,
     )
     .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "brain",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
     let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
@@ -2251,7 +2320,8 @@ if __name__ == "__main__":
     // --- Exposer (server) project
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();

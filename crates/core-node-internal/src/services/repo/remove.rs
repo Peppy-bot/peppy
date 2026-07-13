@@ -1,9 +1,10 @@
 use crate::Result;
-use crate::names;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_all_caches};
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -24,7 +25,7 @@ pub async fn listen_for_repo_remove(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::REPO_REMOVE,
+        ServiceId::RepoRemove.name(),
     )
     .await?;
 

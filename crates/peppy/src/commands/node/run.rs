@@ -1,12 +1,12 @@
 use config::AnyType;
-use config::node::ConformsToItem;
+use config::node::ImplementsEntry;
 use config::runtime::PairingSlotBinding;
-use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig, SlotBinding};
-use core_node_api::NodeStage;
+use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, PairTarget, StackListRequest,
 };
+use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, PairingValidationItem, validate_bindings,
     validate_pairings,
@@ -27,7 +27,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-use peppylib::core_node::transport::{poll_node_info, poll_stack_list, send_node_run};
+use peppylib::core_node::transport::{poll, send_goal};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout; this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -122,7 +122,7 @@ async fn wait_for_build_to_finish(
     let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
 
     loop {
-        let response = poll_node_info(
+        let response = poll(
             &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
             messenger,
             core_node_name,
@@ -266,64 +266,63 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Collapse a clap-parsed `Vec<(KEY, VALUE)>` into a `BTreeMap`, rejecting
-/// duplicate `KEY`s: a plain `collect()` would silently keep the last VALUE.
-/// `kind`/`flag` splice the surface-specific wording into the error.
-fn entries_to_unique_map<V: Clone>(
-    entries: &[(String, V)],
-    instance_id: &str,
-    kind: &str,
-    flag: &str,
-) -> Result<BTreeMap<String, V>> {
+/// `--bind KEY@VALUE` entries as a map of `KEY` (a declared slot link_id)
+/// to its one producer target. A slot binds exactly one producer, so a
+/// repeated `KEY` is a hard error (mirroring [`pairs_to_map`]): a
+/// consumer that needs several producers declares one slot per producer
+/// in its node manifest and binds each slot separately.
+fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
-    for (key, value) in entries {
+    for (key, value) in binds {
         if map.insert(key.clone(), value.clone()).is_some() {
             return Err(Error::ExecutionFailed(format!(
-                "duplicate {kind} key `{key}` on instance `{instance_id}` (each {flag} must be distinct)"
+                "duplicate binding key `{key}` on instance `{instance_id}` — a slot binds \
+                 exactly one producer (each --bind KEY must be distinct; a consumer that needs \
+                 several producers declares one slot per producer in its node manifest)"
             )));
         }
     }
     Ok(map)
 }
 
-/// `--bind KEY@VALUE` entries as a map. Each `KEY` must be unique per
-/// invocation (rule 6): pinned `KEY`s match a declared link_id, free-form
-/// `KEY`s label a `from_any` binding, and either way two bindings on the
-/// same key would clobber.
-fn binds_to_map(binds: &[(String, String)], instance_id: &str) -> Result<BTreeMap<String, String>> {
-    entries_to_unique_map(binds, instance_id, "binding", "--bind KEY")
-}
-
 /// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
-/// most once per invocation, so a repeated LINK_ID is a hard error just
-/// like a duplicate `--bind` key.
+/// most once per invocation, so a repeated LINK_ID is a hard error: a
+/// plain `collect()` would silently keep the last target.
 fn pairs_to_map(
     pairs: &[(String, PairTarget)],
     instance_id: &str,
 ) -> Result<BTreeMap<String, PairTarget>> {
-    entries_to_unique_map(pairs, instance_id, "pairing", "--pair LINK_ID")
+    let mut map = BTreeMap::new();
+    for (key, target) in pairs {
+        if map.insert(key.clone(), target.clone()).is_some() {
+            return Err(Error::ExecutionFailed(format!(
+                "duplicate pairing key `{key}` on instance `{instance_id}` (each --pair LINK_ID must be distinct)"
+            )));
+        }
+    }
+    Ok(map)
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
 /// `stack_list` + `node_info`, feeds it together with the consumer
 /// being launched into the launcher's `validate_bindings`, and returns
-/// the resolved per-slot `SlotBinding` map for the consumer instance.
+/// the resolved per-slot producer map for the consumer instance.
 /// Every rule violation is a hard error; there is no warning path.
 ///
 /// The snapshot is split into two flavors of [`BindingValidationItem`]:
 ///
 /// - **Inert items**: one per already-running `(name, tag)` group. They
 ///   carry real `instances` (so stack-wide `instance_id` uniqueness can
-///   fire) and real `conforms_to` (so the new instance can still match
-///   them as a producer / interface-conformant target), but their
-///   `depends_on` is `None`. Their declared slots were already validated
-///   when each instance was first spawned, so re-running per-instance
-///   rules against them (with the empty `bindings` we synthesize here)
-///   would emit spurious `BindingMissingForPinnedDep` errors for
-///   pins the running invocation actually satisfied.
+///   fire) and real `implements` (so the new instance can still match
+///   them as a producer / contract-implementing target), but their
+///   `depends_on` is `None`. Their declared slots were already resolved
+///   when each instance was first spawned; forwarding the real
+///   `depends_on` here (with the empty `bindings` we synthesize) would
+///   pit the every-slot-bound rule against instances whose real bindings
+///   live in their own boot configs.
 /// - **One live item**: for the synthesized new instance, carrying the
-///   target's real `depends_on` + `conforms_to`. This is the only item
-///   whose pinned slots are checked by Rule 1.
+///   target's real `depends_on` + `implements`. This is the only item
+///   whose bindings are validated and materialized.
 ///
 /// Returns `Ok(None)` on transient transport failures so the call site
 /// can swallow them and continue; an unreachable daemon should fail
@@ -338,8 +337,8 @@ async fn validate_binds_against_stack(
     binds: &BTreeMap<String, String>,
     pairs: &BTreeMap<String, PairTarget>,
     defer_pairs: &[String],
-) -> Result<Option<BTreeMap<String, SlotBinding>>> {
-    let stack_response = poll_stack_list(
+) -> Result<Option<config::runtime::SlotBindings>> {
+    let stack_response = poll(
         &StackListRequest::new(false),
         messenger,
         core_node_name,
@@ -360,7 +359,7 @@ async fn validate_binds_against_stack(
         name: String,
         tag: String,
         instances: Vec<DeploymentInstance>,
-        conforms_to: Vec<ConformsToItem>,
+        implements: Vec<ImplementsEntry>,
         pairing_deps: Vec<config::node::PairingDependency>,
     }
 
@@ -371,7 +370,7 @@ async fn validate_binds_against_stack(
         .collect();
 
     let info_futures = stack_nodes.iter().map(|node| async move {
-        let info = poll_node_info(
+        let info = poll(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,
             core_node_name,
@@ -390,13 +389,13 @@ async fn validate_binds_against_stack(
     });
     let infos = futures::future::try_join_all(info_futures).await?;
 
-    // `(depends_on, conforms_to)` for the target node, harvested from
+    // `(depends_on, implements)` for the target node, harvested from
     // the snapshot if the target is already in the stack so we can
     // avoid a second `node_info` round-trip. Falls back to `None` /
     // empty when the target hasn't been added yet (also covers transient
     // misses below).
     let mut target_depends_on: Option<config::node::DependsOn> = None;
-    let mut target_conforms_to: Vec<ConformsToItem> = Vec::new();
+    let mut target_implements: Vec<ImplementsEntry> = Vec::new();
     let mut target_seen_in_stack = false;
 
     // Pairing slots of running instances that are exclusively claimed right
@@ -424,12 +423,7 @@ async fn validate_binds_against_stack(
         // entry so we don't need a second `node_info` call below.
         if node.name == target_name && node.tag == target_tag {
             target_depends_on = info.config.manifest.depends_on.clone();
-            target_conforms_to = info
-                .config
-                .interfaces
-                .conforms_to
-                .clone()
-                .unwrap_or_default();
+            target_implements = info.config.manifest.implements.clone();
             target_seen_in_stack = true;
         }
         // The validator only reads `instance_id` and `bindings` for
@@ -451,7 +445,7 @@ async fn validate_binds_against_stack(
             name: node.name.clone(),
             tag: node.tag.clone(),
             instances,
-            conforms_to: info.config.interfaces.conforms_to.unwrap_or_default(),
+            implements: info.config.manifest.implements.clone(),
             pairing_deps: info
                 .config
                 .manifest
@@ -466,7 +460,7 @@ async fn validate_binds_against_stack(
     // `node_info` lookup so the validator can still resolve dead-key /
     // missing-binding rules against the target's declared manifest.
     if !target_seen_in_stack {
-        let info_response = poll_node_info(
+        let info_response = poll(
             &NodeInfoRequest::new(target_name.to_owned(), target_tag.to_owned()),
             messenger,
             core_node_name,
@@ -482,12 +476,12 @@ async fn validate_binds_against_stack(
         });
         if let Some(info) = info_response {
             target_depends_on = info.config.manifest.depends_on;
-            target_conforms_to = info.config.interfaces.conforms_to.unwrap_or_default();
+            target_implements = info.config.manifest.implements;
         }
     }
 
     // The one live item: the synthesized new instance with the target's
-    // real `depends_on` + `conforms_to`. Lives in its own group so it
+    // real `depends_on` + `implements`. Lives in its own group so it
     // never inherits the inert `depends_on: None` of an existing target
     // group.
     let synthetic_instances = vec![DeploymentInstance {
@@ -512,7 +506,7 @@ async fn validate_binds_against_stack(
             node_tag: &s.tag,
             instances: &s.instances,
             depends_on: None,
-            conforms_to: &s.conforms_to,
+            implements: &s.implements,
         })
         .collect();
     items.push(BindingValidationItem {
@@ -520,7 +514,7 @@ async fn validate_binds_against_stack(
         node_tag: target_tag,
         instances: &synthetic_instances,
         depends_on: target_depends_on.as_ref(),
-        conforms_to: &target_conforms_to,
+        implements: &target_implements,
     });
 
     // Stamp resolved producer references with the daemon's core_node; the
@@ -580,7 +574,7 @@ async fn validate_binds_against_stack(
 }
 
 /// Validate the supplied `--bind` pairs against the running stack, resolve
-/// them to per-slot `SlotBinding`s, then spawn the instance. This is the
+/// them to per-slot producer lists, then spawn the instance. This is the
 /// single entry point shared between `peppy node run` and `peppy node add
 /// --run`: both surfaces must accept `--bind` and enforce the same binding
 /// rules, so there is exactly one code path responsible for materializing
@@ -662,7 +656,7 @@ pub async fn run_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    slot_bindings: BTreeMap<String, SlotBinding>,
+    slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
     timeouts: &TimeoutConfig,
@@ -717,7 +711,7 @@ pub async fn run_instance_async(
     .with_env_vars(caller_env_overrides())
     .with_requested_pairs(requested_pairs)
     .with_deferred_pairs(deferred_pairs);
-    let mut action_handle = send_node_run(
+    let mut action_handle = send_goal(
         &start_goal,
         messenger_handle,
         core_node_name,
@@ -732,7 +726,12 @@ pub async fn run_instance_async(
         NodeRunGoalResponse,
         NodeRunFeedback,
         NodeRunResult,
-    >(messenger_handle, &mut action_handle, timeouts, "node_run")
+    >(
+        messenger_handle,
+        &mut action_handle,
+        timeouts,
+        ActionId::NodeRun.name(),
+    )
     .await?;
 
     if let Some(pid) = start_result.pid {
@@ -802,7 +801,7 @@ async fn run_node_async(
         // Look up the node's current lifecycle stage so we only trigger a
         // build when the node is not yet built. The same `NodeInfoRequest`
         // is used by the `node add` preflight (see add.rs).
-        let response = poll_node_info(
+        let response = poll(
             &NodeInfoRequest::new(node_name.clone(), tag.clone()),
             conn.messenger,
             &conn.core_node_name,
@@ -914,21 +913,38 @@ mod tests {
         );
     }
 
-    /// Duplicate `--bind` and `--pair` keys are hard errors: collecting
-    /// straight into the `BTreeMap` would silently keep the last value.
+    /// A repeated `--bind KEY` is a hard error — a slot binds exactly one
+    /// producer, whether the targets differ or not — mirroring `--pair`
+    /// key uniqueness. Distinct keys still collect into one map.
     #[test]
-    fn duplicate_bind_and_pair_keys_are_rejected() {
-        let entries = vec![
+    fn repeated_bind_keys_are_rejected_and_duplicate_pairs_are_rejected() {
+        let distinct = vec![
             ("arm".to_string(), "arm_1".to_string()),
-            ("arm".to_string(), "arm_2".to_string()),
+            ("grip".to_string(), "grip_1".to_string()),
         ];
+        let map = binds_to_map(&distinct, "ctrl_1").expect("distinct keys should collect");
+        assert_eq!(map.get("arm").map(String::as_str), Some("arm_1"));
+        assert_eq!(map.get("grip").map(String::as_str), Some("grip_1"));
 
-        let err = binds_to_map(&entries, "ctrl_1").expect_err("duplicate --bind rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("duplicate binding key `arm`") && msg.contains("--bind"),
-            "unexpected error: {msg}"
-        );
+        for repeated in [
+            // Different targets on one slot.
+            vec![
+                ("arm".to_string(), "arm_1".to_string()),
+                ("arm".to_string(), "arm_2".to_string()),
+            ],
+            // Exact duplicate pair.
+            vec![
+                ("arm".to_string(), "arm_1".to_string()),
+                ("arm".to_string(), "arm_1".to_string()),
+            ],
+        ] {
+            let err = binds_to_map(&repeated, "ctrl_1").expect_err("repeated key rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("duplicate binding key `arm`") && msg.contains("exactly one producer"),
+                "unexpected error: {msg}"
+            );
+        }
 
         let pair_entries = vec![
             ("arm".to_string(), PairTarget::new("arm_1")),

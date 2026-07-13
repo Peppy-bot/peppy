@@ -533,8 +533,19 @@ If multiple nodes share the same system dependencies, a single base image can se
 
 Add variables to the `%environment` section so they are available at runtime:
 
-```apptainer
-%environment
-    export PATH="/root/.cargo/bin:$PATH"
-    export RUST_LOG=info
-```
+<Tabs>
+  <TabItem label="Python">
+    ```apptainer
+    %environment
+        export PATH="/opt/my_node/.venv/bin:$PATH"
+        export PYTHONUNBUFFERED=1
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```apptainer
+    %environment
+        export PATH="/root/.cargo/bin:$PATH"
+        export RUST_LOG=info
+    ```
+  </TabItem>
+</Tabs>

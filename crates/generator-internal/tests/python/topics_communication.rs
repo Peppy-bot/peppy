@@ -1,14 +1,14 @@
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output,
-    init_python_project_venv, init_python_user_node, init_test_env, send_shutdown,
-    spawn_python_run, test_peppy_dirs, wait_for_child, wait_for_health_service_reachable_or_exit,
-    wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext, bind_slot, copy_config_to_output,
+    init_python_project_venv, init_python_user_node, init_test_env,
+    python_consumer_stub_node_config, send_shutdown, spawn_python_run, test_peppy_dirs,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    node::{ConsumedTopic, EmittedTopic, ExposedService, MessageFormat},
+    node::{ConsumedTopic, MessageFormat, NativeEmittedTopic, NativeExposedService},
     runtime::{Name, RuntimeConfig},
 };
 use generator::LanguageGenerator;
@@ -56,15 +56,18 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
-    let frame_received_service: ExposedService =
+    let frame_received_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_proj2, STUB_PYTHON_NODE_CONFIG);
+        init_test_env::<generator::PythonGenerator>(
+            &temp_dir_proj2,
+            &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
+        );
     generator
         .add_consumed_topic(
             &consumed_topic,
             subscribed_format,
-            &generator::DependencyContext::native("uvc_camera", "v1"),
+            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -89,6 +92,12 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
         TEST_CORE_NODE,
     )
     .unwrap();
+    let receiver_runtime_config = bind_slot(
+        receiver_runtime_config,
+        "uvc_camera",
+        TEST_CORE_NODE,
+        EMITTER_INSTANCE_ID,
+    );
     let receiver_runtime_config = crate::helpers::apply_mode(receiver_runtime_config, mode);
     let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
     receiver_runtime_config
@@ -151,7 +160,7 @@ if __name__ == "__main__":
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
     let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
-    let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
+    let emitted_topic: NativeEmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
     let emitter_parameters: config::ParameterSchema =

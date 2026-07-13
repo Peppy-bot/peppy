@@ -1,10 +1,10 @@
 //! Python template snapshots for peer (pairing) topics — twins of the Rust
 //! suite: slot-scoped publisher (`link_id=LINK_ID`), the pairing wire
 //! target, the `subscribe_peer` seam, `paired()`/`wait_paired()`, and no
-//! `from_any` involvement.
+//! binding-slot involvement.
 
 use super::*;
-use config::node::EmittedTopic;
+use config::node::NativeEmittedTopic;
 
 const JOINT_STATES: &str = r#"
 {
@@ -25,7 +25,7 @@ fn peer_context() -> crate::generator::types::PeerContext {
     }
 }
 
-fn parse_topic(example: &str) -> EmittedTopic {
+fn parse_topic(example: &str) -> NativeEmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -62,13 +62,13 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
         assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
     }
     assert!(
-        !code.contains("SenderTarget.node(") && !code.contains("SenderTarget.interface("),
+        !code.contains("SenderTarget.node(") && !code.contains("SenderTarget.contract("),
         "peer topics must use the pairing target only:\n{code}"
     );
 }
 
 #[test]
-fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
+fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
     let topic = parse_topic(JOINT_STATES);
     let mut generator = PythonGenerator::new();
     generator
@@ -93,14 +93,14 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
         assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
     }
     assert!(
-        !code.contains("is_from_any") && !code.contains("TopicMessenger.subscribe("),
-        "peer subscriptions must ride subscribe_peer, not the from_any path:\n{code}"
+        !code.contains("bound_producer") && !code.contains("TopicMessenger.subscribe("),
+        "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{code}"
     );
 }
 
 #[test]
 fn peer_consumed_topic_requires_a_message_format() {
-    let topic: EmittedTopic =
+    let topic: NativeEmittedTopic =
         serde_json5::from_str(r#"{ name: "opaque", qos_profile: "reliable" }"#).unwrap();
     let mut generator = PythonGenerator::new();
     let err = generator

@@ -50,7 +50,7 @@ One pairing document models both directions. Each topic declares which **role** 
 
 ## Define the pairing
 
-A pairing is a standalone `pairing/v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). Like an interface, the `message_format` lives here once and both sides inherit it by reference, but unlike an interface, a pairing names *both* directions and the two roles playing them.
+A pairing is a standalone `pairing/v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). Like a contract, the `message_format` lives here once and both sides inherit it by reference, but unlike a contract, a pairing names *both* directions and the two roles playing them.
 
 <Code code={armLinkPairing} lang="json5" title="pairings/arm_link/peppy.json5" />
 
@@ -178,7 +178,7 @@ On the other side, `arm_controller` emits `joint_commands` and consumes `joint_s
 The key behavioral guarantees, all handled by the runtime with no application code:
 
 - **Silent while unpaired.** Publishing on an unpaired slot is a legal no-op, and a subscription on an unpaired slot just waits. Nodes never need pairing-state conditionals around their control loops.
-- **Only the paired peer.** A subscription delivers messages from the paired peer instance and nothing else: not from other instances of the same node, not from conforming third parties. The slot *is* the identity; there is no payload-level demultiplexing (`arm_id` fields and the like) to write.
+- **Only the paired peer.** A subscription delivers messages from the paired peer instance and nothing else: not from other instances of the same node, not from implementing third parties. The slot *is* the identity; there is no payload-level demultiplexing (`arm_id` fields and the like) to write.
 - **A pairing is a live stream, not a mailbox.** Messages published before the pair was established are never delivered.
 - **Re-pinning is seamless.** When the daemon re-pairs a surviving slot to a new peer, the held subscription switches over internally; no stale messages from the old peer leak through.
 
@@ -222,7 +222,7 @@ peppy node run --instance-id cmd_1 two_arm_commander:v1 \
   --pair left_arm@arm_l --pair right_arm@arm_r
 ```
 
-The generated code addresses each arm through its slot module (`pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands`), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
+The generated code addresses each arm through its slot module (`pairings.left_arm.joint_commands` vs `pairings.right_arm.joint_commands` in Python, `pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands` in Rust), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
 
 ## Why topics only?
 
@@ -235,24 +235,24 @@ Peppy has three communication patterns (topics, services, and actions), but a pa
 | Consuming means | "I passively receive these messages" | "I actively call this provider" | "I actively orchestrate this provider" |
 | Allowed in a pairing? | Yes | No | No |
 
-A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [interface conformance](/advanced_guides/interface_conformance#caller-driven-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
+A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [contract implementation](/advanced_guides/contract_implementation#caller-driven-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
 
 If two paired nodes also need a bounded request-response exchange, keep the continuous streams in the pairing and model the bounded job as an [action](/advanced_guides/actions) in one direction (the client depends on the server, no cycle).
 
-## Pairing vs. interfaces (`from_any`)
+## Pairing vs. contracts
 
-Pairing and [interface conformance](/advanced_guides/interface_conformance) both decouple nodes from each other through a shared contract. They answer different questions:
+Pairing and [contract implementation](/advanced_guides/contract_implementation) both decouple nodes from each other through a shared contract. They answer different questions:
 
-| | Pairing | Interface (`from_any`) |
+| | Pairing | Contract |
 |---|---|---|
-| Cardinality | Exactly 1:1 per slot, exclusive | Any number of conforming producers |
-| Directionality | Both directions in one contract (two roles) | One direction per interface |
-| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Implicit: any conforming producer that publishes is received |
+| Cardinality | Exactly 1:1 per slot, exclusive | One implementing producer per slot; a consumer that wants several declares several slots |
+| Directionality | Both directions in one contract (two roles) | One direction per contract |
+| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Explicit (`--bind` / `bindings:`), at instance start |
 | Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |
 | Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | Producers come and go freely |
-| Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry fan-in, monitoring, swappable many-to-one sources |
+| Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry, monitoring, swappable sources (one slot per producer) |
 
-Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **interfaces** when any number of loosely-coupled producers should feed a consumer, like every arm on the floor publishing diagnostics to one observer. The two compose: `robot_arm` can be paired with its controller *and* conform to a one-way `joint_state_source` interface so dashboards can watch it.
+Use a **pairing** when the relationship is exclusive and both directions belong to one conversation, like a controller and *its* arm. Use **contracts** when several loosely-coupled producers should feed a consumer, like every arm on the floor publishing diagnostics to one observer (one observer slot per arm). The two compose: `robot_arm` can be paired with its controller *and* implement a one-way `joint_state_source` contract so dashboards can watch it.
 
 ## Pairing vs. actions
 

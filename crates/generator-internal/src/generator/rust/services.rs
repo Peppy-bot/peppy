@@ -6,7 +6,7 @@ use super::serialization::{
 };
 use super::topics::sender_target_expression;
 use crate::error::{Error, Result};
-use crate::generator::types::InterfaceOrigin;
+use crate::generator::types::ContractOrigin;
 use config::node::MessageFormat;
 use encoding::FunctionParam;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -36,10 +36,10 @@ pub struct ExposedServiceMethodSpec<'a> {
     pub request_data_struct: Option<&'a Ident>,
     pub response_spec: Option<&'a ServiceResponseSpec<'a>>,
     pub use_service_name_const: bool,
-    /// `Some(o)` when the service is conformed via `interfaces.conforms_to`;
-    /// `None` for native services. Drives the `iface_name`/`iface_tag` segments
+    /// `Some(o)` when the service is contract-backed via `manifest.implements`;
+    /// `None` for native services. Drives the `contract_name`/`contract_tag` segments
     /// spliced into the generated `ServiceMessenger::listen` call.
-    pub origin: Option<&'a InterfaceOrigin>,
+    pub origin: Option<&'a ContractOrigin>,
 }
 
 pub fn build_exposed_service_method(

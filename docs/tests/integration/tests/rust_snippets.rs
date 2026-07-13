@@ -1,5 +1,5 @@
 use docs_integration_tests::snippet_runner::{
-    run_snippet, run_snippet_with_deps, run_snippet_with_interface_repo,
+    run_snippet, run_snippet_with_contract_repo, run_snippet_with_deps,
 };
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets/rust";
@@ -27,7 +27,12 @@ fn standalone_node() {
 
 #[test]
 fn hello_world_param_and_hello_receiver() {
-    run_snippet_with_deps(SNIPPETS_ROOT, "hello_receiver", &[], &["hello_world_param"]);
+    run_snippet_with_deps(
+        SNIPPETS_ROOT,
+        "hello_receiver",
+        &["--bind", "hello_world_param@hello_world_param_1"],
+        &[("hello_world_param", &["name=planet"])],
+    );
 }
 
 // The paired duo from the "Pairing" guide. Each side declares one required
@@ -37,7 +42,7 @@ fn hello_world_param_and_hello_receiver() {
 
 #[test]
 fn pairing_robot_arm() {
-    run_snippet_with_interface_repo(
+    run_snippet_with_contract_repo(
         SNIPPETS_ROOT,
         "robot_arm",
         &["--defer-pair", "controller"],
@@ -47,7 +52,7 @@ fn pairing_robot_arm() {
 
 #[test]
 fn pairing_arm_controller() {
-    run_snippet_with_interface_repo(
+    run_snippet_with_contract_repo(
         SNIPPETS_ROOT,
         "arm_controller",
         &["--defer-pair", "arm"],

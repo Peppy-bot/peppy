@@ -3,7 +3,7 @@ mod common;
 use common::{
     NodeAddSource, send_node_add_and_wait, send_node_add_and_wait_with_env,
     send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    start_core_node_with_mock_messenger_outside_home, write_peppy_json5,
 };
 use core_node_api::encoding::NodeBuildFeedback;
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
@@ -1026,6 +1026,116 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
 {}",
         log_content
+    );
+}
+
+/// Regression test: container builds must succeed when the daemon's peppy
+/// data root sits OUTSIDE `$HOME` — which is exactly where dev binaries root
+/// it (`$TMPDIR/.peppy`; on macOS `/var/folders/…`).
+///
+/// On macOS the Lima guest VM only auto-mounts `$HOME`, so the build's
+/// working dir (under `<root>/tmp`) is invisible to the guest unless the
+/// build flow registers the root via `Apptainer::ensure_host_mounts`. Before
+/// that registration existed, this scenario failed command construction with
+/// "Path … is not accessible inside the Lima VM" — but no test caught it,
+/// because every other starter roots the daemon under `test_tmp_root()`
+/// (inside the repo, under `$HOME`). On Linux the native backend imposes no
+/// mount restriction, so there this test only exercises the plain build flow.
+///
+/// The def file deliberately copies a relative `%files` source (like the
+/// generated `%files . /opt/{name}` defs): the build must run with the guest
+/// cwd set to the working dir. Relying on `limactl shell`'s host-cwd
+/// propagation breaks here — the kernel canonicalizes the cwd to
+/// `/private/var/…` while the Lima mount only exists in the guest at the
+/// `/var/folders/…` form, and Lima's failed `cd` is NON-fatal, so the build
+/// silently ran from the home mount and `%files .` copied the user's entire
+/// `$HOME` into the image until the guest tmpfs filled up. The facade now
+/// `cd`s explicitly inside the guest wrapper and aborts if that fails; this
+/// test fails without that fix ("cp: cannot stat './marker.txt'").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_build_with_container_from_outside_home_root() {
+    const TARGET_NODE_NAME: &str = "outside_home_container_node";
+    const TARGET_NODE_TAG: &str = "v1";
+
+    let started_core_node = start_core_node_with_mock_messenger_outside_home().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+        },
+        execution: {
+            language: "rust",
+            container: {
+                def_file: "apptainer.def",
+            }
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+    let apptainer_def = format!(
+        "Bootstrap: docker\n\
+         From: {DEFAULT_ALPINE_BASE_IMAGE}\n\
+         \n\
+         %files\n\
+         \x20   ./marker.txt /opt/marker.txt\n\
+         \n\
+         %runscript\n\
+         \x20   echo \"Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}\"\n"
+    );
+    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
+        .expect("failed to write apptainer definition");
+    std::fs::write(
+        source_dir.path().join("marker.txt"),
+        "guest cwd must be the build working dir\n",
+    )
+    .expect("failed to write marker file");
+
+    let (node_name, node_tag) = stage_node_for_build(
+        &started_core_node,
+        source_dir.path(),
+        CONTAINER_RESULT_TIMEOUT,
+    )
+    .await;
+
+    let build_result = send_node_build_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &node_name,
+        &node_tag,
+        GOAL_TIMEOUT,
+        CONTAINER_RESULT_TIMEOUT,
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should succeed");
+
+    assert!(
+        build_result.success,
+        "container build from a peppy root outside $HOME should succeed \
+         (on macOS this requires the build flow to register the root as a \
+         Lima mount), got error: {:?}",
+        build_result.error_message
+    );
+
+    let artifact_path = entity_artifact_path(
+        &started_core_node.node_stack,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+    );
+    assert!(
+        artifact_path.starts_with(started_core_node.peppy_dirs.root()),
+        "artifact should be stored under the outside-home root, got: {}",
+        artifact_path.display()
+    );
+    assert!(
+        artifact_path.exists(),
+        "node .sif image should exist: {}",
+        artifact_path.display()
     );
 }
 

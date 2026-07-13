@@ -29,11 +29,11 @@ fn make_consumer_depend_on_provider(
         .topics
         .get_or_insert_with(Default::default);
     let exposed = topic_ifaces.emits.get_or_insert_with(Vec::new);
-    if !exposed.iter().any(|topic| topic.name == topic_name) {
-        exposed.push(EmittedTopic {
+    if !exposed.iter().any(|topic| topic.name() == topic_name) {
+        exposed.push(EmittedTopic::Native(config::node::NativeEmittedTopic {
             name: topic_name.to_string(),
             ..Default::default()
-        });
+        }));
     }
 
     let updated_provider_content =
@@ -55,9 +55,8 @@ fn make_consumer_depend_on_provider(
             name: ConfigName::new(provider_name).expect("valid provider name"),
             tag: "v1".to_string(),
             link_id: provider_name.to_string(),
-            from_any: false,
         }],
-        interfaces: vec![],
+        contracts: vec![],
         pairings: vec![],
     });
 

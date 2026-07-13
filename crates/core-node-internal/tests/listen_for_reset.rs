@@ -9,7 +9,7 @@ use common::{
 };
 use config::runtime::Name;
 use core_node_api::encoding::NodeResetRequest;
-use peppylib::core_node::transport::poll_node_reset;
+use peppylib::core_node::transport::poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -135,7 +135,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
     drop(entity_a);
 
-    let reset_response = poll_node_reset(
+    let reset_response = poll(
         &NodeResetRequest::new(),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -252,7 +252,7 @@ async fn node_reset_force_kills_whole_process_group() {
     // The reset request waits out the stuck node's cooperative window, then
     // force-kills its group, so the client timeout must exceed
     // force_kill_deadline(grace) + reap. Default grace is 5s.
-    let reset_response = poll_node_reset(
+    let reset_response = poll(
         &NodeResetRequest::new(),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -309,7 +309,7 @@ async fn listen_for_node_reset_is_idempotent() {
         .as_str()
         .to_owned();
 
-    let response = poll_node_reset(
+    let response = poll(
         &NodeResetRequest::new(),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -448,7 +448,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
-    let reset_response = poll_node_reset(
+    let reset_response = poll(
         &NodeResetRequest::new(),
         &started.caller_handle,
         &started.core_node_name,

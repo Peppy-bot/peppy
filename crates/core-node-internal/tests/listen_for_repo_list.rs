@@ -4,7 +4,7 @@ use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_mess
 use config::consts::NODE_CONFIG_FILE;
 use core_node::{nodes_repo_cache_path, repositories_list_path};
 use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
-use peppylib::core_node::transport::poll_repo_list;
+use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.
@@ -50,7 +50,7 @@ fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::
 }
 
 async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
-    poll_repo_list(
+    poll(
         &RepoListRequest,
         &started.caller_handle,
         &started.core_node_name,

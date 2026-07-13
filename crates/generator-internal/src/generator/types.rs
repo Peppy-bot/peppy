@@ -2,8 +2,8 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
-    MessageFormat, PrimitiveSchema, SchemaType, TypeToken,
+    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    NativeExposedAction, NativeExposedService, PrimitiveSchema, SchemaType, TypeToken,
 };
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
@@ -33,37 +33,38 @@ pub struct ConsumedActionMessage {
     pub result_response: Option<MessageFormat>,
 }
 
-/// Identifies the `conforms_to` interface a producer artifact was pulled from.
+/// Identifies the implemented contract a producer artifact was pulled from.
 ///
 /// `None` on a producer variant means the artifact is the node's own (native)
-/// declaration; `Some` means it was contributed by a [`PeppyInterface`] pulled
-/// via `interfaces.conforms_to`. The pair `(iface_name, iface_tag)` drives both
-/// the generated module nesting (`emitted_topics::{iface_name}::{iface_tag}::{topic}`)
-/// and the two extra Zenoh segments on the wire path.
+/// declaration; `Some` means it is a contract-backed entry resolved through a
+/// `manifest.implements` slot. The pair `(contract_name, contract_tag)` drives
+/// both the generated module nesting
+/// (`emitted_topics::{contract_name}::{contract_tag}::{topic}`) and the two
+/// extra Zenoh segments on the wire path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InterfaceOrigin {
-    pub iface_name: String,
-    pub iface_tag: String,
+pub struct ContractOrigin {
+    pub contract_name: String,
+    pub contract_tag: String,
 }
 
-impl InterfaceOrigin {
+impl ContractOrigin {
     /// Module path for an artifact contributed by this origin:
-    /// `[iface_name, sanitized_tag, leaf_name]`.
+    /// `[contract_name, sanitized_tag, leaf_name]`.
     pub fn module_path_for(&self, leaf_name: &str) -> Vec<String> {
         vec![
-            self.iface_name.clone(),
-            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            self.contract_name.clone(),
+            crate::generator::naming::sanitize_contract_tag(&self.contract_tag),
             leaf_name.to_string(),
         ]
     }
 
-    /// Namespaces `local` with `iface_name` + sanitized tag so a leaf name
-    /// shared across conformed origins produces distinct schema keys.
+    /// Namespaces `local` with `contract_name` + sanitized tag so a leaf name
+    /// shared across contract origins produces distinct schema keys.
     pub fn scoped_schema_key(&self, local: &str) -> String {
         format!(
             "{}_{}_{}",
-            self.iface_name,
-            crate::generator::naming::sanitize_iface_tag(&self.iface_tag),
+            self.contract_name,
+            crate::generator::naming::sanitize_contract_tag(&self.contract_tag),
             local
         )
     }
@@ -71,7 +72,7 @@ impl InterfaceOrigin {
 
 /// Builds a schema key scoped to `origin` when `Some`, falling back to the
 /// raw `local` key when the artifact is the node's own (native) declaration.
-pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> String {
+pub fn scoped_schema_key(origin: Option<&ContractOrigin>, local: &str) -> String {
     match origin {
         Some(o) => o.scoped_schema_key(local),
         None => local.to_string(),
@@ -81,8 +82,8 @@ pub fn scoped_schema_key(origin: Option<&InterfaceOrigin>, local: &str) -> Strin
 /// Identifies the pairing slot a peer topic belongs to. "Pairing" names the
 /// mechanism/contract/slot; "peer" names the other end. Both directions of a
 /// pairing live under the slot's module (`pairings/<link_id>/<topic>`), so the
-/// module path is flat `[link_id, topic]` — deliberately NOT reusing
-/// [`InterfaceOrigin`], whose `[name, tag, leaf]` nesting reflects contract
+/// module path is flat `[link_id, topic]`, deliberately NOT reusing
+/// [`ContractOrigin`], whose `[name, tag, leaf]` nesting reflects contract
 /// identity rather than slot identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerContext {
@@ -107,7 +108,7 @@ pub fn ensure_no_peer_collision(
     sections: &[InterfaceArtifact],
     module_path: &[String],
     peer: &PeerContext,
-    topic: &EmittedTopic,
+    topic: &NativeEmittedTopic,
 ) -> Result<()> {
     let collides = sections.iter().any(|s| {
         matches!(
@@ -124,141 +125,68 @@ pub fn ensure_no_peer_collision(
     Ok(())
 }
 
-/// What the generator should splice into the consumer's subscribe / poll /
-/// send_goal call for the `(from_link_id, from_instance_id)` pair.
-///
-/// In the harmonized wire model the consumer never pins by `link_id` (producers
-/// always advertise the `_` sentinel); instead it pins by `from_instance_id`
-/// looked up at runtime from `Processor::binding_for(<link_id>)`. The codegen
-/// still needs the manifest `link_id` even for `from_any: true` deps so the
-/// binding lookup can resolve them.
-#[derive(Debug, Clone)]
-pub enum WireLinkId {
-    /// Pinned dep: `depends_on` declared `link_id` and `from_any: false`.
-    /// The launcher / CLI validators require a matching binding (or fire a
-    /// warning); the codegen splices `binding_for(link_id)` for the pin.
-    Pinned(String),
-    /// Wildcard dep. `link_id: Some` carries the manifest link_id for
-    /// `from_any: true` deps so an optional binding can still pin them;
-    /// `link_id: None` is reserved for synthetic generator-test fixtures
-    /// that don't model a manifest dep.
-    Wildcard { link_id: Option<String> },
-}
-
-impl WireLinkId {
-    /// `Pinned(link_id)` when `from_any` is false, `Wildcard { link_id:
-    /// Some(link_id) }` when true. The link_id is kept either way so the
-    /// runtime binding lookup can resolve `from_any: true` deps too.
-    pub fn from_link_id(link_id: impl Into<String>, from_any: bool) -> Self {
-        let link_id = link_id.into();
-        if from_any {
-            Self::Wildcard {
-                link_id: Some(link_id),
-            }
-        } else {
-            Self::Pinned(link_id)
-        }
-    }
-
-    /// Wildcard with no manifest link_id. Used by generator-test fixtures
-    /// that exercise the codegen without modeling a consumer dep.
-    pub fn wildcard() -> Self {
-        Self::Wildcard { link_id: None }
-    }
-
-    /// The manifest link_id literal, present for `Pinned` and for `Wildcard`
-    /// deps that came from a real `depends_on` entry. `None` only for the
-    /// test-fixture sentinel.
-    pub fn link_id(&self) -> Option<&str> {
-        match self {
-            Self::Pinned(s) => Some(s.as_str()),
-            Self::Wildcard { link_id } => link_id.as_deref(),
-        }
-    }
-}
-
 /// Identifies a dependency a consumer pulls from. `producer_name` +
 /// `producer_tag` pin the labelled producer for codegen: a real node for
-/// `depends_on.nodes`, or the interface's `(name, tag)` when the consumer
-/// pulls in via `depends_on.interfaces` (there's no producer node in that
+/// `depends_on.nodes`, or the contract's `(name, tag)` when the consumer
+/// pulls in via `depends_on.contracts` (there's no producer node in that
 /// case, but the labels still need a stable identity). `origin` is `Some`
-/// when the consumed artifact carries the `interface`-shaped wire
-/// discriminator (either because the producer node `conforms_to` an
-/// interface or because the dependency itself is an interface contract).
+/// exactly when the dependency is a contract document: node dependencies
+/// expose native interfaces only, so their consumed artifacts always carry
+/// the `node`-shaped wire discriminator.
 ///
-/// `link_id` carries the wire-slot intent: `Pinned(s)` for a specific
-/// consumer link_id, `Wildcard` when `from_any: true` or when no link_id is
-/// declared (the test-fixture default).
+/// `link_id` is the consumer manifest slot whose runtime binding resolves
+/// this dependency's one producer. In the harmonized wire model the consumer
+/// never pins by `link_id` on the wire (producers always advertise the `_`
+/// sentinel); instead the generated call sites splice
+/// `processor().bound_producer(<link_id>)` lookups.
 ///
-/// [`SenderTarget::Interface`]: pmi::SenderTarget::Interface
+/// [`SenderTarget::Contract`]: pmi::SenderTarget::Contract
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
 #[derive(Debug, Clone)]
 pub struct DependencyContext {
     pub producer_name: String,
     pub producer_tag: String,
-    pub origin: Option<InterfaceOrigin>,
-    pub link_id: WireLinkId,
+    pub origin: Option<ContractOrigin>,
+    pub link_id: String,
 }
 
 impl DependencyContext {
-    /// Build a context for a node dependency that emits natively (no
-    /// `conforms_to`). Defaults `link_id` to [`WireLinkId::Wildcard`]; use
-    /// [`Self::with_link_id`] to pin a value.
-    pub fn native(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
-        Self {
-            producer_name: node_name.into(),
-            producer_tag: node_tag.into(),
-            origin: None,
-            link_id: WireLinkId::wildcard(),
-        }
-    }
-
-    /// Build a context for a node dependency that emits via a
-    /// `conforms_to` interface.
-    pub fn conformed(
+    /// Build a context for a node dependency. Node dependencies expose
+    /// native interfaces only, so no origin is involved.
+    pub fn native(
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
-        origin: InterfaceOrigin,
+        link_id: impl Into<String>,
     ) -> Self {
         Self {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
-            origin: Some(origin),
-            link_id: WireLinkId::wildcard(),
+            origin: None,
+            link_id: link_id.into(),
         }
     }
 
-    /// Build a context for a `depends_on.interfaces` dependency. There is
+    /// Build a context for a `depends_on.contracts` dependency. There is
     /// no producer node here; `producer_name` / `producer_tag` carry the
-    /// interface's `(name, tag)` so codegen labels stay readable, and
+    /// contract's `(name, tag)` so codegen labels stay readable, and
     /// `origin` is set to the same `(name, tag)` so consumer-side codegen
-    /// reuses the existing `SenderTarget::Interface` path.
-    pub fn interface(iface_name: impl Into<String>, iface_tag: impl Into<String>) -> Self {
-        let iface_name = iface_name.into();
-        let iface_tag = iface_tag.into();
+    /// takes the `SenderTarget::Contract` path.
+    pub fn contract(
+        contract_name: impl Into<String>,
+        contract_tag: impl Into<String>,
+        link_id: impl Into<String>,
+    ) -> Self {
+        let contract_name = contract_name.into();
+        let contract_tag = contract_tag.into();
         Self {
-            producer_name: iface_name.clone(),
-            producer_tag: iface_tag.clone(),
-            origin: Some(InterfaceOrigin {
-                iface_name,
-                iface_tag,
+            producer_name: contract_name.clone(),
+            producer_tag: contract_tag.clone(),
+            origin: Some(ContractOrigin {
+                contract_name,
+                contract_tag,
             }),
-            link_id: WireLinkId::wildcard(),
+            link_id: link_id.into(),
         }
-    }
-
-    /// Set the wire-slot binding. Generator code reads `link_id.link_id()`
-    /// to splice the binding lookup at the `from_instance_id` slot.
-    pub fn with_link_id(mut self, link_id: WireLinkId) -> Self {
-        self.link_id = link_id;
-        self
-    }
-
-    /// Returns the manifest link_id literal, when known. Used by codegen
-    /// to splice `processor().binding_for(<link_id>)` at the consumer's
-    /// `from_instance_id` wire slot.
-    pub fn wire_link_id(&self) -> Option<&str> {
-        self.link_id.link_id()
     }
 }
 
@@ -272,16 +200,16 @@ impl DependencyContext {
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
     EmittedTopic {
-        topic: EmittedTopic,
-        origin: Option<InterfaceOrigin>,
+        topic: NativeEmittedTopic,
+        origin: Option<ContractOrigin>,
     },
     ExposedService {
-        service: ExposedService,
-        origin: Option<InterfaceOrigin>,
+        service: NativeExposedService,
+        origin: Option<ContractOrigin>,
     },
     ExposedAction {
-        action: ExposedAction,
-        origin: Option<InterfaceOrigin>,
+        action: NativeExposedAction,
+        origin: Option<ContractOrigin>,
     },
     ConsumedTopic {
         topic: ConsumedTopic,
@@ -299,16 +227,16 @@ pub enum InterfaceVariant {
         messages: ConsumedActionMessage,
         dependency: DependencyContext,
     },
-    /// A pairing topic this node's role emits. The `EmittedTopic` shape
-    /// carries the pairing doc's per-topic fields (name, qos,
+    /// A pairing topic this node's role emits. The `NativeEmittedTopic`
+    /// shape carries the pairing doc's per-topic fields (name, qos,
     /// message_format); `peer` carries the slot identity.
     PeerEmittedTopic {
-        topic: EmittedTopic,
+        topic: NativeEmittedTopic,
         peer: PeerContext,
     },
     /// A pairing topic the counterpart role emits (this node consumes it).
     PeerConsumedTopic {
-        topic: EmittedTopic,
+        topic: NativeEmittedTopic,
         peer: PeerContext,
     },
 }
@@ -324,18 +252,18 @@ impl DeploymentInterface {
         Self { interface }
     }
 
-    /// A natively emitted (or `conforms_to`-contributed) topic.
-    pub fn emitted_topic(topic: EmittedTopic, origin: Option<InterfaceOrigin>) -> Self {
+    /// A natively emitted (or contract-backed, resolved) topic.
+    pub fn emitted_topic(topic: NativeEmittedTopic, origin: Option<ContractOrigin>) -> Self {
         Self::new(InterfaceVariant::EmittedTopic { topic, origin })
     }
 
-    /// A natively exposed (or `conforms_to`-contributed) service.
-    pub fn exposed_service(service: ExposedService, origin: Option<InterfaceOrigin>) -> Self {
+    /// A natively exposed (or contract-backed, resolved) service.
+    pub fn exposed_service(service: NativeExposedService, origin: Option<ContractOrigin>) -> Self {
         Self::new(InterfaceVariant::ExposedService { service, origin })
     }
 
-    /// A natively exposed (or `conforms_to`-contributed) action.
-    pub fn exposed_action(action: ExposedAction, origin: Option<InterfaceOrigin>) -> Self {
+    /// A natively exposed (or contract-backed, resolved) action.
+    pub fn exposed_action(action: NativeExposedAction, origin: Option<ContractOrigin>) -> Self {
         Self::new(InterfaceVariant::ExposedAction { action, origin })
     }
 
@@ -381,12 +309,12 @@ impl DeploymentInterface {
     }
 
     /// A pairing topic emitted by this node's role on the given slot.
-    pub fn peer_emitted_topic(topic: EmittedTopic, peer: PeerContext) -> Self {
+    pub fn peer_emitted_topic(topic: NativeEmittedTopic, peer: PeerContext) -> Self {
         Self::new(InterfaceVariant::PeerEmittedTopic { topic, peer })
     }
 
     /// A pairing topic emitted by the counterpart role (consumed here).
-    pub fn peer_consumed_topic(topic: EmittedTopic, peer: PeerContext) -> Self {
+    pub fn peer_consumed_topic(topic: NativeEmittedTopic, peer: PeerContext) -> Self {
         Self::new(InterfaceVariant::PeerConsumedTopic { topic, peer })
     }
 
@@ -398,10 +326,10 @@ impl DeploymentInterface {
 #[derive(Clone)]
 pub struct InterfaceArtifact {
     /// Module path under the category dir, leaf-last. Native artifacts have a
-    /// single segment (the topic/service/action name); artifacts pulled in via
-    /// `interfaces.conforms_to` have three segments
-    /// (`[iface_name, iface_tag, leaf_name]`) so they nest as
-    /// `emitted_topics/{iface_name}/{iface_tag}/{leaf_name}.rs`.
+    /// single segment (the topic/service/action name); contract-backed
+    /// artifacts have three segments
+    /// (`[contract_name, contract_tag, leaf_name]`) so they nest as
+    /// `emitted_topics/{contract_name}/{contract_tag}/{leaf_name}.rs`.
     pub module_path: Vec<String>,
     pub kind: InterfaceKind,
     pub code_output: String,
@@ -409,11 +337,11 @@ pub struct InterfaceArtifact {
 
 impl InterfaceArtifact {
     /// Builds an artifact for `leaf_name`, nesting under
-    /// `{iface_name}/{iface_tag}/{leaf_name}` when contributed via
-    /// `interfaces.conforms_to`, or a single-segment `[leaf_name]` for the
-    /// node's own (native) declarations.
+    /// `{contract_name}/{contract_tag}/{leaf_name}` when contract-backed,
+    /// or a single-segment `[leaf_name]` for the node's own (native)
+    /// declarations.
     pub fn for_leaf(
-        origin: Option<&InterfaceOrigin>,
+        origin: Option<&ContractOrigin>,
         leaf_name: &str,
         kind: InterfaceKind,
         code_output: String,
@@ -453,24 +381,23 @@ impl InterfaceArtifact {
 /// callers normally drive them indirectly through `register_with` rather than calling them
 /// directly.
 pub trait LanguageGenerator {
-    /// `origin` is `Some` when the topic was contributed via a
-    /// `conforms_to` interface (nests the artifact under
-    /// `{iface_name}/{iface_tag}/{leaf}`) and `None` for the node's own
-    /// native declarations.
+    /// `origin` is `Some` when the topic is contract-backed (nests the
+    /// artifact under `{contract_name}/{contract_tag}/{leaf}`) and `None`
+    /// for the node's own native declarations.
     fn add_emitted_topic(
         &mut self,
-        topic: &EmittedTopic,
-        origin: Option<&InterfaceOrigin>,
+        topic: &NativeEmittedTopic,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()>;
     fn add_exposed_service(
         &mut self,
-        service: &ExposedService,
-        origin: Option<&InterfaceOrigin>,
+        service: &NativeExposedService,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()>;
     fn add_exposed_action(
         &mut self,
-        action: &ExposedAction,
-        origin: Option<&InterfaceOrigin>,
+        action: &NativeExposedAction,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()>;
     fn add_consumed_topic(
         &mut self,
@@ -493,10 +420,18 @@ pub trait LanguageGenerator {
     ) -> Result<()>;
     /// A pairing topic emitted by this node's role: slot-scoped publisher
     /// (`link_id: Some(peer.link_id)`) under the `pairing` wire target.
-    fn add_peer_emitted_topic(&mut self, topic: &EmittedTopic, peer: &PeerContext) -> Result<()>;
+    fn add_peer_emitted_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+    ) -> Result<()>;
     /// A pairing topic the counterpart role emits: a `subscribe_peer`-backed
     /// subscription that follows the slot's live pin.
-    fn add_peer_consumed_topic(&mut self, topic: &EmittedTopic, peer: &PeerContext) -> Result<()>;
+    fn add_peer_consumed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+    ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
         self,
@@ -772,55 +707,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wire_link_id_state_machine() {
-        // Pinned: `from_any == false`.
-        let pinned = WireLinkId::from_link_id("cam_left", false);
-        assert!(matches!(pinned, WireLinkId::Pinned(ref s) if s == "cam_left"));
-        assert_eq!(pinned.link_id(), Some("cam_left"));
-
-        // Wildcard carrying a manifest link_id: `from_any == true`.
-        let from_any = WireLinkId::from_link_id("cam_left", true);
-        assert!(matches!(
-            from_any,
-            WireLinkId::Wildcard { link_id: Some(ref s) } if s == "cam_left"
-        ));
-        assert_eq!(from_any.link_id(), Some("cam_left"));
-
-        // Pure wildcard sentinel (test fixtures / no manifest dep).
-        let wildcard = WireLinkId::wildcard();
-        assert!(matches!(wildcard, WireLinkId::Wildcard { link_id: None }));
-        assert_eq!(wildcard.link_id(), None);
-    }
-
-    #[test]
-    fn dependency_context_constructors_set_origin_and_defaults() {
-        // native: no origin, defaults to a pure wildcard link_id.
-        let native = DependencyContext::native("uvc_camera", "v1");
+    fn dependency_context_constructors_set_origin_and_link_id() {
+        // native: no origin.
+        let native = DependencyContext::native("uvc_camera", "v1", "cam_left");
         assert_eq!(native.producer_name, "uvc_camera");
         assert_eq!(native.producer_tag, "v1");
         assert!(native.origin.is_none());
-        assert_eq!(native.wire_link_id(), None);
+        assert_eq!(native.link_id, "cam_left");
 
-        // conformed: producer node identity plus an interface origin.
-        let origin = InterfaceOrigin {
-            iface_name: "camera_iface".to_string(),
-            iface_tag: "v2".to_string(),
-        };
-        let conformed = DependencyContext::conformed("uvc_camera", "v1", origin.clone());
-        assert_eq!(conformed.producer_name, "uvc_camera");
-        assert_eq!(conformed.producer_tag, "v1");
-        assert_eq!(conformed.origin, Some(origin.clone()));
-
-        // interface: no producer node; (name, tag) double as producer identity and origin.
-        let iface = DependencyContext::interface("camera_iface", "v2");
-        assert_eq!(iface.producer_name, "camera_iface");
-        assert_eq!(iface.producer_tag, "v2");
-        assert_eq!(iface.origin, Some(origin));
-
-        // with_link_id overrides the default wildcard.
-        let pinned = DependencyContext::native("uvc_camera", "v1")
-            .with_link_id(WireLinkId::from_link_id("cam_left", false));
-        assert_eq!(pinned.wire_link_id(), Some("cam_left"));
+        // contract: no producer node; (name, tag) double as producer identity and origin.
+        let contract = DependencyContext::contract("camera_contract", "v2", "cam_left");
+        assert_eq!(contract.producer_name, "camera_contract");
+        assert_eq!(contract.producer_tag, "v2");
+        assert_eq!(
+            contract.origin,
+            Some(ContractOrigin {
+                contract_name: "camera_contract".to_string(),
+                contract_tag: "v2".to_string(),
+            })
+        );
+        assert_eq!(contract.link_id, "cam_left");
     }
 
     #[test]

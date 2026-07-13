@@ -6,7 +6,7 @@ use common::{
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use core_node_api::encoding::{NodeSyncRequest, RepoSourceKind};
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
-use peppylib::core_node::transport::poll_node_sync;
+use peppylib::core_node::transport::poll;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -50,7 +50,7 @@ async fn listen_for_node_sync_success() {
     );
 
     let expected_git_hash = "deadbeef";
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), expected_git_hash, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -116,7 +116,7 @@ async fn listen_for_node_sync_success() {
 async fn listen_for_node_sync_missing_node_root_dir_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new("", common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -147,7 +147,7 @@ async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -176,7 +176,7 @@ async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(file_path, common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -205,7 +205,7 @@ async fn listen_for_node_sync_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -246,7 +246,7 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -326,7 +326,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -389,7 +389,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -493,7 +493,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response = poll_node_sync(
+    let uvc_camera_response = poll(
         &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -577,7 +577,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = poll_node_sync(
+    let brain_response = poll(
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -692,7 +692,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let uvc_camera_response = poll_node_sync(
+    let uvc_camera_response = poll(
         &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -773,7 +773,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let brain_response = poll_node_sync(
+    let brain_response = poll(
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -852,7 +852,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let uvc_camera_response = poll_node_sync(
+    let uvc_camera_response = poll(
         &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -933,7 +933,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let brain_response = poll_node_sync(
+    let brain_response = poll(
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1018,7 +1018,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let action_server_response = poll_node_sync(
+    let action_server_response = poll(
         &NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1099,7 +1099,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let controller_response = poll_node_sync(
+    let controller_response = poll(
         &NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1170,7 +1170,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1266,7 +1266,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1300,7 +1300,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1386,7 +1386,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_node_sync(
+    let response = poll(
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1505,7 +1505,7 @@ async fn sync_with_flag(
     node_root: &Path,
     include_repositories: bool,
 ) -> core_node_api::encoding::NodeSyncResponse {
-    poll_node_sync(
+    poll(
         &NodeSyncRequest::new(node_root, common::TEST_GIT_HASH, include_repositories),
         &started.caller_handle,
         &started.core_node_name,
@@ -1964,25 +1964,25 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     );
 }
 
-/// End-to-end regression for the user-reported bug: a `conforms_to` entry
-/// resolved from a git-sourced interface cache must materialize the repo
-/// checkout before reading the interface manifest. The interface cache
+/// End-to-end regression for the user-reported bug: a `manifest.implements`
+/// slot resolved from a git-sourced contract cache must materialize the repo
+/// checkout before reading the contract manifest. The contract cache
 /// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
 /// without `ensure_checkout` the daemon would have tried to read that path
 /// from the daemon's CWD and failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_sync_resolves_git_sourced_conforms_to_interface() {
+async fn node_sync_resolves_git_sourced_implements_contract() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Build a local git repo that hosts the interface manifest at the
+    // Build a local git repo that hosts the contract manifest at the
     // same repo-relative location the real `interfaces_hub` uses.
     let source_parent = tempdir().expect("source parent tempdir");
     let source_repo_dir = source_parent.path().join("interfaces_hub");
     std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
     let branch = init_local_git_repo(&source_repo_dir);
 
-    const INTERFACE_BODY: &str = r#"{
-        peppy_schema: "interface/v1",
+    const CONTRACT_BODY: &str = r#"{
+        peppy_schema: "contract/v1",
         manifest: { name: "depth_camera", tag: "v1" },
         interfaces: {
             topics: [
@@ -1994,11 +1994,11 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     std::fs::create_dir_all(source_repo_dir.join("cameras")).expect("cameras dir");
     std::fs::write(
         source_repo_dir.join("cameras/depth_camera.json5"),
-        INTERFACE_BODY,
+        CONTRACT_BODY,
     )
-    .expect("write interface file");
+    .expect("write contract file");
 
-    // Stage and commit the interface file on top of the initial empty
+    // Stage and commit the contract file on top of the initial empty
     // commit so a fresh clone sees it on the resolved ref.
     let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
     let mut index = repo.index().expect("index");
@@ -2011,38 +2011,38 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     let parent_oid = repo.head().unwrap().target().unwrap();
     let parent = repo.find_commit(parent_oid).expect("find_commit");
     let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("HEAD"), &sig, &sig, "add interface", &tree, &[&parent])
-        .expect("commit interface");
+    repo.commit(Some("HEAD"), &sig, &sig, "add contract", &tree, &[&parent])
+        .expect("commit contract");
 
     let repo_url = source_repo_dir.display().to_string();
 
     TestPackagesCache::new()
-        .interface_git_entry(
+        .contract_git_entry(
             "depth_camera",
             "v1",
             &repo_url,
             &branch,
             "cameras/depth_camera.json5",
-            INTERFACE_BODY,
+            CONTRACT_BODY,
         )
         .write(&started.peppy_dirs);
 
-    // The node under sync declares `conforms_to` against the git-sourced
-    // interface. Before the fix, `handle_node_sync_request` errored here
-    // with "failed to read cached interface ... at cameras/depth_camera.json5".
+    // The node under sync implements the git-sourced contract. Before the
+    // fix, `handle_node_sync_request` errored here
+    // with "failed to read cached contract ... at cameras/depth_camera.json5".
     let node_dir = tempdir().expect("node tempdir");
     write_node_config(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "depth_publisher", tag: "v1" },
-            interfaces: {
-                topics: { emits: [], consumes: [] },
-                services: { exposes: [] },
-                actions: { exposes: [] },
-                conforms_to: [
-                    { name: "depth_camera", tag: "v1" }
+            manifest: {
+                name: "depth_publisher", tag: "v1",
+                implements: [
+                    { name: "depth_camera", tag: "v1", link_id: "depth" }
                 ],
+            },
+            interfaces: {
+                topics: { emits: [{ link_id: "depth", name: "video_stream" }], consumes: [] },
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#,
@@ -2051,11 +2051,11 @@ async fn node_sync_resolves_git_sourced_conforms_to_interface() {
     let response = sync_with_flag(&started, node_dir.path(), true).await;
     assert!(
         response.success,
-        "sync should resolve the git-sourced conforms_to interface, got error: {}",
+        "sync should resolve the git-sourced implemented contract, got error: {}",
         response.error_message
     );
 
-    // The interface's checkout should exist on disk now; this proves
+    // The contract's checkout should exist on disk now; this proves
     // `ensure_checkout` ran rather than `std::fs::read` silently relying
     // on a path that happened to exist in the daemon's CWD.
     let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())

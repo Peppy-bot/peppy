@@ -5,11 +5,11 @@ use std::time::Duration;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::runtime::{PairingSlotBinding, ProducerRef, SlotBinding};
+use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::StackListRequest;
 use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
@@ -31,7 +31,7 @@ pub async fn list_nodes_collecting(
 ) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(dot_graph_path.is_some()),
         conn.messenger,
         &conn.core_node_name,
@@ -138,12 +138,12 @@ pub fn format_stack_list(
         let _ = writeln!(out, "  (none)");
     } else {
         for edge in edges {
-            // An interface-conformance edge is annotated with the interface it
+            // A contract-implementation edge is annotated with the contract it
             // routes through, so it reads distinctly from a direct node dep. The
             // interface name is tinted the same as the node labels it relates.
-            let via = match &edge.via_interface {
+            let via = match &edge.via_contract {
                 Some(iface) => format!(
-                    " (via {} interface conformance)",
+                    " (via {} contract implementation)",
                     paint(colorize, NODE_COLOR, iface)
                 ),
                 None => String::new(),
@@ -367,24 +367,11 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
         .collect()
 }
 
-/// Right-hand side of a `link_id -> …` binding line: the producer the slot
-/// resolves to, rendered as `instance_id@core_node` (the full wire address
-/// every binding now carries). A `from_any` slot with explicit producers
-/// lists them comma-separated; a `from_any` slot left bindless (and the
-/// degenerate "bound to nothing" case) render as `(any)`.
-fn format_slot_binding(binding: &SlotBinding) -> String {
-    let render =
-        |producer: &ProducerRef| format!("{}@{}", producer.instance_id, producer.core_node);
-    match binding {
-        SlotBinding::Pinned { producer } => render(producer),
-        SlotBinding::FromAnyBound { producers } if !producers.is_empty() => {
-            producers.iter().map(render).collect::<Vec<_>>().join(", ")
-        }
-        // `FromAnyBound` with no producers and `FromAnyUnbound` are both "no
-        // pinned producer"; collapse them so the line never trails as
-        // `link_id -> ` with an empty right-hand side.
-        SlotBinding::FromAnyBound { .. } | SlotBinding::FromAnyUnbound => "(any)".to_string(),
-    }
+/// Right-hand side of a `link_id -> …` binding line: the one producer the
+/// slot is bound to, rendered as `instance_id@core_node` (the full wire
+/// address every binding carries).
+fn format_slot_binding(producer: &config::runtime::ProducerRef) -> String {
+    format!("{}@{}", producer.instance_id, producer.core_node)
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -476,6 +463,7 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 mod tests {
     use super::super::table::skip_csi;
     use super::*;
+    use config::runtime::ProducerRef;
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
@@ -504,8 +492,8 @@ mod tests {
         }
     }
 
-    /// `(instance_id, state, [(slot, binding)])` rows fed to [`binding_node`].
-    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, SlotBinding)>);
+    /// `(instance_id, state, [(slot, producer)])` rows fed to [`binding_node`].
+    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, ProducerRef)>);
 
     /// Like [`node`] but lets each instance carry slot bindings, for
     /// exercising the bindings table. Always `Ready`/`v1`.
@@ -524,7 +512,7 @@ mod tests {
                     healthy: true,
                     slot_bindings: binds
                         .into_iter()
-                        .map(|(slot, binding)| (slot.to_string(), binding))
+                        .map(|(slot, producer)| (slot.to_string(), producer))
                         .collect(),
                     pairing_slots: std::collections::BTreeMap::new(),
                 })
@@ -679,7 +667,7 @@ mod tests {
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
-            via_interface: None,
+            via_contract: None,
         }];
         let out = format_stack_list(&[from, to], &edges, false);
         assert!(
@@ -690,18 +678,18 @@ mod tests {
     }
 
     #[test]
-    fn interface_conformance_edge_renders_annotation() {
+    fn contract_implementation_edge_renders_annotation() {
         let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
         let provider = node("camera_mock", "v1", NodeStage::Ready, vec![]);
         let edges = vec![SerializedEdge {
             from: consumer.clone(),
             to: provider.clone(),
-            via_interface: Some("uvc_camera:v1".to_string()),
+            via_contract: Some("uvc_camera:v1".to_string()),
         }];
         let out = format_stack_list(&[consumer, provider], &edges, false);
         assert!(
-            out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 interface conformance)"),
-            "interface-conformance edge annotation missing:\n{}",
+            out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract implementation)"),
+            "contract-implementation edge annotation missing:\n{}",
             out
         );
     }
@@ -739,12 +727,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![(
-                    "arm",
-                    SlotBinding::Pinned {
-                        producer: ProducerRef::new("core_a", "arm-1"),
-                    },
-                )],
+                vec![("arm", ProducerRef::new("core_a", "arm-1"))],
             )],
         )];
         let out = format_stack_list(&nodes, &[], false);
@@ -774,18 +757,8 @@ mod tests {
                     "br-1",
                     InstanceState::Running,
                     vec![
-                        (
-                            "camera",
-                            SlotBinding::Pinned {
-                                producer: ProducerRef::new("core_a", "cam-1"),
-                            },
-                        ),
-                        (
-                            "controller",
-                            SlotBinding::Pinned {
-                                producer: ProducerRef::new("core_a", "ctl-1"),
-                            },
-                        ),
+                        ("camera", ProducerRef::new("core_a", "cam-1")),
+                        ("controller", ProducerRef::new("core_a", "ctl-1")),
                     ],
                 )],
             ),
@@ -869,18 +842,8 @@ mod tests {
                 // Inserted out of sorted order so the assertion below fails if
                 // the BTreeMap link-id sort is ever dropped.
                 vec![
-                    (
-                        "clock",
-                        SlotBinding::Pinned {
-                            producer: ProducerRef::new("core_a", "clk-1"),
-                        },
-                    ),
-                    (
-                        "backbone",
-                        SlotBinding::Pinned {
-                            producer: ProducerRef::new("core_a", "bb-1"),
-                        },
-                    ),
+                    ("clock", ProducerRef::new("core_a", "clk-1")),
+                    ("backbone", ProducerRef::new("core_a", "bb-1")),
                 ],
             )],
         )];
@@ -925,23 +888,15 @@ mod tests {
     }
 
     #[test]
-    fn bindings_table_renders_from_any_variants() {
+    fn bindings_table_renders_slots_sorted_by_link_id() {
         let nodes = vec![binding_node(
             "nav",
             vec![(
                 "nav-1",
                 InstanceState::Running,
                 vec![
-                    (
-                        "sensors",
-                        SlotBinding::FromAnyBound {
-                            producers: vec![
-                                ProducerRef::new("core_a", "cam-1"),
-                                ProducerRef::new("core_a", "cam-2"),
-                            ],
-                        },
-                    ),
-                    ("extra", SlotBinding::FromAnyUnbound),
+                    ("sensors", ProducerRef::new("core_a", "cam-1")),
+                    ("extra", ProducerRef::new("core_a", "lidar-1")),
                 ],
             )],
         )];
@@ -949,11 +904,11 @@ mod tests {
         let section = bindings_section(&out);
 
         let sensors_at = section
-            .find("sensors → cam-1@core_a, cam-2@core_a")
-            .expect("from_any bound producers should be comma-joined");
+            .find("sensors → cam-1@core_a")
+            .expect("a slot should render its one producer's wire address");
         let extra_at = section
-            .find("extra → (any)")
-            .expect("from_any unbound should render (any)");
+            .find("extra → lidar-1@core_a")
+            .expect("a slot should render its one producer's wire address");
         // Sorted by link id regardless of insertion order: "extra" < "sensors".
         assert!(
             extra_at < sensors_at,
@@ -1062,32 +1017,6 @@ mod tests {
     }
 
     #[test]
-    fn bindings_table_renders_any_for_from_any_bound_without_producers() {
-        // Defensive: a `FromAnyBound` carrying no producers (only reachable via
-        // a hand-crafted / corrupt payload) must not render a dangling
-        // `slot -> ` with an empty right-hand side.
-        let nodes = vec![binding_node(
-            "nav",
-            vec![(
-                "nav-1",
-                InstanceState::Running,
-                vec![("sensors", SlotBinding::FromAnyBound { producers: vec![] })],
-            )],
-        )];
-        let out = format_stack_list(&nodes, &[], false);
-        let section = bindings_section(&out);
-
-        assert!(
-            section.contains("sensors → (any)"),
-            "empty from_any bound should collapse to (any):\n{out}"
-        );
-        assert!(
-            !section.contains("sensors → \n") && !section.contains("sensors →  "),
-            "binding line must not trail with an empty producer:\n{out}"
-        );
-    }
-
-    #[test]
     fn bindings_table_groups_multiple_nodes_with_separators_and_drops_instanceless_nodes() {
         let nodes = vec![
             binding_node(
@@ -1096,12 +1025,7 @@ mod tests {
                     (
                         "alpha-1",
                         InstanceState::Running,
-                        vec![(
-                            "dep",
-                            SlotBinding::Pinned {
-                                producer: ProducerRef::new("core_a", "beta-1"),
-                            },
-                        )],
+                        vec![("dep", ProducerRef::new("core_a", "beta-1"))],
                     ),
                     // Second instance, no bindings: stays inside alpha's group
                     // with no separator before it.
@@ -1155,12 +1079,7 @@ mod tests {
             vec![(
                 "实例-uno",
                 InstanceState::Running,
-                vec![(
-                    "传感器",
-                    SlotBinding::Pinned {
-                        producer: ProducerRef::new("core_a", "相机-1"),
-                    },
-                )],
+                vec![("传感器", ProducerRef::new("core_a", "相机-1"))],
             )],
         )];
         // A pairing row mixes the `⇌` separator with CJK link and peer ids,
@@ -1246,12 +1165,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![(
-                    "arm",
-                    SlotBinding::Pinned {
-                        producer: ProducerRef::new("core_a", "arm-1"),
-                    },
-                )],
+                vec![("arm", ProducerRef::new("core_a", "arm-1"))],
             )],
         )];
         let from = node("brain", "v1", NodeStage::Ready, vec![]);
@@ -1259,7 +1173,7 @@ mod tests {
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
-            via_interface: None,
+            via_contract: None,
         }];
 
         let plain = format_stack_list(&nodes, &edges, false);

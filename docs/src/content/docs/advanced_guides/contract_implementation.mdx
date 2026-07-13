@@ -1,0 +1,755 @@
+---
+title: Contract implementation
+description: Declare reusable message contracts and let nodes implement them explicitly, so consumers can bind any implementing producer at launch time
+sidebar:
+  order: 5
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A peppy node can either declare its `topics`, `services` and `actions` natively in its own `peppy.json5`, or it can implement a separately-defined **contract**. A contract is a standalone document with its own `peppy_schema: "contract/v1"` that names a set of topics, services and actions. Producers implement the contract; consumers depend on the contract. Both sides cite the contract by `(name, tag)`, and the launcher binds an implementing producer to the consumer at launch time.
+
+Contract implementation is the abstraction you reach for when several nodes provide the same capability. A `realsense_d405` driver, a `zed_2i` driver, and a `mujoco_depth_camera_sim` all expose the same `video_stream` topic. Without contracts, every consumer would have to hard-code one of those producer names. With contracts, the consumer asks for the `depth_camera:v1` contract and the launcher decides which physical driver (or its sim equivalent) fills the slot. For how contract implementation compares with the other ways of wiring nodes together, see [Choosing a communication pattern](/advanced_guides/communication_patterns/).
+
+## The three pieces
+
+### 1. The contract document
+
+A contract lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "contract/v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
+
+```json5
+// depth_camera/peppy.json5 (inside a registered repo)
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "depth_camera",
+    tag: "v1",
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "video_stream",
+        qos_profile: "sensor_data",
+        message_format: {
+          header: { $type: "object", stamp: "time", frame_id: "u32" },
+          encoding: "string",
+          width: "u32",
+          height: "u32",
+          frame: { $type: "array", $items: "u8" },
+        },
+      },
+    ],
+    services: [
+      {
+        name: "video_stream_info",
+        response_message_format: {
+          width: "u32",
+          height: "u32",
+          frames_per_second: "u8",
+          encoding: "string",
+        },
+      },
+    ],
+  },
+}
+```
+
+After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies a `contract/v1` document by its `peppy_schema` field.
+
+### 2. A producer that implements the contract
+
+A producer node claims a contract in `manifest.implements`. Each entry names a contract by `(name, tag)` and mints a `link_id` for the slot. The producer then lists **every** member of the contract as an explicit contract-backed entry in its `interfaces` section, referencing the slot via that `link_id`:
+
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // realsense_d405/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "realsense_d405",
+        tag: "v1",
+        implements: [
+          { name: "depth_camera", tag: "v1", link_id: "cam" },
+        ],
+      },
+      interfaces: {
+        topics: {
+          emits: [
+            { link_id: "cam", name: "video_stream" },
+          ],
+        },
+        services: {
+          exposes: [
+            { link_id: "cam", name: "video_stream_info" },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "realsense_d405"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // realsense_d405/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "realsense_d405",
+        tag: "v1",
+        implements: [
+          { name: "depth_camera", tag: "v1", link_id: "cam" },
+        ],
+      },
+      interfaces: {
+        topics: {
+          emits: [
+            { link_id: "cam", name: "video_stream" },
+          ],
+        },
+        services: {
+          exposes: [
+            { link_id: "cam", name: "video_stream_info" },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/realsense_d405"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+A contract-backed entry is exactly `{link_id, name}`. The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
+
+The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the contract's identity (`emitted_topics/depth_camera/v1/video_stream`).
+
+#### Full coverage is mandatory
+
+The set of contract-backed entries referencing a slot must cover every member of its contract, exactly once, with no extras. A partial implementation is rejected at `node add` / `node sync` with one aggregated diff per broken slot, listing every missing, unknown, duplicated, and wrong-kind entry at once:
+
+```
+contract `uvc_camera:v1` (implements slot `cam`) is not fully implemented: every
+contract member needs exactly one contract-backed entry in `interfaces`
+referencing link_id `cam`; missing: [video_stream_info (service), set_contrast (service)]
+```
+
+This is the point of the explicit-entry design: the node's `peppy.json5` shows what the node actually emits and exposes, and the daemon enforces that the listing is complete.
+
+#### link_id rules
+
+Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings}` link_ids; a collision is rejected at parse time. Direction matters:
+
+- A produced entry (`topics.emits`, `services.exposes`, `actions.exposes`) may only reference a `manifest.implements` slot.
+- A consumed entry (`*.consumes`) may only reference a `depends_on.{nodes,contracts}` slot.
+
+Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready`, `moves`), matching the consumer-side style, rather than echoing the contract name.
+
+A single node can implement multiple contracts (e.g. `depth_camera:v1` and `uvc_camera:v1` under distinct link_ids) and then satisfies any consumer slot that asks for either. A node may implement each contract `(name, tag)` at most once; several instances of one capability are the job of node instances and [pairings](/advanced_guides/pairing), not repeated implements entries. A node may also implement a contract *and* depend on the same contract under a different link_id (the relay shape).
+
+A native entry and a contract-backed entry may share a name on the same producer: the two are namespaced apart in generated modules, schema keys, and wire keys.
+
+### 3. A consumer that depends on the contract
+
+A consumer references a contract through `manifest.depends_on.contracts` rather than `depends_on.nodes`. Every contract dep carries a `link_id` (exactly like a node dep), but its `(name, tag)` names the contract instead of a concrete producer:
+
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            {
+              name: "video_stream",
+              link_id: "rear_camera",
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            {
+              name: "video_stream",
+              link_id: "rear_camera",
+            },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The consumer never names a producer node. It names the contract, and the launcher does the matchmaking.
+
+#### Node dependencies expose native interfaces only
+
+A consumed entry whose `link_id` names a `depends_on.nodes` slot resolves exclusively against the producer's **native** (no-`link_id`) entries. A contract-backed interface is consumable solely through a `depends_on.contracts` slot. The two namespaces cannot overlap, so there is no precedence rule to learn: consuming a name the producer provides only contract-backed fails with an error pointing at the contract dependency to declare instead. This keeps the wire addressing unambiguous: node-dep consumption is always node-addressed, contract-dep consumption is always contract-addressed.
+
+## Binding an implementing producer
+
+The matching predicate at binding time is: *a producer satisfies a contract slot if its `manifest.implements` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that implements `depth_camera:v1` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that implements it.
+
+### Binding a contract slot
+
+A contract slot is bound with `--bind link_id@producer_instance_id` (or a launcher `bindings:` entry) whose value points at an instance whose node implements the requested contract:
+
+```json5
+// peppy_launcher.json5
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "realsense_d405:v1" },
+      instances: [{ instance_id: "depth_cam_inst1" }],
+    },
+    {
+      source: { name: "video_reconstruction:v1" },
+      instances: [{
+        instance_id: "video_rec_1",
+        bindings: { rear_camera: "depth_cam_inst1" },
+      }],
+    },
+  ],
+}
+```
+
+The same example from the command line, launching the producer against an already-running consumer:
+
+```sh
+peppy node run --instance-id=depth_cam_inst1 realsense_d405:v1
+peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 video_reconstruction:v1
+```
+
+If `depth_cam_inst1` were instead an instance of a node with no `implements`, the launcher rejects the binding with a `BindingContractNotImplemented` error citing the expected contract and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `implements: [{ depth_camera, v1, link_id }]` is treated like any other non-implementing node.
+
+### One slot per implementing producer
+
+A slot binds exactly one producer. A consumer that reads from several implementing producers declares one contract slot per producer and binds each separately. That keeps contract slots the natural shape for many-to-one consumption whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+
+```json5
+manifest: {
+  depends_on: {
+    contracts: [
+      { name: "depth_camera", tag: "v1", link_id: "left_cam" },
+      { name: "depth_camera", tag: "v1", link_id: "right_cam" },
+      { name: "depth_camera", tag: "v1", link_id: "overhead_cam" },
+    ],
+  },
+}
+```
+
+Each binding key names its slot's `link_id` directly, and every bound producer must implement the contract. The same routing rules as node deps apply; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
+
+#### Multiple producer instances under the same node identity
+
+A common case is several instances of the same implementing node (say, three `realsense_d405:v1` cameras plugged into the same robot). Each camera gets a slot of its own: the consumer declares one contract dep per camera and consumes each camera's topic through that slot's `link_id`:
+
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "front" },
+            { name: "depth_camera", tag: "v1", link_id: "back_left" },
+            { name: "depth_camera", tag: "v1", link_id: "back_right" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            { name: "video_stream", link_id: "front" },
+            { name: "video_stream", link_id: "back_left" },
+            { name: "video_stream", link_id: "back_right" },
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // video_reconstruction/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "video_reconstruction",
+        tag: "v1",
+        depends_on: {
+          contracts: [
+            { name: "depth_camera", tag: "v1", link_id: "front" },
+            { name: "depth_camera", tag: "v1", link_id: "back_left" },
+            { name: "depth_camera", tag: "v1", link_id: "back_right" },
+          ],
+        },
+      },
+      interfaces: {
+        topics: {
+          consumes: [
+            { name: "video_stream", link_id: "front" },
+            { name: "video_stream", link_id: "back_left" },
+            { name: "video_stream", link_id: "back_right" },
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/video_reconstruction"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Then the launcher binds each slot to its producer instance:
+
+```json5
+// peppy_launcher.json5
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "realsense_d405:v1" },
+      instances: [
+        { instance_id: "rs_front" },
+        { instance_id: "rs_back_left" },
+        { instance_id: "rs_back_right" },
+      ],
+    },
+    {
+      source: { name: "video_reconstruction:v1" },
+      instances: [
+        {
+          instance_id: "recon_1",
+          bindings: {
+            front: "rs_front",
+            back_left: "rs_back_left",
+            back_right: "rs_back_right",
+          },
+        },
+      ],
+    },
+  ],
+}
+```
+
+The three bindings feed the three slots, and the consumer receives the streams through the generated `front_video_stream`, `back_left_video_stream`, and `back_right_video_stream` modules. A fourth camera launched without a slot of its own would reach no consumer at all: only bound producers feed a slot.
+
+Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.) when merging its slots into one aggregate, so the launcher can re-point a slot at a different implementing instance with no consumer code change.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python
+    import asyncio
+
+    from peppylib import ProducerRef
+    from peppygen.consumed_topics import (
+        back_left_video_stream,
+        back_right_video_stream,
+        front_video_stream,
+    )
+
+    frames_by_producer: dict[ProducerRef, Frame] = {}
+
+    async def pump(subscription):
+        async for producer, frame in subscription:
+            # Key by the returned ProducerRef (its full core_node/instance_id
+            # identity); do not compare against a hard-coded name.
+            frames_by_producer[producer] = frame
+            reconstruct(frames_by_producer)
+
+    await asyncio.gather(
+        pump(await front_video_stream.subscribe(node_runner)),
+        pump(await back_left_video_stream.subscribe(node_runner)),
+        pump(await back_right_video_stream.subscribe(node_runner)),
+    )
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust
+    use peppygen::consumed_topics::{
+        back_left_video_stream, back_right_video_stream, front_video_stream,
+    };
+    use peppylib::messaging::ProducerRef;
+    use std::collections::HashMap;
+
+    let mut frames_by_producer: HashMap<ProducerRef, Frame> = HashMap::new();
+
+    let mut front = front_video_stream::subscribe(&node_runner).await?;
+    let mut back_left = back_left_video_stream::subscribe(&node_runner).await?;
+    let mut back_right = back_right_video_stream::subscribe(&node_runner).await?;
+
+    loop {
+        let next = tokio::select! {
+            next = front.next() => next?,
+            next = back_left.next() => next?,
+            next = back_right.next() => next?,
+        };
+        let Some((producer, frame)) = next else { break };
+        // Key by the returned producer identity; do not compare against a
+        // hard-coded name.
+        frames_by_producer.insert(producer, frame);
+        reconstruct(&frames_by_producer);
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The same applies when the producers are a mix of node identities, as long as each implements `depth_camera:v1`: a launcher can bind `front` to a `realsense_d405:v1` instance and `back_left` to a `zed_2i:v1` instance, since the matching predicate is the implements claim, not node identity. The `(core_node, instance_id)` identity returned with each message still pinpoints the exact producer, regardless of which node implementation it came from.
+
+## sha256 pinning
+
+Both sides can optionally pin a specific contract revision by `sha256`:
+
+```json5
+// consumer side
+depends_on: {
+  contracts: [{ name: "depth_camera", tag: "v1", sha256: "aaaa…", link_id: "rear_camera" }],
+}
+
+// producer side
+manifest: {
+  implements: [{ name: "depth_camera", tag: "v1", sha256: "aaaa…", link_id: "cam" }],
+}
+```
+
+Each side independently verifies its pinned `sha256` against the on-disk contract document at cache-resolution time. Peppy refuses to start a node whose pinned contract revision is not in the cache. The two sides are not cross-checked: a producer that pins `sha256` against the cached contract and a consumer that does not pin can still bind, as long as both pass their own checks.
+
+## Worked example: multi-camera reconstruction
+
+Combining the pieces above, a typical setup looks like this:
+
+```
+┌─ depth_camera:v1 (contract)
+│   topics: [video_stream]
+│   services: [video_stream_info]
+│
+├─ realsense_d405:v1          (node)  implements: [{depth_camera, v1, link_id: cam}]
+├─ zed_2i:v1                  (node)  implements: [{depth_camera, v1, link_id: cam}]
+└─ mujoco_depth_camera_sim:v1 (node)  implements: [{depth_camera, v1, link_id: cam}]
+
+video_reconstruction:v1 (consumer)
+   depends_on.contracts: [
+     { depth_camera, v1, link_id: left_cam },
+     { depth_camera, v1, link_id: right_cam },
+     { depth_camera, v1, link_id: overhead_cam },
+   ]
+```
+
+A launcher can wire the three slots to any mix of implementing producers:
+
+```json5
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "realsense_d405:v1" },
+      instances: [
+        { instance_id: "rs_left" },
+        { instance_id: "rs_right" },
+      ],
+    },
+    {
+      source: { name: "zed_2i:v1" },
+      instances: [
+        { instance_id: "zed_overhead" },
+      ],
+    },
+    {
+      source: { name: "video_reconstruction:v1" },
+      instances: [
+        {
+          instance_id: "recon_1",
+          bindings: {
+            left_cam: "rs_left",
+            right_cam: "rs_right",
+            overhead_cam: "zed_overhead",
+          },
+        },
+      ],
+    },
+  ],
+}
+```
+
+Every binding key names its slot's `link_id`, and the launcher checks each target implements `depth_camera:v1`: `rs_left` and `rs_right` do via the `realsense_d405:v1` producer node, and `zed_overhead` does via `zed_2i:v1`. Node identity never matters, only the implements claim.
+
+Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers implement the same contract and the binding works unchanged.
+
+Once the stack is running, these contract-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 contract implementation)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a contract-implementation edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
+
+## Caller-driven cycles are rejected
+
+A contract dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's contracts without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
+
+**Services and actions are different.** Consuming a service or action contract means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through contracts hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each contract dep to its implementing providers via `manifest.implements`, and rejects any service/action cycle it finds.
+
+### An example that is rejected
+
+Two service contracts, one provided by each node:
+
+```json5
+// pose_service/peppy.json5 (contract)
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "pose_service", tag: "v1" },
+  interfaces: {
+    services: [
+      {
+        name: "current_pose",
+        response_message_format: { x: "f64", y: "f64", theta: "f64" },
+      },
+    ],
+  },
+}
+
+// obstacle_service/peppy.json5 (contract)
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "obstacle_service", tag: "v1" },
+  interfaces: {
+    services: [
+      {
+        name: "nearest_obstacle",
+        request_message_format: { x: "f64", y: "f64" },
+        response_message_format: { distance: "f64", bearing: "f64" },
+      },
+    ],
+  },
+}
+```
+
+`localizer` provides `pose_service` and *calls* `obstacle_service`; `mapper` provides `obstacle_service` and *calls* `pose_service`. Each node implements the contract it provides and consumes the service it calls through a `link_id`, exactly like a mutual-topic wiring, except both consumed links are **services**:
+
+<Tabs>
+  <TabItem label="Python">
+    ```json5
+    // localizer/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "localizer",
+        tag: "v1",
+        implements: [
+          { name: "pose_service", tag: "v1", link_id: "pose_out" }, // provides current_pose
+        ],
+        depends_on: {
+          contracts: [
+            { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
+          ],
+        },
+      },
+      interfaces: {
+        services: {
+          exposes: [
+            { link_id: "pose_out", name: "current_pose" },
+          ],
+          consumes: [
+            { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "localizer"],
+      },
+    }
+
+    // mapper/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "mapper",
+        tag: "v1",
+        implements: [
+          { name: "obstacle_service", tag: "v1", link_id: "obstacles_out" }, // provides nearest_obstacle
+        ],
+        depends_on: {
+          contracts: [
+            { name: "pose_service", tag: "v1", link_id: "pose" },
+          ],
+        },
+      },
+      interfaces: {
+        services: {
+          exposes: [
+            { link_id: "obstacles_out", name: "nearest_obstacle" },
+          ],
+          consumes: [
+            { name: "current_pose", link_id: "pose" }, // calls localizer
+          ],
+        },
+      },
+      execution: {
+        language: "python",
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "mapper"],
+      },
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5
+    // localizer/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "localizer",
+        tag: "v1",
+        implements: [
+          { name: "pose_service", tag: "v1", link_id: "pose_out" }, // provides current_pose
+        ],
+        depends_on: {
+          contracts: [
+            { name: "obstacle_service", tag: "v1", link_id: "obstacles" },
+          ],
+        },
+      },
+      interfaces: {
+        services: {
+          exposes: [
+            { link_id: "pose_out", name: "current_pose" },
+          ],
+          consumes: [
+            { name: "nearest_obstacle", link_id: "obstacles" }, // calls mapper
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/localizer"],
+      },
+    }
+
+    // mapper/peppy.json5
+    {
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "mapper",
+        tag: "v1",
+        implements: [
+          { name: "obstacle_service", tag: "v1", link_id: "obstacles_out" }, // provides nearest_obstacle
+        ],
+        depends_on: {
+          contracts: [
+            { name: "pose_service", tag: "v1", link_id: "pose" },
+          ],
+        },
+      },
+      interfaces: {
+        services: {
+          exposes: [
+            { link_id: "obstacles_out", name: "nearest_obstacle" },
+          ],
+          consumes: [
+            { name: "current_pose", link_id: "pose" }, // calls localizer
+          ],
+        },
+      },
+      execution: {
+        language: "rust",
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/mapper"],
+      },
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The two caller-driven edges close a cycle:
+
+```
+localizer ── calls obstacle_service (nearest_obstacle) ──▶ mapper
+    ▲                                                        │
+    └────────── calls pose_service (current_pose) ◀──────────┘
+```
+
+Whichever node is added second is rejected at add time with a `ServiceActionContractCycle` error. The offending node is **not** committed and the stack is left unchanged:
+
+```
+service dependency cycle through contracts involving localizer:v1 -> mapper:v1 (closing dependency `obstacle_service:v1`). service request/response cycles deadlock and are not allowed; only topics may be bidirectional. If these providers are not actually cross-bound, pin the binding or split the contract.
+```
+
+The same rejection applies however you wire it: directly through `depends_on.nodes`, through contracts, through the launcher (`peppy stack launch`), or incrementally across separate commands. Bringing the nodes up one at a time does not relax the rule: the first node is added because its provider is not present yet, but the moment the second node makes both directions resolvable, the daemon's stack-wide check sees the cycle and rejects that second node.
+
+### Two properties of the check
+
+- **It is conservative (type-level).** The check reasons about node identities and their declared `implements`, not about which producer a specific `--bind` resolves to. If a service or action contract has several implementing providers and only one of them closes a cycle, the configuration is still rejected, because *any* implementing provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
+- **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing) relies on.
+
+### How to fix it
+
+If the two nodes genuinely need to exchange data, model it without a caller-driven cycle:
+
+- Make at least one direction a **topic** stream rather than a service or action: passive subscriptions never deadlock. If the two nodes form an exclusive 1:1 relationship, model both directions as a [pairing](/advanced_guides/pairing).
+- Or model the request/response exchange as an [action](/advanced_guides/actions), which is one-directional by construction (the client depends on the server), so it never needs a back-edge.
+
+See [Why topics only?](/advanced_guides/pairing/#why-topics-only) for the full rationale behind the topic/service/action distinction.
+
+## What contract implementation is not
+
+- **Implementation is explicit.** A node that natively emits `video_stream` but does not declare `implements: [{ depth_camera, v1, link_id }]` does **not** satisfy a `depth_camera:v1` contract slot, even if every field matches. The contract is the explicit `implements` claim plus the explicit per-member entries, not structural duck typing.
+- **Node identity is irrelevant.** A producer whose node name and tag coincidentally equal a contract's `(name, tag)` is treated like any other producer: it only satisfies the slot if it declares `implements`. The reverse is also true: a producer named `realsense_d405:v1` satisfies a `depth_camera:v1` slot as soon as it implements the contract.
+- **Implementation does not flow through node deps.** `depends_on.nodes` still names a specific producer node by `(name, tag)` and exposes only that node's *native* interfaces; `depends_on.contracts` is what introduces implementation-based matching and contract-addressed consumption. The two coexist on the same consumer.

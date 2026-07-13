@@ -1,13 +1,14 @@
 use crate::Result;
-use crate::names;
 use crate::services::repo::cache::nodes_repo_cache_path;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use crate::services::repo::source_identity;
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{
     RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -30,7 +31,7 @@ pub async fn listen_for_repo_list(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::REPO_LIST,
+        ServiceId::RepoList.name(),
     )
     .await?;
 

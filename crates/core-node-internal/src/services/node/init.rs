@@ -2,10 +2,11 @@ mod templates;
 
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
-use crate::names;
 use crate::services::response::into_service_response;
 use config::node::Toolchain;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
@@ -26,7 +27,7 @@ pub async fn listen_for_node_init(
         core_node_node,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::NODE_INIT,
+        ServiceId::NodeInit.name(),
     )
     .await?;
 

@@ -1,23 +1,23 @@
-//! Python mirror of `tests/rust/actions_conforms_to.rs`.
+//! Python mirror of `tests/rust/actions_implements.rs`.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    ActionServiceEndpoint, ExposedAction, MessageFormat, PeppygenLanguage, QoSProfile, SchemaType,
-    TypeToken,
+    ActionServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, QoSProfile,
+    SchemaType, TypeToken,
 };
 use generator::{
-    CrateDeployMode, DeploymentInterface, InterfaceOrigin, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
 use tempfile::TempDir;
 
-fn make_action(marker: &str) -> ExposedAction {
+fn make_action(marker: &str) -> NativeExposedAction {
     let mut req: IndexMap<String, SchemaType> = IndexMap::new();
     req.insert(marker.to_string(), SchemaType::Type(TypeToken::I32));
     let mut resp: IndexMap<String, SchemaType> = IndexMap::new();
     resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    ExposedAction {
+    NativeExposedAction {
         name: "move_arm".to_string(),
         goal_service: Some(ActionServiceEndpoint {
             request_message_format: Some(MessageFormat(req)),
@@ -29,12 +29,12 @@ fn make_action(marker: &str) -> ExposedAction {
     }
 }
 
-fn conformed(name: &str, tag: &str, action: ExposedAction) -> DeploymentInterface {
+fn contract_backed(name: &str, tag: &str, action: NativeExposedAction) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedAction {
         action,
-        origin: Some(InterfaceOrigin {
-            iface_name: name.to_string(),
-            iface_tag: tag.to_string(),
+        origin: Some(ContractOrigin {
+            contract_name: name.to_string(),
+            contract_tag: tag.to_string(),
         }),
     })
 }
@@ -66,14 +66,14 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 #[test]
-fn nests_conformed_actions_under_iface_name_and_tag() {
+fn nests_contract_backed_actions_under_contract_name_and_tag() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        conformed("arm", "v1", make_action("arm_v1_marker")),
-        conformed("arm", "v2", make_action("arm_v2_marker")),
+        contract_backed("arm", "v1", make_action("arm_v1_marker")),
+        contract_backed("arm", "v2", make_action("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -113,18 +113,18 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
-        arm_v1_src.contains("peppylib.SenderTarget.interface(\"arm\", \"v1\")"),
-        "arm v1 leaf should pass `SenderTarget.interface(\"arm\", \"v1\")`:\n{arm_v1_src}",
+        arm_v1_src.contains("peppylib.SenderTarget.contract(\"arm\", \"v1\")"),
+        "arm v1 leaf should pass `SenderTarget.contract(\"arm\", \"v1\")`:\n{arm_v1_src}",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
-        arm_v2_src.contains("peppylib.SenderTarget.interface(\"arm\", \"v2\")"),
-        "arm v2 leaf should pass `SenderTarget.interface(\"arm\", \"v2\")`:\n{arm_v2_src}",
+        arm_v2_src.contains("peppylib.SenderTarget.contract(\"arm\", \"v2\")"),
+        "arm v2 leaf should pass `SenderTarget.contract(\"arm\", \"v2\")`:\n{arm_v2_src}",
     );
 
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
-    // independent of the calling file's depth. Native + conformed actions
+    // independent of the calling file's depth. Native + contract-backed actions
     // must all emit the same loader form.
     let expected_loader = "files(\"peppygen\") / \"capnp\" /";
     for (label, src) in [

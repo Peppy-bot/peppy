@@ -57,6 +57,64 @@ pub fn apply_mode(
     config
 }
 
+/// Consumer-side variant of [`STUB_NODE_CONFIG`]: declares one
+/// `depends_on.nodes` slot so the runtime resolves the slot's bound
+/// producers from the boot config's `slot_bindings` (an undeclared slot
+/// would stay silent). `link_id` must match the `DependencyContext`
+/// link_id the test's generator calls use.
+pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
+    consumer_stub_node_config_with_execution(
+        dep_name,
+        dep_tag,
+        link_id,
+        r#"language: "rust",
+    run_cmd: ["./target/release/generated_node"]"#,
+    )
+}
+
+/// Shared manifest template behind [`consumer_stub_node_config`] and
+/// [`python_consumer_stub_node_config`]; `execution` is the body of the
+/// `execution` block, the only per-toolchain part.
+fn consumer_stub_node_config_with_execution(
+    dep_name: &str,
+    dep_tag: &str,
+    link_id: &str,
+    execution: &str,
+) -> String {
+    format!(
+        r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{
+    name: "generated_node",
+    tag: "v1",
+    depends_on: {{
+      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}" }}]
+    }}
+  }},
+  execution: {{
+    {execution}
+  }}
+}}
+"#
+    )
+}
+
+/// Binds `link_id` to a single producer on the runtime config, exactly
+/// what the launcher's binding validator materializes for
+/// `--bind link_id@instance`.
+pub fn bind_slot(
+    mut config: config::runtime::RuntimeConfig,
+    link_id: &str,
+    producer_core_node: &str,
+    producer_instance_id: &str,
+) -> config::runtime::RuntimeConfig {
+    config.node_instance.slot_bindings.insert(
+        link_id.to_string(),
+        config::runtime::ProducerRef::new(producer_core_node, producer_instance_id),
+    );
+    config
+}
+
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
@@ -890,6 +948,17 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   }
 }
 "#;
+
+/// Python-toolchain variant of [`consumer_stub_node_config`].
+pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
+    consumer_stub_node_config_with_execution(
+        dep_name,
+        dep_tag,
+        link_id,
+        r#"language: "python",
+    run_cmd: ["uv", "run", "python", "main.py"]"#,
+    )
+}
 
 /// Initialises a Python user-node project at `to_dir`.
 ///

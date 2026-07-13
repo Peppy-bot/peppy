@@ -10,7 +10,6 @@ use self::orchestrate::{
 };
 use self::resolve::{parse_launcher_config, resolve_deployments, resolve_framework};
 use crate::Result;
-use crate::names;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -22,10 +21,12 @@ use chrono::Local;
 use config::apply_parameter_defaults;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
     NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, PairTarget,
 };
+use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::Deployment;
 use futures::FutureExt;
@@ -94,7 +95,7 @@ pub async fn listen_for_stack_launch(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::STACK_LAUNCH_ACTION,
+        ActionId::StackLaunch.name(),
         true,
     )
     .await?;
@@ -315,16 +316,32 @@ async fn prepare_container_host_mounts(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
 ) -> std::result::Result<(), LaunchResult> {
-    let mount_sources = match collect_container_mount_sources(ordered, planned_by_key) {
+    let mut mount_sources = match collect_container_mount_sources(ordered, planned_by_key) {
         Ok(paths) => paths,
         Err(reason) => return Err(fail_and_clear_stack(ctx, reason).await),
     };
-    if mount_sources.is_empty() {
-        return Ok(());
-    }
 
     if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
         return Err(fail_and_clear_stack(ctx, reason).await);
+    }
+
+    // The peppy data root hosts the container build working dirs (`tmp/`),
+    // built images (`built_nodes/`), and instance dirs. When it sits outside
+    // `$HOME` (dev roots at `$TMPDIR/.peppy`) the Lima guest cannot see it,
+    // so register it here whenever the stack has container nodes. Doing it in
+    // this step front-loads the one-time VM restart a new mount triggers,
+    // instead of paying it mid-build. Added after `ensure_launch_bind_sources`
+    // on purpose: the root always exists and must not hit the auto-create
+    // warning path. `external_lima_mount_sources` filters it out on Linux and
+    // for home-relative roots (prod).
+    if stack_has_container_nodes(ordered, planned_by_key) {
+        match ctx.peppy_dirs.root().to_str() {
+            Some(root) => mount_sources.push(root.to_owned()),
+            None => {
+                let reason = "peppy root path is not valid UTF-8".to_string();
+                return Err(fail_and_clear_stack(ctx, reason).await);
+            }
+        }
     }
 
     let lima_mount_sources = external_lima_mount_sources(&mount_sources);
@@ -359,6 +376,17 @@ async fn prepare_container_host_mounts(
     }
 
     Ok(())
+}
+
+fn stack_has_container_nodes(
+    ordered: &[NodeKey],
+    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+) -> bool {
+    ordered.iter().any(|key| {
+        planned_by_key
+            .get(key)
+            .is_some_and(|item| item.config.execution.container.is_some())
+    })
 }
 
 fn collect_container_mount_sources(
@@ -485,10 +513,7 @@ async fn start_node_instances(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
-    resolved_slot_bindings: &std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, config::runtime::SlotBinding>,
-    >,
+    resolved_slot_bindings: &std::collections::BTreeMap<String, config::runtime::SlotBindings>,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;

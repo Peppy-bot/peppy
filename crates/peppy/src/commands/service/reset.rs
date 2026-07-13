@@ -7,7 +7,7 @@ use tracing::info;
 use crate::commands::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use peppylib::core_node::transport::poll_node_reset;
+use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -27,7 +27,7 @@ async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
         conn.target_core_node
     );
 
-    let response = poll_node_reset(
+    let response = poll(
         &NodeResetRequest::new(),
         conn.messenger,
         &conn.core_node_name,

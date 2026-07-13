@@ -11,7 +11,7 @@ use common::{
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config_test_support as test_helpers;
-use core_node::names;
+use core_node_api::ActionId;
 use core_node_api::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
@@ -372,5 +372,5 @@ mod replacement_and_lifecycle;
 #[path = "listen_for_node_add/concurrency_and_force.rs"]
 mod concurrency_and_force;
 
-#[path = "listen_for_node_add/conforms_to.rs"]
-mod conforms_to;
+#[path = "listen_for_node_add/implements.rs"]
+mod implements;

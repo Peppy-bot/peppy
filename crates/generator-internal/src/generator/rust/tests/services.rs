@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ConsumedService, ExposedService, PeppygenLanguage};
+use config::node::{ConsumedService, NativeExposedService, PeppygenLanguage};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -91,7 +91,7 @@ const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 /// In the case of a service, an "exposed" service is an entity that accept incoming messages
 #[test]
 fn expose_service() {
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service, None).unwrap();
@@ -156,7 +156,7 @@ fn expose_service() {
 
 #[test]
 fn expose_service_without_request_body() {
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+    let service: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service, None).unwrap();
@@ -197,8 +197,8 @@ fn expose_service_without_request_body() {
 
 #[test]
 fn expose_two_services() {
-    let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+    let service1: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service2: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service1, None).unwrap();
@@ -236,7 +236,7 @@ fn consumed_service() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -270,11 +270,11 @@ fn consumed_service() {
     // Request struct
     assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
-    // Poll function signature. The fixture's `DependencyContext::native`
-    // defaults to `WireLinkId::wildcard()` (no manifest link_id), so the
-    // poll call splices `peppylib::messaging::ServiceTarget::Any` at the
-    // single target slot and the user-facing `target_instance_id` parameter
-    // is gone. `target_core_node` is never exposed in the generated API.
+    // Poll function signature. The slot's one bound producer is spliced
+    // inline at the single target slot (an infallible lookup: launch and
+    // startup guarantee exactly one producer per declared slot); the
+    // user-facing `target_instance_id` parameter is gone.
+    // `target_core_node` is never exposed in the generated API.
     assert_contains_all(
         &rendered,
         &["pub async fn poll(", "-> crate::Result<Response>"],
@@ -289,43 +289,43 @@ fn consumed_service() {
     );
 
     // Request serialization and messenger integration, including the
-    // wildcard `ServiceTarget::Any` spliced at the poll call's single
-    // target slot.
+    // resolved producer spliced at the poll call's single target slot.
     assert_contains_all(
         &rendered,
         &[
             "root.set_enable(enable);",
+            ".bound_producer(\"uvc_camera\")",
             "peppylib::ServiceMessenger::poll(",
-            "peppylib::messaging::ServiceTarget::Any,",
+            "peppylib::messaging::ServiceTarget::Producer(",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );
 }
 
-/// A consumed service pulled via a `conforms_to` interface (or a
-/// `depends_on.interfaces` dependency) addresses the producer as an
-/// *interface* rather than a node: the `to_target` becomes
-/// `SenderTarget::interface(iface_name, iface_tag)` instead of
-/// `SenderTarget::node(...)`. This is the consumer-side complement to the
-/// producer-side `conforms_to` tests, exercising the
-/// `DependencyContext::interface` / `::conformed` constructors that only the
-/// external consumer drives in production.
+/// A consumed service pulled via a `depends_on.contracts` dependency
+/// addresses the producer as a *contract* rather than a node: the
+/// `to_target` becomes `SenderTarget::contract(contract_name, contract_tag)`
+/// instead of `SenderTarget::node(...)`. This is the consumer-side
+/// complement to the producer-side implements tests, exercising the
+/// `DependencyContext::contract` constructor that only the external
+/// consumer drives in production. (Node dependencies expose native
+/// interfaces only, so there is no node-dep contract-addressed shape.)
 #[test]
-fn consumed_service_via_interface_origin_targets_interface() {
+fn consumed_service_via_contract_origin_targets_contract() {
     let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
-    // `::interface`: no producer node; the interface (name, tag) carries identity.
+    // `::contract`: no producer node; the contract (name, tag) carries identity.
     let mut generator = RustGenerator::new();
     generator
         .add_consumed_service(
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::interface("camera_iface", "v2"),
+            &crate::DependencyContext::contract("camera_contract", "v2", "camera_contract"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -334,43 +334,12 @@ fn consumed_service_via_interface_origin_targets_interface() {
         .expect("artifact is present");
     assert_contains_all(
         &rendered,
-        &["SenderTarget::interface(", "\"camera_iface\"", "\"v2\""],
+        &["SenderTarget::contract(", "\"camera_contract\"", "\"v2\""],
     );
     assert_rendered!(
         !rendered.contains("SenderTarget::node"),
         rendered,
-        "an interface-origin dep must address the producer as an interface, not a node",
-    );
-
-    // `::conformed`, a real producer node exposing the service via `conforms_to`:
-    // the wire target is still the interface, while NODE_NAME stays the producer.
-    let mut generator = RustGenerator::new();
-    generator
-        .add_consumed_service(
-            &service,
-            &request_format,
-            &response_format,
-            &crate::DependencyContext::conformed(
-                "uvc_camera",
-                "v1",
-                crate::InterfaceOrigin {
-                    iface_name: "camera_iface".to_string(),
-                    iface_tag: "v2".to_string(),
-                },
-            ),
-        )
-        .unwrap();
-    let rendered = render_artifacts(generator.into_artifacts())
-        .into_iter()
-        .next()
-        .expect("artifact is present");
-    assert_contains_all(
-        &rendered,
-        &[
-            "SenderTarget::interface(",
-            "\"camera_iface\"",
-            "const NODE_NAME: &str = \"uvc_camera\";",
-        ],
+        "a contract-origin dep must address the producer as a contract, not a node",
     );
 }
 
@@ -394,7 +363,7 @@ fn consumed_two_services_same_node() {
             &service1,
             &request_format1,
             &response_format1,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -402,7 +371,7 @@ fn consumed_two_services_same_node() {
             &service2,
             &empty_format,
             &response_format2,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -446,7 +415,7 @@ fn consumed_service_without_response_payload() {
             &service,
             &empty_format,
             &empty_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .expect("generator should allow services without response format");
 
@@ -476,7 +445,7 @@ fn consumed_service_rejects_optional_scalar_response_field() {
             &service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap_err();
 
@@ -498,7 +467,8 @@ fn consumed_service_rejects_optional_scalar_response_field() {
 #[test]
 fn clippy_single_exposed_service_without_request_body() {
     let temp_dir = TempDir::new().unwrap();
-    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+    let exposed_service: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
@@ -532,14 +502,14 @@ fn clippy_single_exposed_service_without_request_body() {
         .add_consumed_action(
             &consumed_action1,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1"),
+            &crate::DependencyContext::native("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &action_messages,
-            &crate::DependencyContext::native("controller", "v1"),
+            &crate::DependencyContext::native("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -575,8 +545,10 @@ fn clippy_single_exposed_service_without_request_body() {
 #[test]
 fn compile_lib_with_exposed_and_consumed_services() {
     let temp_dir = TempDir::new().unwrap();
-    let exposed_service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+    let exposed_service1: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service2: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let consumed_service1: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
@@ -606,7 +578,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service1,
             &consumed_service_request1,
             &consumed_service_response1,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -614,7 +586,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service2,
             &empty_format,
             &consumed_service_response2,
-            &crate::DependencyContext::native("uvc_camera", "v1"),
+            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -697,7 +669,7 @@ fn clippy_consumed_service_empty_request_format() {
             &consumed_service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native("sensor", "v1"),
+            &crate::DependencyContext::native("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -736,7 +708,7 @@ fn clippy_consumed_service_empty_response_format() {
             &consumed_service,
             &request_format,
             &empty_format,
-            &crate::DependencyContext::native("sensor", "v1"),
+            &crate::DependencyContext::native("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

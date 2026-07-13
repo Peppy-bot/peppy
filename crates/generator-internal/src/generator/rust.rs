@@ -15,8 +15,8 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, ConsumedActionMessage, DependencyContext, InterfaceArtifact, InterfaceKind,
-    InterfaceOrigin, LanguageGenerator, goal_action_response_format, non_empty_message_format,
+    CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
+    InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
     scoped_schema_key,
 };
 use crate::error::{Error, Result};
@@ -25,8 +25,8 @@ use crate::generator::naming::{
     sanitize_component, sanitize_node_display_name, to_camel_case,
 };
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
-    MessageFormat,
+    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    NativeExposedAction, NativeExposedService,
 };
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use indexmap::IndexMap;
@@ -75,7 +75,7 @@ impl RustGenerator {
     fn make_artifact(
         &self,
         leaf_name: &str,
-        origin: Option<&InterfaceOrigin>,
+        origin: Option<&ContractOrigin>,
         kind: InterfaceKind,
         code_output: String,
     ) -> InterfaceArtifact {
@@ -284,14 +284,16 @@ impl RustGenerator {
             }
         };
 
-        // The `to_target` matches the producer's emission shape: address the
-        // dependency as an Interface if it exposes the action via
-        // `conforms_to`, otherwise as its native Node identity. The `target`
-        // (the producer's full `(core_node, instance_id)`) is resolved at
-        // runtime from the consumer's binding map; pinned slots address it
-        // directly and skip discovery.
+        // The `to_target` matches the producer's emission shape: a dependency
+        // with a `ContractOrigin` is addressed as
+        // `SenderTarget::contract(...)`, otherwise as its native node
+        // identity. The `target` (the producer's full
+        // `(core_node, instance_id)`) is the slot's one bound producer,
+        // resolved at runtime from the consumer's binding map and addressed
+        // directly with no discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let target_expr = crate::generator::rust::topics::consumed_target_expression(dependency);
+        let bound_producer_expr =
+            crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
         let method_tokens = quote! {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
@@ -307,7 +309,7 @@ impl RustGenerator {
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
                     TARGET_ACTION_NAME,
-                    #target_expr,
+                    Some(#bound_producer_expr),
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -638,8 +640,8 @@ impl SchemaInfo {
 impl LanguageGenerator for RustGenerator {
     fn add_emitted_topic(
         &mut self,
-        topic: &EmittedTopic,
-        origin: Option<&InterfaceOrigin>,
+        topic: &NativeEmittedTopic,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
@@ -689,8 +691,8 @@ impl LanguageGenerator for RustGenerator {
 
     fn add_exposed_service(
         &mut self,
-        service: &ExposedService,
-        origin: Option<&InterfaceOrigin>,
+        service: &NativeExposedService,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
@@ -809,8 +811,8 @@ impl LanguageGenerator for RustGenerator {
 
     fn add_exposed_action(
         &mut self,
-        action: &ExposedAction,
-        origin: Option<&InterfaceOrigin>,
+        action: &NativeExposedAction,
+        origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
@@ -1253,15 +1255,15 @@ impl LanguageGenerator for RustGenerator {
         };
 
         // The `to_target` matches the producer's emission shape: if the
-        // dependency exposes the service via `conforms_to`, address it as the
+        // dependency exposes the service via an implemented contract, address it as the
         // interface; otherwise as the dependency's node identity. The
-        // `target` (the producer scope, resolved at runtime from the
-        // consumer's binding map) pins the full `(core_node, instance_id)`
-        // for bound slots (no discovery) and falls back to
-        // `ServiceTarget::Any` otherwise.
+        // `target` (the producer's full `(core_node, instance_id)`,
+        // resolved at runtime from the consumer's binding map) is the
+        // slot's one bound producer, addressed directly with no
+        // discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let target_expr =
-            crate::generator::rust::topics::consumed_service_target_expression(dependency);
+        let bound_producer_expr =
+            crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
@@ -1269,7 +1271,7 @@ impl LanguageGenerator for RustGenerator {
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
                 SERVICE_NAME,
-                #target_expr,
+                peppylib::messaging::ServiceTarget::Producer(#bound_producer_expr),
                 request_payload,
                 timeout,
             )
@@ -1400,7 +1402,7 @@ impl LanguageGenerator for RustGenerator {
 
     fn add_peer_emitted_topic(
         &mut self,
-        topic: &EmittedTopic,
+        topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
         let topic_component = sanitize_component(topic.name.as_str());
@@ -1453,7 +1455,7 @@ impl LanguageGenerator for RustGenerator {
 
     fn add_peer_consumed_topic(
         &mut self,
-        topic: &EmittedTopic,
+        topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
         let topic_component = sanitize_component(topic.name.as_str());

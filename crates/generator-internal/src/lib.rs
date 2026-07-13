@@ -15,8 +15,8 @@
 //!
 //! # Value objects the caller builds
 //! [`DeploymentInterface`] wraps an [`InterfaceVariant`]; consumed variants carry a
-//! [`DependencyContext`] (`native` / `conformed` / `interface`, plus `with_link_id` taking a
-//! [`WireLinkId`]). [`InterfaceOrigin`] tags artifacts pulled in via `conforms_to`.
+//! [`DependencyContext`] (`native` / `contract`, each carrying the consumer
+//! manifest `link_id`). [`ContractOrigin`] tags contract-backed artifacts.
 //! [`ConsumedActionMessage`] bundles an action's goal/feedback/result formats. These types form
 //! the deliberate, semver-relevant assembly contract between this crate and its consumer: their
 //! public fields are the construction protocol, so changes to them are breaking changes.
@@ -38,6 +38,6 @@ pub use generator::generate_peppygen_lib;
 pub use generator::python::PythonGenerator;
 pub use generator::rust::RustGenerator;
 pub use generator::types::{
-    ConsumedActionMessage, DependencyContext, DeploymentInterface, InterfaceOrigin,
-    InterfaceVariant, LanguageGenerator, PeerContext, WireLinkId,
+    ConsumedActionMessage, ContractOrigin, DependencyContext, DeploymentInterface,
+    InterfaceVariant, LanguageGenerator, PeerContext,
 };

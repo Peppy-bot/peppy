@@ -12,7 +12,7 @@
 use config::consts::NODE_CONFIG_FILE;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
-use daemon_config::interface::PeppyInterfaceParser;
+use daemon_config::contract::PeppyContractParser;
 use docs_integration_tests::workspace_root;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ fn find_node_configs(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The schema tag a config declares, read without parsing the whole document.
-/// Snippet `peppy.json5` files mix node and interface schemas, so the test must
+/// Snippet `peppy.json5` files mix node and contract schemas, so the test must
 /// peek the tag and dispatch each file to the parser that matches it.
 #[derive(Deserialize)]
 struct SchemaPeek {
@@ -43,7 +43,7 @@ struct SchemaPeek {
 }
 
 /// Parse `path` with the typed parser matching its declared `peppy_schema` and
-/// assert it succeeds. This keeps interface snippets covered by the same
+/// assert it succeeds. This keeps contract snippets covered by the same
 /// schema-sync guarantee as node snippets instead of skipping them.
 fn assert_parses_with_matching_schema(path: &Path) {
     let content = std::fs::read_to_string(path)
@@ -61,11 +61,11 @@ fn assert_parses_with_matching_schema(path: &Path) {
                 result.unwrap_err()
             );
         }
-        PeppySchema::InterfaceV1 => {
-            let result = PeppyInterfaceParser::from_path(path);
+        PeppySchema::ContractV1 => {
+            let result = PeppyContractParser::from_path(path);
             assert!(
                 result.is_ok(),
-                "failed to parse interface {}: {:?}",
+                "failed to parse contract {}: {:?}",
                 path.display(),
                 result.unwrap_err()
             );
@@ -80,7 +80,7 @@ fn assert_parses_with_matching_schema(path: &Path) {
             );
         }
         PeppySchema::LauncherV1 => panic!(
-            "unexpected launcher/v1 among node/interface/pairing snippets: {}",
+            "unexpected launcher/v1 among node/contract/pairing snippets: {}",
             path.display()
         ),
     }

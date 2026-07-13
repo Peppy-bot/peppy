@@ -1,7 +1,8 @@
 use crate::Result;
-use crate::names;
 use crate::services::response::into_service_response;
+use core_node_api::ServiceId;
 use core_node_api::encoding::{HealthRequest, HealthResponse};
+use core_node_api::names;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -26,7 +27,7 @@ pub async fn listen_for_health(
         core_node_name,
         instance_id,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        names::HEALTH,
+        ServiceId::Health.name(),
     )
     .await?;
 

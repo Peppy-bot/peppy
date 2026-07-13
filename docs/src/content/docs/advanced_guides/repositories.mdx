@@ -5,18 +5,18 @@ sidebar:
   order: 8
 ---
 
-Repositories tell peppy where to look for nodes, launchers, interfaces, and pairings. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
+Repositories tell peppy where to look for nodes, launchers, contracts, and pairings. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
 
 - **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
-- **Interfaces**, identified by content: every `.json5` file whose body declares `peppy_schema: "interface/v1"` is treated as an interface, regardless of its filename. An interface is a reusable contract of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes reference interfaces by `name:tag` to declare conformance.
+- **Contracts**, identified by content: every `.json5` file whose body declares `peppy_schema: "contract/v1"` is treated as a contract, regardless of its filename. A contract is a reusable declaration of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes claim contracts by `name:tag` in `manifest.implements`.
 - **Pairings**, identified by content: every `.json5` file whose body declares `peppy_schema: "pairing/v1"` is treated as a pairing, regardless of its filename. A pairing is a two-role, topics-only contract that two node instances pair 1:1 over, keyed by the `name:tag` declared in its manifest; see [Pairing](/advanced_guides/pairing/).
 
 Out of the box, four repositories are configured:
 
 - **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`): a curated collection of ready-to-use nodes.
 - **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`): community launch files that compose nodes from the hubs.
-- **`interfaces-hub`** (`https://github.com/Peppy-bot/interfaces-hub.git`, tracked on `main`): shared interface definitions that nodes reference by `name:tag` to declare conformance.
+- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
 - **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`): nodes specific to the OpenArm01 robot.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.
@@ -31,7 +31,7 @@ Repository configuration lives in `~/.peppy/conf/`, and the indexes built by `pe
 | `conf/excluded_repositories.json5` | Repositories (or subdirectories) to skip |
 | `cache/nodes.json5` | Index of nodes discovered across repositories |
 | `cache/launchers.json5` | Index of launch files discovered across repositories |
-| `cache/interfaces.json5` | Index of interface definitions discovered across repositories |
+| `cache/contracts.json5` | Index of contract definitions discovered across repositories |
 | `cache/pairings.json5` | Index of pairing definitions discovered across repositories |
 
 The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), a `type`, and source-specific fields:
@@ -49,7 +49,7 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `fs` | `path` | A local directory. Peppy recursively walks it, indexing every `peppy.json5` (node) and every `.json5` file whose body declares `peppy_schema: "launcher/v1"` (launcher), `peppy_schema: "interface/v1"` (interface), or `peppy_schema: "pairing/v1"` (pairing). |
+| `fs` | `path` | A local directory. Peppy recursively walks it, indexing every `peppy.json5` (node) and every `.json5` file whose body declares `peppy_schema: "launcher/v1"` (launcher), `peppy_schema: "contract/v1"` (contract), or `peppy_schema: "pairing/v1"` (pairing). |
 | `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and scans it the same way as an `fs` source. Use `ref` to pin a branch, tag, or commit. |
 | `url` | `url` | An HTTP endpoint (not yet implemented). |
 
@@ -77,16 +77,16 @@ Shows all discovered nodes grouped by the repository that provides them. Each gr
 peppy repo refresh
 ```
 
-Re-scans all configured repositories and rebuilds the node, launcher, interface, and pairing indexes. `peppy repo update` is accepted as an alias. During refresh, peppy:
+Re-scans all configured repositories and rebuilds the node, launcher, contract, and pairing indexes. `peppy repo update` is accepted as an alias. During refresh, peppy:
 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Walks local directories and shallow-clones git repositories.
-- Records every `peppy.json5` as a node, every `.json5` file whose body declares `peppy_schema: "launcher/v1"` as a launcher (file stem becomes the launcher name), every `.json5` file whose body declares `peppy_schema: "interface/v1"` as an interface (keyed by the `name:tag` in its manifest), and every `.json5` file whose body declares `peppy_schema: "pairing/v1"` as a pairing (also keyed by its manifest `name:tag`).
-- Reports each discovered node, launcher, interface, pairing, and excluded repository in real time.
-- Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/interfaces.json5`, and `~/.peppy/cache/pairings.json5`.
+- Records every `peppy.json5` as a node, every `.json5` file whose body declares `peppy_schema: "launcher/v1"` as a launcher (file stem becomes the launcher name), every `.json5` file whose body declares `peppy_schema: "contract/v1"` as a contract (keyed by the `name:tag` in its manifest), and every `.json5` file whose body declares `peppy_schema: "pairing/v1"` as a pairing (also keyed by its manifest `name:tag`).
+- Reports each discovered node, launcher, contract, pairing, and excluded repository in real time.
+- Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, and `~/.peppy/cache/pairings.json5`.
 
-On completion it prints a summary, for example `Repository refresh complete. 12 node(s), 3 launcher(s), 5 interface(s), 2 pairing(s) found.`
+On completion it prints a summary, for example `Repository refresh complete. 12 node(s), 3 launcher(s), 5 contract(s), 2 pairing(s) found.`
 
 When multiple repositories provide the same `name:tag` pair, the repository with the lower `id` takes priority. The duplicate is still recorded and shown in `repo list` but does not override the primary source.
 

@@ -27,7 +27,7 @@ use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
 use latency_report::format::{fmt_delta, fmt_duration};
 use peppylib::ActionMessenger;
-use peppylib::core_node::transport::send_stack_benchmark;
+use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
@@ -83,7 +83,7 @@ async fn benchmark_async(
         conn.target_core_node, effective_samples, warmup
     );
 
-    let mut action_handle = send_stack_benchmark(
+    let mut action_handle = send_goal(
         &goal,
         conn.messenger,
         &conn.core_node_name,
@@ -218,13 +218,13 @@ const NOTE_WRAP_COLS: usize = 18;
 /// The `edge` cell, tinted with the shared `stack` palette and wrapped onto
 /// three lines so the (often long) node identities never force a wide column:
 /// the consumer, then the kind arrow + producer (`➔` for an interface-
-/// conformance edge, `→` for a direct one), then the consumed interface indented
+/// implementation edge, `→` for a direct one), then the consumed interface indented
 /// beneath the producer. The column then only needs to fit the widest single
 /// node label rather than the whole `from → to/iface` string. Node labels are
 /// cyan, as `stack list` colors them. Mirrors [`InterfaceLatency::edge_label`]
 /// but colored and wrapped; the plain `edge_label` still backs the baseline key.
 fn edge_cell(row: &InterfaceLatency, colorize: bool) -> String {
-    let arrow = if row.via_interface.is_some() {
+    let arrow = if row.via_contract.is_some() {
         "➔"
     } else {
         "→"
@@ -354,7 +354,7 @@ fn benchmark_legend(colorize: bool) -> String {
         "\
 Legend:
   edge       →  direct dependency (depends_on.nodes)
-             ➔  resolved through interface conformance (the note names the interface)
+             ➔  resolved through contract implementation (the note names the contract)
   synthetic  round-trips on a single clock; the producer's framework replies and
              handlers never run, with payloads sized from the message schema
              {svc}  round-trip to the service
@@ -369,7 +369,7 @@ Legend:
   clock      same-host  exact (producer shares this host's clock)
              corrected  cross-host, adjusted via the producer's measured offset
              flagged    implausible delta, suppressed (deploy PTP/NTP)
-  note       the interface (➔ edges) and, for probe rows, the measured payload
+  note       the contract (➔ edges) and, for probe rows, the measured payload
              sizes (request → response; `≥` = schema lower bound)
   Δp50       median vs the previous run on this machine
 
@@ -403,12 +403,12 @@ fn display_rows(
                     fmt_duration(Duration::from_nanos(ns))
                 }
             };
-            // The `➔` arrow + legend already say "via interface conformance",
-            // so the note only names the interface (tinted like the labels it
+            // The `➔` arrow + legend already say "via contract implementation",
+            // so the note only names the contract (tinted like the labels it
             // relates), followed by any measurement diagnostic / payload summary.
             // Wrapped so a long note doesn't widen the whole table.
             let iface = row
-                .via_interface
+                .via_contract
                 .as_deref()
                 .map(|i| paint(colorize, NODE_COLOR, i));
             let note = match (iface, &row.note) {
@@ -465,7 +465,7 @@ mod tests {
             to_tag: "v1".to_string(),
             interface_name: interface.to_string(),
             link_id: link_id.to_string(),
-            via_interface: via.map(str::to_string),
+            via_contract: via.map(str::to_string),
             kind,
             measurement,
             clock_confidence: clock,
@@ -479,8 +479,8 @@ mod tests {
     }
 
     /// Rows mirroring the real stack: a direct action edge, an interface-
-    /// conformance topic edge measured both ways (node-probe + delivery), and an
-    /// interface-conformance service-probe edge whose payload note is long
+    /// contract topic edge measured both ways (node-probe + delivery), and an
+    /// contract-implementation service-probe edge whose payload note is long
     /// enough to exercise wrapping.
     fn sample_rows() -> Vec<InterfaceLatency> {
         vec![
@@ -547,10 +547,10 @@ mod tests {
             direct,
             "my_python_robot_backbone:v1\n→ my_python_robot_arm:v1\n  /move_arm"
         );
-        // Interface-conformance edge uses the heavy arrow.
-        let conformance = edge_cell(&rows[1], false);
+        // Contract-implementation edge uses the heavy arrow.
+        let contract_edge = edge_cell(&rows[1], false);
         assert_eq!(
-            conformance,
+            contract_edge,
             "uvc_camera_video_reconstruction:v1\n➔ uvc_camera_python_mock:v1\n  /video_stream"
         );
     }

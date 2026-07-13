@@ -11,7 +11,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
-use peppylib::core_node::transport::send_repo_refresh;
+use peppylib::core_node::transport::send_goal;
 
 const IDLE_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 3600;
@@ -23,7 +23,7 @@ pub(super) fn repo_refresh(ctx: &Arc<AppContext>) -> Result<()> {
 async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let mut action_handle = send_repo_refresh(
+    let mut action_handle = send_goal(
         &RepoRefreshGoal,
         conn.messenger,
         &conn.core_node_name,
@@ -84,10 +84,10 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     }
 
     info!(
-        "Repository refresh complete. {} node(s), {} launcher(s), {} interface(s), {} pairing(s) found.",
+        "Repository refresh complete. {} node(s), {} launcher(s), {} contract(s), {} pairing(s) found.",
         result.total_nodes_found,
         result.total_launchers_found,
-        result.total_interfaces_found,
+        result.total_contracts_found,
         result.total_pairings_found
     );
     Ok(())

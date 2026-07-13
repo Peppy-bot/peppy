@@ -1,5 +1,5 @@
 use crate::error::StructuredError;
-use crate::internal::interface::validate_named_items;
+use crate::internal::contract::validate_named_items;
 use config::{AnyType, consts::DEFAULT_LINK_ID_SENTINEL, runtime::Name, schema::PeppySchema};
 use serde::{
     Deserialize, Serialize,
@@ -166,24 +166,79 @@ pub struct DeploymentInstance {
 }
 
 /// Each key is a `link_id` literal declared by the deployed node's
-/// `depends_on.{nodes,interfaces}` and each value points at the producer
-/// `instance_id` defined elsewhere in the launcher. Keys and values are
+/// `depends_on.{nodes,contracts}` and each value names exactly one
+/// producer `instance_id` defined elsewhere in the launcher. Keys are
 /// validated for non-emptiness and intra-collection duplicates via
-/// [`validate_named_items`]; the reserved producer-default sentinel
+/// [`validate_named_items`]; targets must be non-empty. An array value
+/// is rejected with an actionable message: a slot binds exactly one
+/// producer, and a consumer that needs several producers declares one
+/// slot per producer in its node manifest. The reserved producer-default
+/// sentinel
 /// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key here so the
-/// launcher cannot redundantly "bind" to the default. The value's
+/// launcher cannot redundantly "bind" to the default. Each target's
 /// existence as an `instance_id` is checked later at the
 /// [`PeppyLauncher`] level once all deployments have been parsed; the
 /// key's existence in the deployed node's `depends_on` and the producer
-/// identity are checked at launch time, when both the launcher and the
+/// identities are checked at launch time, when both the launcher and the
 /// node manifests are loaded.
 fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(deserialize_kv_entries(deserializer, "binding")?
-        .into_iter()
-        .collect())
+    /// One binding value: a single producer `instance_id` string. A
+    /// custom visitor (rather than plain `String::deserialize`) so an
+    /// array value fails with the one-producer-per-slot rule instead of
+    /// serde's generic "invalid type" message.
+    struct BindingTarget(String);
+
+    impl<'de> Deserialize<'de> for BindingTarget {
+        fn deserialize<D2>(deserializer: D2) -> Result<Self, D2::Error>
+        where
+            D2: Deserializer<'de>,
+        {
+            struct TargetVisitor;
+
+            impl<'de> de::Visitor<'de> for TargetVisitor {
+                type Value = BindingTarget;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    formatter.write_str("a single producer instance_id string")
+                }
+
+                fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                    Ok(BindingTarget(v.to_string()))
+                }
+
+                fn visit_seq<A>(self, _seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: de::SeqAccess<'de>,
+                {
+                    Err(de::Error::custom(
+                        "a slot binds exactly one producer, so a binding value cannot be an \
+                         array; a consumer that needs several producers declares one slot per \
+                         producer in its node manifest",
+                    ))
+                }
+            }
+
+            deserializer.deserialize_any(TargetVisitor)
+        }
+    }
+
+    let entries =
+        deserializer.deserialize_map(BindingEntriesVisitor::<BindingTarget>::new("binding"))?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "binding")
+        .map_err(de::Error::custom)?;
+    let mut out = BTreeMap::new();
+    for (key, BindingTarget(target)) in entries {
+        if target.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "binding target for key `{key}` cannot be empty"
+            )));
+        }
+        out.insert(key, target);
+    }
+    Ok(out)
 }
 
 /// Mirror of [`deserialize_bindings`] for the per-instance `pairings` map:
@@ -192,12 +247,23 @@ where
 /// keys/values, and malformed targets are rejected here; sentinel keys and
 /// unknown target instances are checked at the [`PeppyLauncher`] level where
 /// the owning `instance_id` and the full instance set are in scope.
+/// Entries are captured as a Vec because a direct `BTreeMap::deserialize`
+/// would silently overwrite duplicate keys, hiding them from
+/// `validate_named_items`. Duplicate VALUES are intentionally permitted:
+/// one peer may serve multiple `link_id` slots.
 fn deserialize_pairings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let entries = deserialize_kv_entries(deserializer, "pairing")?;
+    let entries = deserializer.deserialize_map(BindingEntriesVisitor::<String>::new("pairing"))?;
+    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), "pairing")
+        .map_err(de::Error::custom)?;
     for (key, value) in &entries {
+        if value.trim().is_empty() {
+            return Err(de::Error::custom(format!(
+                "pairing target for key `{key}` cannot be empty"
+            )));
+        }
         // Reject malformed targets at parse time rather than letting an
         // empty or slash-bearing peer_link fail later as "no complementary
         // slot" during plan validation.
@@ -212,34 +278,6 @@ where
     Ok(entries.into_iter().collect())
 }
 
-/// Shared scaffold of [`deserialize_bindings`] / [`deserialize_pairings`]:
-/// duplicate-key and empty-key/value checks over a `link_id -> target` map,
-/// with `kind` labeling the errors. Entries are captured as a Vec because a
-/// direct `BTreeMap::deserialize` would silently overwrite duplicate keys,
-/// hiding them from `validate_named_items`. Duplicate VALUES are
-/// intentionally permitted: one producer/peer may serve multiple `link_id`
-/// slots. Sentinel-key checks live in `PeppyLauncher::deserialize` where
-/// the owning `instance_id` is in scope for the structured error.
-fn deserialize_kv_entries<'de, D>(
-    deserializer: D,
-    kind: &'static str,
-) -> Result<Vec<(String, String)>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let entries = deserializer.deserialize_map(BindingEntriesVisitor)?;
-    validate_named_items(entries.iter().map(|(k, _)| k.as_str()), kind)
-        .map_err(de::Error::custom)?;
-    for (key, value) in &entries {
-        if value.trim().is_empty() {
-            return Err(de::Error::custom(format!(
-                "{kind} target for key `{key}` cannot be empty"
-            )));
-        }
-    }
-    Ok(entries)
-}
-
 /// Splits a launcher `pairings` value (or CLI `--pair` right-hand side) into
 /// `(peer_instance_id, Option<peer_link_id>)`. The `/` separator cannot
 /// appear inside wire segments, so the split is unambiguous.
@@ -250,13 +288,32 @@ pub fn split_pair_target(value: &str) -> (&str, Option<&str>) {
     }
 }
 
-struct BindingEntriesVisitor;
+/// Map visitor shared by the binding and pairing deserializers, generic
+/// over the value shape (a single target string for pairings, one-or-many
+/// targets for bindings). Collects into a Vec so duplicate keys survive to
+/// `validate_named_items` instead of being collapsed by a map insert.
+struct BindingEntriesVisitor<V> {
+    /// Entry kind used to prefix value errors with the owning key
+    /// (`"binding"` / `"pairing"`), so e.g. an array binding value fails
+    /// as "binding `uvc_camera`: …" instead of a bare type error.
+    label: &'static str,
+    _value: std::marker::PhantomData<V>,
+}
 
-impl<'de> Visitor<'de> for BindingEntriesVisitor {
-    type Value = Vec<(String, String)>;
+impl<V> BindingEntriesVisitor<V> {
+    fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            _value: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'de, V: Deserialize<'de>> Visitor<'de> for BindingEntriesVisitor<V> {
+    type Value = Vec<(String, V)>;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a map of binding link_id -> instance_id strings")
+        f.write_str("a map of link_id -> producer instance_id target")
     }
 
     fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
@@ -264,7 +321,10 @@ impl<'de> Visitor<'de> for BindingEntriesVisitor {
         A: MapAccess<'de>,
     {
         let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
-        while let Some((key, value)) = access.next_entry::<String, String>()? {
+        while let Some(key) = access.next_key::<String>()? {
+            let value = access
+                .next_value::<V>()
+                .map_err(|err| de::Error::custom(format!("{} `{key}`: {err}", self.label)))?;
             entries.push((key, value));
         }
         Ok(entries)
@@ -409,6 +469,42 @@ mod tests {
             backbone.bindings.get("torso_camera").map(String::as_str),
             Some("cam_torso")
         );
+    }
+
+    /// An array value is a parse error naming the slot and the
+    /// one-producer-per-slot rule. A slot binds exactly one producer; a
+    /// consumer that needs several producers declares one slot per
+    /// producer in its node manifest. Even a single-element or empty
+    /// array is rejected: a binding value is a single producer string.
+    #[test]
+    fn bindings_reject_producer_arrays() {
+        for producers in [
+            r#"["left_arm_inst", "right_arm_inst"]"#,
+            r#"["left_arm_inst"]"#,
+            r#"[]"#,
+        ] {
+            let json5 = format!(
+                r#"{{
+                    instance_id: "commander",
+                    bindings: {{ arm_states: {producers} }}
+                }}"#
+            );
+            let err = serde_json5::from_str::<DeploymentInstance>(&json5)
+                .expect_err("array binding value must be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("binding `arm_states`"),
+                "error must name the slot: {msg}"
+            );
+            assert!(
+                msg.contains("exactly one producer"),
+                "error must state the one-producer-per-slot rule: {msg}"
+            );
+            assert!(
+                msg.contains("one slot per producer"),
+                "error must point at declaring one slot per producer: {msg}"
+            );
+        }
     }
 
     #[test]

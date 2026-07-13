@@ -14,7 +14,7 @@ pub use pairing::{PairEndpoint, Pairing, SlotAddr};
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    NodeConfig, collect_dependency_specs, collect_interface_conformance_edges,
+    NodeConfig, collect_contract_implementation_edges, collect_dependency_specs,
     validate_dependency_specs,
 };
 use config::runtime::Name;
@@ -158,7 +158,7 @@ impl NodeStackInner {
     /// Reject a service/action dependency cycle that the candidate would close.
     ///
     /// Interface deps are absent from the node-dep graph, so a caller-driven
-    /// cycle routed through interfaces is invisible to the structural check.
+    /// cycle routed through contracts is invisible to the structural check.
     /// This runs over the whole stack plus the candidate (using the candidate's
     /// incoming config on a re-add, not the stale stored one) so a cycle
     /// completed across separate invocations is caught the moment the second
@@ -201,7 +201,7 @@ impl NodeStackInner {
             .collect();
 
         if let Some(cycle) = find_service_action_cycle(&view) {
-            return Err(Error::ServiceActionInterfaceCycle {
+            return Err(Error::ServiceActionContractCycle {
                 nodes: cycle.nodes,
                 closing_dependency: cycle.closing_dependency,
                 kind: cycle.kind.to_string(),
@@ -804,7 +804,7 @@ impl NodeStackInner {
         let serialize_entity = |entity: &NodeEntity| SerializedNode::from(entity);
 
         // One read-lock per entity yields both its serialized node and a clone
-        // of its config; the configs feed the interface-conformance edges
+        // of its config; the configs feed the contract-implementation edges
         // below, so collecting them here avoids a second locking pass.
         let (mut nodes, configs): (Vec<SerializedNode>, Vec<NodeConfig>) = self
             .graph
@@ -858,21 +858,22 @@ impl NodeStackInner {
                 Some(SerializedEdge {
                     from: serialize_entity(&src_handle.read()),
                     to: serialize_entity(&dst_handle.read()),
-                    via_interface: None,
+                    via_contract: None,
                 })
             })
             .collect();
 
-        // Interface-conformance edges (`depends_on.interfaces` → a `conforms_to`
-        // provider) are deliberately kept out of the DAG so they never constrain
+        // Contract-implementation edges (`depends_on.contracts` to a
+        // `manifest.implements` provider) are deliberately kept out of the
+        // DAG so they never constrain
         // launch ordering, but they are real dependencies; surface them in the
-        // display graph, annotated with the interface they route through.
+        // display graph, annotated with the contract they route through.
         let config_refs: Vec<&NodeConfig> = configs.iter().collect();
         let node_by_key: HashMap<(&str, &str), &SerializedNode> = nodes
             .iter()
             .map(|n| ((n.name.as_str(), n.tag.as_str()), n))
             .collect();
-        for edge in collect_interface_conformance_edges(&config_refs) {
+        for edge in collect_contract_implementation_edges(&config_refs) {
             let (Some(from), Some(to)) = (
                 node_by_key.get(&(edge.consumer_name.as_str(), edge.consumer_tag.as_str())),
                 node_by_key.get(&(edge.provider_name.as_str(), edge.provider_tag.as_str())),
@@ -882,7 +883,7 @@ impl NodeStackInner {
             edges.push(SerializedEdge {
                 from: (*from).clone(),
                 to: (*to).clone(),
-                via_interface: Some(format!("{}:{}", edge.interface_name, edge.interface_tag)),
+                via_contract: Some(format!("{}:{}", edge.contract_name, edge.contract_tag)),
             });
         }
 

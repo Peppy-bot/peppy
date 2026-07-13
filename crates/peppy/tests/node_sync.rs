@@ -20,11 +20,11 @@ fn add_emitted_topic(peppy_json5: &Path) {
         "message": "string",
     }))
     .expect("message format should deserialize");
-    topics.push(EmittedTopic {
+    topics.push(EmittedTopic::Native(config::node::NativeEmittedTopic {
         name: "goodbye_world".to_string(),
         qos_profile: QoSProfile::Standard,
         message_format: Some(message_format),
-    });
+    }));
 
     // Write JSON (valid JSON5) back to disk.
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");

@@ -16,7 +16,7 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use peppylib::core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll;
 
 use super::common::test_node_target;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -124,7 +124,7 @@ fn node_add_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -273,7 +273,7 @@ fn node_add_command_with_run_arg_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -450,7 +450,7 @@ fn node_add_after_failed_sync_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -594,7 +594,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -647,7 +647,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     // Verify the instance was stopped and node was re-added with 0 instances
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -781,7 +781,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -867,7 +867,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
     // Step 5: Verify the existing instance was stopped and node was re-added
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -1032,7 +1032,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = rt
-        .block_on(poll_stack_list(
+        .block_on(poll(
             &StackListRequest::new(false),
             messenger_handle,
             &core_node_name,
@@ -1149,16 +1149,15 @@ fn write_consumer_with_pinned_depends_on(
     consumer_dir
 }
 
-/// `peppy node add . -sbr` (sync + build + run) on a consumer whose
-/// manifest declares a pinned `depends_on` entry MUST fail validation when
-/// no `--bind` is supplied. Before the fix the chained-run path called
-/// `run_instance_async` with an empty slot map, so the daemon would spawn
-/// the consumer despite the missing binding, exactly the bug from the
-/// reproducer at the top of this file. The fix routes both `node run` and
-/// `node add -r` through `validate_and_run_instance`, so the same
-/// unbound-slot error fires for both.
+/// `peppy node add . -sbr` (sync + build + run) runs the chained spawn
+/// through the same binding validation as `node run`: a `--bind` whose
+/// KEY names no declared slot MUST fail before any spawn side-effect.
+/// Before the fix the chained-run path called `run_instance_async`
+/// directly, bypassing validation entirely; the fix routes both `node
+/// run` and `node add -r` through `validate_and_run_instance`, so the
+/// same error fires for both.
 #[test]
-fn node_add_with_run_rejects_unbound_pinned_dependency() {
+fn node_add_with_run_rejects_unknown_binding_slot() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
@@ -1183,8 +1182,8 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     // Set up a built producer the consumer depends on; we don't spawn an
-    // instance of it because the validator's pinned-unbound rule fires on
-    // declaration alone; no producer instance is needed to reproduce.
+    // instance of it because the unknown-key rule fires on the binding
+    // key alone; no producer instance is needed to reproduce.
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),
@@ -1217,8 +1216,8 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     .execute(&node_ctx)
     .expect("producer node add should succeed");
 
-    // Consumer with a single pinned link_id. With no `--bind`, launching
-    // this consumer must be rejected.
+    // Consumer with a single declared link_id. A `--bind` on a key that
+    // names no declared slot must be rejected by the chained run.
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
         consumer_name,
@@ -1234,10 +1233,11 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
             git_ref: None,
             sync: false,
             build: true,
-            run: true, // chain run, the path that used to bypass validation
+            run: true, // chain run: binding validation must hold on this path too
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(), // <-- the bug: this used to silently succeed
+            // A binding on an undeclared slot must be rejected.
+            binds: vec![("stale_slot".to_string(), "ghost_producer".to_string())],
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1246,17 +1246,17 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     .execute(&node_ctx);
 
     let err = result.expect_err(
-        "node add -r on a consumer with unbound pinned deps must fail with the same error \
+        "node add -r with a binding on an undeclared slot must fail with the same error \
          as `node run`; chaining must NOT bypass binding validation",
     );
     let msg = err.to_string();
     assert!(
-        msg.contains("is unbound"),
-        "error should report the slot as unbound. Got: {msg}"
+        msg.contains("names no declared slot"),
+        "error should report the unknown slot key. Got: {msg}"
     );
     assert!(
-        msg.contains("wrist_left"),
-        "error should name the missing link_id. Got: {msg}"
+        msg.contains("stale_slot"),
+        "error should name the offending binding key. Got: {msg}"
     );
 
     // The instance must NEVER have been spawned: the validator runs
@@ -1265,12 +1265,12 @@ fn node_add_with_run_rejects_unbound_pinned_dependency() {
     let logs = log_capture.logs();
     assert!(
         !logs.contains("Started node instance"),
-        "node add -r must NOT spawn an instance when a pinned dep is unbound. Logs:\n{logs}"
+        "node add -r must NOT spawn an instance when a binding is invalid. Logs:\n{logs}"
     );
 }
 
 /// Positive control: `peppy node add -r --bind KEY@VALUE` (where KEY is a
-/// declared pinned link_id and VALUE is the producer's instance_id) is the
+/// declared link_id and VALUE is the producer's instance_id) is the
 /// supported path. The same producer/consumer scaffolding as the
 /// rejection test above, but with the binding supplied; the consumer
 /// must launch cleanly.

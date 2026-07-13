@@ -4,7 +4,7 @@ use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeou
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use config::runtime::Name;
-use core_node::names;
+use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin,
 };
@@ -406,7 +406,7 @@ async fn send_launch_origin_and_wait(
         core_node_name,
         CALLER_INSTANCE_ID,
         common::core_node_target(core_node_name),
-        names::STACK_LAUNCH_ACTION,
+        ActionId::StackLaunch.name(),
         None,
         goal_payload,
         config::node::QoSProfile::default(),

@@ -78,14 +78,29 @@ Register hooks during setup, as soon as the resource they release exists. A hook
 
 Long-running work still belongs in spawned tasks that watch the token:
 
-```rust
-tokio::select! {
-    _ = token.cancelled() => break, // stop working; cleanup happens in hooks
-    _ = interval.tick() => { /* do work */ }
-}
-```
+<Tabs>
+  <TabItem label="Python">
+    ```python
+    token = node_runner.cancellation_token()
+    while not token.is_cancelled():
+        do_work()
+        await asyncio.sleep(interval)
+    # stop working; cleanup happens in hooks
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => break, // stop working; cleanup happens in hooks
+            _ = interval.tick() => { /* do work */ }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
 
-Inside a hook the token is already cancelled, so `token.is_cancelled()` is `true` and awaiting `token.cancelled()` returns immediately.
+Inside a hook the token is already cancelled, so `token.is_cancelled()` reports true and awaiting `token.cancelled()` returns immediately.
 
 ## Grace windows
 

@@ -1,10 +1,10 @@
 //! Template snapshots for peer (pairing) topics: the slot-scoped publisher
 //! splice, the `pairing` wire target, the `subscribe_peer` seam, the
 //! module-level slot consts + `paired()`/`wait_paired()`, and the absence of
-//! any `from_any` involvement.
+//! any binding-slot involvement.
 
 use super::*;
-use config::node::EmittedTopic;
+use config::node::NativeEmittedTopic;
 
 const JOINT_COMMANDS: &str = r#"
 {
@@ -25,7 +25,7 @@ fn peer_context() -> crate::generator::types::PeerContext {
     }
 }
 
-fn parse_topic(example: &str) -> EmittedTopic {
+fn parse_topic(example: &str) -> NativeEmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -71,13 +71,13 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
     // Pairing publishers never use node/interface targets or the default
     // link_id sentinel.
     assert!(
-        !rendered.contains("SenderTarget::node(") && !rendered.contains("SenderTarget::interface("),
+        !rendered.contains("SenderTarget::node(") && !rendered.contains("SenderTarget::contract("),
         "peer topics must use the pairing target only:\n{rendered}"
     );
 }
 
 #[test]
-fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
+fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
     let topic = parse_topic(JOINT_COMMANDS);
     let mut generator = RustGenerator::new();
     generator
@@ -109,19 +109,17 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_from_any() {
             "pub async fn wait_paired(",
         ],
     );
-    // No from_any machinery: pairing subscriptions are pinned by the live
-    // peer_update channel, never by wildcard reservation.
+    // No binding-slot machinery: pairing subscriptions are pinned by the
+    // live peer_update channel, never by the consumer-filter path.
     assert!(
-        !rendered.contains("is_from_any")
-            && !rendered.contains("ConsumerFilter")
-            && !rendered.contains("TopicMessenger::subscribe("),
-        "peer subscriptions must ride subscribe_peer, not the from_any path:\n{rendered}"
+        !rendered.contains("ConsumerFilter") && !rendered.contains("TopicMessenger::subscribe("),
+        "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{rendered}"
     );
 }
 
 #[test]
 fn peer_consumed_topic_requires_a_message_format() {
-    let topic: EmittedTopic =
+    let topic: NativeEmittedTopic =
         serde_json5::from_str(r#"{ name: "opaque", qos_profile: "reliable" }"#).unwrap();
     let mut generator = RustGenerator::new();
     let err = generator

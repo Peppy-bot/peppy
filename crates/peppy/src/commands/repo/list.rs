@@ -6,7 +6,7 @@ use core_node_api::encoding::{RepoListNodeEntry, RepoListRequest};
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use peppylib::core_node::transport::poll_repo_list;
+use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -17,7 +17,7 @@ pub(super) fn list_repos(ctx: &Arc<AppContext>) -> Result<()> {
 async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = poll_repo_list(
+    let response = poll(
         &RepoListRequest,
         conn.messenger,
         &conn.core_node_name,

@@ -10,7 +10,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::poll_node_sync;
+use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn sync_node(
@@ -59,7 +59,7 @@ async fn sync_resolved_node(
         conn.git_hash,
         include_repositories,
     );
-    let response = poll_node_sync(
+    let response = poll(
         &request,
         conn.messenger,
         &conn.core_node_name,
