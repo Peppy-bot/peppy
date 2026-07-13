@@ -33,46 +33,96 @@ pub(crate) fn guest_pgid_path(key: &str) -> PathBuf {
     PathBuf::from(GUEST_PGID_DIR).join(format!("{key}.pgid"))
 }
 
+/// The guest-side `cd` prelude shared by [`lima_guest_pgid_argv`] and
+/// [`lima_guest_workdir_argv`]: enter the working directory passed as `$1`,
+/// then `shift` it off so the rest of the script sees its usual parameters.
+///
+/// The `cd` MUST abort on failure. `limactl shell` propagates the host cwd
+/// into the guest with a NON-fatal `cd`, and on macOS the kernel reports the
+/// host cwd in canonical form (`/private/var/…`) while the Lima mount only
+/// exists in the guest at its literal lima.yaml location (`/var/folders/…`) —
+/// so that propagation silently lands in the guest's home directory. A build
+/// def whose `%files` uses relative sources (the generated `%files .
+/// /opt/{name}`) then copies the user's entire `$HOME` into the image. The
+/// explicit `cd` here uses the same path form as the registered mount, and a
+/// failure is loud instead of a silent fallback.
+const GUEST_CD_PRELUDE: &str = "cd \"$1\" || { \
+     echo \"peppy: guest working directory not accessible: $1\" >&2; exit 1; }; \
+     shift; ";
+
 /// Builds the guest-side argv (after the `limactl shell ... --` separator) that
 /// runs a guest `apptainer` command (build or run) as its own session/process-group
 /// leader and records its PGID to `pgid_file` (a guest-native path from
-/// [`guest_pgid_path`]).
+/// [`guest_pgid_path`]). When `guest_workdir` is set, the script first enters
+/// that directory (see [`GUEST_CD_PRELUDE`]) and aborts loudly if it cannot.
 ///
 /// `setsid -w` makes `sh` the session+group leader (so its PGID equals its PID)
 /// and waits for it, forwarding stdout/stderr and the exit status unchanged. The
-/// `sh -c` script is a fixed constant: the pgid file, apptainer binary, and its
-/// args arrive as the shell's own positional parameters (`$1`, then `$@`), so
-/// they are never re-tokenized and need no shell escaping. The script `mkdir -p`s
-/// the guest-native pgid dir (derived from `$1`) so the write does not race the
-/// virtiofs host mount, records `$$` to `$1`, then runs apptainer as a child of
-/// the same group (not via `exec`) so apptainer's children (a build's `%post`
-/// steps, a run's container workload) inherit the group and `sh` survives to
-/// remove the pgid file and forward apptainer's exit status on the normal path.
-/// On cancel, [`lima_kill_pgid_argv`] SIGKILLs the whole group from inside the
-/// VM. On node stop/teardown, [`lima_terminate_pgid_argv`] first SIGTERMs the
-/// wrapped `apptainer` child without removing the pgid file, so the wrapper can
-/// keep waiting/cleaning up and a later SIGKILL can still find the group if the
-/// workload ignores SIGTERM.
+/// `sh -c` script is a fixed constant: the working dir (optional), pgid file,
+/// apptainer binary, and its args arrive as the shell's own positional
+/// parameters, so they are never re-tokenized and need no shell escaping. The
+/// script `mkdir -p`s the guest-native pgid dir (derived from `$1`) so the write
+/// does not race the virtiofs host mount, records `$$` to `$1`, then runs
+/// apptainer as a child of the same group (not via `exec`) so apptainer's
+/// children (a build's `%post` steps, a run's container workload) inherit the
+/// group and `sh` survives to remove the pgid file and forward apptainer's exit
+/// status on the normal path. On cancel, [`lima_kill_pgid_argv`] SIGKILLs the
+/// whole group from inside the VM. On node stop/teardown,
+/// [`lima_terminate_pgid_argv`] first SIGTERMs the wrapped `apptainer` child
+/// without removing the pgid file, so the wrapper can keep waiting/cleaning up
+/// and a later SIGKILL can still find the group if the workload ignores SIGTERM.
 pub(crate) fn lima_guest_pgid_argv(
     apptainer_bin: &Path,
     apptainer_args: &[&str],
     pgid_file: &Path,
+    guest_workdir: Option<&Path>,
 ) -> Vec<String> {
     // Fixed script; values follow as positional params. `sh` is the `$0`
-    // placeholder so the next operand is `$1` (the pgid file) and the rest are
-    // apptainer's binary and args. Derive the pgid dir from `$1`, record the
+    // placeholder so the next operand is `$1` (the working dir when set,
+    // consumed by the prelude's `shift`; otherwise the pgid file) and the rest
+    // are apptainer's binary and args. Derive the pgid dir from `$1`, record the
     // leader PID, then `shift` `$1` off so `"$@"` runs apptainer as a child while
     // `$pgid` keeps the path for cleanup.
-    let script = "d=$(dirname \"$1\"); mkdir -p \"$d\"; echo $$ > \"$1\"; \
+    let pgid_script = "d=$(dirname \"$1\"); mkdir -p \"$d\"; echo $$ > \"$1\"; \
                   pgid=\"$1\"; shift; \"$@\"; __rc=$?; rm -f \"$pgid\"; exit $__rc";
+    let script = match guest_workdir {
+        Some(_) => format!("{GUEST_CD_PRELUDE}{pgid_script}"),
+        None => pgid_script.to_string(),
+    };
     let mut argv = vec![
         "setsid".to_string(),
         "-w".to_string(),
         "sh".to_string(),
         "-c".to_string(),
-        script.to_string(),
+        script,
         "sh".to_string(),
-        pgid_file.display().to_string(),
+    ];
+    if let Some(workdir) = guest_workdir {
+        argv.push(workdir.display().to_string());
+    }
+    argv.push(pgid_file.display().to_string());
+    argv.push(apptainer_bin.display().to_string());
+    argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    argv
+}
+
+/// Guest-side argv (after the `limactl shell ... --` separator) that runs a
+/// guest `apptainer` command from `guest_workdir` without PGID bookkeeping:
+/// enter the directory (aborting loudly on failure, see [`GUEST_CD_PRELUDE`])
+/// and `exec` apptainer in place of the shell. Used when a command needs a
+/// working directory but no cancel/teardown group kill.
+pub(crate) fn lima_guest_workdir_argv(
+    apptainer_bin: &Path,
+    apptainer_args: &[&str],
+    guest_workdir: &Path,
+) -> Vec<String> {
+    let script = format!("{GUEST_CD_PRELUDE}exec \"$@\"");
+    let mut argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        script,
+        "sh".to_string(),
+        guest_workdir.display().to_string(),
         apptainer_bin.display().to_string(),
     ];
     argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));

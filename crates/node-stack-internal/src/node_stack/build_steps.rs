@@ -181,7 +181,15 @@ pub(super) async fn build_container_image(
         .and_then(|n| n.to_str())
         .map(str::to_owned);
 
-    let mut cmd_builder = apptainer.build(&output_path, &def_path);
+    // The working dir must go through the facade (not `Command::current_dir`)
+    // so `%files . /opt/{name}` in the .def file copies from the node's source
+    // directory on both backends: under Lima the facade `cd`s inside the guest
+    // and aborts if the directory is not mounted, where a host-side
+    // `current_dir` would be canonicalized by `limactl shell`, miss the mount,
+    // and silently fall back to the guest home directory.
+    let mut cmd_builder = apptainer
+        .build(&output_path, &def_path)
+        .working_dir(inputs.working_dir);
     if let Some(key) = &build_key {
         cmd_builder = cmd_builder.cancel_pgid(key);
     }
@@ -195,9 +203,6 @@ pub(super) async fn build_container_image(
         .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
 
     let mut cmd = tokio::process::Command::from(std_cmd);
-    // Set the working directory so `%files . /opt/{name}` in the .def file
-    // copies from the node's source directory, not the daemon's cwd.
-    cmd.current_dir(inputs.working_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());

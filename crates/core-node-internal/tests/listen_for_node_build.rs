@@ -1041,6 +1041,17 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 /// because every other starter roots the daemon under `test_tmp_root()`
 /// (inside the repo, under `$HOME`). On Linux the native backend imposes no
 /// mount restriction, so there this test only exercises the plain build flow.
+///
+/// The def file deliberately copies a relative `%files` source (like the
+/// generated `%files . /opt/{name}` defs): the build must run with the guest
+/// cwd set to the working dir. Relying on `limactl shell`'s host-cwd
+/// propagation breaks here — the kernel canonicalizes the cwd to
+/// `/private/var/…` while the Lima mount only exists in the guest at the
+/// `/var/folders/…` form, and Lima's failed `cd` is NON-fatal, so the build
+/// silently ran from the home mount and `%files .` copied the user's entire
+/// `$HOME` into the image until the guest tmpfs filled up. The facade now
+/// `cd`s explicitly inside the guest wrapper and aborts if that fails; this
+/// test fails without that fix ("cp: cannot stat './marker.txt'").
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_with_container_from_outside_home_root() {
     const TARGET_NODE_NAME: &str = "outside_home_container_node";
@@ -1069,11 +1080,19 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
         "Bootstrap: docker\n\
          From: {DEFAULT_ALPINE_BASE_IMAGE}\n\
          \n\
+         %files\n\
+         \x20   ./marker.txt /opt/marker.txt\n\
+         \n\
          %runscript\n\
          \x20   echo \"Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}\"\n"
     );
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
+    std::fs::write(
+        source_dir.path().join("marker.txt"),
+        "guest cwd must be the build working dir\n",
+    )
+    .expect("failed to write marker file");
 
     let (node_name, node_tag) = stage_node_for_build(
         &started_core_node,

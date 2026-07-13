@@ -385,7 +385,15 @@ pub(super) async fn build_container_command(
     // node and, worse, a host var with a shell-invalid name silently breaks
     // apptainer's env-injection script and drops PEPPY_RUNTIME_CONFIG, making
     // the node fall back to standalone defaults. See `ApptainerCommand::clean_env`.
-    let mut apptainer_cmd = apptainer.run(sif_str).cancel_pgid(instance_id).clean_env();
+    // `working_dir` goes through the facade: on Linux it becomes the child's
+    // `current_dir`; under Lima the facade `cd`s inside the guest (aborting if
+    // the directory is not mounted) instead of relying on `limactl shell`'s
+    // silent, canonicalizing host-cwd propagation.
+    let mut apptainer_cmd = apptainer
+        .run(sif_str)
+        .working_dir(working_dir)
+        .cancel_pgid(instance_id)
+        .clean_env();
     for arg in apptainer_run_extra_args {
         apptainer_cmd = apptainer_cmd.raw_flag(arg);
     }
@@ -439,7 +447,6 @@ pub(super) async fn build_container_command(
 
     let mut command = Command::from(std_cmd);
     command
-        .current_dir(working_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
