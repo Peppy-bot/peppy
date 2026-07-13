@@ -358,17 +358,23 @@ pub(super) async fn build_container_command(
     // working dir, and the runtime config (binds[0]) all live under it, and
     // it sits outside `$HOME` in dev (rooted at `$TMPDIR/.peppy`).
     // `ensure_host_mounts` filters home-relative paths and is a no-op on the
-    // native (Linux) backend.
+    // native (Linux) backend. Runs on the blocking pool because a first-time
+    // mount registration restarts the Lima VM.
     let peppy_root = peppy_dirs
         .root()
         .to_str()
-        .ok_or_else(|| std::io::Error::other("peppy root path is not valid UTF-8"))?;
-    let mut src_paths: Vec<&str> = vec![peppy_root];
+        .ok_or_else(|| std::io::Error::other("peppy root path is not valid UTF-8"))?
+        .to_owned();
+    let mut src_paths: Vec<String> = vec![peppy_root];
     // Skip binds[0] (runtime config); it's under the peppy root added above.
-    src_paths.extend(binds[1..].iter().map(|b| b.src.as_str()));
-    apptainer
-        .ensure_host_mounts(&src_paths)
-        .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
+    src_paths.extend(binds[1..].iter().map(|b| b.src.clone()));
+    let apptainer = tokio::task::spawn_blocking(move || {
+        let refs: Vec<&str> = src_paths.iter().map(String::as_str).collect();
+        apptainer.ensure_host_mounts(&refs).map(|()| apptainer)
+    })
+    .await
+    .map_err(|e| std::io::Error::other(format!("Host mount registration task failed: {}", e)))?
+    .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
 
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are
