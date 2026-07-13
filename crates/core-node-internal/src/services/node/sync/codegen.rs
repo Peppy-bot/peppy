@@ -131,7 +131,7 @@ pub struct AutoSyncParams<'a> {
     pub interfaces: &'a config::node::Interfaces,
     pub git_hash: &'a str,
     /// Receives progress lines emitted by `ensure_checkout` when a
-    /// git-sourced `conforms_to` interface needs to be materialized.
+    /// git-sourced contract document needs to be materialized.
     pub on_feedback: &'a dyn Fn(&str),
 }
 

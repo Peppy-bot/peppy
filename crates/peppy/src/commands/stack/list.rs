@@ -138,12 +138,12 @@ pub fn format_stack_list(
         let _ = writeln!(out, "  (none)");
     } else {
         for edge in edges {
-            // A contract-conformance edge is annotated with the contract it
+            // A contract-implementation edge is annotated with the contract it
             // routes through, so it reads distinctly from a direct node dep. The
             // interface name is tinted the same as the node labels it relates.
             let via = match &edge.via_contract {
                 Some(iface) => format!(
-                    " (via {} contract conformance)",
+                    " (via {} contract implementation)",
                     paint(colorize, NODE_COLOR, iface)
                 ),
                 None => String::new(),
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_conformance_edge_renders_annotation() {
+    fn contract_implementation_edge_renders_annotation() {
         let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
         let provider = node("camera_mock", "v1", NodeStage::Ready, vec![]);
         let edges = vec![SerializedEdge {
@@ -688,8 +688,8 @@ mod tests {
         }];
         let out = format_stack_list(&[consumer, provider], &edges, false);
         assert!(
-            out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract conformance)"),
-            "contract-conformance edge annotation missing:\n{}",
+            out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract implementation)"),
+            "contract-implementation edge annotation missing:\n{}",
             out
         );
     }

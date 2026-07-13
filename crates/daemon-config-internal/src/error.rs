@@ -63,7 +63,7 @@ where
 }
 
 /// Whether a declared slot is a node dep (matched by `(name, tag)` identity)
-/// or a contract dep (matched against the producer's `conforms_to`). Used
+/// or a contract dep (matched against the producer's `manifest.implements`). Used
 /// in error payloads so messages can name the expected category in singular
 /// human form instead of leaking the `depends_on.nodes` / `depends_on.contracts`
 /// field path.
@@ -101,8 +101,8 @@ pub struct BindingTargetMismatch {
     pub actual_tag: String,
 }
 
-/// Payload for [`ParsingError::BindingContractNotConformed`]. Raised when a
-/// `--bind` targets a contract slot but the producer's `interfaces.conforms_to`
+/// Payload for [`ParsingError::BindingContractNotImplemented`]. Raised when a
+/// `--bind` targets a contract slot but the producer's `manifest.implements`
 /// list does not include the requested `(contract_name, contract_tag)`.
 ///
 /// Boxed in the variant for the same `clippy::result_large_err` reason as the
@@ -112,9 +112,9 @@ pub struct BindingTargetMismatch {
     "binding `{binding}` on instance `{owner_instance_id}`: target \
      `{target_instance_id}` deploys `{producer_name}:{producer_tag}`, but \
      the slot requires contract `{contract_name}:{contract_tag}` (add it \
-     to the producer's `conforms_to`)"
+     to the producer's `manifest.implements`)"
 )]
-pub struct BindingContractNotConformed {
+pub struct BindingContractNotImplemented {
     pub owner_instance_id: String,
     pub binding: String,
     pub target_instance_id: String,
@@ -358,11 +358,11 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
-    /// A `--bind` targets an interface slot but the producer doesn't
-    /// declare conformance to the requested interface. Boxed for the same
-    /// `result_large_err` reason as the other binding variants.
+    /// A `--bind` targets a contract slot but the producer doesn't
+    /// declare the requested contract in `manifest.implements`. Boxed for
+    /// the same `result_large_err` reason as the other binding variants.
     #[error(transparent)]
-    BindingContractNotConformed(Box<BindingContractNotConformed>),
+    BindingContractNotImplemented(Box<BindingContractNotImplemented>),
     /// Two instances anywhere in the running stack share an `instance_id`.
     /// Boxed for the same `result_large_err` reason as the other binding
     /// variants.

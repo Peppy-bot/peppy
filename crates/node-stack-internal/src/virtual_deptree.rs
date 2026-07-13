@@ -328,14 +328,14 @@ mod tests {
         }
     }
 
-    /// Writes a node config that conforms to contracts and consumes
+    /// Writes a node config that implements contracts and consumes
     /// service/action/topic items through contract deps, for the
     /// caller-driven cycle tests. `contract_deps` and the consume lists are
     /// `(name, tag, link_id)` / `link_id` / `(link_id, topic_name)`.
     fn write_node_full(
         dir: &Path,
         name: &str,
-        conforms_to: &[(&str, &str)],
+        implements: &[(&str, &str)],
         contract_deps: &[(&str, &str, &str)],
         service_consumes: &[&str],
         action_consumes: &[&str],
@@ -343,10 +343,13 @@ mod tests {
     ) -> NodeConfig {
         std::fs::create_dir_all(dir).unwrap();
         let join = |items: Vec<String>| items.join(", ");
-        let conforms = join(
-            conforms_to
+        let implements = join(
+            implements
                 .iter()
-                .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}" }}"#))
+                .enumerate()
+                .map(|(idx, (n, t))| {
+                    format!(r#"{{ name: "{n}", tag: "{t}", link_id: "impl_{idx}" }}"#)
+                })
                 .collect(),
         );
         let contracts = join(
@@ -379,10 +382,10 @@ mod tests {
                 manifest: {{
                     name: "{name}",
                     tag: "v1",
+                    implements: [{implements}],
                     depends_on: {{ nodes: [], contracts: [{contracts}] }},
                 }},
                 interfaces: {{
-                    conforms_to: [{conforms}],
                     services: {{ consumes: [{services}] }},
                     actions: {{ consumes: [{actions}] }},
                     topics: {{ consumes: [{topics}] }},

@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ConsumedService, ExposedService, MessageFormat};
+use config::node::{ConsumedService, MessageFormat, NativeExposedService};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -96,7 +96,7 @@ const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 /// In the case of a service, an "exposed" service is an entity that accepts incoming requests.
 #[test]
 fn expose_service() {
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_service(&service, None).unwrap();
@@ -196,7 +196,7 @@ fn expose_service() {
 
 #[test]
 fn expose_service_without_request_body() {
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+    let service: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_service(&service, None).unwrap();
@@ -257,8 +257,8 @@ fn expose_service_without_request_body() {
 
 #[test]
 fn expose_two_services() {
-    let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+    let service1: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service2: NativeExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_service(&service1, None).unwrap();

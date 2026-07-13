@@ -109,7 +109,7 @@ fn sync_and_add_node(
 
 /// Registers `contracts_root` (relative to the workspace) as a filesystem
 /// repository the emulated daemon will scan, then refreshes so that
-/// `depends_on.contracts` and `conforms_to` references resolve from the
+/// `depends_on.contracts` and `manifest.implements` references resolve from the
 /// contract cache during `node sync -r`. The serve emulation seeds an empty
 /// `repositories.json5` at startup; we overwrite it with the single fs entry.
 fn register_contract_repo(peppy: &Path, setup: &NodeSetup, contracts_root: &str) {
@@ -210,7 +210,7 @@ pub fn run_snippet_with_deps(
 }
 
 /// Run a snippet whose `depends_on` contract references (contract docs,
-/// pairing docs, `conforms_to`) are resolved from a document repository
+/// pairing docs, `manifest.implements`) are resolved from a document repository
 /// rather than from other nodes in the stack. `contracts_root` is a
 /// workspace-relative directory of `contract/v1` / `pairing/v1` documents;
 /// it is registered as an fs repo and refreshed, then the snippet is synced

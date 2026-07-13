@@ -1,11 +1,12 @@
 use super::deps::{
-    DependencyKind, DependencyLookupEntry, DependencyOfferings,
-    build_dependency_context_for_interface, build_dependency_context_for_node,
-    build_dependency_lookup, build_dependency_offerings,
+    DependencyKind, DependencyLookupEntry, DependencyOfferings, build_dependency_lookup,
+    build_dependency_offerings,
 };
 use crate::services::repo::cache as repo_cache;
+use config::ContractCoverageMismatch;
+use config::node::InterfaceKind;
 use daemon_config::consts::PeppyDirs;
-use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceOrigin};
+use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
 use std::collections::HashMap;
 
@@ -19,12 +20,13 @@ use std::collections::HashMap;
 /// peer map first to resolve sibling nodes that haven't been added to the
 /// stack yet; used by `node sync -a` for batch operations.
 /// The full peppygen interface set for one node, in one call: consumed
-/// interfaces from `depends_on`, `conforms_to` documents, and both
-/// directions of every declared pairing slot (role-validated, sha-pinned,
-/// drift-checked). Used by `node add`, `node sync`, and the launch-time
-/// auto-sync so the "what feeds peppygen" sequence lives in one place.
-/// Error strings name the failing step; callers only add their transport
-/// wrapper.
+/// interfaces from `depends_on`, contract-backed produced entries resolved
+/// through `manifest.implements` (coverage-checked, sha-pinned,
+/// drift-checked), and both directions of every declared pairing slot
+/// (role-validated, sha-pinned, drift-checked). Used by `node add`,
+/// `node sync`, and the launch-time auto-sync so the "what feeds peppygen"
+/// sequence lives in one place. Error strings name the failing step; callers
+/// only add their transport wrapper.
 pub fn collect_all_deployment_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
@@ -36,8 +38,8 @@ pub fn collect_all_deployment_interfaces(
         collect_consumed_interfaces(manifest, interfaces_cfg, resolve, peppy_dirs, on_feedback)
             .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
     interfaces.extend(
-        resolve_conforms_to(interfaces_cfg, peppy_dirs, on_feedback)
-            .map_err(|reason| format!("failed to resolve `conforms_to` interfaces: {reason}"))?,
+        resolve_implements(manifest, interfaces_cfg, peppy_dirs, on_feedback)
+            .map_err(|reason| format!("failed to resolve `manifest.implements`: {reason}"))?,
     );
     interfaces.extend(
         super::pairings::collect_pairing_interfaces(manifest, peppy_dirs, on_feedback)
@@ -57,17 +59,16 @@ pub fn collect_consumed_interfaces(
     let dep_lookup = build_dependency_lookup(manifest);
 
     // Pre-resolve each unique node dependency into a per-dep offerings table
-    // that merges native emits/exposes (origin `None`) with conformed entries
-    // (origin `Some(_)`). Native wins on key collision so the consumer side
-    // still addresses native producers via `SenderTarget::Node` and conformed
-    // ones via `SenderTarget::Interface`.
+    // of its NATIVE emits/exposes. Contract-backed entries are deliberately
+    // absent: node dependencies expose native interfaces only, and
+    // contract-backed interfaces are consumed through `depends_on.contracts`.
     let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
     // Memoized parsed contracts for `depends_on.contracts`
     // entries, keyed by `link_id` so two entries with the same
     // `(name, tag)` but different sha256 pins are cached and resolved
     // separately. `resolve_contract_doc` handles SHA-pin matching and
     // on-disk drift detection per load.
-    let mut iface_dep_contracts: HashMap<String, daemon_config::contract::PeppyContract> =
+    let mut contract_dep_docs: HashMap<String, daemon_config::contract::PeppyContract> =
         HashMap::new();
 
     for (link_id, entry) in dep_lookup.iter() {
@@ -80,22 +81,10 @@ pub fn collect_consumed_interfaces(
                 let Some(dep_config) = resolve(&entry.name, &entry.tag) else {
                     continue;
                 };
-                let conformed =
-                    resolve_conforms_to(&dep_config.interfaces, peppy_dirs, on_feedback).map_err(
-                        |e| {
-                            format!(
-                                "failed to resolve `conforms_to` for dependency `{}:{}`: {e}",
-                                entry.name, entry.tag
-                            )
-                        },
-                    )?;
-                node_dep_offerings.insert(
-                    node_key,
-                    build_dependency_offerings(&dep_config, &conformed),
-                );
+                node_dep_offerings.insert(node_key, build_dependency_offerings(&dep_config));
             }
-            DependencyKind::Interface => {
-                if iface_dep_contracts.contains_key(link_id) {
+            DependencyKind::Contract => {
+                if contract_dep_docs.contains_key(link_id) {
                     continue;
                 }
                 let parsed = resolve_contract_doc(
@@ -105,7 +94,7 @@ pub fn collect_consumed_interfaces(
                     entry.sha256.as_deref(),
                     on_feedback,
                 )?;
-                iface_dep_contracts.insert(link_id.clone(), parsed);
+                contract_dep_docs.insert(link_id.clone(), parsed);
             }
         }
     }
@@ -117,15 +106,10 @@ pub fn collect_consumed_interfaces(
             let Some((message_format, dependency)) = resolve_consumed_offering(
                 &dep_lookup,
                 &node_dep_offerings,
-                &iface_dep_contracts,
+                &contract_dep_docs,
                 &consumed_topic.link_id,
                 consumed_topic.name.trim(),
-                |offerings, name| {
-                    offerings
-                        .topics
-                        .get(name)
-                        .map(|(mf, origin)| (mf.clone(), origin.clone()))
-                },
+                |offerings, name| offerings.topics.get(name).cloned(),
                 |parsed, name| {
                     parsed
                         .interfaces
@@ -152,15 +136,10 @@ pub fn collect_consumed_interfaces(
             let Some(((request_format, response_format), dependency)) = resolve_consumed_offering(
                 &dep_lookup,
                 &node_dep_offerings,
-                &iface_dep_contracts,
+                &contract_dep_docs,
                 &consumed_service.link_id,
                 consumed_service.name.trim(),
-                |offerings, name| {
-                    offerings
-                        .services
-                        .get(name)
-                        .map(|(req, resp, origin)| ((req.clone(), resp.clone()), origin.clone()))
-                },
+                |offerings, name| offerings.services.get(name).cloned(),
                 |parsed, name| {
                     let exposed = parsed
                         .interfaces
@@ -191,15 +170,10 @@ pub fn collect_consumed_interfaces(
             let Some((action_message, dependency)) = resolve_consumed_offering(
                 &dep_lookup,
                 &node_dep_offerings,
-                &iface_dep_contracts,
+                &contract_dep_docs,
                 &consumed_action.link_id,
                 consumed_action.name.trim(),
-                |offerings, name| {
-                    offerings
-                        .actions
-                        .get(name)
-                        .map(|(msg, origin)| (msg.clone(), origin.clone()))
-                },
+                |offerings, name| offerings.actions.get(name).cloned(),
                 |parsed, name| {
                     parsed
                         .interfaces
@@ -223,45 +197,42 @@ pub fn collect_consumed_interfaces(
 }
 
 /// Resolves a single consumed interface to its message-format payload plus the
-/// `DependencyContext` the generator needs to address it. Walks both node and
-/// interface backings via the caller-supplied extractors; for nodes the
-/// extractor must surface the `Option<InterfaceOrigin>` from the offering so
-/// the consumer reaches `conforms_to` producers via `SenderTarget::Interface`.
+/// `DependencyContext` the generator needs to address it. Node dependencies
+/// resolve against the producer's native offerings only (node-addressed);
+/// contract dependencies resolve against the contract document
+/// (contract-addressed).
 fn resolve_consumed_offering<T>(
     dep_lookup: &HashMap<String, DependencyLookupEntry>,
     node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
-    iface_dep_contracts: &HashMap<String, daemon_config::contract::PeppyContract>,
+    contract_dep_docs: &HashMap<String, daemon_config::contract::PeppyContract>,
     link_id: &str,
     lookup_name: &str,
-    extract_from_node: impl FnOnce(
-        &DependencyOfferings,
-        &str,
-    ) -> Option<(T, Option<generator::InterfaceOrigin>)>,
-    extract_from_interface: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
+    extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
+    extract_from_contract: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
 ) -> Option<(T, generator::DependencyContext)> {
     let entry = dep_lookup.get(link_id)?;
     match entry.kind {
         DependencyKind::Node => {
             let offerings = node_dep_offerings.get(&(entry.name.clone(), entry.tag.clone()))?;
-            let (extracted, origin) = extract_from_node(offerings, lookup_name)?;
+            let extracted = extract_from_node(offerings, lookup_name)?;
             Some((
                 extracted,
-                build_dependency_context_for_node(&entry.name, &entry.tag, origin, link_id),
+                generator::DependencyContext::native(&entry.name, &entry.tag, link_id),
             ))
         }
-        DependencyKind::Interface => {
-            let parsed = iface_dep_contracts.get(link_id)?;
-            let extracted = extract_from_interface(parsed, lookup_name)?;
+        DependencyKind::Contract => {
+            let parsed = contract_dep_docs.get(link_id)?;
+            let extracted = extract_from_contract(parsed, lookup_name)?;
             Some((
                 extracted,
-                build_dependency_context_for_interface(&entry.name, &entry.tag, link_id),
+                generator::DependencyContext::contract(&entry.name, &entry.tag, link_id),
             ))
         }
     }
 }
 
 pub(super) fn action_message_from_exposed(
-    exposed_action: &config::node::ExposedAction,
+    exposed_action: &config::node::NativeExposedAction,
 ) -> ConsumedActionMessage {
     ConsumedActionMessage {
         goal_request: exposed_action
@@ -283,7 +254,7 @@ pub(super) fn action_message_from_exposed(
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
 /// against the cached fingerprint. Returns the parsed contract document,
 /// or an error string ready to surface to the client. Shared between
-/// [`resolve_conforms_to`] (producer side) and the `depends_on.contracts`
+/// [`resolve_implements`] (producer side) and the `depends_on.contracts`
 /// resolution path (consumer side).
 pub(crate) fn resolve_contract_doc(
     peppy_dirs: &PeppyDirs,
@@ -314,98 +285,242 @@ pub(crate) fn resolve_contract_doc(
     )
 }
 
-/// Resolves every `interfaces.conforms_to` entry against the local interface
-/// cache and returns the pulled interface's topics/services/actions as a
-/// `Vec<DeploymentInterface>` ready to feed [`generator::generate_peppygen_lib`].
+/// Error from [`resolve_implements`]. Tier B coverage failures keep their
+/// per-slot [`ContractCoverageMismatch`] payloads so callers can render or
+/// match each slot's diff individually; every other failure is a plain
+/// message, matching the sync module's string error contract.
+#[derive(Debug)]
+pub enum ImplementsError {
+    /// One aggregated set-diff per broken slot.
+    Coverage(Vec<ContractCoverageMismatch>),
+    Other(String),
+}
+
+impl std::fmt::Display for ImplementsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Coverage(mismatches) => {
+                for (idx, mismatch) in mismatches.iter().enumerate() {
+                    if idx > 0 {
+                        f.write_str("; ")?;
+                    }
+                    write!(f, "{mismatch}")?;
+                }
+                Ok(())
+            }
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ImplementsError {}
+
+impl From<String> for ImplementsError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+/// Per-slot Tier B coverage bookkeeping: which contract members the manifest
+/// entries visited (with counts), plus names that matched no member of the
+/// right kind.
+#[derive(Default)]
+struct SlotCoverage {
+    visited: HashMap<InterfaceKind, HashMap<String, u32>>,
+    unknown: Vec<String>,
+    wrong_kind: Vec<String>,
+}
+
+/// Resolves the node's contract-backed produced entries (Decision 1:
+/// entries drive codegen). For every `{link_id, name}` entry in
+/// `topics.emits` / `services.exposes` / `actions.exposes`:
 ///
-/// Each returned `DeploymentInterface` is stamped with an
-/// [`InterfaceOrigin`] so the generator nests it under
-/// `emitted_topics/{iface_name}/{iface_tag}/{leaf}` (and similar for services
-/// and actions) and embeds the matching `(iface_name, iface_tag)` segments in
-/// the generated wire-path calls.
+/// entry -> implements slot -> contract document -> member (by name and
+/// kind) -> shape/qos, stamped with a [`ContractOrigin`] so the generator
+/// nests the artifact under `{contract_name}/{contract_tag}/{leaf}` and
+/// embeds the matching wire segments.
 ///
-/// Errors:
-/// - Duplicate raw `(name, tag)` entries (sha256 differences do not count).
-/// - Two entries that sanitize to the same `(iface_name, iface_tag)`, e.g.
-///   `v1` and `v-1` collide because the wire-path tag normalization replaces
-///   hyphens with underscores. Refusing this keeps generated symbols
-///   addressable without ambiguity.
-/// - Cache miss, which surfaces "run `peppy repo refresh`".
-/// - `sha256` pin set but the on-disk content has drifted.
-pub fn resolve_conforms_to(
+/// After resolution, the Tier B coverage check runs per (slot x kind): the
+/// contract-backed entries referencing a slot must cover every member of
+/// its contract exactly once, with no extras. Any discrepancy is reported
+/// as one aggregated set-diff per broken slot
+/// ([`ContractCoverageMismatch`]).
+///
+/// Contract documents resolve through the local cache with sha256 pinning
+/// and on-disk drift detection (see [`resolve_contract_doc`]); a cache miss
+/// surfaces "run `peppy repo refresh`".
+pub fn resolve_implements(
+    manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<Vec<DeploymentInterface>, String> {
-    let Some(items) = interfaces_cfg.conforms_to.as_ref() else {
-        return Ok(Vec::new());
-    };
-    if items.is_empty() {
+) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
+    if manifest.implements.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Sanitized-key collisions strictly dominate raw-key duplicates (an exact
-    // raw dup collides post-sanitize too), so one pass catches both. Compare
-    // the prior raw tag to distinguish "duplicate" from "collides after
-    // hyphen→underscore normalization" (e.g. `v1` vs `v-1`); both would
-    // generate to the same module path and wire segments.
-    let mut seen: HashMap<(String, String), String> = HashMap::new();
-    for item in items {
-        let sanitized_tag = item.tag.replace('-', "_");
-        let key = (item.name.as_str().to_string(), sanitized_tag);
-        if let Some(prior_tag) = seen.insert(key, item.tag.clone()) {
-            if prior_tag == item.tag {
-                return Err(format!(
-                    "duplicate `conforms_to` entry `{}:{}`",
-                    item.name.as_str(),
-                    item.tag
-                ));
-            }
-            return Err(format!(
-                "`conforms_to` entries `{}:{}` and `{}:{}` collide after \
-                 tag normalization (hyphens become underscores); rename one \
-                 to disambiguate",
-                item.name.as_str(),
-                prior_tag,
-                item.name.as_str(),
-                item.tag
-            ));
-        }
+    // Resolve each slot's contract document once, keeping the slot alongside
+    // so entry resolution recovers both with one lookup. Parse-time validation
+    // already rejected duplicate link_ids and duplicate (name, tag) pairs.
+    let mut docs: HashMap<
+        &str,
+        (
+            &config::node::ImplementsEntry,
+            daemon_config::contract::PeppyContract,
+        ),
+    > = HashMap::new();
+    for slot in &manifest.implements {
+        let parsed = resolve_contract_doc(
+            peppy_dirs,
+            slot.name.as_str(),
+            &slot.tag,
+            slot.sha256.as_deref(),
+            on_feedback,
+        )?;
+        docs.insert(slot.link_id.as_str(), (slot, parsed));
     }
 
     let mut out: Vec<DeploymentInterface> = Vec::new();
-    for item in items {
-        let name = item.name.as_str();
-        let tag = item.tag.as_str();
-        let parsed =
-            resolve_contract_doc(peppy_dirs, name, tag, item.sha256.as_deref(), on_feedback)?;
+    let mut coverage: HashMap<&str, SlotCoverage> = HashMap::new();
 
-        let origin = InterfaceOrigin {
-            iface_name: name.to_string(),
-            iface_tag: tag.to_string(),
+    for (kind, entry) in interfaces_cfg.contract_backed_entries() {
+        let name = entry.name.as_str();
+        let Some((slot, doc)) = docs.get(entry.link_id.as_str()) else {
+            // Parse-time validation guarantees every produced entry's
+            // link_id names an implements slot; reaching this means the
+            // config bypassed the parser.
+            return Err(ImplementsError::Other(format!(
+                "produced entry `{name}` references link_id `{}`, which matches no \
+                 `manifest.implements` slot",
+                entry.link_id
+            )));
+        };
+        let origin = ContractOrigin {
+            contract_name: slot.name.as_str().to_string(),
+            contract_tag: slot.tag.clone(),
+        };
+        let slot_coverage = coverage.entry(slot.link_id.as_str()).or_default();
+
+        let resolved = match kind {
+            InterfaceKind::Topic => doc
+                .interfaces
+                .topics
+                .iter()
+                .find(|t| t.name == name)
+                .map(|topic| DeploymentInterface::emitted_topic(topic.clone(), Some(origin))),
+            InterfaceKind::Service => doc
+                .interfaces
+                .services
+                .iter()
+                .find(|s| s.name == name)
+                .map(|service| DeploymentInterface::exposed_service(service.clone(), Some(origin))),
+            InterfaceKind::Action => doc
+                .interfaces
+                .actions
+                .iter()
+                .find(|a| a.name == name)
+                .map(|action| DeploymentInterface::exposed_action(action.clone(), Some(origin))),
         };
 
-        for topic in parsed.interfaces.topics {
-            out.push(DeploymentInterface::emitted_topic(
-                topic,
-                Some(origin.clone()),
-            ));
-        }
-        for service in parsed.interfaces.services {
-            out.push(DeploymentInterface::exposed_service(
-                service,
-                Some(origin.clone()),
-            ));
-        }
-        for action in parsed.interfaces.actions {
-            out.push(DeploymentInterface::exposed_action(
-                action,
-                Some(origin.clone()),
-            ));
+        match resolved {
+            Some(interface) => {
+                out.push(interface);
+                *slot_coverage
+                    .visited
+                    .entry(kind)
+                    .or_default()
+                    .entry(name.to_string())
+                    .or_insert(0) += 1;
+            }
+            None => {
+                // The entry's name was not found under `kind`, so any kind
+                // this returns is necessarily a different one.
+                match member_kind(doc, name) {
+                    Some(member_kind) => slot_coverage.wrong_kind.push(format!(
+                        "{name} (declared as {kind}, contract declares {member_kind})"
+                    )),
+                    None => slot_coverage.unknown.push(name.to_string()),
+                }
+            }
         }
     }
 
+    // Tier B coverage: per (slot x kind) set equality between the contract's
+    // members and the visited entries, aggregated into one diff per slot.
+    let mut broken: Vec<ContractCoverageMismatch> = Vec::new();
+    for slot in &manifest.implements {
+        let (_, doc) = &docs[slot.link_id.as_str()];
+        let empty = SlotCoverage::default();
+        let slot_coverage = coverage.get(slot.link_id.as_str()).unwrap_or(&empty);
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut duplicated: Vec<String> = Vec::new();
+        let members = doc
+            .interfaces
+            .topics
+            .iter()
+            .map(|t| (InterfaceKind::Topic, t.name.as_str()))
+            .chain(
+                doc.interfaces
+                    .services
+                    .iter()
+                    .map(|s| (InterfaceKind::Service, s.name.as_str())),
+            )
+            .chain(
+                doc.interfaces
+                    .actions
+                    .iter()
+                    .map(|a| (InterfaceKind::Action, a.name.as_str())),
+            );
+        for (kind, member_name) in members {
+            let visits = slot_coverage
+                .visited
+                .get(&kind)
+                .and_then(|members| members.get(member_name))
+                .copied()
+                .unwrap_or(0);
+            match visits {
+                0 => missing.push(format!("{member_name} ({kind})")),
+                1 => {}
+                _ => duplicated.push(format!("{member_name} ({kind})")),
+            }
+        }
+
+        if missing.is_empty()
+            && duplicated.is_empty()
+            && slot_coverage.unknown.is_empty()
+            && slot_coverage.wrong_kind.is_empty()
+        {
+            continue;
+        }
+        broken.push(ContractCoverageMismatch {
+            contract_name: slot.name.as_str().to_string(),
+            contract_tag: slot.tag.clone(),
+            link_id: slot.link_id.clone(),
+            missing,
+            unknown: slot_coverage.unknown.clone(),
+            duplicated,
+            wrong_kind: slot_coverage.wrong_kind.clone(),
+        });
+    }
+    if !broken.is_empty() {
+        return Err(ImplementsError::Coverage(broken));
+    }
+
     Ok(out)
+}
+
+/// The first kind under which a contract declares a member named `name`.
+fn member_kind(doc: &daemon_config::contract::PeppyContract, name: &str) -> Option<InterfaceKind> {
+    if doc.interfaces.topics.iter().any(|t| t.name == name) {
+        Some(InterfaceKind::Topic)
+    } else if doc.interfaces.services.iter().any(|s| s.name == name) {
+        Some(InterfaceKind::Service)
+    } else if doc.interfaces.actions.iter().any(|a| a.name == name) {
+        Some(InterfaceKind::Action)
+    } else {
+        None
+    }
 }
 
 /// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
@@ -423,15 +538,15 @@ pub fn stack_resolver(
 }
 
 #[cfg(test)]
-mod conforms_to_tests {
-    //! Exercises [`resolve_conforms_to`]: the cache-loading side of
-    //! `interfaces.conforms_to` resolution. The generator-side (module
-    //! nesting / wire-segment embedding) is verified by the integration
-    //! tests in `crates/generator-internal/tests/{rust,python}/conforms_to.rs`.
+mod implements_tests {
+    //! Exercises [`resolve_implements`]: the cache-loading, entry-driven
+    //! resolution and Tier B coverage side of `manifest.implements`. The
+    //! generator side (module nesting / wire-segment embedding) is verified
+    //! by the integration tests in
+    //! `crates/generator-internal/tests/{rust,python}/`.
 
     use super::*;
-    use config::node::{ConformsToItem, Interfaces};
-    use config::runtime::Name;
+    use config::node::{Interfaces, Manifest};
     use core_node_api::encoding::RepoSourceKind;
     use generator::InterfaceVariant;
     use std::fs;
@@ -487,45 +602,42 @@ mod conforms_to_tests {
         }
     }"#;
 
-    fn interfaces_with_conforms(items: Vec<ConformsToItem>) -> Interfaces {
-        Interfaces {
-            topics: None,
-            services: None,
-            actions: None,
-            conforms_to: Some(items),
-        }
+    fn manifest_with_implements(implements: &str) -> Manifest {
+        serde_json5::from_str(&format!(
+            r#"{{ name: "camera_node", tag: "v1", implements: [{implements}] }}"#
+        ))
+        .expect("manifest parses")
+    }
+
+    fn interfaces_from(json5: &str) -> Interfaces {
+        serde_json5::from_str(json5).expect("interfaces parses")
     }
 
     #[test]
-    fn returns_empty_when_no_conforms_to() {
+    fn returns_empty_when_no_implements() {
         let dirs = PeppyDirs::new(TempDir::new().unwrap().path().to_path_buf());
-        let cfg = Interfaces {
-            topics: None,
-            services: None,
-            actions: None,
-            conforms_to: None,
-        };
-        let out = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect("ok");
+        let manifest: Manifest = serde_json5::from_str(r#"{ name: "plain", tag: "v1" }"#).unwrap();
+        let out =
+            resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {}).expect("ok");
         assert!(out.is_empty());
     }
 
-    /// Happy path: a `conforms_to` entry whose `(name, tag)` is present in the
-    /// contracts cache yields the underlying contract's topics, each wrapped
-    /// as `EmittedTopic` and stamped with `origin` pointing back to the source
-    /// contract so downstream codegen can attribute the topic.
+    /// Happy path: a full-coverage manifest yields one DeploymentInterface
+    /// per contract-backed entry, each carrying the member's shape from the
+    /// contract document and a `ContractOrigin` pointing back at the source
+    /// contract.
     #[test]
-    fn resolves_cache_hit_with_origin() {
+    fn resolves_full_coverage_with_origin() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
-        let cfg = interfaces_with_conforms(vec![ConformsToItem {
-            name: Name::new("depth_camera").unwrap(),
-            tag: "v1".to_string(),
-            sha256: None,
-        }]);
+        let manifest =
+            manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
+        let interfaces =
+            interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let out = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect("happy path");
+        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {}).expect("happy path");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
             InterfaceVariant::EmittedTopic {
@@ -533,119 +645,188 @@ mod conforms_to_tests {
                 origin: Some(o),
             } => {
                 assert_eq!(topic.name, "video_stream");
-                assert_eq!(o.iface_name, "depth_camera");
-                assert_eq!(o.iface_tag, "v1");
+                assert_eq!(
+                    topic.qos_profile,
+                    config::node::QoSProfile::SensorData,
+                    "shape and qos come from the contract document"
+                );
+                assert_eq!(o.contract_name, "depth_camera");
+                assert_eq!(o.contract_tag, "v1");
             }
             other => panic!("expected EmittedTopic with origin, got {other:?}"),
         }
     }
 
     #[test]
+    fn partial_coverage_rejected_with_aggregated_diff() {
+        const UVC_BODY: &str = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "uvc_camera", tag: "v1" },
+            interfaces: {
+                topics: [ { name: "video_stream" } ],
+                services: [ { name: "video_stream_info" }, { name: "set_contrast" } ]
+            }
+        }"#;
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "uvc_camera", "v1", UVC_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest =
+            manifest_with_implements(r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#);
+        // Missing both services; carries one unknown extra.
+        let interfaces = interfaces_from(
+            r#"{
+                topics: { emits: [
+                    { link_id: "cam", name: "video_stream" },
+                    { link_id: "cam", name: "not_in_contract" },
+                ] },
+            }"#,
+        );
+
+        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+            .expect_err("partial coverage must error");
+        let ImplementsError::Coverage(mismatches) = &err else {
+            panic!("coverage failure must carry structured mismatches, got {err:?}");
+        };
+        assert_eq!(mismatches.len(), 1, "one broken slot, one mismatch");
+        let err = err.to_string();
+        assert!(
+            err.contains("uvc_camera:v1") && err.contains("cam"),
+            "error should name the contract and slot, got: {err}"
+        );
+        assert!(
+            err.contains("video_stream_info") && err.contains("set_contrast"),
+            "error should list every missing member at once, got: {err}"
+        );
+        assert!(
+            err.contains("not_in_contract"),
+            "error should list unknown names, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wrong_kind_entry_reported_in_diff() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest =
+            manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
+        // The contract's one topic listed under services.exposes.
+        let interfaces = interfaces_from(
+            r#"{ services: { exposes: [{ link_id: "cam", name: "video_stream" }] } }"#,
+        );
+
+        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+            .expect_err("wrong-kind entry must error")
+            .to_string();
+        assert!(
+            err.contains("video_stream") && err.contains("wrong kind"),
+            "error should flag the wrong-kind entry, got: {err}"
+        );
+        assert!(
+            err.contains("declared as service, contract declares topic"),
+            "error should say which kinds are involved, got: {err}"
+        );
+    }
+
+    /// One complete slot + one broken slot: the error names only the broken
+    /// one.
+    #[test]
+    fn multi_slot_error_names_only_the_broken_slot() {
+        const IMU_BODY: &str = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "imu", tag: "v1" },
+            interfaces: { topics: [ { name: "orientation" } ] }
+        }"#;
+        let tmp = TempDir::new().unwrap();
+        let depth = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let imu = seed_contract(tmp.path(), "imu", "v1", IMU_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[depth, imu]);
+
+        let manifest = manifest_with_implements(
+            r#"{ name: "depth_camera", tag: "v1", link_id: "cam" },
+               { name: "imu", tag: "v1", link_id: "motion" }"#,
+        );
+        // cam fully covered; motion missing its one topic.
+        let interfaces =
+            interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
+
+        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+            .expect_err("broken slot must error")
+            .to_string();
+        assert!(
+            err.contains("imu:v1") && err.contains("motion") && err.contains("orientation"),
+            "error should name the broken slot and its missing member, got: {err}"
+        );
+        assert!(
+            !err.contains("depth_camera:v1"),
+            "the complete slot must not be flagged, got: {err}"
+        );
+    }
+
+    /// A zero-member contract with zero entries is degenerately
+    /// coverage-complete.
+    #[test]
+    fn zero_member_contract_with_zero_entries_passes() {
+        const EMPTY_BODY: &str = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "empty_contract", tag: "v1" },
+            interfaces: {}
+        }"#;
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "empty_contract", "v1", EMPTY_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest =
+            manifest_with_implements(r#"{ name: "empty_contract", tag: "v1", link_id: "noop" }"#);
+        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
+            .expect("degenerate coverage passes");
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn cache_miss_suggests_repo_refresh() {
         // Empty cache; any lookup misses.
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
-        let cfg = interfaces_with_conforms(vec![ConformsToItem {
-            name: Name::new("depth_camera").unwrap(),
-            tag: "v1".to_string(),
-            sha256: None,
-        }]);
+        let manifest =
+            manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
 
-        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("miss must error");
+        let err = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
+            .expect_err("miss must error")
+            .to_string();
         assert!(
             err.contains("`depth_camera:v1`") && err.contains("peppy repo refresh"),
             "missing-from-cache error should name the entry and suggest refresh, got: {err}"
         );
     }
 
+    /// Services and actions resolve through the same entry-driven path with
+    /// origins stamped, including the (not-yet-used-in-production)
+    /// contract-declared action shape.
     #[test]
-    fn duplicate_raw_entries_are_rejected() {
+    fn resolves_service_and_action_members_with_origin() {
+        const ARM_BODY: &str = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "arm", tag: "v1" },
+            interfaces: {
+                services: [ { name: "control" } ],
+                actions: [ { name: "move_arm" } ]
+            }
+        }"#;
         let tmp = TempDir::new().unwrap();
-        let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let entry = seed_contract(tmp.path(), "arm", "v1", ARM_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
-        // Two entries with the same raw `(name, tag)`; sha256 differing
-        // should NOT rescue this case per the spec.
-        let cfg = interfaces_with_conforms(vec![
-            ConformsToItem {
-                name: Name::new("depth_camera").unwrap(),
-                tag: "v1".to_string(),
-                sha256: None,
-            },
-            ConformsToItem {
-                name: Name::new("depth_camera").unwrap(),
-                tag: "v1".to_string(),
-                sha256: Some("aaa".to_string()),
-            },
-        ]);
-
-        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("dup must error");
-        assert!(
-            err.contains("duplicate") && err.contains("depth_camera:v1"),
-            "duplicate error should name the entry, got: {err}"
+        let manifest = manifest_with_implements(r#"{ name: "arm", tag: "v1", link_id: "arm" }"#);
+        let interfaces = interfaces_from(
+            r#"{
+                services: { exposes: [{ link_id: "arm", name: "control" }] },
+                actions: { exposes: [{ link_id: "arm", name: "move_arm" }] },
+            }"#,
         );
-    }
 
-    #[test]
-    fn tag_sanitize_collisions_are_rejected() {
-        // `v_1` and `v-1` both sanitize to `v_1` after the hyphen→underscore
-        // pass that the wire-path and generated-symbol layers apply. Refuse
-        // rather than silently merge.
-        let tmp = TempDir::new().unwrap();
-        let entry_a = seed_contract(tmp.path(), "depth_camera", "v_1", DEPTH_V1_BODY);
-        let body_b = DEPTH_V1_BODY.replace("\"v1\"", "\"v-1\"");
-        let entry_b = seed_contract(tmp.path(), "depth_camera", "v-1", &body_b);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry_a, entry_b]);
-
-        let cfg = interfaces_with_conforms(vec![
-            ConformsToItem {
-                name: Name::new("depth_camera").unwrap(),
-                tag: "v_1".to_string(),
-                sha256: None,
-            },
-            ConformsToItem {
-                name: Name::new("depth_camera").unwrap(),
-                tag: "v-1".to_string(),
-                sha256: None,
-            },
-        ]);
-
-        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("collision must error");
-        assert!(
-            err.contains("collide") && err.contains("normalization"),
-            "sanitize-collision error should mention collision + normalization, got: {err}"
-        );
-    }
-
-    const ARM_V1_WITH_SERVICE_AND_ACTION: &str = r#"{
-        peppy_schema: "contract/v1",
-        manifest: { name: "arm", tag: "v1" },
-        interfaces: {
-            services: [
-                { name: "control" }
-            ],
-            actions: [
-                { name: "move_arm" }
-            ]
-        }
-    }"#;
-
-    /// A `conforms_to` entry whose body declares a service AND an action must
-    /// yield both as `ExposedService`/`ExposedAction` variants stamped with
-    /// `Some(origin)` pointing back at the source interface. Mirrors
-    /// `resolves_cache_hit_with_origin` but exercises the non-topic variants.
-    #[test]
-    fn resolves_cache_hit_with_service_and_action_origin() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_contract(tmp.path(), "arm", "v1", ARM_V1_WITH_SERVICE_AND_ACTION);
-        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
-
-        let cfg = interfaces_with_conforms(vec![ConformsToItem {
-            name: Name::new("arm").unwrap(),
-            tag: "v1".to_string(),
-            sha256: None,
-        }]);
-
-        let out = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect("happy path");
+        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {}).expect("happy path");
 
         let mut saw_service = false;
         let mut saw_action = false;
@@ -656,8 +837,8 @@ mod conforms_to_tests {
                     origin: Some(o),
                 } => {
                     assert_eq!(service.name, "control");
-                    assert_eq!(o.iface_name, "arm");
-                    assert_eq!(o.iface_tag, "v1");
+                    assert_eq!(o.contract_name, "arm");
+                    assert_eq!(o.contract_tag, "v1");
                     saw_service = true;
                 }
                 InterfaceVariant::ExposedAction {
@@ -665,8 +846,8 @@ mod conforms_to_tests {
                     origin: Some(o),
                 } => {
                     assert_eq!(action.name, "move_arm");
-                    assert_eq!(o.iface_name, "arm");
-                    assert_eq!(o.iface_tag, "v1");
+                    assert_eq!(o.contract_name, "arm");
+                    assert_eq!(o.contract_tag, "v1");
                     saw_action = true;
                 }
                 other => panic!("unexpected resolved variant: {other:?}"),
@@ -682,7 +863,7 @@ mod conforms_to_tests {
         let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
         // Rewrite the underlying file so its fingerprint no longer matches
         // the cache's `sha256`, i.e. the cache thinks the file is X but it
-        // is now Y. resolve_conforms_to must catch this.
+        // is now Y. resolve_implements must catch this.
         fs::write(
             &entry.path,
             DEPTH_V1_BODY.replace("video_stream", "video_stream_v2"),
@@ -692,12 +873,13 @@ mod conforms_to_tests {
         // ensure load_contract_cache trusts it.
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
-        let cfg = interfaces_with_conforms(vec![ConformsToItem {
-            name: Name::new("depth_camera").unwrap(),
-            tag: "v1".to_string(),
-            sha256: None,
-        }]);
-        let err = resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("drift must error");
+        let manifest =
+            manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
+        let interfaces =
+            interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
+        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+            .expect_err("drift must error")
+            .to_string();
         assert!(
             err.contains("drifted") && err.contains("peppy repo refresh"),
             "drift error should mention drift + refresh, got: {err}"
@@ -707,7 +889,7 @@ mod conforms_to_tests {
     /// Seeds a local git repository at `repo_dir` with a single file at the
     /// given repo-relative path, then returns the branch name (e.g. "main"
     /// or "master") that `ensure_checkout` can target.
-    fn init_git_repo_with_interface(
+    fn init_git_repo_with_contract(
         repo_dir: &std::path::Path,
         repo_relative_path: &str,
         body: &str,
@@ -736,20 +918,20 @@ mod conforms_to_tests {
             .to_owned()
     }
 
-    /// Direct regression for the user-reported bug: a `conforms_to` entry
-    /// whose cache record is git-sourced (so `entry.path` is repo-relative)
-    /// must materialize the checkout via `ensure_checkout` and read from the
-    /// joined absolute path, not from CWD.
+    /// A `manifest.implements` slot whose cache record is git-sourced (so
+    /// `entry.path` is repo-relative) must materialize the checkout via
+    /// `ensure_checkout` and read from the joined absolute path, not from
+    /// CWD.
     #[test]
-    fn resolve_conforms_to_git_sourced_interface_reads_from_checkout() {
+    fn resolve_implements_git_sourced_contract_reads_from_checkout() {
         let peppy_tmp = TempDir::new().unwrap();
         let dirs = PeppyDirs::new(peppy_tmp.path().to_path_buf());
         fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
 
         let source_parent = TempDir::new().unwrap();
-        let source_repo_dir = source_parent.path().join("interfaces_hub");
+        let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_git_repo_with_interface(
+        let branch = init_git_repo_with_contract(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
@@ -773,14 +955,13 @@ mod conforms_to_tests {
         )
         .expect("write cache file");
 
-        let cfg = interfaces_with_conforms(vec![ConformsToItem {
-            name: Name::new("depth_camera").unwrap(),
-            tag: "v1".to_string(),
-            sha256: None,
-        }]);
+        let manifest =
+            manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
+        let interfaces =
+            interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let out = resolve_conforms_to(&cfg, &dirs, &|_| {})
-            .expect("git-sourced conforms_to should resolve");
+        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+            .expect("git-sourced implements should resolve");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
             InterfaceVariant::EmittedTopic {
@@ -788,8 +969,8 @@ mod conforms_to_tests {
                 origin: Some(o),
             } => {
                 assert_eq!(topic.name, "video_stream");
-                assert_eq!(o.iface_name, "depth_camera");
-                assert_eq!(o.iface_tag, "v1");
+                assert_eq!(o.contract_name, "depth_camera");
+                assert_eq!(o.contract_tag, "v1");
             }
             other => panic!("expected EmittedTopic with origin, got {other:?}"),
         }
@@ -801,15 +982,15 @@ mod conforms_to_tests {
     /// trigger the drift error even when the on-disk content lives in a
     /// git checkout the resolver has to materialize first.
     #[test]
-    fn resolve_conforms_to_git_sourced_drift_detected() {
+    fn resolve_implements_git_sourced_drift_detected() {
         let peppy_tmp = TempDir::new().unwrap();
         let dirs = PeppyDirs::new(peppy_tmp.path().to_path_buf());
         fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
 
         let source_parent = TempDir::new().unwrap();
-        let source_repo_dir = source_parent.path().join("interfaces_hub");
+        let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_git_repo_with_interface(
+        let branch = init_git_repo_with_contract(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
@@ -834,14 +1015,14 @@ mod conforms_to_tests {
         )
         .expect("write cache file");
 
-        let cfg = interfaces_with_conforms(vec![ConformsToItem {
-            name: Name::new("depth_camera").unwrap(),
-            tag: "v1".to_string(),
-            sha256: None,
-        }]);
+        let manifest =
+            manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
+        let interfaces =
+            interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let err =
-            resolve_conforms_to(&cfg, &dirs, &|_| {}).expect_err("git-sourced drift must error");
+        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+            .expect_err("git-sourced drift must error")
+            .to_string();
         assert!(
             err.contains("drifted") && err.contains("peppy repo refresh"),
             "drift error should mention drift + refresh, got: {err}"
@@ -871,7 +1052,7 @@ mod conforms_to_tests {
         let entry = seed_contract(tmp.path(), "uvc_camera", "v1", UVC_V1_BODY);
         let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
-        let manifest: config::node::Manifest = serde_json5::from_str(
+        let manifest: Manifest = serde_json5::from_str(
             r#"{
                 name: "uvc_consumer",
                 tag: "v1",
@@ -924,5 +1105,86 @@ mod conforms_to_tests {
             }
             other => panic!("expected ConsumedService variant, got {other:?}"),
         }
+    }
+
+    /// Node-dependency consumption resolves the producer's NATIVE entries
+    /// only; the same interface consumed via a contract dep is
+    /// contract-addressed.
+    #[test]
+    fn node_dep_consumption_is_native_only() {
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
+
+        let producer: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "hybrid", tag: "v1",
+                    implements: [{ name: "depth_camera", tag: "v1", link_id: "cam" }],
+                },
+                interfaces: {
+                    topics: { emits: [
+                        { link_id: "cam", name: "video_stream" },
+                        { name: "debug_stream", message_format: { x: "f64" } },
+                    ] },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        )
+        .expect("producer parses");
+
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "consumer",
+                tag: "v1",
+                depends_on: {
+                    nodes: [ { name: "hybrid", tag: "v1", link_id: "producer" } ]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+
+        // Native name resolves, node-addressed.
+        let native_cfg: Interfaces = serde_json5::from_str(
+            r#"{ topics: { consumes: [{ link_id: "producer", name: "debug_stream" }] } }"#,
+        )
+        .unwrap();
+        let out = collect_consumed_interfaces(
+            &manifest,
+            &native_cfg,
+            |name, _| (name == "hybrid").then(|| producer.clone()),
+            &dirs,
+            &|_| {},
+        )
+        .expect("native consumption resolves");
+        assert_eq!(out.len(), 1);
+        match out[0].interface() {
+            InterfaceVariant::ConsumedTopic { dependency, .. } => {
+                assert!(
+                    dependency.origin.is_none(),
+                    "node-dep consumption must be node-addressed"
+                );
+            }
+            other => panic!("expected ConsumedTopic, got {other:?}"),
+        }
+
+        // Contract-backed-only name does not resolve through the node dep
+        // (validate_dependency_specs reports the dedicated error upstream;
+        // resolution simply finds no native offering here).
+        let contract_backed_cfg: Interfaces = serde_json5::from_str(
+            r#"{ topics: { consumes: [{ link_id: "producer", name: "video_stream" }] } }"#,
+        )
+        .unwrap();
+        let out = collect_consumed_interfaces(
+            &manifest,
+            &contract_backed_cfg,
+            |name, _| (name == "hybrid").then(|| producer.clone()),
+            &dirs,
+            &|_| {},
+        )
+        .expect("collection itself does not fail");
+        assert!(
+            out.is_empty(),
+            "a contract-backed-only name must not resolve through a node dep"
+        );
     }
 }

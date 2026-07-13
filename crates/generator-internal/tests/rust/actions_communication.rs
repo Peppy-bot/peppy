@@ -11,7 +11,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    node::{ConsumedAction, ExposedAction, MessageFormat},
+    node::{ConsumedAction, MessageFormat, NativeExposedAction},
     runtime::{Name, RuntimeConfig},
 };
 use generator::{ConsumedActionMessage, LanguageGenerator};
@@ -184,7 +184,8 @@ fn main() -> Result<()> {
     // --- Exposer (server) project: ONE binary, spawned twice below.
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -535,7 +536,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -865,7 +867,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1231,7 +1234,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -1617,7 +1621,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -2004,7 +2009,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();
@@ -2396,7 +2402,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action, None).unwrap();

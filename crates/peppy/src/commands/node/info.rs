@@ -221,7 +221,19 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Emitted Topics:");
                 for topic in topics {
-                    let _ = writeln!(out, "  - {} (qos: {:?})", topic.name, topic.qos_profile);
+                    match topic.as_native() {
+                        Some(native) => {
+                            let _ = writeln!(
+                                out,
+                                "  - {} (qos: {:?})",
+                                native.name, native.qos_profile
+                            );
+                        }
+                        None => {
+                            let _ =
+                                writeln!(out, "  - {}{}", topic.name(), via_slot(topic.link_id()));
+                        }
+                    }
                 }
             }
 
@@ -234,7 +246,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Services:");
                 for service in services {
-                    let _ = writeln!(out, "  - {}", service.name);
+                    let _ = writeln!(out, "  - {}{}", service.name(), via_slot(service.link_id()));
                 }
             }
 
@@ -247,7 +259,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             {
                 let _ = writeln!(out, "Actions:");
                 for action in actions {
-                    let _ = writeln!(out, "  - {}", action.name);
+                    let _ = writeln!(out, "  - {}{}", action.name(), via_slot(action.link_id()));
                 }
             }
         }
@@ -337,6 +349,14 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     }
 
     let _ = writeln!(out);
+}
+
+/// Suffix naming the `manifest.implements` slot a contract-backed produced
+/// entry resolves through; empty for a native entry.
+fn via_slot(link_id: Option<&str>) -> String {
+    link_id
+        .map(|link_id| format!(" (via implements slot: {link_id})"))
+        .unwrap_or_default()
 }
 
 /// Render a parameter declaration: a primitive shows its type and optional

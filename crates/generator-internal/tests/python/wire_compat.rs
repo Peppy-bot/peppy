@@ -264,10 +264,8 @@ if __name__ == "__main__":
 
     let exposed_action = parse_producer_config_in_memory(ACTION_PRODUCER_CONFIG)
         .interfaces
-        .actions
-        .as_ref()
-        .and_then(|a| a.exposes.as_ref())
-        .and_then(|v| v.iter().find(|a| a.name == ACTION_NAME))
+        .native_action_exposes()
+        .find(|a| a.name == ACTION_NAME)
         .cloned()
         .expect("exposed action present in producer config");
 
@@ -645,10 +643,8 @@ if __name__ == "__main__":
 
     let exposed_service = parse_producer_config_in_memory(SERVICE_PRODUCER_CONFIG)
         .interfaces
-        .services
-        .as_ref()
-        .and_then(|s| s.exposes.as_ref())
-        .and_then(|v| v.iter().find(|s| s.name == SERVICE_NAME))
+        .native_service_exposes()
+        .find(|s| s.name == SERVICE_NAME)
         .cloned()
         .expect("exposed service present in producer config");
 
@@ -1002,10 +998,8 @@ if __name__ == "__main__":
 
     let emitted_topic = parse_producer_config_in_memory(TOPIC_PRODUCER_CONFIG)
         .interfaces
-        .topics
-        .as_ref()
-        .and_then(|t| t.emits.as_ref())
-        .and_then(|v| v.iter().find(|t| t.name == TOPIC_NAME))
+        .native_emits()
+        .find(|t| t.name == TOPIC_NAME)
         .cloned()
         .expect("emitted topic present in producer config");
 

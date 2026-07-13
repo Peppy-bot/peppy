@@ -1,5 +1,5 @@
 use config::AnyType;
-use config::node::ConformsToItem;
+use config::node::ImplementsEntry;
 use config::runtime::PairingSlotBinding;
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use core_node_api::encoding::{
@@ -313,15 +313,15 @@ fn pairs_to_map(
 ///
 /// - **Inert items**: one per already-running `(name, tag)` group. They
 ///   carry real `instances` (so stack-wide `instance_id` uniqueness can
-///   fire) and real `conforms_to` (so the new instance can still match
-///   them as a producer / contract-conformant target), but their
+///   fire) and real `implements` (so the new instance can still match
+///   them as a producer / contract-implementing target), but their
 ///   `depends_on` is `None`. Their declared slots were already resolved
 ///   when each instance was first spawned; forwarding the real
 ///   `depends_on` here (with the empty `bindings` we synthesize) would
 ///   pit the every-slot-bound rule against instances whose real bindings
 ///   live in their own boot configs.
 /// - **One live item**: for the synthesized new instance, carrying the
-///   target's real `depends_on` + `conforms_to`. This is the only item
+///   target's real `depends_on` + `implements`. This is the only item
 ///   whose bindings are validated and materialized.
 ///
 /// Returns `Ok(None)` on transient transport failures so the call site
@@ -359,7 +359,7 @@ async fn validate_binds_against_stack(
         name: String,
         tag: String,
         instances: Vec<DeploymentInstance>,
-        conforms_to: Vec<ConformsToItem>,
+        implements: Vec<ImplementsEntry>,
         pairing_deps: Vec<config::node::PairingDependency>,
     }
 
@@ -389,13 +389,13 @@ async fn validate_binds_against_stack(
     });
     let infos = futures::future::try_join_all(info_futures).await?;
 
-    // `(depends_on, conforms_to)` for the target node, harvested from
+    // `(depends_on, implements)` for the target node, harvested from
     // the snapshot if the target is already in the stack so we can
     // avoid a second `node_info` round-trip. Falls back to `None` /
     // empty when the target hasn't been added yet (also covers transient
     // misses below).
     let mut target_depends_on: Option<config::node::DependsOn> = None;
-    let mut target_conforms_to: Vec<ConformsToItem> = Vec::new();
+    let mut target_implements: Vec<ImplementsEntry> = Vec::new();
     let mut target_seen_in_stack = false;
 
     // Pairing slots of running instances that are exclusively claimed right
@@ -423,12 +423,7 @@ async fn validate_binds_against_stack(
         // entry so we don't need a second `node_info` call below.
         if node.name == target_name && node.tag == target_tag {
             target_depends_on = info.config.manifest.depends_on.clone();
-            target_conforms_to = info
-                .config
-                .interfaces
-                .conforms_to
-                .clone()
-                .unwrap_or_default();
+            target_implements = info.config.manifest.implements.clone();
             target_seen_in_stack = true;
         }
         // The validator only reads `instance_id` and `bindings` for
@@ -450,7 +445,7 @@ async fn validate_binds_against_stack(
             name: node.name.clone(),
             tag: node.tag.clone(),
             instances,
-            conforms_to: info.config.interfaces.conforms_to.unwrap_or_default(),
+            implements: info.config.manifest.implements.clone(),
             pairing_deps: info
                 .config
                 .manifest
@@ -481,12 +476,12 @@ async fn validate_binds_against_stack(
         });
         if let Some(info) = info_response {
             target_depends_on = info.config.manifest.depends_on;
-            target_conforms_to = info.config.interfaces.conforms_to.unwrap_or_default();
+            target_implements = info.config.manifest.implements;
         }
     }
 
     // The one live item: the synthesized new instance with the target's
-    // real `depends_on` + `conforms_to`. Lives in its own group so it
+    // real `depends_on` + `implements`. Lives in its own group so it
     // never inherits the inert `depends_on: None` of an existing target
     // group.
     let synthetic_instances = vec![DeploymentInstance {
@@ -511,7 +506,7 @@ async fn validate_binds_against_stack(
             node_tag: &s.tag,
             instances: &s.instances,
             depends_on: None,
-            conforms_to: &s.conforms_to,
+            implements: &s.implements,
         })
         .collect();
     items.push(BindingValidationItem {
@@ -519,7 +514,7 @@ async fn validate_binds_against_stack(
         node_tag: target_tag,
         instances: &synthetic_instances,
         depends_on: target_depends_on.as_ref(),
-        conforms_to: &target_conforms_to,
+        implements: &target_implements,
     });
 
     // Stamp resolved producer references with the daemon's core_node; the

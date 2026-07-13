@@ -59,10 +59,14 @@ fn resolve_pairing_doc_cached(
 /// link_id (ready for the codegen collection step):
 ///
 /// - the declared `role` must be one of the doc's two roles (the error
-///   names them);
-/// - two entries must not collide after tag normalization (same rule as
-///   `conforms_to`; exact duplicates of `(name, tag, role, link_id)` are
-///   already impossible because link_ids are unique).
+///   names them).
+///
+/// No tag-collision rule applies here: pairing slots are addressed by
+/// `link_id` everywhere (module paths, wire segments), and link_id
+/// uniqueness is enforced at parse time. The tag identifies the resolved
+/// pairing artifact instead: with the name and sha256 pin it forms the
+/// `(name, tag, sha256)` key each slot's document is looked up and cached
+/// under.
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
@@ -144,7 +148,7 @@ pub fn collect_pairing_interfaces(
             pairing_tag: dep.tag.clone(),
         };
         for topic in &doc.topics {
-            let emitted = config::node::EmittedTopic {
+            let emitted = config::node::NativeEmittedTopic {
                 name: topic.name.clone(),
                 qos_profile: topic.qos_profile.clone(),
                 message_format: topic.message_format.clone(),

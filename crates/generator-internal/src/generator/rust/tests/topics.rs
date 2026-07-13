@@ -1,6 +1,8 @@
 use super::*;
 use crate::error::Error;
-use config::node::{ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, MessageFormat};
+use config::node::{
+    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -92,7 +94,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 }
 "#;
 
-fn parse_emitted_topic(example: &str) -> EmittedTopic {
+fn parse_emitted_topic(example: &str) -> NativeEmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -169,6 +171,69 @@ fn emit_topic() {
     assert!(
         !rendered.contains("TopicMessenger::emit"),
         "TopicMessenger::emit should no longer be generated; got: {rendered}"
+    );
+}
+
+/// An emitted topic declared through a `manifest.implements` slot is
+/// contract-addressed: the generated declare_publisher splices
+/// `SenderTarget::contract(contract_name, contract_tag)` instead of the
+/// runtime's own node identity.
+#[test]
+fn emitted_topic_via_contract_origin_targets_contract() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let origin = crate::ContractOrigin {
+        contract_name: "depth_camera".to_string(),
+        contract_tag: "v1".to_string(),
+    };
+
+    let mut generator = RustGenerator::new();
+    generator.add_emitted_topic(&topic, Some(&origin)).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &["SenderTarget::contract(", "\"depth_camera\"", "\"v1\""],
+    );
+    assert_rendered!(
+        !rendered.contains("SenderTarget::node"),
+        rendered,
+        "a contract-backed emitted topic must be contract-addressed, not node-addressed",
+    );
+}
+
+/// A consumed topic pulled via a `depends_on.contracts` dependency addresses
+/// the producer as a contract: the generated subscribe call passes
+/// `SenderTarget::contract(contract_name, contract_tag)` instead of
+/// `SenderTarget::node(...)`.
+#[test]
+fn consumed_topic_via_contract_origin_targets_contract() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_consumed_topic(
+            &topic,
+            format,
+            &crate::DependencyContext::contract("camera_contract", "v2", "uvc_camera"),
+        )
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &["SenderTarget::contract(", "\"camera_contract\"", "\"v2\""],
+    );
+    assert_rendered!(
+        !rendered.contains("SenderTarget::node"),
+        rendered,
+        "a contract-origin dep must address the producer as a contract, not a node",
     );
 }
 

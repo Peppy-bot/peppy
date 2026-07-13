@@ -676,10 +676,12 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
 }
 
 /// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
-/// build phase is skipped), an optional `depends_on` block, and an optional
-/// top-level `interfaces` block. Mirrors `write_node_config` but accepts
-/// run_cmd as owned strings and manifest/interfaces extensions for tests
-/// that need to exercise binding resolution against `conforms_to`.
+/// build phase is skipped), optional `depends_on` / `implements` manifest
+/// blocks, and an optional top-level `interfaces` block. Mirrors
+/// `write_node_config` but accepts run_cmd as owned strings and
+/// manifest/interfaces extensions for tests that need to exercise binding
+/// resolution against `manifest.implements`.
+#[allow(clippy::too_many_arguments)]
 fn write_node_config_for_helper(
     nodes_directory: &Path,
     node_name: &str,
@@ -687,6 +689,7 @@ fn write_node_config_for_helper(
     git_hash: &str,
     run_cmd: &[String],
     depends_on_json5: Option<&str>,
+    implements_json5: Option<&str>,
     interfaces_json5: Option<&str>,
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
@@ -697,9 +700,12 @@ fn write_node_config_for_helper(
         .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
-    let manifest_extra = depends_on_json5
-        .map(|deps| format!(",\n            depends_on: {deps}"))
-        .unwrap_or_default();
+    let manifest_extra = implements_json5
+        .map(|implements| format!(",\n            implements: {implements}"))
+        .unwrap_or_default()
+        + &depends_on_json5
+            .map(|deps| format!(",\n            depends_on: {deps}"))
+            .unwrap_or_default();
     let interfaces_extra = interfaces_json5
         .map(|ifaces| format!(",\n            interfaces: {ifaces}"))
         .unwrap_or_default();
@@ -779,6 +785,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &producer_run_cmd,
         None,
         None,
+        None,
     );
 
     let consumer_run_cmd = vec![
@@ -799,6 +806,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         &git_hash,
         &consumer_run_cmd,
         Some(&consumer_depends_on),
+        None,
         None,
     );
 
@@ -1088,7 +1096,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
 }
 
 /// Writes a minimal `peppy_schema: "contract/v1"` document at `path` with
-/// a single `video_stream` topic. Used by the conformance-binding
+/// a single `video_stream` topic. Used by the implementation-binding
 /// integration tests to materialize the contract document on disk
 /// alongside the producer/consumer node configs that reference it.
 fn write_contract_v1_doc(path: &Path, name: &str, tag: &str) {
@@ -1139,13 +1147,13 @@ fn write_contract_v1_doc_with_topic(
 }
 
 /// End-to-end check that a pinned contract binding resolves against
-/// the producer's `interfaces.conforms_to` declaration. Exercises a real
+/// the producer's `manifest.implements` declaration. Exercises a real
 /// `peppy_schema: "contract/v1"` document on disk alongside a `node/v1`
-/// producer declaring conformance and a `node/v1` consumer declaring
+/// producer implementing the contract and a `node/v1` consumer declaring
 /// the contract dep; pairs the unit-level binding validator tests
 /// with the full launch pipeline (cache resolution + daemon node-add).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
+async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1168,7 +1176,7 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
 
     // Materialize the contract document on disk and register
     // the containing directory as an fs-type repo. The launcher binding
-    // validator only inspects `conforms_to` claims, but the daemon's
+    // validator only inspects `implements` claims, but the daemon's
     // node-add path also resolves the contract document from cache
     // for consumers declaring `depends_on.contracts`; without the
     // repo refresh the consumer node-add would fail before
@@ -1193,11 +1201,11 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
         "-c".to_string(),
         "exec sleep 30".to_string(),
     ];
-    let producer_interfaces = format!(
-        r#"{{
-            conforms_to: [{{ name: "{contract_name}", tag: "{contract_tag}" }}]
-        }}"#
-    );
+    let producer_implements =
+        format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam" }}]"#);
+    let producer_interfaces = r#"{
+            topics: { emits: [{ link_id: "cam", name: "video_stream" }] }
+        }"#;
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -1205,7 +1213,8 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
         &git_hash,
         &producer_run_cmd,
         None,
-        Some(&producer_interfaces),
+        Some(&producer_implements),
+        Some(producer_interfaces),
     );
 
     let consumer_run_cmd = vec![
@@ -1233,6 +1242,7 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
         &git_hash,
         &consumer_run_cmd,
         Some(&consumer_depends_on),
+        None,
         None,
     );
 
@@ -1330,7 +1340,7 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
         },
     }
     .execute(&ctx)
-    .expect("launch should succeed with conforming producer");
+    .expect("launch should succeed with implementing producer");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
@@ -1365,17 +1375,17 @@ async fn stack_launch_resolves_conforms_to_binding_with_real_contract_doc() {
             &core_node_name,
             producer_instance_id
         )),
-        "contract dep `{link_id}` should resolve to the conforming producer's instance \
+        "contract dep `{link_id}` should resolve to the implementing producer's instance \
          stamped with the daemon's core_node",
     );
 }
 
-/// Contract satisfaction is determined solely by `interfaces.conforms_to`,
+/// Contract satisfaction is determined solely by `manifest.implements`,
 /// never by node identity: a producer whose node name coincidentally
 /// matches a consumer's contract dep name+tag but who declares no
-/// `conforms_to` must be rejected at binding validation.
+/// `implements` must be rejected at binding validation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
+async fn stack_launch_rejects_binding_when_producer_omits_implements() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1384,7 +1394,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
 
     // Contract name and producer node name intentionally collide on
     // `depth_camera:v1` to confirm the validator ignores node-identity
-    // coincidence and requires an explicit `conforms_to` declaration.
+    // coincidence and requires an explicit `implements` declaration.
     let contract_name = "depth_camera";
     let contract_tag = "v1";
     let producer_name = "depth_camera"; // intentional coincidence
@@ -1399,13 +1409,14 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
     write_contract_v1_doc(&contract_doc_path, contract_name, contract_tag);
 
     let run_cmd = vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()];
-    // Producer omits `interfaces.conforms_to` entirely.
+    // Producer omits `manifest.implements` entirely.
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
         node_tag,
         &git_hash,
         &run_cmd,
+        None,
         None,
         None,
     );
@@ -1427,6 +1438,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
         &git_hash,
         &run_cmd,
         Some(&consumer_depends_on),
+        None,
         None,
     );
 
@@ -1470,11 +1482,11 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
     .execute(&ctx);
 
     let err_msg = result
-        .expect_err("launch must fail when producer omits conforms_to")
+        .expect_err("launch must fail when producer omits implements")
         .to_string();
     assert!(
-        err_msg.contains("conforms_to"),
-        "error should mention conforms_to. Got:\n{err_msg}"
+        err_msg.contains("manifest.implements"),
+        "error should mention manifest.implements. Got:\n{err_msg}"
     );
     assert!(
         err_msg.contains(link_id),
@@ -1486,11 +1498,11 @@ async fn stack_launch_rejects_binding_when_producer_omits_conforms_to() {
     );
 }
 
-/// `conforms_to` matching is strict on `(name, tag)`: a producer
-/// declaring conformance to the right contract name but a different
-/// tag must be rejected at binding validation.
+/// `implements` matching is strict on `(name, tag)`: a producer
+/// implementing the right contract name but a different tag must be
+/// rejected at binding validation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
+async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1527,11 +1539,11 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
     );
 
     let run_cmd = vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()];
-    let producer_interfaces = format!(
-        r#"{{
-            conforms_to: [{{ name: "{contract_name}", tag: "{producer_claims_tag}" }}]
-        }}"#
-    );
+    let producer_implements =
+        format!(r#"[{{ name: "{contract_name}", tag: "{producer_claims_tag}", link_id: "cam" }}]"#);
+    let producer_interfaces = r#"{
+            topics: { emits: [{ link_id: "cam", name: "video_stream" }] }
+        }"#;
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -1539,7 +1551,8 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
         &git_hash,
         &run_cmd,
         None,
-        Some(&producer_interfaces),
+        Some(&producer_implements),
+        Some(producer_interfaces),
     );
 
     let consumer_depends_on = format!(
@@ -1559,6 +1572,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
         &git_hash,
         &run_cmd,
         Some(&consumer_depends_on),
+        None,
         None,
     );
 
@@ -1602,11 +1616,11 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
     .execute(&ctx);
 
     let err_msg = result
-        .expect_err("launch must fail when producer's conforms_to tag mismatches")
+        .expect_err("launch must fail when producer's implements tag mismatches")
         .to_string();
     assert!(
-        err_msg.contains("conforms_to"),
-        "error should mention conforms_to. Got:\n{err_msg}"
+        err_msg.contains("manifest.implements"),
+        "error should mention manifest.implements. Got:\n{err_msg}"
     );
     assert!(
         err_msg.contains(&format!("{contract_name}:{consumer_wants_tag}")),
@@ -1615,9 +1629,9 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_conforms_to() {
 }
 
 /// Bidirectional contract communication under explicit bindings: two
-/// nodes each emit one contract (`conforms_to`) and consume the other
+/// nodes each emit one contract (`manifest.implements`) and consume the other
 /// through a contract dep, each slot bound to the other instance in the
-/// launcher (conformance-matched, not node-identity-matched). The
+/// launcher (implements-matched, not node-identity-matched). The
 /// launcher must materialize both slots with the producer's full wire
 /// address, and the stack must come up regardless of deployment order.
 /// This is the end-to-end counterpart to the unit-level binding
@@ -1685,7 +1699,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     .expect("serialize repos");
     fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
-    // arm_controller: emits joint_commands (conforms_to joint_command_source),
+    // arm_controller: emits joint_commands (implements joint_command_source),
     // consumes joint_states through its `arm` slot (bound in the launcher).
     let controller_run_cmd = vec![
         "sh".to_string(),
@@ -1705,11 +1719,11 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             }}]
         }}"#
     );
-    let controller_interfaces = format!(
-        r#"{{
-            conforms_to: [{{ name: "{command_contract}", tag: "{contract_tag}" }}]
-        }}"#
-    );
+    let controller_implements =
+        format!(r#"[{{ name: "{command_contract}", tag: "{contract_tag}", link_id: "cmd_out" }}]"#);
+    let controller_interfaces = r#"{
+            topics: { emits: [{ link_id: "cmd_out", name: "joint_commands" }] }
+        }"#;
     let controller_path = write_node_config_for_helper(
         nodes_dir.path(),
         controller_name,
@@ -1717,10 +1731,11 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         &git_hash,
         &controller_run_cmd,
         Some(&controller_depends_on),
-        Some(&controller_interfaces),
+        Some(&controller_implements),
+        Some(controller_interfaces),
     );
 
-    // robot_arm: emits joint_states (conforms_to joint_state_source),
+    // robot_arm: emits joint_states (implements joint_state_source),
     // consumes joint_commands through its `controller` slot, bound back
     // to the controller in the launcher (every declared slot must be
     // bound).
@@ -1742,11 +1757,11 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             }}]
         }}"#
     );
-    let arm_interfaces = format!(
-        r#"{{
-            conforms_to: [{{ name: "{state_contract}", tag: "{contract_tag}" }}]
-        }}"#
-    );
+    let arm_implements =
+        format!(r#"[{{ name: "{state_contract}", tag: "{contract_tag}", link_id: "state_out" }}]"#);
+    let arm_interfaces = r#"{
+            topics: { emits: [{ link_id: "state_out", name: "joint_states" }] }
+        }"#;
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
         arm_name,
@@ -1754,7 +1769,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         &git_hash,
         &arm_run_cmd,
         Some(&arm_depends_on),
-        Some(&arm_interfaces),
+        Some(&arm_implements),
+        Some(arm_interfaces),
     );
 
     let ctx = Arc::new(
@@ -1970,6 +1986,7 @@ async fn stack_launch_rejects_unbound_slot() {
         &consumer_run_cmd,
         Some(&consumer_depends_on),
         None,
+        None,
     );
 
     let ctx = Arc::new(
@@ -2084,6 +2101,7 @@ async fn stack_launch_establishes_launcher_pairings() {
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
         ),
         None,
+        None,
     );
     let ctrl_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -2094,6 +2112,7 @@ async fn stack_launch_establishes_launcher_pairings() {
         Some(
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
         ),
+        None,
         None,
     );
 
@@ -2229,6 +2248,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
         Some(
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
         ),
+        None,
         None,
     );
 

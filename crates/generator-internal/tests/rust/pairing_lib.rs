@@ -8,7 +8,7 @@
 //! `peppylib::runtime::{subscribe_peer, NodeRunner::peer}`.
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::node::EmittedTopic;
+use config::node::NativeEmittedTopic;
 use generator::LanguageGenerator;
 use generator::PeerContext;
 use std::fs;
@@ -55,8 +55,8 @@ fn controller_peer_context() -> PeerContext {
 #[test]
 fn generated_peer_modules_compile_against_peppylib() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
-    let commands: EmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
-    let states: EmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
+    let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
+    let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
     let (mut generator, output_dir, user_node, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);

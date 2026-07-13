@@ -120,7 +120,7 @@ pub enum Error {
     /// A service or action dependency forms a cycle, whether routed directly
     /// or through a contract. Caller-driven request/response cycles deadlock
     /// at runtime, so only topics may be bidirectional. Detection is
-    /// type-level, so a service/action contract with several conforming
+    /// type-level, so a service/action contract with several implementing
     /// providers can be rejected even when a specific binding would avoid the
     /// cycle: pin the binding or split the contract.
     #[error(

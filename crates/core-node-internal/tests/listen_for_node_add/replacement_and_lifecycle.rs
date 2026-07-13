@@ -112,7 +112,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             .topics
             .as_ref()
             .and_then(|t| t.emits.as_ref())
-            .is_some_and(|topics| topics.iter().any(|topic| topic.name == "/example")),
+            .is_some_and(|topics| topics.iter().any(|topic| topic.name() == "/example")),
         "node should have updated interfaces from the overwritten config"
     );
     drop(entity_guard);
@@ -291,7 +291,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         let exposed: Vec<&str> = services
             .exposes
             .as_ref()
-            .map(|v| v.iter().map(|s| s.name.as_str()).collect())
+            .map(|v| v.iter().map(|s| s.name()).collect())
             .unwrap_or_default();
         assert!(
             exposed.contains(&"reset_sensor"),
@@ -1369,7 +1369,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             .as_ref()
             .and_then(|s| s.exposes.as_ref())
             .expect("v1 services.exposes should be present");
-        let names: Vec<&str> = exposes.iter().map(|svc| svc.name.as_str()).collect();
+        let names: Vec<&str> = exposes.iter().map(|svc| svc.name()).collect();
         assert!(
             names.contains(&"reset_sensor"),
             "v1 `reset_sensor` should still be exposed after failed overwrite, got: {:?}",

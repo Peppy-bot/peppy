@@ -541,7 +541,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"], &[], None)?;
+        let mut cmd = self.command(&["--version"], &[], None, None)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -771,6 +771,7 @@ impl Apptainer {
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
+            working_dir: None,
         }
     }
 
@@ -789,6 +790,7 @@ impl Apptainer {
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
+            working_dir: None,
         }
     }
 
@@ -806,6 +808,7 @@ impl Apptainer {
             bind_mounts: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
+            working_dir: None,
         }
     }
 
@@ -871,9 +874,19 @@ impl Apptainer {
 
     /// Build a [`Command`] that will invoke apptainer with the given arguments.
     ///
-    /// On Linux: runs `{apptainer_bin} <args...>` directly.
+    /// On Linux: runs `{apptainer_bin} <args...>` directly, with `working_dir`
+    /// (when set) applied via [`Command::current_dir`].
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
-    /// execute inside the Lima VM using the synced guest-side binary.
+    /// execute inside the Lima VM using the synced guest-side binary. A
+    /// `working_dir` is translated via [`translate_path`](Self::translate_path)
+    /// and entered by an explicit, loudly-failing `cd` inside the guest wrapper.
+    /// It must NOT be applied as the host command's `current_dir`: `limactl
+    /// shell` propagates the host cwd into the guest with a NON-fatal `cd`, and
+    /// the kernel reports the cwd in canonical form (`/private/var/…`) while the
+    /// Lima mount exists in the guest only at its literal lima.yaml location
+    /// (`/var/folders/…`) — so the propagation silently falls back to the guest
+    /// home directory and relative paths (a def file's `%files .`) resolve
+    /// against `$HOME` instead of the working dir.
     ///
     /// `guest_pgid_file` (Lima only) wraps the guest invocation so apptainer runs
     /// as a process-group leader recording its PGID there; see
@@ -884,11 +897,15 @@ impl Apptainer {
         args: &[&str],
         lima_shell_extra_args: &[String],
         guest_pgid_file: Option<&Path>,
+        working_dir: Option<&Path>,
     ) -> Result<Command> {
         match &self.backend {
             Backend::Native { apptainer_bin } => {
                 let mut cmd = Command::new(apptainer_bin);
                 cmd.args(args);
+                if let Some(dir) = working_dir {
+                    cmd.current_dir(dir);
+                }
                 Ok(cmd)
             }
             Backend::Lima {
@@ -897,16 +914,27 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
+                let guest_workdir = working_dir
+                    .map(|dir| self.translate_path(dir))
+                    .transpose()?;
                 let mut cmd = lima::lima_shell_base(limactl_path, lima_home, lima::LIMA_INSTANCE);
                 for arg in lima_shell_extra_args {
                     cmd.arg(arg);
                 }
                 cmd.arg("--");
-                match guest_pgid_file {
-                    Some(pgid_file) => {
-                        cmd.args(lima::lima_guest_pgid_argv(apptainer_bin, args, pgid_file));
+                match (guest_pgid_file, guest_workdir.as_deref()) {
+                    (Some(pgid_file), workdir) => {
+                        cmd.args(lima::lima_guest_pgid_argv(
+                            apptainer_bin,
+                            args,
+                            pgid_file,
+                            workdir,
+                        ));
                     }
-                    None => {
+                    (None, Some(workdir)) => {
+                        cmd.args(lima::lima_guest_workdir_argv(apptainer_bin, args, workdir));
+                    }
+                    (None, None) => {
                         cmd.arg(apptainer_bin);
                         cmd.args(args);
                     }
@@ -1101,6 +1129,9 @@ pub struct ApptainerCommand<'a> {
     /// Meaningful for `build` (cancel an in-flight `--force` supersede) and `run`
     /// (force-stop the in-VM workload on daemon teardown).
     cancel_pgid_path: Option<PathBuf>,
+    /// Host-side working directory for the apptainer process. See
+    /// [`ApptainerCommand::working_dir`].
+    working_dir: Option<PathBuf>,
 }
 
 impl<'a> ApptainerCommand<'a> {
@@ -1177,6 +1208,25 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
+    /// Run the apptainer process from `dir` (a host-side path), so relative
+    /// paths — chiefly a build def's `%files` sources like the generated
+    /// `%files . /opt/{name}` — resolve against it.
+    ///
+    /// On the native backend (Linux) this is applied as the child's
+    /// `current_dir`. Under Lima (macOS) the path is translated to its
+    /// guest-visible form and entered by an explicit `cd` inside the guest
+    /// wrapper that ABORTS the command if the directory is not accessible.
+    /// Callers must use this instead of setting `current_dir` on the returned
+    /// [`Command`]: `limactl shell`'s own host-cwd propagation canonicalizes
+    /// the path (`/var/folders/…` → `/private/var/…`), misses the literal
+    /// Lima mount location in the guest, and falls back to the guest home
+    /// directory WITHOUT failing — which once made a build's `%files .` copy
+    /// the user's entire `$HOME` into the image.
+    pub fn working_dir(mut self, dir: &Path) -> Self {
+        self.working_dir = Some(dir.to_path_buf());
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Generic flag / args
     // -----------------------------------------------------------------------
@@ -1236,6 +1286,7 @@ impl<'a> ApptainerCommand<'a> {
             &str_args,
             &self.lima_shell_extra_args,
             self.cancel_pgid_path.as_deref(),
+            self.working_dir.as_deref(),
         )
     }
 

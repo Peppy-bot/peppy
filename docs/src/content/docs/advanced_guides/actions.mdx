@@ -775,7 +775,7 @@ Without a single bound producer, a goal request would be broadcast to every matc
 The launcher validator runs these checks before the stack starts:
 
 1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys and no unbound slots: a declared slot with no binding entry fails the launch before anything is spawned.
-2. **Every target must satisfy the slot.** A binding whose target `instance_id` deploys a different node than the slot expects (or one that does not conform to the requested interface) is rejected.
+2. **Every target must satisfy the slot.** A binding whose target `instance_id` deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
 3. **One binding per slot.** `KEY` uniqueness within a single invocation is enforced (no two bindings on the same client may share the same `KEY`).
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
 5. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, so generated calls address exactly one producer and never match on `instance_id` alone.

@@ -9,7 +9,6 @@ pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
-use config::node::{EmittedTopic, ExposedAction, ExposedService};
 use config::{
     consts::NODE_CONFIG_FILE,
     node::{NodeConfigParser, PeppygenLanguage},
@@ -18,7 +17,7 @@ use daemon_config::consts::PeppyDirs;
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, io::ErrorKind, path::Path};
-use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
+use types::{DeploymentInterface, LanguageGenerator};
 
 /// Generate an interface library for the given language from a node directory.
 ///
@@ -128,91 +127,35 @@ pub fn generate_peppygen_lib(
     Ok(())
 }
 
-/// Collects all exposed interfaces from a NodeConfig into DeploymentInterface instances.
+/// Collects the node's own NATIVE exposed interfaces from a NodeConfig into
+/// DeploymentInterface instances. Contract-backed entries are skipped here:
+/// their shapes live in the contract documents, which the daemon resolves
+/// (with the Tier B coverage check) into the pre-resolved interface vec this
+/// function's output is merged with.
 fn collect_exposed_interfaces(
     config: &config::node::NodeConfig,
     extra_capacity: usize,
 ) -> Vec<DeploymentInterface> {
-    let mut interfaces =
-        Vec::with_capacity(count_exposed_interfaces(config).saturating_add(extra_capacity));
-
-    push_interfaces(
-        &mut interfaces,
-        config
-            .interfaces
-            .topics
-            .as_ref()
-            .and_then(|topics| topics.emits.as_deref()),
-        |topic: EmittedTopic| InterfaceVariant::EmittedTopic {
-            topic,
-            origin: None,
-        },
-    );
-    push_interfaces(
-        &mut interfaces,
-        config
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|services| services.exposes.as_deref()),
-        |service: ExposedService| InterfaceVariant::ExposedService {
-            service,
-            origin: None,
-        },
-    );
-    push_interfaces(
-        &mut interfaces,
-        config
-            .interfaces
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.exposes.as_deref()),
-        |action: ExposedAction| InterfaceVariant::ExposedAction {
-            action,
-            origin: None,
-        },
-    );
-
-    interfaces
-}
-
-fn count_exposed_interfaces(config: &config::node::NodeConfig) -> usize {
-    config
-        .interfaces
-        .topics
-        .as_ref()
-        .and_then(|topics| topics.emits.as_ref())
-        .map_or(0, Vec::len)
-        + config
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|services| services.exposes.as_ref())
-            .map_or(0, Vec::len)
-        + config
-            .interfaces
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.exposes.as_ref())
-            .map_or(0, Vec::len)
-}
-
-fn push_interfaces<T, F>(interfaces: &mut Vec<DeploymentInterface>, items: Option<&[T]>, wrap: F)
-where
-    T: Clone,
-    F: Fn(T) -> InterfaceVariant,
-{
-    let Some(items) = items else {
-        return;
-    };
-
+    let mut interfaces = Vec::with_capacity(extra_capacity);
     interfaces.extend(
-        items
-            .iter()
-            .cloned()
-            .map(wrap)
-            .map(DeploymentInterface::new),
+        config
+            .interfaces
+            .native_emits()
+            .map(|topic| DeploymentInterface::emitted_topic(topic.clone(), None)),
     );
+    interfaces.extend(
+        config
+            .interfaces
+            .native_service_exposes()
+            .map(|service| DeploymentInterface::exposed_service(service.clone(), None)),
+    );
+    interfaces.extend(
+        config
+            .interfaces
+            .native_action_exposes()
+            .map(|action| DeploymentInterface::exposed_action(action.clone(), None)),
+    );
+    interfaces
 }
 
 fn generate_with_backend<B>(

@@ -11,7 +11,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    node::{ConsumedService, ExposedService, MessageFormat},
+    node::{ConsumedService, MessageFormat, NativeExposedService},
     runtime::{Name, RuntimeConfig},
 };
 use generator::LanguageGenerator;
@@ -146,7 +146,8 @@ fn main() -> Result<()> {
     let exposer_instance_id = "the_exposer";
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator
@@ -452,7 +453,7 @@ fn main() -> Result<()> {
     let exposer_instance_id = "the_exposer";
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_service: ExposedService =
+    let exposed_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
@@ -756,7 +757,8 @@ fn main() -> Result<()> {
     let exposer1_instance_id = "exposer1_instance";
     let temp_dir_exposer1 = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer1, STUB_NODE_CONFIG);
     generator
@@ -817,7 +819,8 @@ fn main() -> Result<()> {
     let exposer2_instance_id = "exposer2_instance";
     let temp_dir_exposer2 = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
-    let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service2: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer2, STUB_NODE_CONFIG);
     generator

@@ -218,7 +218,7 @@ const NOTE_WRAP_COLS: usize = 18;
 /// The `edge` cell, tinted with the shared `stack` palette and wrapped onto
 /// three lines so the (often long) node identities never force a wide column:
 /// the consumer, then the kind arrow + producer (`➔` for an interface-
-/// conformance edge, `→` for a direct one), then the consumed interface indented
+/// implementation edge, `→` for a direct one), then the consumed interface indented
 /// beneath the producer. The column then only needs to fit the widest single
 /// node label rather than the whole `from → to/iface` string. Node labels are
 /// cyan, as `stack list` colors them. Mirrors [`InterfaceLatency::edge_label`]
@@ -354,7 +354,7 @@ fn benchmark_legend(colorize: bool) -> String {
         "\
 Legend:
   edge       →  direct dependency (depends_on.nodes)
-             ➔  resolved through contract conformance (the note names the contract)
+             ➔  resolved through contract implementation (the note names the contract)
   synthetic  round-trips on a single clock; the producer's framework replies and
              handlers never run, with payloads sized from the message schema
              {svc}  round-trip to the service
@@ -403,7 +403,7 @@ fn display_rows(
                     fmt_duration(Duration::from_nanos(ns))
                 }
             };
-            // The `➔` arrow + legend already say "via contract conformance",
+            // The `➔` arrow + legend already say "via contract implementation",
             // so the note only names the contract (tinted like the labels it
             // relates), followed by any measurement diagnostic / payload summary.
             // Wrapped so a long note doesn't widen the whole table.
@@ -479,8 +479,8 @@ mod tests {
     }
 
     /// Rows mirroring the real stack: a direct action edge, an interface-
-    /// conformance topic edge measured both ways (node-probe + delivery), and an
-    /// contract-conformance service-probe edge whose payload note is long
+    /// contract topic edge measured both ways (node-probe + delivery), and an
+    /// contract-implementation service-probe edge whose payload note is long
     /// enough to exercise wrapping.
     fn sample_rows() -> Vec<InterfaceLatency> {
         vec![
@@ -547,10 +547,10 @@ mod tests {
             direct,
             "my_python_robot_backbone:v1\n→ my_python_robot_arm:v1\n  /move_arm"
         );
-        // Contract-conformance edge uses the heavy arrow.
-        let conformance = edge_cell(&rows[1], false);
+        // Contract-implementation edge uses the heavy arrow.
+        let contract_edge = edge_cell(&rows[1], false);
         assert_eq!(
-            conformance,
+            contract_edge,
             "uvc_camera_video_reconstruction:v1\n➔ uvc_camera_python_mock:v1\n  /video_stream"
         );
     }

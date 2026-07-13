@@ -14,10 +14,10 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
-fn init_test_data_dir() -> (TempDir, PeppyDirs) {
+fn init_test_data_dir() -> (Option<TempDir>, PeppyDirs) {
     let dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
-    (dir, peppy_dirs)
+    (Some(dir), peppy_dirs)
 }
 
 pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
@@ -44,7 +44,10 @@ pub struct StartedCoreNode {
     /// and assert the shutdown-time suppression (no spurious "became unhealthy",
     /// no crash relabeling of intentionally-stopped nodes).
     pub shutdown_token: tokio_util::sync::CancellationToken,
-    _data_dir: TempDir,
+    /// `Some` for the default random-root starters (dropped with the test).
+    /// `None` when the peppy root is a stable path the caller manages (see
+    /// [`start_core_node_with_mock_messenger_outside_home`]).
+    _data_dir: Option<TempDir>,
 }
 
 fn default_node_arguments() -> CoreNodeArguments {
@@ -70,6 +73,48 @@ pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
         shared_messenger,
         default_node_arguments(),
         data_dir,
+        peppy_dirs,
+        daemon_config::peppy_config::PeppyConfig::default(),
+    )
+    .await
+}
+
+/// Boots the core node with its peppy data root at a stable path under the
+/// system temp dir — i.e. outside `$HOME`, mirroring where dev binaries root
+/// their data (`$TMPDIR/.peppy`, see `daemon_config::consts::resolve_root`).
+///
+/// Regression harness for container builds/runs from an outside-`$HOME` root:
+/// on macOS the Lima guest VM only auto-mounts `$HOME`, so container
+/// operations from this root only work when the daemon registers the root as
+/// an extra Lima mount (`Apptainer::ensure_host_mounts`). Every other starter
+/// roots under `test_tmp_root()` (inside the repo, under `$HOME`), which
+/// silently sidesteps that requirement.
+///
+/// The path is deliberately stable rather than a `TempDir`: registering a new
+/// mount rewrites `lima.yaml` and restarts the VM, and a random per-run path
+/// would pay that restart on every run (and disturb concurrently running
+/// container tests). With a stable path the restart happens at most once per
+/// machine. Contents are wiped on entry so runs stay independent.
+pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNode {
+    let root = std::env::temp_dir().join("peppy-test-outside-home-root");
+    if root.exists() {
+        for entry in std::fs::read_dir(&root).expect("read stable outside-home test root") {
+            let path = entry.expect("read dir entry").path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).expect("wipe stale test root subdir");
+            } else {
+                std::fs::remove_file(&path).expect("wipe stale test root file");
+            }
+        }
+    } else {
+        std::fs::create_dir_all(&root).expect("create stable outside-home test root");
+    }
+    let peppy_dirs = PeppyDirs::new(&root);
+    let shared_messenger = create_mock_messenger().await;
+    start_core_node_with_messenger(
+        shared_messenger,
+        default_node_arguments(),
+        None,
         peppy_dirs,
         daemon_config::peppy_config::PeppyConfig::default(),
     )
@@ -232,7 +277,7 @@ pub async fn start_core_node_with_health_monitor(
 async fn start_core_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
     node_arguments: CoreNodeArguments,
-    data_dir: TempDir,
+    data_dir: Option<TempDir>,
     peppy_dirs: PeppyDirs,
     peppy_config: daemon_config::peppy_config::PeppyConfig,
 ) -> StartedCoreNode {

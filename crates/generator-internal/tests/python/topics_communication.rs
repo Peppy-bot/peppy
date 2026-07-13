@@ -8,7 +8,7 @@ use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
-    node::{ConsumedTopic, EmittedTopic, ExposedService, MessageFormat},
+    node::{ConsumedTopic, MessageFormat, NativeEmittedTopic, NativeExposedService},
     runtime::{Name, RuntimeConfig},
 };
 use generator::LanguageGenerator;
@@ -56,7 +56,7 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
-    let frame_received_service: ExposedService =
+    let frame_received_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
     let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
-    let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
+    let emitted_topic: NativeEmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
     let emitter_parameters: config::ParameterSchema =

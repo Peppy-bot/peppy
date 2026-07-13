@@ -1,5 +1,5 @@
 use config::{
-    node::{EmittedTopic, ExposedAction, ExposedService},
+    node::{NativeEmittedTopic, NativeExposedAction, NativeExposedService},
     runtime::Name,
     schema::PeppySchema,
 };
@@ -20,8 +20,9 @@ where
 
 /// A reusable contract describing the topics, services, and actions a node
 /// claims to expose. Contract documents are stand-alone JSON5 files identified
-/// by `peppy_schema: "contract/v1"`; nodes reference them by name/tag to
-/// declare conformance.
+/// by `peppy_schema: "contract/v1"`; nodes claim them by name/tag in
+/// `manifest.implements` and list every member as an explicit contract-backed
+/// entry in their `interfaces` section.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PeppyContract {
@@ -59,8 +60,9 @@ where
 
 /// The body of a contract document. Each section is a flat list of items;
 /// there is no `emits`/`consumes` split because a contract describes the
-/// provider side only. Conformance for the consumer side is checked separately
-/// against the node's declared interfaces.
+/// provider side only. Members use the native (inline-shape) item types
+/// directly: a contract member is the source of shape, so the contract-backed
+/// `{link_id, name}` entry form node manifests use cannot appear here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
@@ -69,54 +71,54 @@ pub struct Interfaces {
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_topics"
     )]
-    pub topics: Vec<EmittedTopic>,
+    pub topics: Vec<NativeEmittedTopic>,
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_services"
     )]
-    pub services: Vec<ExposedService>,
+    pub services: Vec<NativeExposedService>,
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_actions"
     )]
-    pub actions: Vec<ExposedAction>,
+    pub actions: Vec<NativeExposedAction>,
 }
 
-fn deserialize_topics<'de, D>(deserializer: D) -> Result<Vec<EmittedTopic>, D::Error>
+fn deserialize_topics<'de, D>(deserializer: D) -> Result<Vec<NativeEmittedTopic>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<EmittedTopic>::deserialize(deserializer)?;
+    let items = Vec::<NativeEmittedTopic>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|t| t.name.as_str()), "topic")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ExposedService>, D::Error>
+fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<NativeExposedService>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<ExposedService>::deserialize(deserializer)?;
+    let items = Vec::<NativeExposedService>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|s| s.name.as_str()), "service")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<ExposedAction>, D::Error>
+fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<NativeExposedAction>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<ExposedAction>::deserialize(deserializer)?;
+    let items = Vec::<NativeExposedAction>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|a| a.name.as_str()), "action")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-/// Rejects empty/whitespace names and duplicates within a single list. Both
-/// states would otherwise survive parsing because the underlying item types
-/// default `name` to `""` for ergonomics in node configs.
+/// Rejects empty/whitespace names and duplicates within a single list, with
+/// contract-flavored messages (the shared item types report generic serde
+/// errors for a missing `name`; this catches the explicit-empty case).
 pub(crate) fn validate_named_items<'a>(
     names: impl Iterator<Item = &'a str>,
     kind: &'static str,
@@ -388,7 +390,7 @@ mod tests {
             peppy_schema: "contract/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
-                topics: [ { qos_profile: "standard" } ]
+                topics: [ { name: " ", qos_profile: "standard" } ]
             }
         }"#;
         let err =
@@ -476,7 +478,7 @@ mod tests {
                 labels: Some(vec!["vendor".to_string(), "sensor".to_string()]),
             },
             interfaces: Interfaces {
-                topics: vec![EmittedTopic {
+                topics: vec![NativeEmittedTopic {
                     name: "stream".to_string(),
                     qos_profile: QoSProfile::SensorData,
                     message_format: Some(MessageFormat(

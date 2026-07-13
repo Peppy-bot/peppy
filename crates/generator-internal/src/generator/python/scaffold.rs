@@ -7,7 +7,7 @@ use crate::generator::scaffold_tree::{
 };
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, ModuleCategory};
 #[cfg(test)]
-use crate::generator::types::{InterfaceKind, InterfaceOrigin};
+use crate::generator::types::{ContractOrigin, InterfaceKind};
 use rust_embed::Embed;
 use std::collections::HashMap;
 use std::fs;
@@ -126,7 +126,12 @@ pub fn add_peppylib_dependencies(
                         io::ErrorKind::NotFound,
                         format!(
                             "no embedded native extension found for platform \
-                             '{target_suffix}' (expected '{expected_so_name}')"
+                             '{target_suffix}' (expected '{expected_so_name}'). \
+                             Linux container bindings are only produced (or, \
+                             after a shared-crate change, refreshed) by a cross \
+                             build: rebuild peppy with PEPPY_CROSS_BUILD=1 \
+                             (scripts/build_release.sh does this) and restart \
+                             the daemon."
                         ),
                     )
                 })?;
@@ -304,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn write_tree_node_nests_conformed_artifacts() {
+    fn write_tree_node_nests_contract_backed_artifacts() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let native = InterfaceArtifact::for_leaf(
             None,
@@ -312,20 +317,20 @@ mod tests {
             InterfaceKind::EmittedTopic,
             String::from("NATIVE = True\n"),
         );
-        // A conformed origin nests the leaf under `{iface_name}/{iface_tag}/`,
+        // A contract origin nests the leaf under `{contract_name}/{contract_tag}/`,
         // i.e. module_path == ["depth_camera", "v1", "video_stream"].
-        let conformed_origin = InterfaceOrigin {
-            iface_name: "depth_camera".to_string(),
-            iface_tag: "v1".to_string(),
+        let contract_origin = ContractOrigin {
+            contract_name: "depth_camera".to_string(),
+            contract_tag: "v1".to_string(),
         };
-        let conformed = InterfaceArtifact::for_leaf(
-            Some(&conformed_origin),
+        let contract_backed = InterfaceArtifact::for_leaf(
+            Some(&contract_origin),
             "video_stream",
             InterfaceKind::EmittedTopic,
             String::from("CONFORMED = True\n"),
         );
 
-        let tree = build_module_tree(vec![native, conformed]);
+        let tree = build_module_tree(vec![native, contract_backed]);
         write_module_tree(temp_dir.path(), &tree, &mut PythonTreeWriter)
             .expect("tree should be written");
 
@@ -336,10 +341,10 @@ mod tests {
                 .join("depth_camera/v1/video_stream.py")
                 .exists()
         );
-        let conformed_code =
+        let contract_code =
             fs::read_to_string(temp_dir.path().join("depth_camera/v1/video_stream.py"))
-                .expect("conformed file should be readable");
-        assert!(conformed_code.contains("CONFORMED"));
+                .expect("contract-backed file should be readable");
+        assert!(contract_code.contains("CONFORMED"));
         let root_init = fs::read_to_string(temp_dir.path().join("__init__.py")).unwrap();
         assert!(root_init.contains("from . import video_stream"));
         assert!(root_init.contains("from . import depth_camera"));

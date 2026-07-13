@@ -1005,6 +1005,7 @@ fn lima_guest_pgid_argv_wraps_in_setsid_and_records_pgid() {
         Path::new("/opt/apptainer/bin/apptainer"),
         &["build", "/home/u/out.sif", "/home/u/node.def"],
         Path::new("/tmp/peppy/pgids/buildkey.pgid"),
+        None,
     );
 
     // `setsid -w sh -c <fixed script> sh <pgid_file> <apptainer_bin> <args...>`:
@@ -1035,6 +1036,84 @@ fn lima_guest_pgid_argv_wraps_in_setsid_and_records_pgid() {
     assert_eq!(argv[9], "/home/u/out.sif");
     assert_eq!(argv[10], "/home/u/node.def");
     assert_eq!(argv.len(), 11);
+}
+
+#[test]
+fn lima_guest_pgid_argv_with_workdir_cds_first_and_aborts_on_failure() {
+    let argv = super::lima::lima_guest_pgid_argv(
+        Path::new("/opt/apptainer/bin/apptainer"),
+        &["build", "/var/folders/x/T/.peppy/tmp/b/out.sif", "node.def"],
+        Path::new("/tmp/peppy/pgids/buildkey.pgid"),
+        Some(Path::new("/var/folders/x/T/.peppy/tmp/b")),
+    );
+
+    // Same wrapper as above with the working dir prepended as `$1`: the script
+    // `cd`s there FIRST and exits non-zero if it cannot. Relying on `limactl
+    // shell`'s host-cwd propagation instead is what once copied the user's
+    // entire $HOME into an image: the kernel canonicalizes the host cwd to
+    // `/private/var/…`, the guest mount only exists at `/var/folders/…`, and
+    // Lima's own failed `cd` is non-fatal, so `%files .` ran from the guest
+    // home directory.
+    assert_eq!(argv[0], "setsid");
+    assert_eq!(argv[1], "-w");
+    assert_eq!(argv[2], "sh");
+    assert_eq!(argv[3], "-c");
+    assert!(
+        argv[4].starts_with(
+            "cd \"$1\" || { echo \"peppy: guest working directory not accessible: $1\" >&2; \
+             exit 1; }; shift; "
+        ),
+        "script must cd to the working dir first and abort loudly on failure, got: {}",
+        argv[4]
+    );
+    assert!(
+        argv[4].ends_with(
+            "d=$(dirname \"$1\"); mkdir -p \"$d\"; echo $$ > \"$1\"; \
+             pgid=\"$1\"; shift; \"$@\"; __rc=$?; rm -f \"$pgid\"; exit $__rc"
+        ),
+        "after the cd prelude the pgid wrapper must be unchanged, got: {}",
+        argv[4]
+    );
+    assert_eq!(argv[5], "sh");
+    assert_eq!(
+        argv[6], "/var/folders/x/T/.peppy/tmp/b",
+        "`$1`: the guest working dir, consumed by the prelude's shift"
+    );
+    assert_eq!(
+        argv[7], "/tmp/peppy/pgids/buildkey.pgid",
+        "`$1` after the shift: the pgid file"
+    );
+    assert_eq!(argv[8], "/opt/apptainer/bin/apptainer");
+    assert_eq!(argv[9], "build");
+    assert_eq!(argv.len(), 12);
+}
+
+#[test]
+fn lima_guest_workdir_argv_cds_then_execs() {
+    let argv = super::lima::lima_guest_workdir_argv(
+        Path::new("/opt/apptainer/bin/apptainer"),
+        &["run", "img.sif"],
+        Path::new("/var/folders/x/T/.peppy/instances/i1"),
+    );
+
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+    assert!(
+        argv[2].starts_with("cd \"$1\" || "),
+        "script must cd to the working dir first, got: {}",
+        argv[2]
+    );
+    assert!(
+        argv[2].ends_with("shift; exec \"$@\""),
+        "script must exec apptainer after entering the working dir, got: {}",
+        argv[2]
+    );
+    assert_eq!(argv[3], "sh");
+    assert_eq!(argv[4], "/var/folders/x/T/.peppy/instances/i1");
+    assert_eq!(argv[5], "/opt/apptainer/bin/apptainer");
+    assert_eq!(argv[6], "run");
+    assert_eq!(argv[7], "img.sif");
+    assert_eq!(argv.len(), 8);
 }
 
 #[test]

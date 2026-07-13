@@ -1,26 +1,27 @@
-//! Generator-level test that a node exposing the same action `move` both
-//! natively and via two conformed interfaces (`arm:v1`, `arm:v2`) produces
-//! distinct generated files AND each `ActionMessenger::expose` call inside
-//! those files passes the matching `iface_name`/`iface_tag` literals.
+//! Generator-level test that a node exposing the same action `move_arm` both
+//! natively and via two contract-backed slots (`arm:v1`, `arm:v2`, each with a
+//! `ContractOrigin`) produces distinct generated files AND each
+//! `ActionMessenger::expose` call inside those files passes the matching
+//! `contract_name`/`contract_tag` literals.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    ActionServiceEndpoint, ExposedAction, MessageFormat, PeppygenLanguage, QoSProfile, SchemaType,
-    TypeToken,
+    ActionServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, QoSProfile,
+    SchemaType, TypeToken,
 };
 use generator::{
-    CrateDeployMode, DeploymentInterface, InterfaceOrigin, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
 use tempfile::TempDir;
 
-fn make_action(marker: &str) -> ExposedAction {
+fn make_action(marker: &str) -> NativeExposedAction {
     let mut req: IndexMap<String, SchemaType> = IndexMap::new();
     req.insert(marker.to_string(), SchemaType::Type(TypeToken::I32));
     let mut resp: IndexMap<String, SchemaType> = IndexMap::new();
     resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    ExposedAction {
+    NativeExposedAction {
         name: "move_arm".to_string(),
         goal_service: Some(ActionServiceEndpoint {
             request_message_format: Some(MessageFormat(req)),
@@ -32,12 +33,12 @@ fn make_action(marker: &str) -> ExposedAction {
     }
 }
 
-fn conformed(name: &str, tag: &str, action: ExposedAction) -> DeploymentInterface {
+fn contract_backed(name: &str, tag: &str, action: NativeExposedAction) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedAction {
         action,
-        origin: Some(InterfaceOrigin {
-            iface_name: name.to_string(),
-            iface_tag: tag.to_string(),
+        origin: Some(ContractOrigin {
+            contract_name: name.to_string(),
+            contract_tag: tag.to_string(),
         }),
     })
 }
@@ -68,26 +69,26 @@ const NODE_CONFIG: &str = r#"{
 }
 "#;
 
-/// One native `move` action plus two conformed `arm:v1`/`arm:v2` interfaces
-/// each exposing an action named `move`. Verifies:
-///   1. Conformed artifacts nest under
-///      `exposed_actions/{iface_name}/{iface_tag}/move_arm.rs` while the native
-///      artifact stays flat at `exposed_actions/move_arm.rs`.
+/// One native `move_arm` action plus two contract-backed `arm:v1`/`arm:v2`
+/// slots each exposing an action named `move_arm`. Verifies:
+///   1. Contract-backed artifacts nest under
+///      `exposed_actions/{contract_name}/{contract_tag}/move_arm.rs` while the
+///      native artifact stays flat at `exposed_actions/move_arm.rs`.
 ///   2. The category `exposed_actions.rs` lists the native leaf and one
-///      module entry per conforming interface.
+///      module entry per implemented contract.
 ///   3. Each leaf calls `peppylib::ActionMessenger::expose` with the matching
-///      sender target: `SenderTarget::interface("name", "tag")?` for conformed
+///      sender target: `SenderTarget::contract("name", "tag")?` for contract-backed
 ///      leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
 ///   4. Per-interface marker fields land in the right file.
 #[test]
-fn nests_conformed_actions_under_iface_name_and_tag() {
+fn nests_contract_backed_actions_under_contract_name_and_tag() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        conformed("arm", "v1", make_action("arm_v1_marker")),
-        conformed("arm", "v2", make_action("arm_v2_marker")),
+        contract_backed("arm", "v1", make_action("arm_v1_marker")),
+        contract_backed("arm", "v2", make_action("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -146,6 +147,10 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
+        arm_v1_src.contains("SenderTarget::contract("),
+        "arm v1 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{arm_v1_src}",
+    );
+    assert!(
         arm_v1_src.contains("\"arm\"") && arm_v1_src.contains("\"v1\""),
         "arm v1 leaf should pass `arm`,`v1`:\n{arm_v1_src}",
     );
@@ -155,6 +160,10 @@ fn nests_conformed_actions_under_iface_name_and_tag() {
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
+    assert!(
+        arm_v2_src.contains("SenderTarget::contract("),
+        "arm v2 leaf should be contract-addressed via `SenderTarget::contract(...)`:\n{arm_v2_src}",
+    );
     assert!(
         arm_v2_src.contains("\"arm\"") && arm_v2_src.contains("\"v2\""),
         "arm v2 leaf should pass `arm`,`v2`:\n{arm_v2_src}",

@@ -353,14 +353,28 @@ pub(super) async fn build_container_command(
     //     so an unintended mkdir is still visible to the operator.
     ensure_bind_sources(&binds[1..], log_file, feedback_tx)?;
 
-    // Ensure host paths outside $HOME are accessible in the Lima VM.
-    // Skip binds[0] (runtime config); it's always under $HOME.
-    if binds.len() > 1 {
-        let src_paths: Vec<&str> = binds[1..].iter().map(|b| b.src.as_str()).collect();
-        apptainer
-            .ensure_host_mounts(&src_paths)
-            .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
-    }
+    // Ensure host paths outside $HOME are accessible in the Lima VM. The
+    // peppy data root is always included: the SIF image, the instance
+    // working dir, and the runtime config (binds[0]) all live under it, and
+    // it sits outside `$HOME` in dev (rooted at `$TMPDIR/.peppy`).
+    // `ensure_host_mounts` filters home-relative paths and is a no-op on the
+    // native (Linux) backend. Runs on the blocking pool because a first-time
+    // mount registration restarts the Lima VM.
+    let peppy_root = peppy_dirs
+        .root()
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("peppy root path is not valid UTF-8"))?
+        .to_owned();
+    let mut src_paths: Vec<String> = vec![peppy_root];
+    // Skip binds[0] (runtime config); it's under the peppy root added above.
+    src_paths.extend(binds[1..].iter().map(|b| b.src.clone()));
+    let apptainer = tokio::task::spawn_blocking(move || {
+        let refs: Vec<&str> = src_paths.iter().map(String::as_str).collect();
+        apptainer.ensure_host_mounts(&refs).map(|()| apptainer)
+    })
+    .await
+    .map_err(|e| std::io::Error::other(format!("Host mount registration task failed: {}", e)))?
+    .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
 
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are
@@ -377,7 +391,15 @@ pub(super) async fn build_container_command(
     // node and, worse, a host var with a shell-invalid name silently breaks
     // apptainer's env-injection script and drops PEPPY_RUNTIME_CONFIG, making
     // the node fall back to standalone defaults. See `ApptainerCommand::clean_env`.
-    let mut apptainer_cmd = apptainer.run(sif_str).cancel_pgid(instance_id).clean_env();
+    // `working_dir` goes through the facade: on Linux it becomes the child's
+    // `current_dir`; under Lima the facade `cd`s inside the guest (aborting if
+    // the directory is not mounted) instead of relying on `limactl shell`'s
+    // silent, canonicalizing host-cwd propagation.
+    let mut apptainer_cmd = apptainer
+        .run(sif_str)
+        .working_dir(working_dir)
+        .cancel_pgid(instance_id)
+        .clean_env();
     for arg in apptainer_run_extra_args {
         apptainer_cmd = apptainer_cmd.raw_flag(arg);
     }
@@ -431,7 +453,6 @@ pub(super) async fn build_container_command(
 
     let mut command = Command::from(std_cmd);
     command
-        .current_dir(working_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

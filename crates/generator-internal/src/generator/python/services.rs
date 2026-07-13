@@ -4,25 +4,25 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
-use crate::generator::types::{InterfaceOrigin, non_empty_message_format};
-use config::node::{ConsumedService, ExposedService, MessageFormat};
+use crate::generator::types::{ContractOrigin, non_empty_message_format};
+use config::node::{ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
 /// generated `listen` / `poll` / `subscribe` / `emit` call:
-///   - non-`conforms_to` artifact → `peppylib.SenderTarget.node(<node_name_expr>, <node_tag_expr>)`
-///   - `interfaces.conforms_to`   → `peppylib.SenderTarget.interface("<name>", "<tag>")`
+///   - native artifact         -> `peppylib.SenderTarget.node(<node_name_expr>, <node_tag_expr>)`
+///   - contract-backed artifact -> `peppylib.SenderTarget.contract("<name>", "<tag>")`
 ///
 /// Consumer-side wildcard (`None`) is passed directly at the call site that
 /// needs it; this helper covers only the producer-known origin cases.
 pub(crate) fn sender_target_python_expr(
-    origin: Option<&InterfaceOrigin>,
+    origin: Option<&ContractOrigin>,
     node_name_expr: &str,
     node_tag_expr: &str,
 ) -> String {
     match origin {
         Some(o) => format!(
-            "peppylib.SenderTarget.interface({:?}, {:?})",
-            o.iface_name, o.iface_tag
+            "peppylib.SenderTarget.contract({:?}, {:?})",
+            o.contract_name, o.contract_tag
         ),
         None => format!("peppylib.SenderTarget.node({node_name_expr}, {node_tag_expr})"),
     }
@@ -46,10 +46,10 @@ pub(crate) fn emit_bound_producer_lookup(
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
-    service: &ExposedService,
+    service: &NativeExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
-    origin: Option<&InterfaceOrigin>,
+    origin: Option<&ContractOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 

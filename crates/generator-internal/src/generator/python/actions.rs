@@ -7,9 +7,9 @@ use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_pream
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{
-    ConsumedActionMessage, InterfaceOrigin, goal_action_response_format, non_empty_message_format,
+    ConsumedActionMessage, ContractOrigin, goal_action_response_format, non_empty_message_format,
 };
-use config::node::{ConsumedAction, ExposedAction};
+use config::node::{ConsumedAction, NativeExposedAction};
 
 // ---------------------------------------------------------------------------
 // Exposed actions
@@ -22,12 +22,12 @@ use config::node::{ConsumedAction, ExposedAction};
 /// accepts/rejects it, returning a per-goal `GoalContext` on accept. All
 /// routing/cancel/result/feedback behavior lives in the shared Rust engine.
 pub fn build_exposed_action(
-    action: &ExposedAction,
+    action: &NativeExposedAction,
     goal_request_schema_info: Option<&PythonSchemaInfo>,
     goal_response_schema_info: Option<&PythonSchemaInfo>,
     result_response_schema_info: Option<&PythonSchemaInfo>,
     feedback_schema_info: Option<&PythonSchemaInfo>,
-    origin: Option<&InterfaceOrigin>,
+    origin: Option<&ContractOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
