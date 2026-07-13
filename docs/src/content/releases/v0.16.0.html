@@ -1,0 +1,39 @@
+<entry>
+  <title>v0.16.0</title>
+  <id>https://docs.peppy.bot/releases/v0-16-0/</id>
+  <updated>2026-07-13T00:00:00Z</updated>
+
+  <summary>Renames interfaces to contracts, tightens `depends_on` slot validation, and fixes macOS container builds.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.16.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Renames interfaces to contracts, tightens `depends_on` slot validation, and fixes macOS container builds.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 13, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The &lt;code&gt;conforms_to&lt;/code&gt; manifest field has been renamed to &lt;code&gt;implements&lt;/code&gt; as part of a broader rename of "interfaces" to "contracts"; rename &lt;code&gt;conforms_to&lt;/code&gt; to &lt;code&gt;implements&lt;/code&gt; in your &lt;code&gt;peppy.json5&lt;/code&gt; and update any "interface" wording to "contract".&lt;/li&gt;
+&lt;li&gt;Dependency slots (&lt;code&gt;depends_on&lt;/code&gt;) now require a single producer each, replacing the previous &lt;code&gt;from_any&lt;/code&gt; binding model, and peppy now fails validation whenever a &lt;code&gt;depends_on&lt;/code&gt; slot is left unfulfilled; update your bindings so every slot names exactly one producer.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Container builds and runs (macOS)&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;macOS container builds no longer silently default to &lt;code&gt;$HOME&lt;/code&gt; and now use the current working directory.&lt;/li&gt;
+&lt;li&gt;The peppy data root is now mounted into the Lima VM so container builds and runs can access it.&lt;/li&gt;
+&lt;li&gt;Fixed a hang where restarting the Lima VM blocked the async runtime while registering a host mount for the first time.&lt;/li&gt;
+&lt;li&gt;Container Python bindings no longer ship stale native extensions after shared-crate changes.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Validation and output&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Contract (&lt;code&gt;implements&lt;/code&gt;) validation failures now report per-slot coverage mismatches instead of a single combined string.&lt;/li&gt;
+&lt;li&gt;The CLI info output formatting has been simplified.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Documentation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The advanced guides now include Python examples alongside the existing Rust examples.&lt;/li&gt;
+&lt;li&gt;The Python async examples now wrap &lt;code&gt;select!&lt;/code&gt; in a loop and hold references to asyncio tasks so they are not cleaned up or garbage-collected prematurely.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
