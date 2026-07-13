@@ -604,6 +604,14 @@ mod peppylib_build {
     /// `(source_hash, profile)` its `.so` was last built from. A missing or
     /// malformed marker parses to an empty map (everything treated as stale).
     fn read_build_state(so_dir: &Path) -> BTreeMap<String, (String, String)> {
+        // The recorded state decides which cached bindings may be embedded
+        // (see `stale_so_names`), so a change to it — e.g. a cross build in
+        // another checkout refreshing the Linux bindings — must re-run this
+        // script and re-evaluate the embed set.
+        println!(
+            "cargo:rerun-if-changed={}",
+            so_dir.join(BUILD_STATE_MARKER).display()
+        );
         let Ok(contents) = std::fs::read_to_string(so_dir.join(BUILD_STATE_MARKER)) else {
             return BTreeMap::new();
         };
@@ -627,6 +635,42 @@ mod peppylib_build {
             .map(|(platform, (hash, profile))| format!("{platform}\t{hash}\t{profile}\n"))
             .collect();
         build_helpers::write_if_changed(&so_dir.join(BUILD_STATE_MARKER), body.as_bytes());
+    }
+
+    /// Names of the platform `.so` files in `so_dir` that were NOT built from
+    /// `current_hash` (per the recorded build state; no state = unknown
+    /// provenance) and therefore must not be embedded — see
+    /// [`peppylib_build_policy::should_embed_so`]. In practice these are the
+    /// Linux container bindings after a shared-crate change: a plain build
+    /// rebuilds only the host `.so` and skips the cross-compile, so the cache
+    /// keeps Linux bindings from older sources. The files are left in place
+    /// (another checkout at their revision may still embed them; the next
+    /// cross build overwrites them) — they are only excluded from this build's
+    /// embed.
+    fn stale_so_names(
+        so_dir: &Path,
+        state: &BTreeMap<String, (String, String)>,
+        current_hash: &str,
+    ) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(so_dir) else {
+            return Vec::new();
+        };
+        let mut stale: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !is_platform_so_name(&name) {
+                    return None;
+                }
+                let suffix = name
+                    .strip_prefix("_peppylib.abi3.")
+                    .and_then(|s| s.strip_suffix(".so"))?;
+                let recorded = state.get(suffix).map(|(hash, _)| hash.as_str());
+                (!peppylib_build_policy::should_embed_so(recorded, current_hash)).then_some(name)
+            })
+            .collect();
+        stale.sort();
+        stale
     }
 
     /// Removes `.so` files (and their state entries) for platforms that are no
@@ -655,14 +699,15 @@ mod peppylib_build {
         state.retain(|platform, _| current_platforms.contains(platform));
     }
 
-    /// Computes a combined SHA-256 hash of all platform `.so` files **and**
-    /// every `.py` file in the peppylib package, emitting it as the
+    /// Computes a combined SHA-256 hash of all embeddable platform `.so` files
+    /// **and** every `.py` file in the peppylib package, emitting it as the
     /// `PEPPYLIB_SO_HASH` env var for cache invalidation. The `.py` wrappers live
     /// in the source checkout (`peppylib_dir`); the compiled `.so` live in the
     /// peppy-owned `so_dir`. Including the `.py` files ensures a Python-side edit
     /// (rename, new export, etc.) invalidates the cached embed even when the
-    /// native `.so` is unchanged.
-    fn compute_and_emit_so_hash(peppylib_dir: &Path, so_dir: &Path) {
+    /// native `.so` is unchanged. `excluded_so` (see [`stale_so_names`]) is left
+    /// out to match what [`generate_embedded_peppylib_so`] actually embeds.
+    fn compute_and_emit_so_hash(peppylib_dir: &Path, so_dir: &Path, excluded_so: &[String]) {
         use sha2::{Digest, Sha256};
 
         let mut hashed_files: Vec<PathBuf> = super::walkdir(peppylib_dir)
@@ -673,9 +718,9 @@ mod peppylib_build {
             })
             .collect();
         hashed_files.extend(super::walkdir(so_dir).into_iter().filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(is_platform_so_name)
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
+                is_platform_so_name(name) && !excluded_so.iter().any(|ex| ex == name)
+            })
         }));
         // Keyed by filename: the `.py` and `.so` come from two dirs but their
         // names never collide, and the pre-split layout sorted by path within one
@@ -701,7 +746,12 @@ mod peppylib_build {
     /// artifacts are embedded through OUT_DIR rather than a compile-time source
     /// path, so the `.so` can live in a peppy-owned cache dir instead of being
     /// written into the shared source checkout.
-    fn generate_embedded_peppylib_so(so_dir: &Path) {
+    ///
+    /// `excluded_so` names cached bindings built from other sources (see
+    /// [`stale_so_names`]); they are skipped so the scaffolder treats their
+    /// platform as having no binding at all, but still registered for rerun so
+    /// an out-of-band refresh (a cross build in another checkout) re-embeds.
+    fn generate_embedded_peppylib_so(so_dir: &Path, excluded_so: &[String]) {
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
         let generated = out_dir.join("embedded_peppylib_so.rs");
 
@@ -721,9 +771,13 @@ mod peppylib_build {
         let mut entries = String::new();
         for so in &so_files {
             let name = so.file_name().and_then(|n| n.to_str()).unwrap();
-            entries.push_str(&format!("    ({name:?}, include_bytes!({so:?})),\n"));
-            // A changed `.so` must recompile the scaffolder that embeds it.
+            // A changed `.so` must recompile the scaffolder that embeds it (or
+            // would embed it once refreshed, for excluded ones).
             println!("cargo:rerun-if-changed={}", so.display());
+            if excluded_so.iter().any(|ex| ex == name) {
+                continue;
+            }
+            entries.push_str(&format!("    ({name:?}, include_bytes!({so:?})),\n"));
         }
 
         let content = format!(
@@ -791,9 +845,11 @@ mod peppylib_build {
         // explicit directory (mounted from the host) instead of building.
         if let Some(prebuilt) = std::env::var_os(PREBUILT_SO_DIR_ENV) {
             let so_dir = PathBuf::from(prebuilt);
+            // verify_prebuilt_so fails loudly on any stale binding, so nothing
+            // needs excluding here.
             verify_prebuilt_so(&so_dir, &current_hash);
-            generate_embedded_peppylib_so(&so_dir);
-            compute_and_emit_so_hash(&peppylib_dir, &so_dir);
+            generate_embedded_peppylib_so(&so_dir, &[]);
+            compute_and_emit_so_hash(&peppylib_dir, &so_dir, &[]);
             return;
         }
 
@@ -846,8 +902,10 @@ mod peppylib_build {
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
-            generate_embedded_peppylib_so(&so_dir);
-            compute_and_emit_so_hash(&peppylib_dir, &so_dir);
+            // The assert above already failed the build if any binding is
+            // stale, so nothing needs excluding here.
+            generate_embedded_peppylib_so(&so_dir, &[]);
+            compute_and_emit_so_hash(&peppylib_dir, &so_dir, &[]);
             return;
         }
 
@@ -944,8 +1002,23 @@ mod peppylib_build {
             std::fs::remove_file(&so_path).ok();
         }
 
-        generate_embedded_peppylib_so(&so_dir);
-        compute_and_emit_so_hash(&peppylib_dir, &so_dir);
+        // Cached bindings this build chose not to rebuild (the Linux
+        // cross-compiles, without PEPPY_CROSS_BUILD) may date from other
+        // sources; embedding one ships a model mismatch inside container
+        // images that only surfaces when the node crashes at startup. Exclude
+        // them so container builds for those platforms fail up front with the
+        // scaffolder's explicit "no embedded native extension" error instead.
+        let stale = stale_so_names(&so_dir, &state, &current_hash);
+        for name in &stale {
+            println!(
+                "cargo:warning=Excluding {name} from the embedded peppylib set: it was \
+                 built from different sources. Container Python nodes for that platform \
+                 will fail to build until a cross build refreshes it \
+                 (PEPPY_CROSS_BUILD=1 cargo build, or scripts/build_release.sh)."
+            );
+        }
+        generate_embedded_peppylib_so(&so_dir, &stale);
+        compute_and_emit_so_hash(&peppylib_dir, &so_dir, &stale);
     }
 }
 

@@ -126,7 +126,12 @@ pub fn add_peppylib_dependencies(
                         io::ErrorKind::NotFound,
                         format!(
                             "no embedded native extension found for platform \
-                             '{target_suffix}' (expected '{expected_so_name}')"
+                             '{target_suffix}' (expected '{expected_so_name}'). \
+                             Linux container bindings are only produced (or, \
+                             after a shared-crate change, refreshed) by a cross \
+                             build: rebuild peppy with PEPPY_CROSS_BUILD=1 \
+                             (scripts/build_release.sh does this) and restart \
+                             the daemon."
                         ),
                     )
                 })?;
