@@ -41,8 +41,8 @@ The shape says nothing about which node sits on the other end. A consumer couple
 
 | | Declared under | Who can fill the slot | Instances per slot |
 |---|---|---|---|
-| Direct node dependency | `depends_on.nodes` | Instances of that exact producer node | The one instance the launcher binds to the slot |
-| [Contract dependency](/advanced_guides/contract_implementation/) | `depends_on.contracts` | Any node whose `manifest.implements` names the contract | The one implementing instance the launcher binds to the slot |
+| Direct node dependency | `depends_on.nodes` | Instances of that exact producer node | The producer instance(s) bound to the slot, sized by its cardinality (one by default) |
+| [Contract dependency](/advanced_guides/contract_implementation/) | `depends_on.contracts` | Any node whose `manifest.implements` names the contract | The implementing instance(s) bound to the slot, sized by its cardinality (one by default) |
 | [Pairing slot](/advanced_guides/pairing/) | `depends_on.pairings` | One instance playing the complementary role of the pairing | Exactly one peer at a time, exclusive, both directions |
 
 :::note
