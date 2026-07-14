@@ -253,8 +253,9 @@ pub fn validate_bindings(
 /// count (CLI flags) satisfy the slot's declared cardinality? Launch-file
 /// shapes are strict (a scalar is only valid on a `one` slot and an array
 /// only on a multi slot), while flag occurrences carry no shape and are
-/// checked by count alone. `Flags` is non-empty by construction (zero
-/// occurrences is an omitted binding, handled by rule 5).
+/// checked by count alone. CLI-built `Flags` is non-empty (zero occurrences
+/// is an omitted binding, handled by rule 5), but the validator still rejects
+/// an empty programmatic value on `one_or_more`.
 fn check_value_matches_cardinality(
     slot: &SlotMeta<'_>,
     value: &BindingValue,
@@ -285,7 +286,9 @@ fn check_value_matches_cardinality(
                 cardinality: slot.cardinality,
             })
         }
-        (Cardinality::OneOrMore, BindingValue::Array(targets)) if targets.is_empty() => {
+        (Cardinality::OneOrMore, BindingValue::Array(targets) | BindingValue::Flags(targets))
+            if targets.is_empty() =>
+        {
             Err(ParsingError::BindingCardinalityUnmet {
                 owner_instance_id: instance.instance_id.to_string(),
                 binding: binding_key.to_string(),
@@ -1011,6 +1014,22 @@ mod tests {
         assert_eq!(owner_instance_id, "cons1");
         assert_eq!(binding, "main");
         assert_eq!(*target_count, 2);
+
+        // The CLI never constructs an empty Flags value, but programmatic
+        // callers still go through the same cardinality check.
+        let mut empty = DeploymentInstance::empty(Name::new("cons1").unwrap());
+        empty.bindings.insert("main".to_string(), flags(&["prod1"]));
+        empty.bindings.insert("cameras".to_string(), flags(&[]));
+        let empty_instances = vec![empty];
+        let items = vec![
+            item("cons", "v1", &empty_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(matches!(
+            out.errors.as_slice(),
+            [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras"
+        ));
     }
 
     /// Rule 3 runs per bound instance on a multi slot: one bad target

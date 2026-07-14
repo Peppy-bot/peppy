@@ -181,12 +181,15 @@ impl BindingTargets {
     /// Parses a raw target list, rejecting the first target that appears
     /// more than once within it.
     pub fn new(targets: Vec<String>) -> Result<Self, DuplicateBindingTarget> {
-        for (idx, target) in targets.iter().enumerate() {
-            if targets[..idx].contains(target) {
-                return Err(DuplicateBindingTarget {
-                    target: target.clone(),
-                });
-            }
+        let duplicate = {
+            let mut seen = HashSet::with_capacity(targets.len());
+            targets
+                .iter()
+                .find(|target| !seen.insert(target.as_str()))
+                .cloned()
+        };
+        if let Some(target) = duplicate {
+            return Err(DuplicateBindingTarget { target });
         }
         Ok(Self(targets))
     }
