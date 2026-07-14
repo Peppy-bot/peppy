@@ -90,11 +90,24 @@ fn emit_build_message_fn(
     builder.blank_line();
 }
 
-/// Emits the held-`Subscription` class shared by the plain and peer
-/// consumer modules; only the docstring differs. `next()` mirrors the Rust
-/// `Subscription::next`: a `(producer, message)` tuple, or `None` once the
-/// subscription has closed.
-fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str) {
+/// How the held-`Subscription` class receives its next `(producer,
+/// message)` pair: a bound-set subscription yields the pair pre-tagged by
+/// the source that delivered it, while a peer subscription yields the raw
+/// message alone and the producer is read off its headers.
+pub(crate) enum SubscriptionYield {
+    TaggedPair,
+    RawMessage,
+}
+
+/// Emits the held-`Subscription` class shared by the bound-set and peer
+/// consumer modules; the docstring and the receive step differ. `next()`
+/// mirrors the Rust `Subscription::next`: a `(producer, message)` tuple, or
+/// `None` once the subscription has closed.
+fn emit_subscription_class(
+    builder: &mut PythonCodeBuilder,
+    docstring: &str,
+    yields: SubscriptionYield,
+) {
     builder.line("class Subscription:");
     builder.indent();
     builder.line(&format!("\"\"\"{docstring}\"\"\""));
@@ -106,12 +119,24 @@ fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str) {
     builder.blank_line();
     builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
     builder.indent();
-    builder.line("raw_message = await self._inner.on_next_message()");
-    builder.line("if raw_message is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line("producer = raw_message.producer");
+    match yields {
+        SubscriptionYield::TaggedPair => {
+            builder.line("item = await self._inner.on_next_message()");
+            builder.line("if item is None:");
+            builder.indent();
+            builder.line("return None");
+            builder.dedent();
+            builder.line("producer, raw_message = item");
+        }
+        SubscriptionYield::RawMessage => {
+            builder.line("raw_message = await self._inner.on_next_message()");
+            builder.line("if raw_message is None:");
+            builder.indent();
+            builder.line("return None");
+            builder.dedent();
+            builder.line("producer = raw_message.producer");
+        }
+    }
     builder.line("message = _deserialize_payload(raw_message.payload)");
     builder.line("return producer, message");
     builder.dedent();
@@ -336,6 +361,7 @@ pub fn build_peer_consumed_topic(
     emit_subscription_class(
         &mut builder,
         "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.",
+        SubscriptionYield::RawMessage,
     );
 
     builder.blank_line();
@@ -403,23 +429,30 @@ pub fn build_consumed_topic(
         "_deserialize_payload",
     );
 
-    // Generate the held-subscription consumer API. `subscribe()` returns a
-    // `Subscription` whose buffer keeps every message in arrival order, so
-    // looping on `next()` (or `async for`) never drops a message published
-    // between calls.
+    // Generate the held-subscription consumer API. `subscribe()` covers the
+    // slot's complete bound producer set (one pinned wire subscription per
+    // member, merged behind one object) and yields `(producer, message)`
+    // pairs; the shape is identical for every cardinality, only the size of
+    // the set changes.
     builder.add_import("import peppylib");
+
+    crate::generator::python::services::emit_bound_producers_fn(&mut builder, dependency);
 
     builder.blank_line();
     emit_subscription_class(
         &mut builder,
-        "A held subscription whose buffer keeps every message in arrival order.",
+        "A merged subscription covering every producer bound to this slot. \
+Per-producer order is preserved (no total order across producers), ready \
+producers are merged fairly, and the bound set is fixed at startup; filter \
+on the yielded producer to follow a single member.",
+        SubscriptionYield::TaggedPair,
     );
 
     builder.blank_line();
     builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
     builder.indent();
     builder.line(&format!("topic_name = \"{}\"", topic_name));
-    builder.line("inner = await peppylib.TopicMessenger.subscribe(");
+    builder.line("inner = await peppylib.TopicMessenger.subscribe_bound_set(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
@@ -431,13 +464,16 @@ pub fn build_consumed_topic(
     );
     builder.line(&format!("{from_target},"));
     builder.line("topic_name,");
-    // The slot's one bound producer — a declared slot with no binding
-    // fails node startup before any subscribe runs.
+    // The slot's complete bound producer set: sized per the declared
+    // cardinality at launch, re-validated at node startup, possibly empty
+    // only for a zero_or_more slot (the subscription then yields nothing
+    // until shutdown).
     builder.line(&format!(
-        "node_runner.bound_producer({:?}),",
+        "node_runner.bound_producers({:?}),",
         dependency.link_id
     ));
     builder.line("peppylib.QoSProfile.Standard,");
+    builder.line("node_runner.cancellation_token(),");
     builder.dedent();
     builder.line(")");
     builder.line("return Subscription(inner)");

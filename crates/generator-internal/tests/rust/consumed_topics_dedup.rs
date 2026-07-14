@@ -17,7 +17,7 @@
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
-use generator::{DependencyContext, DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -82,12 +82,12 @@ fn rust_handles_two_consumed_topics_sharing_topic_name() {
         DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
             topic: left_topic,
             message_format: shared_format.clone(),
-            dependency: DependencyContext::native("robot_arm", "v1", "left_arm"),
+            dependency: helpers::native_dep("robot_arm", "v1", "left_arm"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
             topic: right_topic,
             message_format: shared_format,
-            dependency: DependencyContext::native("robot_arm", "v1", "right_arm"),
+            dependency: helpers::native_dep("robot_arm", "v1", "right_arm"),
         }),
     ];
 

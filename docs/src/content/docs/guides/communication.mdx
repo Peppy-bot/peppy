@@ -225,7 +225,7 @@ Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A slot left without a `--bind` is an error: every declared slot must be bound, and the run is rejected before the node spawns.
+A slot left without a `--bind` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
 
 When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
@@ -251,7 +251,7 @@ Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 
-The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer: a slot binds exactly one producer, and only the bound producer reaches it. To read the new instance instead, restart the receiver bound to it:
+The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer: this slot has the default cardinality `one`, so it binds exactly one producer, and only the bound producer reaches it. To read the new instance instead, restart the receiver bound to it:
 ```sh
 ❯ peppy node stop vigorous-buck-8117
 ❯ peppy node run hello_receiver:v1 \

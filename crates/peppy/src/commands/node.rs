@@ -213,12 +213,13 @@ pub enum NodeCommands {
         /// Only meaningful with `--run`; gated with `requires = "run"`.
         #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
-        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// Bind a `link_id` from this consumer's `depends_on` to a specific
         /// producer `instance_id`: `KEY@VALUE`. Repeatable across slots
         /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`); each KEY may appear once — a slot binds
-        /// exactly one producer. Only valid alongside `--run`: without a
-        /// chained run there is no instance to apply the bindings to, so
+        /// (`--bind a@p1,b@p2`); repeating a KEY accumulates the slot's
+        /// bound set on a multi-cardinality slot and is rejected on a
+        /// `cardinality: "one"` slot. Only valid alongside `--run`: without
+        /// a chained run there is no instance to apply the bindings to, so
         /// `requires = "run"` rejects the combination at parse time.
         /// Validation is shared with `peppy node run`; see
         /// `validate_and_run_instance` for the rule set.
@@ -314,14 +315,16 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
-        /// Pin a `link_id` from this consumer's `depends_on` to a specific
+        /// Bind a `link_id` from this consumer's `depends_on` to a specific
         /// producer `instance_id`: `KEY@VALUE`. Repeatable across slots
         /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`); each KEY may appear once — a slot binds
-        /// exactly one producer. KEY must be a `link_id` declared in this
-        /// node's manifest; VALUE is the producer's `instance_id`
-        /// (see `peppy node list`). Missing bindings for declared deps are
-        /// treated as validation errors and will abort the run.
+        /// (`--bind a@p1,b@p2`); repeating a KEY accumulates the slot's
+        /// bound set in flag order on a multi-cardinality slot and is
+        /// rejected on a `cardinality: "one"` slot. KEY must be a `link_id`
+        /// declared in this node's manifest; VALUE is the producer's
+        /// `instance_id` (see `peppy node list`). A declared slot with no
+        /// binding aborts the run unless its cardinality is
+        /// `zero_or_more`.
         #[arg(
             long = "bind",
             value_delimiter = ',',

@@ -5,8 +5,9 @@ use crate::helpers::{
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
     consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit,
+    native_dep, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -95,10 +96,11 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            // The manifest link_id rides into codegen so the generated
-            // fire_goal resolves `bound_producer("brain")` at runtime
-            // instead of emitting a wildcard target.
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            // The manifest link_id rides into codegen so this `one` slot
+            // exposes the singular `bound_producer()` and fire_goal
+            // membership-checks the passed target instead of emitting a
+            // wildcard.
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -152,6 +154,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         };
         let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
+            brain_move_arm::bound_producer(&node_runner),
             Duration::from_secs(5),
             request,
             peppygen::QoSProfile::SensorData,
@@ -451,7 +454,7 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -499,6 +502,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -790,7 +794,7 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -838,6 +842,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1136,7 +1141,7 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1184,6 +1189,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1528,7 +1534,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1576,6 +1582,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1904,7 +1911,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1952,6 +1959,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -2298,7 +2306,7 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -2346,6 +2354,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,

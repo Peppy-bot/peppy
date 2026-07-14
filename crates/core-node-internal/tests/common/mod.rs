@@ -26,6 +26,16 @@ use peppylib::messaging::SenderTarget;
 /// `manifest.tag` value the integration test fixtures emit.
 pub const TEST_NODE_TAG: &str = "v1";
 
+/// Serializes real Apptainer tests within the current integration-test binary.
+///
+/// The tests share one Lima VM whose mount configuration can restart the VM.
+/// Each integration-test binary compiles this module separately, so this guard
+/// does not coordinate separate test processes.
+pub async fn acquire_container_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    static CONTAINER_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    CONTAINER_TEST_MUTEX.lock().await
+}
+
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {

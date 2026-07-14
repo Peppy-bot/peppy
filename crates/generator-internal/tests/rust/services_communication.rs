@@ -5,7 +5,7 @@ use crate::helpers::{
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
     consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
+    native_dep, send_shutdown, spawn_cargo_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -81,7 +81,7 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -124,9 +124,11 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let camera = uvc_camera_enable_camera::bound_producer(&node_runner);
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
-            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), request).await?;
+            uvc_camera_enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)
+                .await?;
         let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
         println!(
             "enable_camera result: service_id={} enabled={} error={}",
@@ -392,7 +394,7 @@ async fn services_communication_exposed_service_without_request_body(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -435,8 +437,10 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let camera = uvc_camera_get_system_status::bound_producer(&node_runner);
         let response =
-            uvc_camera_get_system_status::poll(&node_runner, Duration::from_secs(5)).await?;
+            uvc_camera_get_system_status::poll(&node_runner, camera, Duration::from_secs(5))
+                .await?;
         println!(
             "get_system_status result: service_id={} healthy={}",
             &response.instance_id,
@@ -692,7 +696,7 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -736,9 +740,11 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let camera = uvc_camera_enable_camera::bound_producer(&node_runner);
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
-            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), request).await?;
+            uvc_camera_enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)
+                .await?;
         let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
         println!(
             "enable_camera result: enabled={} error={}",

@@ -55,6 +55,7 @@ fn make_consumer_depend_on_provider(
             name: ConfigName::new(provider_name).expect("valid provider name"),
             tag: "v1".to_string(),
             link_id: provider_name.to_string(),
+            cardinality: config::node::Cardinality::One,
         }],
         contracts: vec![],
         pairings: vec![],

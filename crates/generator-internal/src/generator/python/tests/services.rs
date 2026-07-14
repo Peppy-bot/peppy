@@ -331,7 +331,7 @@ fn consumed_service() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -388,19 +388,18 @@ fn consumed_service() {
         ],
     );
 
-    // Poll function signature with typed params and return type. The
-    // slot's one bound producer is resolved into `bound_producer`
-    // (raising when the slot is not bound to exactly one) and spliced at
-    // the single target slot; the user-facing `target_instance_id`
-    // parameter is gone. `target_core_node` is never exposed in the
-    // user-facing generated API, and the renamed `pinned_target_for`
-    // accessor must never be emitted (the runtime helper is
-    // `bound_producer`).
+    // Poll function signature with typed params and return type: the
+    // caller passes the selected member of the slot's bound set explicitly
+    // (every cardinality, `one` included). No implicit-target overload is
+    // generated; `target_core_node` / `target_instance_id` never appear as
+    // string parameters, and the renamed `pinned_target_for` accessor must
+    // never be emitted.
     assert_contains_all(
         &rendered,
         &[
             "async def poll(",
             "node_runner: peppylib.NodeRunner",
+            "target: peppylib.ProducerRef",
             "request: Request",
             "timeout: float",
             ") -> Response:",
@@ -416,20 +415,36 @@ fn consumed_service() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is bound_producer; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; got:\n{rendered}"
+    );
+
+    // The cardinality-typed module surface plus the per-call membership
+    // check: this `one` slot exposes the singular, infallible
+    // `bound_producer()`, never the plural accessor.
+    assert_contains_all(
+        &rendered,
+        &[
+            "LINK_ID = \"uvc_camera\"",
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:",
+            "return node_runner.bound_producer(\"uvc_camera\")",
+            "node_runner.ensure_target_bound(LINK_ID, target)",
+        ],
+    );
+    assert!(
+        !rendered.contains("def bound_producers("),
+        "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
 
     // Request serialization
     assert_contains_all(&rendered, &["request_payload = capnp_msg.to_bytes()"]);
 
-    // Messenger integration, including the resolved producer spliced at
-    // the poll call's single target slot.
+    // Messenger integration, with the selected target pinned at the poll
+    // call's target slot.
     assert_contains_all(
         &rendered,
         &[
-            "bound_producer = node_runner.bound_producer(\"uvc_camera\")",
             "peppylib.ServiceMessenger.poll(",
-            "SERVICE_NAME,\n        bound_producer,\n        request_payload,",
+            "SERVICE_NAME,\n        target,\n        request_payload,",
         ],
     );
 
@@ -456,7 +471,7 @@ fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -497,7 +512,7 @@ fn consumed_two_services_same_node() {
             &service1,
             &request_format1,
             &response_format1,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -505,7 +520,7 @@ fn consumed_two_services_same_node() {
             &service2,
             &empty_format,
             &response_format2,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -579,7 +594,7 @@ fn consumed_service_without_response_payload() {
             &service,
             &empty_format,
             &empty_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .expect("generator should allow services without response format");
 

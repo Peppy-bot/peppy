@@ -1409,7 +1409,18 @@ mod tests {
         let mut bindings = BTreeMap::new();
         bindings.insert(
             "arm".to_string(),
-            config::runtime::ProducerRef::new("core_a", "arm-1"),
+            config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+                "core_a", "arm-1",
+            )),
+        );
+        // A multi-cardinality slot's ordered set rides the same wire.
+        bindings.insert(
+            "cameras".to_string(),
+            config::runtime::BoundProducers::try_from(vec![
+                config::runtime::ProducerRef::new("core_a", "cam-1"),
+                config::runtime::ProducerRef::new("core_a", "cam-2"),
+            ])
+            .expect("distinct producers"),
         );
         let bound = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),

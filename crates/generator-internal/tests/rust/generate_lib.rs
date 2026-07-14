@@ -413,11 +413,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
         topic: consumed_topic,
         message_format: consumed_format,
-        dependency: generator::DependencyContext::native(
-            EXPOSED_NODE_NAME,
-            "v1",
-            EXPOSED_NODE_NAME,
-        ),
+        dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
     generate_peppygen_lib(
@@ -540,11 +536,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             service: consumed_service,
             request_format,
             response_format,
-            dependency: generator::DependencyContext::native(
-                EXPOSED_NODE_NAME,
-                "v1",
-                EXPOSED_NODE_NAME,
-            ),
+            dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
         },
     )];
 
@@ -692,11 +684,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: action_messages,
-        dependency: generator::DependencyContext::native(
-            EXPOSED_NODE_NAME,
-            "v1",
-            EXPOSED_NODE_NAME,
-        ),
+        dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
     generate_peppygen_lib(

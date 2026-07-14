@@ -217,7 +217,12 @@ fn resolve_consumed_offering<T>(
             let extracted = extract_from_node(offerings, lookup_name)?;
             Some((
                 extracted,
-                generator::DependencyContext::native(&entry.name, &entry.tag, link_id),
+                generator::DependencyContext::native(
+                    &entry.name,
+                    &entry.tag,
+                    link_id,
+                    entry.cardinality,
+                ),
             ))
         }
         DependencyKind::Contract => {
@@ -225,7 +230,12 @@ fn resolve_consumed_offering<T>(
             let extracted = extract_from_contract(parsed, lookup_name)?;
             Some((
                 extracted,
-                generator::DependencyContext::contract(&entry.name, &entry.tag, link_id),
+                generator::DependencyContext::contract(
+                    &entry.name,
+                    &entry.tag,
+                    link_id,
+                    entry.cardinality,
+                ),
             ))
         }
     }

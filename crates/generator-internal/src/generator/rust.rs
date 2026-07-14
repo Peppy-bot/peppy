@@ -287,20 +287,32 @@ impl RustGenerator {
         // The `to_target` matches the producer's emission shape: a dependency
         // with a `ContractOrigin` is addressed as
         // `SenderTarget::contract(...)`, otherwise as its native node
-        // identity. The `target` (the producer's full
-        // `(core_node, instance_id)`) is the slot's one bound producer,
-        // resolved at runtime from the consumer's binding map and addressed
-        // directly with no discovery.
+        // identity. The `target` is the caller-selected member of the slot's
+        // bound producer set (its full `(core_node, instance_id)`), checked
+        // against the set before anything reaches the wire and then addressed
+        // directly with no discovery. The returned handle retains it: goal
+        // submission, feedback, result retrieval, and cancellation all stay
+        // pinned to that same producer.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let bound_producer_expr =
-            crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
+        let target_selection_doc = doc_attrs(dependency.target_selection_doc());
         let method_tokens = quote! {
+            /// Fires this goal at `target`, a member of this slot's bound set (a
+            /// `ProducerRef` yielded by the slot's own subscription is a member
+            /// by construction); a target outside the set fails before anything
+            /// reaches the wire. Each returned handle stays pinned to its
+            /// target: feedback, result retrieval, and cancellation all address
+            /// that producer directly.
+            ///
+            #(#target_selection_doc)*
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
+                target: &peppylib::messaging::ProducerRef,
                 timeout: std::time::Duration,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
             ) -> crate::Result<Self> {
+                node_runner.processor().ensure_target_bound(LINK_ID, target)?;
+
                 #goal_payload_tokens
 
                 let action_handle = peppylib::ActionMessenger::send_goal(
@@ -309,7 +321,7 @@ impl RustGenerator {
                     node_runner.processor().bound_instance_id(),
                     #to_target_expr,
                     TARGET_ACTION_NAME,
-                    Some(#bound_producer_expr),
+                    Some(target),
                     goal_payload,
                     feedback_qos,
                     timeout,
@@ -1257,13 +1269,11 @@ impl LanguageGenerator for RustGenerator {
         // The `to_target` matches the producer's emission shape: if the
         // dependency exposes the service via an implemented contract, address it as the
         // interface; otherwise as the dependency's node identity. The
-        // `target` (the producer's full `(core_node, instance_id)`,
-        // resolved at runtime from the consumer's binding map) is the
-        // slot's one bound producer, addressed directly with no
-        // discovery.
+        // `target` is the caller-selected member of the slot's bound
+        // producer set (its full `(core_node, instance_id)`), checked
+        // against the set before anything reaches the wire and then
+        // addressed directly with no discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let bound_producer_expr =
-            crate::generator::rust::topics::consumed_bound_producer_expression(dependency);
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
@@ -1271,7 +1281,7 @@ impl LanguageGenerator for RustGenerator {
                 node_runner.processor().bound_instance_id(),
                 #to_target_expr,
                 SERVICE_NAME,
-                peppylib::messaging::ServiceTarget::Producer(#bound_producer_expr),
+                peppylib::messaging::ServiceTarget::Producer(target),
                 request_payload,
                 timeout,
             )
@@ -1346,22 +1356,37 @@ impl LanguageGenerator for RustGenerator {
         let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
         let node_name_literal = Literal::string(dependency_node_name);
+        let link_id_literal = Literal::string(&dependency.link_id);
 
         let constants_tokens = quote! {
             const NODE_NAME: &str = #node_name_literal;
             const SERVICE_NAME: &str = #service_name_literal;
+            const LINK_ID: &str = #link_id_literal;
         };
 
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
+            quote!(target: &peppylib::messaging::ProducerRef),
             quote!(timeout: std::time::Duration),
         ];
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }
 
+        let bound_producers_fn =
+            crate::generator::rust::topics::build_bound_producers_fn(dependency);
+
+        let target_selection_doc = doc_attrs(dependency.target_selection_doc());
         let function_token = quote! {
+            /// Polls this service on `target`, a member of this slot's bound set
+            /// (a `ProducerRef` yielded by the slot's own subscription is a
+            /// member by construction); a target outside the set fails before
+            /// anything reaches the wire.
+            ///
+            #(#target_selection_doc)*
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
+                node_runner.processor().ensure_target_bound(LINK_ID, target)?;
+
                 #request_payload_tokens
 
                 #poll_tokens
@@ -1370,7 +1395,7 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let mut all_tokens = vec![constants_tokens];
+        let mut all_tokens = vec![constants_tokens, bound_producers_fn];
         all_tokens.append(&mut service_tokens);
         all_tokens.push(function_token);
         if let Some(deserialize_fn) = deserialize_fn_tokens {
@@ -1564,9 +1589,11 @@ impl LanguageGenerator for RustGenerator {
 
         let node_name_literal = Literal::string(dependency_node_name);
         let action_name_literal = Literal::string(action.name.as_str());
+        let link_id_literal = Literal::string(&dependency.link_id);
         let constants_tokens = quote! {
             const TARGET_NODE_NAME: &str = #node_name_literal;
             const TARGET_ACTION_NAME: &str = #action_name_literal;
+            const LINK_ID: &str = #link_id_literal;
         };
 
         let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
@@ -1634,7 +1661,10 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let mut items = vec![constants_tokens];
+        let bound_producers_fn =
+            crate::generator::rust::topics::build_bound_producers_fn(dependency);
+
+        let mut items = vec![constants_tokens, bound_producers_fn];
         items.extend(context.into_tokens());
         items.push(action_handle_struct);
         items.push(quote! {
@@ -1675,4 +1705,21 @@ impl LanguageGenerator for RustGenerator {
 fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
     let name = identifiers::prefixed_name(prefix, candidate, fallback);
     Ident::new(&name, Span::call_site())
+}
+
+/// One `#[doc = "..."]` attribute per pre-wrapped doc line (the renderer
+/// prints each attribute back as a `///` line). Splices the shared
+/// per-cardinality prose of [`DependencyContext::target_selection_doc`]
+/// and [`DependencyContext::bound_producers_doc`] into generated items.
+///
+/// [`DependencyContext::target_selection_doc`]: crate::generator::types::DependencyContext::target_selection_doc
+/// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
+fn doc_attrs(lines: &[&str]) -> Vec<TokenStream> {
+    lines
+        .iter()
+        .map(|line| {
+            let line = Literal::string(&format!(" {line}"));
+            quote!(#[doc = #line])
+        })
+        .collect()
 }
