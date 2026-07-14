@@ -236,7 +236,7 @@ fn consumed_service() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -270,14 +270,17 @@ fn consumed_service() {
     // Request struct
     assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
-    // Poll function signature. The slot's one bound producer is spliced
-    // inline at the single target slot (an infallible lookup: launch and
-    // startup guarantee exactly one producer per declared slot); the
-    // user-facing `target_instance_id` parameter is gone.
-    // `target_core_node` is never exposed in the generated API.
+    // Poll function signature: the caller passes the selected member of the
+    // slot's bound set explicitly (for every cardinality, `one` included);
+    // no implicit-target overload is generated, and `target_core_node` /
+    // `target_instance_id` never appear as string parameters.
     assert_contains_all(
         &rendered,
-        &["pub async fn poll(", "-> crate::Result<Response>"],
+        &[
+            "pub async fn poll(",
+            "target: &peppylib::messaging::ProducerRef",
+            "-> crate::Result<Response>",
+        ],
     );
     assert!(
         !rendered.contains("target_instance_id: Option<&str>"),
@@ -288,15 +291,33 @@ fn consumed_service() {
         "target_core_node should not appear in the generated API; got: {rendered}"
     );
 
-    // Request serialization and messenger integration, including the
-    // resolved producer spliced at the poll call's single target slot.
+    // The cardinality-typed module surface plus the per-call membership
+    // check: this `one` slot exposes the singular, infallible
+    // `bound_producer()` (never the plural accessor), and the target must
+    // belong to the slot's own bound set before anything reaches the wire.
+    assert_contains_all(
+        &rendered,
+        &[
+            "const LINK_ID: &str = \"uvc_camera\";",
+            "pub fn bound_producer(",
+            ") -> &peppylib::messaging::ProducerRef",
+            ".sole_bound_producer(\"uvc_camera\")",
+            ".ensure_target_bound(LINK_ID, target)?",
+        ],
+    );
+    assert!(
+        !rendered.contains("pub fn bound_producers("),
+        "a `one` slot must expose only the singular accessor; got: {rendered}"
+    );
+
+    // Request serialization and messenger integration, with the selected
+    // target pinned at the poll call's target slot.
     assert_contains_all(
         &rendered,
         &[
             "root.set_enable(enable);",
-            ".bound_producer(\"uvc_camera\")",
             "peppylib::ServiceMessenger::poll(",
-            "peppylib::messaging::ServiceTarget::Producer(",
+            "peppylib::messaging::ServiceTarget::Producer(target)",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
     );
@@ -325,7 +346,7 @@ fn consumed_service_via_contract_origin_targets_contract() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::contract("camera_contract", "v2", "camera_contract"),
+            &contract_dep("camera_contract", "v2", "camera_contract"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -363,7 +384,7 @@ fn consumed_two_services_same_node() {
             &service1,
             &request_format1,
             &response_format1,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -371,7 +392,7 @@ fn consumed_two_services_same_node() {
             &service2,
             &empty_format,
             &response_format2,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -415,7 +436,7 @@ fn consumed_service_without_response_payload() {
             &service,
             &empty_format,
             &empty_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .expect("generator should allow services without response format");
 
@@ -445,7 +466,7 @@ fn consumed_service_rejects_optional_scalar_response_field() {
             &service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap_err();
 
@@ -502,14 +523,14 @@ fn clippy_single_exposed_service_without_request_body() {
         .add_consumed_action(
             &consumed_action1,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &action_messages,
-            &crate::DependencyContext::native("controller", "v1", "controller"),
+            &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -578,7 +599,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service1,
             &consumed_service_request1,
             &consumed_service_response1,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -586,7 +607,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service2,
             &empty_format,
             &consumed_service_response2,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -669,7 +690,7 @@ fn clippy_consumed_service_empty_request_format() {
             &consumed_service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native("sensor", "v1", "sensor"),
+            &native_dep("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -708,7 +729,7 @@ fn clippy_consumed_service_empty_response_format() {
             &consumed_service,
             &request_format,
             &empty_format,
-            &crate::DependencyContext::native("sensor", "v1", "sensor"),
+            &native_dep("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

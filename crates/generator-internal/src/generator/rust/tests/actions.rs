@@ -499,11 +499,7 @@ fn consumed_action() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "brain"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -588,21 +584,36 @@ fn consumed_action() {
         &["pub struct FeedbackMessage", "pub new_position: [i32; 3]"],
     );
 
-    // fire_goal method (constructor). The slot's one bound producer is
-    // spliced inline at the single target slot (an infallible lookup:
-    // launch and startup guarantee exactly one producer per declared
-    // slot).
+    // fire_goal method (constructor). The caller passes the selected member
+    // of the slot's bound set explicitly (every cardinality, `one`
+    // included); the wrapper checks membership before the goal reaches the
+    // wire and pins the selected target.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn fire_goal(",
+            "target: &peppylib::messaging::ProducerRef",
             "request: GoalRequest",
             "feedback_qos: peppylib::config::QoSProfile",
             "-> crate::Result<Self>",
+            "const LINK_ID: &str = \"brain\";",
+            ".ensure_target_bound(LINK_ID, target)?",
             "peppylib::ActionMessenger::send_goal",
-            "Some(node_runner.processor().bound_producer(\"brain\")),",
+            "Some(target),",
             "node_runner.messenger().clone()",
         ],
+    );
+
+    // The cardinality-typed module surface: the action module exposes the
+    // same slot-level accessor as topics and services, singular here
+    // because this is a `one` slot.
+    assert_contains_all(
+        &rendered,
+        &["pub fn bound_producer(", ".sole_bound_producer(\"brain\")"],
+    );
+    assert!(
+        !rendered.contains("pub fn bound_producers("),
+        "a `one` slot must expose only the singular accessor; got: {rendered}"
     );
 
     // cancel_goal method
@@ -686,14 +697,14 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &move_arm_action,
             &move_arm_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &rotate_action,
             &rotate_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
 
@@ -805,7 +816,7 @@ fn consumed_two_actions_same_node() {
 }
 
 /// The generated `send_goal` resolves the slot's one bound producer
-/// via `bound_producer(<link_id>)` into its full
+/// via the slot's bound set into its full
 /// `(core_node, instance_id)`, so the goal addresses exactly one
 /// producer with no discovery probe.
 #[test]
@@ -825,18 +836,19 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native("brain", "v1", "left_arm"),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "left_arm"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_contains_all(
         &rendered,
-        &["Some(node_runner.processor().bound_producer(\"left_arm\")),"],
+        &[
+            "const LINK_ID: &str = \"left_arm\";",
+            ".ensure_target_bound(LINK_ID, target)?",
+            ".sole_bound_producer(\"left_arm\")",
+            "Some(target),",
+        ],
     );
     assert_rendered!(
         !rendered.contains("Option::<&peppylib::messaging::ProducerRef>::None"),
@@ -861,11 +873,7 @@ fn consumed_action_without_response_payload() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "brain"))
         .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -912,11 +920,7 @@ fn consumed_action_without_feedback() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "brain"))
         .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");
@@ -991,14 +995,14 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .add_consumed_action(
             &consumed_action1,
             &consumed_action1_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &consumed_action2_messages,
-            &crate::DependencyContext::native("controller", "v1", "controller"),
+            &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -1078,14 +1082,14 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         .add_consumed_action(
             &consumed_action1,
             &consumed_action1_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &consumed_action2_messages,
-            &crate::DependencyContext::native("controller", "v1", "controller"),
+            &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -1191,7 +1195,7 @@ fn clippy_consumed_action_empty_goal_request() {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &crate::DependencyContext::native("robot", "v1", "robot"),
+            &native_dep("robot", "v1", "robot"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

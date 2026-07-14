@@ -9,6 +9,7 @@
 //! instances, bindings); general document errors raised by the shared node
 //! parser stay in `config::ParsingError`.
 
+use config::node::Cardinality;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -161,16 +162,16 @@ pub struct BindingUnknownSlot {
 }
 
 /// Payload for [`ParsingError::BindingSlotUnfulfilled`]. A declared
-/// `depends_on` slot with no binding entry. Every declared slot must be
-/// bound to exactly one producer; there is no unbound state and no
-/// wildcard fallback.
+/// `depends_on` slot of cardinality `one` or `one_or_more` with no binding
+/// entry. Only a `zero_or_more` slot may be left unbound (its empty set is
+/// a valid value); there is no wildcard fallback for the others.
 #[derive(Debug, Clone, Error)]
 #[error(
     "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
-     `{slot_name}:{slot_tag}`) unfulfilled: every declared depends_on slot \
-     must be bound; add `bindings: {{ {link_id}: \"<producer_instance_id>\" }}` \
-     (or `--bind {link_id}@<producer_instance_id>`) or remove the dependency \
-     from the node manifest"
+     `{slot_name}:{slot_tag}`, cardinality `{cardinality}`) unfulfilled: every \
+     declared depends_on slot except `zero_or_more` must be bound; add a \
+     `bindings:` entry for `{link_id}` (or `--bind {link_id}@<producer_instance_id>`, \
+     repeatable on a multi slot) or remove the dependency from the node manifest"
 )]
 pub struct BindingSlotUnfulfilled {
     pub owner_instance_id: String,
@@ -178,6 +179,7 @@ pub struct BindingSlotUnfulfilled {
     pub slot_kind: SlotKind,
     pub slot_name: String,
     pub slot_tag: String,
+    pub cardinality: Cardinality,
 }
 
 /// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
@@ -334,22 +336,63 @@ pub enum ParsingError {
     /// `depends_on.{nodes,interfaces}` slot link_id.
     #[error(transparent)]
     BindingUnknownSlot(Box<BindingUnknownSlot>),
-    /// A declared `depends_on` slot with no binding entry. Every declared
-    /// slot must be bound to exactly one producer; there is no unbound
-    /// state and no wildcard fallback. Boxed for the same
-    /// `result_large_err` reason as the other binding variants.
+    /// A declared `one` / `one_or_more` slot with no binding entry. Only a
+    /// `zero_or_more` slot may be left unbound; there is no wildcard
+    /// fallback for the others. Boxed for the same `result_large_err`
+    /// reason as the other binding variants.
     #[error(transparent)]
     BindingSlotUnfulfilled(Box<BindingSlotUnfulfilled>),
-    /// Two `--bind KEY@…` entries on the same invocation share the same
-    /// `KEY`. Each `KEY` names a declared slot link_id and a slot binds
-    /// exactly one producer, given in one place, so a repeated `KEY`
-    /// would clobber.
+    /// A launch-file array value (of any length, single-element and empty
+    /// included) on a `cardinality: "one"` slot. The binding value's shape
+    /// mirrors the slot's declared cardinality: a `one` slot takes a scalar
+    /// string only.
     #[error(
-        "duplicate binding key `{binding}` on instance `{owner_instance_id}` (each --bind KEY must be distinct; a slot binds exactly one producer)"
+        "binding `{binding}` on instance `{owner_instance_id}` is an array, but the slot's \
+         cardinality is `one`: bind a scalar (`{binding}: \"<producer_instance_id>\"`), or \
+         declare `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency to \
+         accept a producer array"
     )]
-    BindingDuplicateKey {
+    BindingArrayOnOneSlot {
         owner_instance_id: String,
         binding: String,
+    },
+    /// A launch-file scalar value on a `one_or_more` / `zero_or_more` slot.
+    /// Multi-cardinality slots take an array of instance ids, even for a
+    /// single producer.
+    #[error(
+        "binding `{binding}` on instance `{owner_instance_id}` is a scalar, but the slot's \
+         cardinality is `{cardinality}`: bind an array \
+         (`{binding}: [\"<producer_instance_id>\", ...]`)"
+    )]
+    BindingScalarOnMultiSlot {
+        owner_instance_id: String,
+        binding: String,
+        cardinality: Cardinality,
+    },
+    /// An empty array on a `one_or_more` slot: the binding entry exists but
+    /// its set does not meet the slot's minimum of one producer. (An empty
+    /// array is a valid definition only for `zero_or_more`.)
+    #[error(
+        "binding `{binding}` on instance `{owner_instance_id}` is an empty array, but the \
+         slot's cardinality is `one_or_more`: bind at least one producer, or declare \
+         `cardinality: \"zero_or_more\"` on the dependency if an empty set is meaningful"
+    )]
+    BindingCardinalityUnmet {
+        owner_instance_id: String,
+        binding: String,
+    },
+    /// Repeated `--bind KEY@…` occurrences on a `cardinality: "one"` slot.
+    /// Flag repetition accumulates a multi slot's set and stays a hard
+    /// error on a `one` slot.
+    #[error(
+        "{target_count} `--bind {binding}@…` occurrences on instance `{owner_instance_id}`, \
+         but the slot's cardinality is `one`: pass exactly one, or declare \
+         `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency"
+    )]
+    BindingSingleSlotMultipleTargets {
+        owner_instance_id: String,
+        binding: String,
+        target_count: usize,
     },
     /// Boxed payload so this variant does not grow `ParsingError` past the
     /// `clippy::result_large_err` threshold; without the indirection, the

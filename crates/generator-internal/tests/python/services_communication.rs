@@ -6,8 +6,8 @@ use crate::helpers::{
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
     copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
-    send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -81,7 +81,7 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -123,7 +123,8 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0)
+    camera = uvc_camera_enable_camera.bound_producer(node_runner)
+    response = await uvc_camera_enable_camera.poll(node_runner, camera, request, 5.0)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
@@ -412,7 +413,7 @@ async fn services_communication_exposed_service_without_request_body(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -453,7 +454,8 @@ from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_get_system_status
 
 async def poll_service(node_runner):
-    response = await uvc_camera_get_system_status.poll(node_runner, 5.0)
+    camera = uvc_camera_get_system_status.bound_producer(node_runner)
+    response = await uvc_camera_get_system_status.poll(node_runner, camera, 5.0)
     print(
         f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
         flush=True,
@@ -725,7 +727,7 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -768,7 +770,8 @@ from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0)
+    camera = uvc_camera_enable_camera.bound_producer(node_runner)
+    response = await uvc_camera_enable_camera.poll(node_runner, camera, request, 5.0)
     error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: enabled={response.data.enabled} error={error_msg}",

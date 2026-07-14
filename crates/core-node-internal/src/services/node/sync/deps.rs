@@ -128,15 +128,18 @@ pub(crate) enum DependencyKind {
     Contract,
 }
 
-/// Resolved `(name, tag, kind)` for a single dependency referenced by a
-/// consumer's `interfaces.topics.consumes`,
+/// Resolved `(name, tag, kind, cardinality)` for a single dependency
+/// referenced by a consumer's `interfaces.topics.consumes`,
 /// `interfaces.services.consumes`, or `interfaces.actions.consumes`.
+/// `cardinality` rides along so codegen can document each slot's bound-set
+/// size; interface shape resolution itself is cardinality-independent.
 #[derive(Debug, Clone)]
 pub(crate) struct DependencyLookupEntry {
     pub name: String,
     pub tag: String,
     pub sha256: Option<String>,
     pub kind: DependencyKind,
+    pub cardinality: config::node::Cardinality,
 }
 
 /// Builds a lookup from `link_id` → [`DependencyLookupEntry`] using the
@@ -158,6 +161,7 @@ pub(super) fn build_dependency_lookup(
                 tag: node.tag.clone(),
                 sha256: None,
                 kind: DependencyKind::Node,
+                cardinality: node.cardinality,
             },
         );
     }
@@ -169,6 +173,7 @@ pub(super) fn build_dependency_lookup(
                 tag: contract.tag.clone(),
                 sha256: contract.sha256.clone(),
                 kind: DependencyKind::Contract,
+                cardinality: contract.cardinality,
             },
         );
     }

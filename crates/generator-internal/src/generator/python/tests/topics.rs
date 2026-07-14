@@ -439,11 +439,10 @@ fn emit_topic_with_dynamic_object_array() {
 }
 
 /// The generated subscribe splices the slot's runtime binding lookup as
-/// the `from_producers` argument:
-/// `node_runner.bound_producer(<link_id>)` resolves at runtime to
-/// the bound producers' full `(core_node, instance_id)` tuples, so a
-/// bound topic slot only ever receives from producers the launcher bound
-/// to it.
+/// the bound-set argument: `node_runner.bound_producers(<link_id>)`
+/// resolves at runtime to the bound producers' full
+/// `(core_node, instance_id)` tuples, so a bound topic slot only ever
+/// receives from producers the application bound to it.
 #[test]
 fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -451,16 +450,70 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(
-            &topic,
-            format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "cam_left"),
-        )
+        .add_consumed_topic(&topic, format, &native_dep("uvc_camera", "v1", "cam_left"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(&rendered, &["node_runner.bound_producer(\"cam_left\"),"]);
+    assert_contains_all(
+        &rendered,
+        &[
+            "node_runner.bound_producers(\"cam_left\"),",
+            "return node_runner.bound_producer(\"cam_left\")",
+        ],
+    );
+}
+
+/// The bound-producer accessor is cardinality-typed, mirroring the Rust
+/// codegen: `one_or_more` and `zero_or_more` slots generate the plural
+/// `bound_producers()` list accessor (documented never-empty or
+/// possibly-empty respectively), never the singular `bound_producer()`
+/// that `one` slots get. The accessor emission is shared by every consumed
+/// interface kind, so this topic-module test pins both multi shapes;
+/// `consumed_topic` below pins the singular `one` shape.
+#[test]
+fn consumed_topic_accessor_is_cardinality_typed() {
+    let cases = [
+        (
+            config::node::Cardinality::OneOrMore,
+            "This slot declares cardinality `one_or_more`:",
+            "`[0]` is always valid.",
+        ),
+        (
+            config::node::Cardinality::ZeroOrMore,
+            "This slot declares cardinality `zero_or_more`:",
+            "handle the empty case.",
+        ),
+    ];
+    for (cardinality, expected_cardinality_doc, expected_emptiness_doc) in cases {
+        let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+        let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+
+        let mut generator = PythonGenerator::new();
+        generator
+            .add_consumed_topic(
+                &topic,
+                format,
+                &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
+            )
+            .unwrap();
+        let artifacts = render_artifacts(generator.into_artifacts());
+        let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+        assert_contains_all(
+            &rendered,
+            &[
+                "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
+                "return node_runner.bound_producers(\"cam_left\")",
+                expected_cardinality_doc,
+                expected_emptiness_doc,
+            ],
+        );
+        assert!(
+            !rendered.contains("def bound_producer("),
+            "a {cardinality:?} slot must expose only the plural accessor; got:\n{rendered}"
+        );
+    }
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -475,7 +528,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -594,26 +647,45 @@ fn consumed_topic() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Topic metadata and subscribe call: the slot's bound producers are
-    // resolved at runtime via `bound_producer(<link_id>)`.
+    // Topic metadata and subscribe call: the merged subscription covers the
+    // slot's complete bound set (resolved at runtime via
+    // `bound_producers(<link_id>)`) and threads the node's cancellation
+    // token so an empty `zero_or_more` set pends until shutdown.
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
-            "peppylib.TopicMessenger.subscribe(",
-            "topic_name,\n        node_runner.bound_producer(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,",
+            "peppylib.TopicMessenger.subscribe_bound_set(",
+            "topic_name,\n        node_runner.bound_producers(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,\n        node_runner.cancellation_token(),",
         ],
     );
 
-    // next() body: receive (None once closed), deserialize, return.
+    // The cardinality-typed module surface: this `one` slot exposes the
+    // singular, infallible `bound_producer()`, never the plural accessor.
+    // The subscribe splice above still covers the complete (single-member)
+    // set through the plain list lookup.
     assert_contains_all(
         &rendered,
         &[
-            "raw_message = await self._inner.on_next_message()",
-            "if raw_message is None:",
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:",
+            "return node_runner.bound_producer(\"uvc_camera\")",
+        ],
+    );
+    assert!(
+        !rendered.contains("def bound_producers("),
+        "a `one` slot must expose only the singular accessor; got:\n{rendered}"
+    );
+
+    // next() body: the merged subscription yields the (producer, message)
+    // pair pre-tagged by the source that delivered it (None once closed).
+    assert_contains_all(
+        &rendered,
+        &[
+            "item = await self._inner.on_next_message()",
+            "if item is None:",
             "return None",
-            "producer = raw_message.producer",
+            "producer, raw_message = item",
             "message = _deserialize_payload(raw_message.payload)",
             "return producer, message",
         ],
@@ -626,7 +698,7 @@ fn consumed_topic() {
     // subscription the buffer keeps every message between `next` calls.
     assert_eq!(
         rendered
-            .matches("peppylib.TopicMessenger.subscribe(")
+            .matches("peppylib.TopicMessenger.subscribe_bound_set(")
             .count(),
         1,
         "topic must be subscribed once, not per next() call; rendered:\n{rendered}"
@@ -657,7 +729,7 @@ fn consumed_topic_escapes_python_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("keyword_source", "v1", "keyword_source"),
+            &native_dep("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -689,14 +761,14 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &sound_topic,
             sound_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -785,7 +857,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -793,14 +865,14 @@ fn no_user_facing_producer_identity_params() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &action,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
@@ -819,11 +891,11 @@ fn no_user_facing_producer_identity_params() {
     );
 
     // The fixtures supply real manifest link_ids, and every consumed call
-    // site resolves its target slot through `bound_producer(<link_id>)`.
-    // The generated API exposes no targeting parameters: `target_core_node`
-    // and `target_instance_id` must not appear, and a `pinned_target_for`
-    // accessor must never be emitted (the runtime helper is
-    // `bound_producer`).
+    // site resolves its bound set through the slot's cardinality-typed
+    // accessor. The generated API exposes no targeting parameters:
+    // `target_core_node` and `target_instance_id` must not appear, and a
+    // `pinned_target_for` accessor must never be emitted (the runtime
+    // helpers are the bound-producer accessors).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -834,6 +906,6 @@ fn no_user_facing_producer_identity_params() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is bound_producer; rendered:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; rendered:\n{rendered}"
     );
 }

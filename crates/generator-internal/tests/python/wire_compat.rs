@@ -30,8 +30,9 @@
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, WaitContext, bind_slot, init_python_project_venv, init_python_user_node,
-    send_shutdown, spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{
@@ -290,11 +291,7 @@ if __name__ == "__main__":
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: consumed_action_messages,
-        dependency: generator::DependencyContext::native(
-            PRODUCER_NODE_NAME,
-            "v1",
-            PRODUCER_NODE_NAME,
-        ),
+        dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
     generate_peppygen_lib(
@@ -331,8 +328,9 @@ from peppygen.consumed_actions import producer_perform_scan
 
 async def consume_action(node_runner, done):
     request = producer_perform_scan.GoalRequest(scan_id=7)
+    producer = producer_perform_scan.bound_producer(node_runner)
     goal = await producer_perform_scan.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, producer, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -662,11 +660,7 @@ if __name__ == "__main__":
             .response_message_format
             .clone()
             .unwrap_or_default(),
-        dependency: generator::DependencyContext::native(
-            PRODUCER_NODE_NAME,
-            "v1",
-            PRODUCER_NODE_NAME,
-        ),
+        dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
     generate_peppygen_lib(
@@ -701,7 +695,8 @@ from peppygen.consumed_services import producer_report_status
 
 async def poll_service(node_runner, done):
     request = producer_report_status.Request(detail=True)
-    response = await producer_report_status.poll(node_runner, request, 5.0)
+    producer = producer_report_status.bound_producer(node_runner)
+    response = await producer_report_status.poll(node_runner, producer, request, 5.0)
     print(
         f"response ok={response.data.ok} status={response.data.status} "
         f"measurements={response.data.measurements} elapsed={response.data.elapsed}",
@@ -1013,11 +1008,7 @@ if __name__ == "__main__":
             .message_format
             .clone()
             .expect("emitted topic has a message format"),
-        dependency: generator::DependencyContext::native(
-            PRODUCER_NODE_NAME,
-            "v1",
-            PRODUCER_NODE_NAME,
-        ),
+        dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
     generate_peppygen_lib(

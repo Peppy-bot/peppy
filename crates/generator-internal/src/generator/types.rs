@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService, PrimitiveSchema, SchemaType, TypeToken,
 };
 use daemon_config::consts::PeppyDirs;
@@ -135,10 +135,18 @@ pub fn ensure_no_peer_collision(
 /// the `node`-shaped wire discriminator.
 ///
 /// `link_id` is the consumer manifest slot whose runtime binding resolves
-/// this dependency's one producer. In the harmonized wire model the consumer
-/// never pins by `link_id` on the wire (producers always advertise the `_`
-/// sentinel); instead the generated call sites splice
-/// `processor().bound_producer(<link_id>)` lookups.
+/// this dependency's bound producer set, sized per `cardinality`. In the
+/// harmonized wire model the consumer never pins by `link_id` on the wire
+/// (producers always advertise the `_` sentinel); instead the generated
+/// call sites splice processor bound-set lookups by `link_id`.
+/// `cardinality` picks the generated accessor shape so the launch-validated
+/// guarantee lives in the type: a `one` slot exposes `bound_producer()`
+/// returning the sole `&ProducerRef`, `one_or_more` exposes
+/// `bound_producers()` returning a never-empty `NonEmptyProducers`, and
+/// `zero_or_more` exposes `bound_producers()` returning a plain, possibly
+/// empty slice. Everything else is uniform across cardinalities: topics
+/// subscribe to the complete set, and services / actions take one
+/// explicit, membership-checked member of it.
 ///
 /// [`SenderTarget::Contract`]: pmi::SenderTarget::Contract
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
@@ -148,6 +156,7 @@ pub struct DependencyContext {
     pub producer_tag: String,
     pub origin: Option<ContractOrigin>,
     pub link_id: String,
+    pub cardinality: Cardinality,
 }
 
 impl DependencyContext {
@@ -157,12 +166,14 @@ impl DependencyContext {
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
         link_id: impl Into<String>,
+        cardinality: Cardinality,
     ) -> Self {
         Self {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
             origin: None,
             link_id: link_id.into(),
+            cardinality,
         }
     }
 
@@ -175,6 +186,7 @@ impl DependencyContext {
         contract_name: impl Into<String>,
         contract_tag: impl Into<String>,
         link_id: impl Into<String>,
+        cardinality: Cardinality,
     ) -> Self {
         let contract_name = contract_name.into();
         let contract_tag = contract_tag.into();
@@ -186,6 +198,69 @@ impl DependencyContext {
                 contract_tag,
             }),
             link_id: link_id.into(),
+            cardinality,
+        }
+    }
+
+    /// Pre-wrapped doc lines stating how a caller selects `target` from
+    /// this slot's bound set, spliced into the generated consumed service
+    /// `poll` and action `fire_goal` docs in both languages. Names the
+    /// slot's cardinality-typed accessor, so the sentence differs per
+    /// cardinality while the explicit `target` parameter stays uniform.
+    pub fn target_selection_doc(&self) -> &'static [&'static str] {
+        match self.cardinality {
+            Cardinality::One => &[
+                "This slot declares cardinality `one`: `target` is its sole bound",
+                "producer, returned by `bound_producer()`; the explicit parameter",
+                "keeps call sites uniform across cardinalities.",
+            ],
+            Cardinality::OneOrMore => &[
+                "This slot declares cardinality `one_or_more`: `target` is a",
+                "caller-selected member of the never-empty `bound_producers()`",
+                "set, and addressing several members is a plain loop at the call",
+                "site.",
+            ],
+            Cardinality::ZeroOrMore => &[
+                "This slot declares cardinality `zero_or_more`: `target` is a",
+                "caller-selected member of the possibly empty `bound_producers()`",
+                "set, and addressing several members is a plain loop at the call",
+                "site.",
+            ],
+        }
+    }
+
+    /// Pre-wrapped doc lines for the module-level bound-producer accessor,
+    /// shared verbatim by both language generators (the same mechanism as
+    /// [`Self::target_selection_doc`]) so the bound-set guarantees are
+    /// stated once. The first line stands alone as the summary sentence.
+    /// The `one_or_more` prose deliberately stops mid-sentence ("so"): each
+    /// generator appends its own API-specific tail (`first()` for Rust,
+    /// `[0]` for Python).
+    pub fn bound_producers_doc(&self) -> &'static [&'static str] {
+        match self.cardinality {
+            Cardinality::One => &[
+                "The producer bound to this module's slot.",
+                "The binding is fixed when the node starts (no live discovery; a",
+                "producer disconnecting never rebinds it) and shared by every",
+                "generated module referencing this slot. This slot declares",
+                "cardinality `one`: launch validation resolved exactly one producer,",
+                "so the accessor is singular and infallible.",
+            ],
+            Cardinality::OneOrMore => &[
+                "The producer set bound to this module's slot, in declaration order.",
+                "The set is fixed when the node starts (no live discovery; a producer",
+                "disconnecting never shrinks it) and shared by every generated module",
+                "referencing this slot. This slot declares cardinality `one_or_more`:",
+                "the set is never empty, so",
+            ],
+            Cardinality::ZeroOrMore => &[
+                "The producer set bound to this module's slot, in declaration order.",
+                "The set is fixed when the node starts (no live discovery; a producer",
+                "disconnecting never shrinks it) and shared by every generated module",
+                "referencing this slot. This slot declares cardinality `zero_or_more`:",
+                "the set may be empty (the launch bound no producers), so callers",
+                "handle the empty case.",
+            ],
         }
     }
 }
@@ -709,14 +784,24 @@ mod tests {
     #[test]
     fn dependency_context_constructors_set_origin_and_link_id() {
         // native: no origin.
-        let native = DependencyContext::native("uvc_camera", "v1", "cam_left");
+        let native = DependencyContext::native(
+            "uvc_camera",
+            "v1",
+            "cam_left",
+            config::node::Cardinality::One,
+        );
         assert_eq!(native.producer_name, "uvc_camera");
         assert_eq!(native.producer_tag, "v1");
         assert!(native.origin.is_none());
         assert_eq!(native.link_id, "cam_left");
 
         // contract: no producer node; (name, tag) double as producer identity and origin.
-        let contract = DependencyContext::contract("camera_contract", "v2", "cam_left");
+        let contract = DependencyContext::contract(
+            "camera_contract",
+            "v2",
+            "cam_left",
+            config::node::Cardinality::One,
+        );
         assert_eq!(contract.producer_name, "camera_contract");
         assert_eq!(contract.producer_tag, "v2");
         assert_eq!(

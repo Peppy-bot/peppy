@@ -68,11 +68,12 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentGitSource,
-        DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource, FrameworkOverrides, PairingValidationItem, PeppyLauncher,
-        PeppyLauncherParser, PlannedPairEndpoint, PlannedPairing, ValidatedBindings,
-        ValidatedPairings, split_pair_target, validate_bindings, validate_pairings,
+        AlreadyPairedSlots, BindingTargets, BindingValidationItem, BindingValue, Deployment,
+        DeploymentGitSource, DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource,
+        DeploymentSource, DeploymentUrlSource, DuplicateBindingTarget, FrameworkOverrides,
+        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, PlannedPairEndpoint,
+        PlannedPairing, ValidatedBindings, ValidatedPairings, split_pair_target, validate_bindings,
+        validate_pairings,
     };
 }
 

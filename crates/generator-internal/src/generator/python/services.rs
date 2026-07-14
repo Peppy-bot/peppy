@@ -5,7 +5,7 @@ use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
 use crate::generator::types::{ContractOrigin, non_empty_message_format};
-use config::node::{ConsumedService, MessageFormat, NativeExposedService};
+use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
 /// generated `listen` / `poll` / `subscribe` / `emit` call:
@@ -28,20 +28,66 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Emits the statement that resolves the slot's one bound producer into
-/// a local `bound_producer` ahead of a consumed poll / send_goal call
-/// (consumed topics splice the same lookup inline as a subscribe
-/// argument). Every declared slot is bound to exactly one producer
-/// (launch and node startup both reject anything else), so the lookup is
-/// infallible for generated link_ids.
-pub(crate) fn emit_bound_producer_lookup(
+/// Emits the module-level bound-producer accessor every consumed topic,
+/// service, and action module exposes. Mirroring the Rust codegen, the
+/// accessor encodes the slot's launch-validated cardinality: `one`
+/// generates the singular `bound_producer()` returning the sole
+/// `ProducerRef` directly, while `one_or_more` / `zero_or_more` generate
+/// `bound_producers()` returning the ordered list (documented never-empty
+/// or possibly-empty respectively; Python has no non-empty list type, so
+/// the name flip is what surfaces a cardinality change at call sites).
+/// The docstring prose comes from
+/// `DependencyContext::bound_producers_doc` so both language generators
+/// state the same guarantees; only the Python-API tail sentence is added
+/// here. Callers need `import peppylib`, which every consumed module
+/// already adds.
+pub(crate) fn emit_bound_producers_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
+    let (fn_name, return_type, api_note) = match dependency.cardinality {
+        Cardinality::One => ("bound_producer", "peppylib.ProducerRef", None),
+        Cardinality::OneOrMore => (
+            "bound_producers",
+            "List[peppylib.ProducerRef]",
+            Some("`[0]` is always valid."),
+        ),
+        Cardinality::ZeroOrMore => ("bound_producers", "List[peppylib.ProducerRef]", None),
+    };
+    if !dependency.cardinality.is_one() {
+        builder.add_import("from typing import List");
+    }
+
+    let doc = dependency.bound_producers_doc();
+    builder.blank_line();
     builder.line(&format!(
-        "bound_producer = node_runner.bound_producer({:?})",
+        "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
+    ));
+    builder.indent();
+    builder.line(&format!("\"\"\"{}", doc[0]));
+    builder.blank_line();
+    for line in &doc[1..] {
+        builder.line(line);
+    }
+    if let Some(note) = api_note {
+        builder.line(note);
+    }
+    builder.line("\"\"\"");
+    builder.line(&format!(
+        "return node_runner.{fn_name}({:?})",
         dependency.link_id
     ));
+    builder.dedent();
+    builder.blank_line();
+}
+
+/// Emits the per-call membership check ahead of a consumed poll /
+/// send_goal call: the caller-selected `target` must be a member of the
+/// slot's own bound set, rejected before anything reaches the wire
+/// otherwise. `LINK_ID` is a module constant every consumed service /
+/// action module defines.
+pub(crate) fn emit_target_membership_check(builder: &mut PythonCodeBuilder) {
+    builder.line("node_runner.ensure_target_bound(LINK_ID, target)");
 }
 
 /// Generates Python code for an exposed (handler) service.
@@ -243,6 +289,7 @@ pub fn build_consumed_service(
     // Constants
     builder.line(&format!("NODE_NAME = \"{}\"", dependency.producer_name));
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
+    builder.line(&format!("LINK_ID = \"{}\"", dependency.link_id));
     builder.blank_line();
 
     // Request dataclass
@@ -289,15 +336,27 @@ pub fn build_consumed_service(
         " -> None"
     };
 
+    emit_bound_producers_fn(&mut builder, dependency);
+
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float){return_type}:"
         )
     } else {
-        format!("async def poll(node_runner: peppylib.NodeRunner, timeout: float){return_type}:")
+        format!(
+            "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float){return_type}:"
+        )
     };
     builder.line(&signature);
     builder.indent();
+    builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound set.");
+    builder.blank_line();
+    builder.line("A target outside the set fails before anything reaches the wire.");
+    for doc_line in dependency.target_selection_doc() {
+        builder.line(doc_line);
+    }
+    builder.line("\"\"\"");
+    emit_target_membership_check(&mut builder);
 
     // Serialize the request payload
     if let Some((fmt, info)) = request_format.zip(request_schema_info) {
@@ -319,7 +378,6 @@ pub fn build_consumed_service(
         builder.line("request_payload = b\"\"");
     }
 
-    emit_bound_producer_lookup(&mut builder, dependency);
     if has_response {
         builder.line("response_message = await peppylib.ServiceMessenger.poll(");
     } else {
@@ -336,7 +394,7 @@ pub fn build_consumed_service(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{target_expr},"));
     builder.line("SERVICE_NAME,");
-    builder.line("bound_producer,");
+    builder.line("target,");
     builder.line("request_payload,");
     builder.line("timeout,");
     builder.dedent();

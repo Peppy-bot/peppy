@@ -3,28 +3,31 @@
 //! cross-reference each consumer's `depends_on` against the running
 //! stack snapshot's `instance_id → (name, tag)` lookup.
 //!
-//! Every binding entry maps a declared slot to its one producer: the KEY
-//! must equal a `depends_on.{nodes,contracts}` `link_id` and the target
-//! must deploy the slot's node (node slots) or implement the slot's
-//! contract (contract slots). Every declared slot must have a binding
-//! entry — an unfulfilled slot fails validation before anything is
-//! spawned; there is no wildcard fallback, no free-form key, no unbound
-//! state, and no multi-producer slot (a consumer that needs N producers
-//! declares N slots).
+//! Every binding entry maps a declared slot to its application-selected
+//! producer set: the KEY must equal a `depends_on.{nodes,contracts}`
+//! `link_id`, the value's shape must mirror the slot's declared
+//! cardinality (a scalar for `one`, an array for `one_or_more` /
+//! `zero_or_more`; repeated `--bind` flags are checked by count instead),
+//! and every target must deploy the slot's node (node slots) or implement
+//! the slot's contract (contract slots); conformance runs per bound
+//! instance. Every declared slot must resolve: `one` to exactly one
+//! producer, `one_or_more` to at least one, and `zero_or_more` to zero or
+//! more (an omitted binding and an empty array are both its valid empty
+//! set). There is no wildcard fallback and no free-form key.
 //!
 //! The validator emits both errors and the resolved per-slot producer
-//! per consumer instance, which the caller serializes into
+//! set per consumer instance, which the caller serializes into
 //! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
 use crate::error::{
     BindingContractNotImplemented, BindingSlotUnfulfilled, BindingTargetMismatch,
     BindingUnknownSlot, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
-use config::node::{DependsOn, ImplementsEntry};
-use config::runtime::{ProducerRef, SlotBindings};
+use config::node::{Cardinality, DependsOn, ImplementsEntry};
+use config::runtime::{BoundProducers, ProducerRef, SlotBindings};
 use std::collections::BTreeMap;
 
-use super::types::DeploymentInstance;
+use super::types::{BindingValue, DeploymentInstance};
 
 /// Minimal view of one planned deployment needed for binding
 /// validation. Built by the launcher with borrowed references to avoid
@@ -43,14 +46,15 @@ pub struct BindingValidationItem<'a> {
 }
 
 /// Per-slot metadata extracted from `depends_on` during validation.
-/// Carrying `kind` inline lets the target-matching path pick the right
-/// error (node mismatch vs contract not implemented) without re-scanning
+/// Carrying `kind` and `cardinality` inline lets the shape and
+/// target-matching paths pick the right error without re-scanning
 /// `depends_on` per binding.
 #[derive(Clone, Copy)]
 struct SlotMeta<'a> {
     name: &'a str,
     tag: &'a str,
     kind: SlotKind,
+    cardinality: Cardinality,
 }
 
 /// Outcome of [`validate_bindings`]. `errors` aggregates every validator
@@ -60,9 +64,11 @@ struct SlotMeta<'a> {
 #[derive(Debug, Default)]
 pub struct ValidatedBindings {
     pub errors: Vec<ParsingError>,
-    /// `consumer_instance_id → link_id → bound producer`. When `errors`
-    /// is empty, every declared slot of an instance appears, each bound
-    /// to exactly one producer.
+    /// `consumer_instance_id → link_id → ordered bound producer set`.
+    /// When `errors` is empty, every declared slot of an instance
+    /// appears, sized per its cardinality; a `zero_or_more` slot with no
+    /// binding appears with an explicit empty set so the resolution is
+    /// self-describing.
     pub slot_bindings: BTreeMap<String, SlotBindings>,
 }
 
@@ -85,27 +91,34 @@ pub struct ValidatedBindings {
 ///    contracts}` `link_id`. A key naming a pairing slot gets the
 ///    targeted [`ParsingError::BindingKeyIsPairingSlot`]; any other
 ///    unknown key is [`ParsingError::BindingUnknownSlot`].
-/// 2. The slot's one target exists in the snapshot
+/// 2. The binding value matches the slot's declared cardinality. Launch
+///    files carry shape: a `one` slot takes a scalar only (an array,
+///    single-element and empty included, is
+///    [`ParsingError::BindingArrayOnOneSlot`]), a multi slot takes an
+///    array only (a scalar is
+///    [`ParsingError::BindingScalarOnMultiSlot`]), and an empty array
+///    meets only `zero_or_more`
+///    ([`ParsingError::BindingCardinalityUnmet`] on `one_or_more`).
+///    CLI flag occurrences carry no shape and are checked by count:
+///    more than one on a `one` slot is
+///    [`ParsingError::BindingSingleSlotMultipleTargets`].
+/// 3. Every target in the slot's set exists in the snapshot
 ///    ([`ParsingError::UnknownInstanceId`] otherwise) and satisfies the
-///    slot: node slots match the target's `(name, tag)` identity
-///    ([`ParsingError::BindingTargetMismatch`] otherwise), contract
-///    slots match the target's `manifest.implements`
+///    slot, checked per bound instance: node slots match the target's
+///    `(name, tag)` identity ([`ParsingError::BindingTargetMismatch`]
+///    otherwise), contract slots match the target's
+///    `manifest.implements`
 ///    ([`ParsingError::BindingContractNotImplemented`] otherwise).
-///    Multiplicity never reaches this validator — the launcher
-///    deserializer and the `--bind` CLI parser both reject a slot
-///    naming more than one producer, and the binding map's value type
-///    holds exactly one target.
-/// 3. `--bind KEY` uniqueness within one invocation is enforced by the
-///    CLI parser and the deserializer; this validator surfaces any
-///    residual duplicates as [`ParsingError::BindingDuplicateKey`]
-///    (defensive; should not fire in practice).
+///    Duplicate targets within one slot are unrepresentable
+///    ([`super::types::BindingTargets`] rejects them at construction);
+///    declaration order is preserved into the resolution.
 /// 4. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
-/// 5. Every declared `depends_on.{nodes,contracts}` slot must have a
-///    binding entry. A declared slot the bindings leave out emits one
-///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in link_id
-///    order) — there is no unbound state.
+/// 5. Every declared slot resolves. A `one` / `one_or_more` slot with no
+///    binding entry emits one [`ParsingError::BindingSlotUnfulfilled`]
+///    per slot (in link_id order); a `zero_or_more` slot with no entry
+///    resolves to an explicit empty set.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
     producer_core_node: &str,
@@ -131,18 +144,8 @@ pub fn validate_bindings(
 
         for instance in item.instances {
             let mut resolved: SlotBindings = BTreeMap::new();
-            let mut seen_keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
 
-            for (binding_key, target_id) in &instance.bindings {
-                // Rule 3 defensive check.
-                if !seen_keys.insert(binding_key.as_str()) {
-                    out.errors.push(ParsingError::BindingDuplicateKey {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        binding: binding_key.clone(),
-                    });
-                    continue;
-                }
-
+            for (binding_key, value) in &instance.bindings {
                 if pairing_link_ids.contains(binding_key.as_str()) {
                     out.errors.push(ParsingError::BindingKeyIsPairingSlot {
                         owner_instance_id: instance.instance_id.to_string(),
@@ -163,56 +166,65 @@ pub fn validate_bindings(
                     continue;
                 };
 
-                // Rule 2: the slot's one target exists and satisfies the
-                // slot.
-                let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
-                    out.errors.push(ParsingError::UnknownInstanceId {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        binding: binding_key.clone(),
-                        instance_id: target_id.clone(),
-                    });
-                    continue;
-                };
-                if !slot_matches_producer(&slot, target_item) {
-                    out.errors.push(match slot.kind {
-                        SlotKind::Node => {
-                            ParsingError::BindingTargetMismatch(Box::new(BindingTargetMismatch {
-                                owner_instance_id: instance.instance_id.to_string(),
-                                binding: binding_key.clone(),
-                                target_instance_id: target_id.clone(),
-                                expected_name: slot.name.to_string(),
-                                expected_tag: slot.tag.to_string(),
-                                actual_name: target_item.node_name.to_string(),
-                                actual_tag: target_item.node_tag.to_string(),
-                            }))
-                        }
-                        SlotKind::Contract => ParsingError::BindingContractNotImplemented(
-                            Box::new(BindingContractNotImplemented {
-                                owner_instance_id: instance.instance_id.to_string(),
-                                binding: binding_key.clone(),
-                                target_instance_id: target_id.clone(),
-                                contract_name: slot.name.to_string(),
-                                contract_tag: slot.tag.to_string(),
-                                producer_name: target_item.node_name.to_string(),
-                                producer_tag: target_item.node_tag.to_string(),
-                            }),
-                        ),
-                    });
+                // Rule 2: the value's shape (or flag count) must match the
+                // slot's declared cardinality.
+                if let Err(shape_error) =
+                    check_value_matches_cardinality(&slot, value, binding_key, instance)
+                {
+                    out.errors.push(shape_error);
                     continue;
                 }
-                resolved.insert(
-                    binding_key.clone(),
-                    ProducerRef::new(producer_core_node, target_id.clone()),
-                );
+
+                // Rule 3: every target exists and satisfies the slot
+                // (uniqueness holds by `BindingTargets` construction).
+                // All-or-nothing: a slot with any bad target reports each
+                // offender and resolves nothing.
+                let mut producers: Vec<ProducerRef> = Vec::with_capacity(value.targets().len());
+                let mut slot_failed = false;
+                for target_id in value.targets() {
+                    let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
+                        out.errors.push(ParsingError::UnknownInstanceId {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            binding: binding_key.clone(),
+                            instance_id: target_id.clone(),
+                        });
+                        slot_failed = true;
+                        continue;
+                    };
+                    if !slot_matches_producer(&slot, target_item) {
+                        out.errors.push(target_conformance_error(
+                            &slot,
+                            target_item,
+                            binding_key,
+                            target_id,
+                            instance,
+                        ));
+                        slot_failed = true;
+                        continue;
+                    }
+                    producers.push(ProducerRef::new(producer_core_node, target_id.clone()));
+                }
+                if slot_failed {
+                    continue;
+                }
+
+                let bound = BoundProducers::try_from(producers)
+                    .expect("targets are duplicate-free by BindingTargets construction");
+                resolved.insert(binding_key.clone(), bound);
             }
 
-            // Rule 5: every declared slot must have a binding entry. One
-            // error per slot the bindings left out, in link_id
-            // (`BTreeMap`) order. Keyed on `seen_keys`, not `resolved`,
-            // so a slot whose entry failed target validation reports
-            // only its target error, not a bogus "add a binding" too.
+            // Rule 5: every declared slot must resolve. Keyed on the
+            // binding entries, not `resolved`, so a slot whose entry
+            // failed shape or target validation reports only that error,
+            // not a bogus "add a binding" too. A `zero_or_more` slot with
+            // no entry resolves to an explicit empty set.
             for (slot_link_id, slot) in &declared_slots {
-                if !seen_keys.contains(*slot_link_id) {
+                if instance.bindings.contains_key(*slot_link_id) {
+                    continue;
+                }
+                if slot.cardinality.allows_empty() {
+                    resolved.insert((*slot_link_id).to_string(), BoundProducers::default());
+                } else {
                     out.errors
                         .push(ParsingError::BindingSlotUnfulfilled(Box::new(
                             BindingSlotUnfulfilled {
@@ -221,6 +233,7 @@ pub fn validate_bindings(
                                 slot_kind: slot.kind,
                                 slot_name: slot.name.to_string(),
                                 slot_tag: slot.tag.to_string(),
+                                cardinality: slot.cardinality,
                             },
                         )));
                 }
@@ -234,6 +247,92 @@ pub fn validate_bindings(
     }
 
     out
+}
+
+/// Rule 2: does the binding value's shape (launch file) or occurrence
+/// count (CLI flags) satisfy the slot's declared cardinality? Launch-file
+/// shapes are strict (a scalar is only valid on a `one` slot and an array
+/// only on a multi slot), while flag occurrences carry no shape and are
+/// checked by count alone. CLI-built `Flags` is non-empty (zero occurrences
+/// is an omitted binding, handled by rule 5), but the validator still rejects
+/// an empty programmatic value on `one_or_more`.
+fn check_value_matches_cardinality(
+    slot: &SlotMeta<'_>,
+    value: &BindingValue,
+    binding_key: &str,
+    instance: &DeploymentInstance,
+) -> Result<(), ParsingError> {
+    match (slot.cardinality, value) {
+        (Cardinality::One, BindingValue::Scalar(_)) => Ok(()),
+        (Cardinality::One, BindingValue::Array(_)) => Err(ParsingError::BindingArrayOnOneSlot {
+            owner_instance_id: instance.instance_id.to_string(),
+            binding: binding_key.to_string(),
+        }),
+        (Cardinality::One, BindingValue::Flags(targets)) => {
+            if targets.len() == 1 {
+                Ok(())
+            } else {
+                Err(ParsingError::BindingSingleSlotMultipleTargets {
+                    owner_instance_id: instance.instance_id.to_string(),
+                    binding: binding_key.to_string(),
+                    target_count: targets.len(),
+                })
+            }
+        }
+        (Cardinality::OneOrMore | Cardinality::ZeroOrMore, BindingValue::Scalar(_)) => {
+            Err(ParsingError::BindingScalarOnMultiSlot {
+                owner_instance_id: instance.instance_id.to_string(),
+                binding: binding_key.to_string(),
+                cardinality: slot.cardinality,
+            })
+        }
+        (Cardinality::OneOrMore, BindingValue::Array(targets) | BindingValue::Flags(targets))
+            if targets.is_empty() =>
+        {
+            Err(ParsingError::BindingCardinalityUnmet {
+                owner_instance_id: instance.instance_id.to_string(),
+                binding: binding_key.to_string(),
+            })
+        }
+        (
+            Cardinality::OneOrMore | Cardinality::ZeroOrMore,
+            BindingValue::Array(_) | BindingValue::Flags(_),
+        ) => Ok(()),
+    }
+}
+
+/// Rule 3 conformance error for one bound target, picked by slot kind:
+/// node slots report an identity mismatch, contract slots a missing
+/// `manifest.implements` claim.
+fn target_conformance_error(
+    slot: &SlotMeta<'_>,
+    target_item: &BindingValidationItem<'_>,
+    binding_key: &str,
+    target_id: &str,
+    instance: &DeploymentInstance,
+) -> ParsingError {
+    match slot.kind {
+        SlotKind::Node => ParsingError::BindingTargetMismatch(Box::new(BindingTargetMismatch {
+            owner_instance_id: instance.instance_id.to_string(),
+            binding: binding_key.to_string(),
+            target_instance_id: target_id.to_string(),
+            expected_name: slot.name.to_string(),
+            expected_tag: slot.tag.to_string(),
+            actual_name: target_item.node_name.to_string(),
+            actual_tag: target_item.node_tag.to_string(),
+        })),
+        SlotKind::Contract => {
+            ParsingError::BindingContractNotImplemented(Box::new(BindingContractNotImplemented {
+                owner_instance_id: instance.instance_id.to_string(),
+                binding: binding_key.to_string(),
+                target_instance_id: target_id.to_string(),
+                contract_name: slot.name.to_string(),
+                contract_tag: slot.tag.to_string(),
+                producer_name: target_item.node_name.to_string(),
+                producer_tag: target_item.node_tag.to_string(),
+            }))
+        }
+    }
 }
 
 /// Build `instance_id → BindingValidationItem` lookup. Duplicate IDs
@@ -295,9 +394,10 @@ fn check_stack_wide_instance_id_uniqueness(
 type DeclaredSlots<'a> = BTreeMap<&'a str, SlotMeta<'a>>;
 
 /// The declared binding slots: every `depends_on.{nodes,contracts}`
-/// entry keyed by `link_id`, with the dep's `(name, tag, kind)` so the
-/// target-matching path can branch on node-vs-contract without
-/// re-scanning the manifest.
+/// entry keyed by `link_id`, with the dep's `(name, tag, kind,
+/// cardinality)` so the shape and target-matching paths can branch
+/// without re-scanning the manifest. Cardinality applies uniformly to
+/// both entry kinds.
 fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
     let mut slots = BTreeMap::new();
     if let Some(deps) = depends_on {
@@ -308,6 +408,7 @@ fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
                     name: dep.name.as_str(),
                     tag: dep.tag.as_str(),
                     kind: SlotKind::Node,
+                    cardinality: dep.cardinality,
                 },
             );
         }
@@ -318,6 +419,7 @@ fn collect_declared_slots(depends_on: Option<&DependsOn>) -> DeclaredSlots<'_> {
                     name: dep.name.as_str(),
                     tag: dep.tag.as_str(),
                     kind: SlotKind::Contract,
+                    cardinality: dep.cardinality,
                 },
             );
         }
@@ -348,6 +450,7 @@ fn format_declared_keys(slots: &DeclaredSlots<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::runtime::Name;
 
     /// The launching daemon's core_node stamped into every resolved
     /// binding by these tests.
@@ -400,11 +503,34 @@ mod tests {
         }
     }
 
-    fn slot_binding(out: &ValidatedBindings, instance: &str, link_id: &str) -> Option<ProducerRef> {
+    /// The resolved producer set for one slot, as a plain `Vec` for
+    /// assertion ergonomics. `None` when the instance or slot resolved
+    /// nothing at all.
+    fn slot_binding(
+        out: &ValidatedBindings,
+        instance: &str,
+        link_id: &str,
+    ) -> Option<Vec<ProducerRef>> {
         out.slot_bindings
             .get(instance)
             .and_then(|m| m.get(link_id))
-            .cloned()
+            .map(|bound| bound.iter().cloned().collect())
+    }
+
+    /// Shorthand for the common single-producer expectation.
+    fn single(core_node: &str, instance_id: &str) -> Option<Vec<ProducerRef>> {
+        Some(vec![ProducerRef::new(core_node, instance_id)])
+    }
+
+    /// Test shorthand: a `Flags` binding value from unique literals, as
+    /// the CLI's flag accumulation would build it.
+    fn flags(targets: &[&str]) -> BindingValue {
+        BindingValue::Flags(
+            super::super::types::BindingTargets::new(
+                targets.iter().map(|t| t.to_string()).collect(),
+            )
+            .expect("test targets are unique"),
+        )
     }
 
     #[test]
@@ -535,7 +661,7 @@ mod tests {
         // caller, but the resolution itself is complete for bound slots).
         assert_eq!(
             slot_binding(&out, "cons1", "middle"),
-            Some(ProducerRef::new(TEST_CORE, "prod1"))
+            single(TEST_CORE, "prod1")
         );
     }
 
@@ -563,8 +689,435 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "main"),
-            Some(ProducerRef::new(TEST_CORE, "prod1"))
+            single(TEST_CORE, "prod1")
         );
+    }
+
+    /// Depends-on fixture with one slot per cardinality, all expecting
+    /// `camera:v1` nodes: `main` (one, omitted), `cameras` (one_or_more),
+    /// `spare_cameras` (zero_or_more).
+    fn all_cardinalities_depends_on() -> DependsOn {
+        parse_depends_on(
+            r#"{
+                nodes: [
+                    { name: "camera", tag: "v1", link_id: "main" },
+                    { name: "camera", tag: "v1", link_id: "cameras", cardinality: "one_or_more" },
+                    { name: "camera", tag: "v1", link_id: "spare_cameras", cardinality: "zero_or_more" }
+                ]
+            }"#,
+        )
+    }
+
+    /// Happy path across all three cardinalities: a scalar on the `one`
+    /// slot, an array on the `one_or_more` slot (resolved in declaration
+    /// order), and an omitted `zero_or_more` slot resolving to an explicit
+    /// empty set.
+    #[test]
+    fn cardinalities_resolve_scalar_array_and_omitted_empty_set() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: {
+                    main: "prod1",
+                    cameras: ["prod2", "prod1"]
+                }
+            }]"#,
+        );
+        let depends_on = all_cardinalities_depends_on();
+        let prod_instances = parse_instances(
+            r#"[
+                { instance_id: "prod1" },
+                { instance_id: "prod2" }
+            ]"#,
+        );
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            slot_binding(&out, "cons1", "main"),
+            single(TEST_CORE, "prod1")
+        );
+        assert_eq!(
+            slot_binding(&out, "cons1", "cameras"),
+            Some(vec![
+                ProducerRef::new(TEST_CORE, "prod2"),
+                ProducerRef::new(TEST_CORE, "prod1"),
+            ]),
+            "array declaration order must be preserved, not sorted"
+        );
+        assert_eq!(
+            slot_binding(&out, "cons1", "spare_cameras"),
+            Some(Vec::new()),
+            "an omitted zero_or_more binding resolves to an explicit empty set"
+        );
+    }
+
+    /// A `zero_or_more` slot bound to an explicit empty array is the same
+    /// valid empty set as omitting the binding entirely.
+    #[test]
+    fn zero_or_more_empty_array_is_a_valid_empty_set() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: {
+                    main: "prod1",
+                    cameras: ["prod1"],
+                    spare_cameras: []
+                }
+            }]"#,
+        );
+        let depends_on = all_cardinalities_depends_on();
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            slot_binding(&out, "cons1", "spare_cameras"),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            slot_binding(&out, "cons1", "cameras"),
+            single(TEST_CORE, "prod1"),
+            "a single-element array is valid on a multi slot"
+        );
+    }
+
+    /// Rule 2: an array on a `one` slot is rejected, single-element and
+    /// empty arrays included; the value shape must mirror the cardinality.
+    #[test]
+    fn rule2_array_on_a_one_slot_is_rejected() {
+        for producers in [r#"["prod1", "prod2"]"#, r#"["prod1"]"#, r#"[]"#] {
+            let cons_json = format!(
+                r#"[{{
+                    instance_id: "cons1",
+                    bindings: {{ main: {producers} }}
+                }}]"#
+            );
+            let cons_instances = parse_instances(&cons_json);
+            let depends_on =
+                parse_depends_on(r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#);
+            let prod_instances = parse_instances(
+                r#"[
+                    { instance_id: "prod1" },
+                    { instance_id: "prod2" }
+                ]"#,
+            );
+            let items = vec![
+                item("cons", "v1", &cons_instances, Some(&depends_on)),
+                item("camera", "v1", &prod_instances, None),
+            ];
+            let out = validate_bindings(&items, TEST_CORE);
+            assert_eq!(out.errors.len(), 1, "value {producers}: {:?}", out.errors);
+            let ParsingError::BindingArrayOnOneSlot {
+                owner_instance_id,
+                binding,
+            } = &out.errors[0]
+            else {
+                panic!(
+                    "expected BindingArrayOnOneSlot for {producers}, got {:?}",
+                    out.errors[0]
+                );
+            };
+            assert_eq!(owner_instance_id, "cons1");
+            assert_eq!(binding, "main");
+            assert!(
+                !out.slot_bindings.contains_key("cons1"),
+                "a shape-rejected slot must not resolve"
+            );
+        }
+    }
+
+    /// Rule 2: a scalar on a multi slot is rejected for both multi
+    /// cardinalities; the error names the slot's cardinality.
+    #[test]
+    fn rule2_scalar_on_a_multi_slot_is_rejected() {
+        // Per case: the slot under test bound as a scalar, the other two
+        // slots validly bound.
+        for (link_id, cardinality, cons_json) in [
+            (
+                "cameras",
+                Cardinality::OneOrMore,
+                r#"[{
+                    instance_id: "cons1",
+                    bindings: { main: "prod1", cameras: "prod1", spare_cameras: [] }
+                }]"#,
+            ),
+            (
+                "spare_cameras",
+                Cardinality::ZeroOrMore,
+                r#"[{
+                    instance_id: "cons1",
+                    bindings: { main: "prod1", cameras: ["prod1"], spare_cameras: "prod1" }
+                }]"#,
+            ),
+        ] {
+            let cons_instances = parse_instances(cons_json);
+            let depends_on = all_cardinalities_depends_on();
+            let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+            let items = vec![
+                item("cons", "v1", &cons_instances, Some(&depends_on)),
+                item("camera", "v1", &prod_instances, None),
+            ];
+            let out = validate_bindings(&items, TEST_CORE);
+            assert_eq!(out.errors.len(), 1, "slot {link_id}: {:?}", out.errors);
+            let ParsingError::BindingScalarOnMultiSlot {
+                owner_instance_id,
+                binding,
+                cardinality: actual_cardinality,
+            } = &out.errors[0]
+            else {
+                panic!(
+                    "expected BindingScalarOnMultiSlot for {link_id}, got {:?}",
+                    out.errors[0]
+                );
+            };
+            assert_eq!(owner_instance_id, "cons1");
+            assert_eq!(binding, link_id);
+            assert_eq!(*actual_cardinality, cardinality);
+        }
+    }
+
+    /// Rule 2: an empty array on a `one_or_more` slot is a binding entry
+    /// whose set misses the minimum of one producer.
+    #[test]
+    fn rule2_empty_array_on_one_or_more_is_cardinality_unmet() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { main: "prod1", cameras: [], spare_cameras: [] }
+            }]"#,
+        );
+        let depends_on = all_cardinalities_depends_on();
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
+        let ParsingError::BindingCardinalityUnmet {
+            owner_instance_id,
+            binding,
+        } = &out.errors[0]
+        else {
+            panic!("expected BindingCardinalityUnmet, got {:?}", out.errors[0]);
+        };
+        assert_eq!(owner_instance_id, "cons1");
+        assert_eq!(binding, "cameras");
+    }
+
+    /// An omitted binding is an error for BOTH `one` and `one_or_more`
+    /// (the cardinality table's "omitted binding" column), each reported
+    /// with the slot's cardinality; only `zero_or_more` tolerates it.
+    #[test]
+    fn omitted_bindings_error_per_cardinality() {
+        let cons_instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
+        let depends_on = all_cardinalities_depends_on();
+        let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
+        let out = validate_bindings(&items, TEST_CORE);
+        let unfulfilled: Vec<(&str, Cardinality)> = out
+            .errors
+            .iter()
+            .map(|e| match e {
+                ParsingError::BindingSlotUnfulfilled(info) => {
+                    (info.link_id.as_str(), info.cardinality)
+                }
+                other => panic!("expected only BindingSlotUnfulfilled, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            unfulfilled,
+            [
+                ("cameras", Cardinality::OneOrMore),
+                ("main", Cardinality::One)
+            ],
+            "one error per non-zero_or_more slot, in link_id order"
+        );
+        assert_eq!(
+            slot_binding(&out, "cons1", "spare_cameras"),
+            Some(Vec::new()),
+            "the zero_or_more slot still resolves to its empty set"
+        );
+    }
+
+    /// CLI flag occurrences (shape-less `BindingValue::Flags`) accumulate
+    /// on a multi slot in flag order and stay a hard error on a `one`
+    /// slot; a single occurrence is valid everywhere it meets the minimum.
+    #[test]
+    fn flag_occurrences_check_count_not_shape() {
+        let depends_on = all_cardinalities_depends_on();
+        let prod_instances = parse_instances(
+            r#"[
+                { instance_id: "prod1" },
+                { instance_id: "prod2" }
+            ]"#,
+        );
+
+        // Accumulated flags on the multi slot, one flag on the one slot.
+        let mut valid = DeploymentInstance::empty(Name::new("cons1").unwrap());
+        valid.bindings.insert("main".to_string(), flags(&["prod1"]));
+        valid
+            .bindings
+            .insert("cameras".to_string(), flags(&["prod2", "prod1"]));
+        let valid_instances = vec![valid];
+        let items = vec![
+            item("cons", "v1", &valid_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            slot_binding(&out, "cons1", "main"),
+            single(TEST_CORE, "prod1")
+        );
+        assert_eq!(
+            slot_binding(&out, "cons1", "cameras"),
+            Some(vec![
+                ProducerRef::new(TEST_CORE, "prod2"),
+                ProducerRef::new(TEST_CORE, "prod1"),
+            ]),
+            "flag occurrence order must be preserved"
+        );
+
+        // Two flags on the `one` slot: hard error naming the count.
+        let mut repeated = DeploymentInstance::empty(Name::new("cons1").unwrap());
+        repeated
+            .bindings
+            .insert("main".to_string(), flags(&["prod1", "prod2"]));
+        repeated
+            .bindings
+            .insert("cameras".to_string(), flags(&["prod1"]));
+        let repeated_instances = vec![repeated];
+        let items = vec![
+            item("cons", "v1", &repeated_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
+        let ParsingError::BindingSingleSlotMultipleTargets {
+            owner_instance_id,
+            binding,
+            target_count,
+        } = &out.errors[0]
+        else {
+            panic!(
+                "expected BindingSingleSlotMultipleTargets, got {:?}",
+                out.errors[0]
+            );
+        };
+        assert_eq!(owner_instance_id, "cons1");
+        assert_eq!(binding, "main");
+        assert_eq!(*target_count, 2);
+
+        // The CLI never constructs an empty Flags value, but programmatic
+        // callers still go through the same cardinality check.
+        let mut empty = DeploymentInstance::empty(Name::new("cons1").unwrap());
+        empty.bindings.insert("main".to_string(), flags(&["prod1"]));
+        empty.bindings.insert("cameras".to_string(), flags(&[]));
+        let empty_instances = vec![empty];
+        let items = vec![
+            item("cons", "v1", &empty_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert!(matches!(
+            out.errors.as_slice(),
+            [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras"
+        ));
+    }
+
+    /// Rule 3 runs per bound instance on a multi slot: one bad target
+    /// among good ones reports exactly that target, and the slot resolves
+    /// nothing (all-or-nothing) while other slots still resolve.
+    #[test]
+    fn rule3_checks_each_target_of_a_multi_slot() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: {
+                    main: "prod1",
+                    cameras: ["prod1", "actually_lidar", "ghost"]
+                }
+            }]"#,
+        );
+        let depends_on = all_cardinalities_depends_on();
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let lidar_instances = parse_instances(r#"[{ instance_id: "actually_lidar" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+            item("lidar", "v1", &lidar_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert_eq!(out.errors.len(), 2, "errors: {:?}", out.errors);
+        let ParsingError::BindingTargetMismatch(mismatch) = &out.errors[0] else {
+            panic!(
+                "expected BindingTargetMismatch first, got {:?}",
+                out.errors[0]
+            );
+        };
+        assert_eq!(mismatch.target_instance_id, "actually_lidar");
+        assert_eq!(mismatch.actual_name, "lidar");
+        let ParsingError::UnknownInstanceId { instance_id, .. } = &out.errors[1] else {
+            panic!("expected UnknownInstanceId second, got {:?}", out.errors[1]);
+        };
+        assert_eq!(instance_id, "ghost");
+        let resolved = out.slot_bindings.get("cons1").expect("cons1 resolution");
+        assert!(
+            !resolved.contains_key("cameras"),
+            "a slot with any bad target must resolve nothing"
+        );
+        assert!(
+            resolved.contains_key("main"),
+            "unrelated slots still resolve"
+        );
+    }
+
+    /// Contract-slot conformance also runs per bound instance: every
+    /// member of a multi slot must implement the contract.
+    #[test]
+    fn contract_multi_slot_checks_implements_per_target() {
+        let cons_instances = parse_instances(
+            r#"[{
+                instance_id: "cons1",
+                bindings: { cameras: ["webcam_1", "not_a_camera"] }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                contracts: [{
+                    name: "uvc_camera",
+                    tag: "v1",
+                    link_id: "cameras",
+                    cardinality: "one_or_more"
+                }]
+            }"#,
+        );
+        let webcam_instances = parse_instances(r#"[{ instance_id: "webcam_1" }]"#);
+        let webcam_implements =
+            parse_implements(r#"[{ name: "uvc_camera", tag: "v1", link_id: "cam" }]"#);
+        let other_instances = parse_instances(r#"[{ instance_id: "not_a_camera" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item_with_implements("webcam", "v1", &webcam_instances, None, &webcam_implements),
+            item("other", "v1", &other_instances, None),
+        ];
+        let out = validate_bindings(&items, TEST_CORE);
+        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
+        let ParsingError::BindingContractNotImplemented(info) = &out.errors[0] else {
+            panic!(
+                "expected BindingContractNotImplemented, got {:?}",
+                out.errors[0]
+            );
+        };
+        assert_eq!(info.target_instance_id, "not_a_camera");
+        assert_eq!(info.contract_name, "uvc_camera");
     }
 
     /// Rule 5: pinned binding whose target deploys the wrong node.
@@ -672,7 +1225,7 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "depth"),
-            Some(ProducerRef::new(TEST_CORE, "webcam_inst_1"))
+            single(TEST_CORE, "webcam_inst_1")
         );
     }
 
@@ -726,7 +1279,7 @@ mod tests {
         for link_id in ["wrist_left_camera", "wrist_right_camera"] {
             assert_eq!(
                 slot_binding(&out, "backbone_inst_1", link_id),
-                Some(ProducerRef::new(TEST_CORE, "depth_cam_inst1"))
+                single(TEST_CORE, "depth_cam_inst1")
             );
         }
     }
@@ -841,11 +1394,11 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "cam"),
-            Some(ProducerRef::new(TEST_CORE, "node_prod_inst"))
+            single(TEST_CORE, "node_prod_inst")
         );
         assert_eq!(
             slot_binding(&out, "cons1", "depth"),
-            Some(ProducerRef::new(TEST_CORE, "contract_prod_inst"))
+            single(TEST_CORE, "contract_prod_inst")
         );
     }
 
@@ -1071,11 +1624,11 @@ mod tests {
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "depth_cons", "feed"),
-            Some(ProducerRef::new(TEST_CORE, "multi_prod"))
+            single(TEST_CORE, "multi_prod")
         );
         assert_eq!(
             slot_binding(&out, "uvc_cons", "feed"),
-            Some(ProducerRef::new(TEST_CORE, "multi_prod"))
+            single(TEST_CORE, "multi_prod")
         );
     }
 
@@ -1173,8 +1726,8 @@ mod tests {
         let out = validate_bindings(&items, "daemon_west");
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         let resolved = out.slot_bindings.get("cons1").expect("cons1 bindings");
-        assert_eq!(resolved.len(), 2, "both bound producers must be stamped");
-        for producer in resolved.values() {
+        assert_eq!(resolved.len(), 2, "both slots must resolve");
+        for producer in resolved.values().flat_map(|bound| bound.iter()) {
             assert_eq!(producer.core_node, "daemon_west");
         }
     }

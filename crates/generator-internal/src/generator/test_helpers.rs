@@ -15,7 +15,22 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use super::types::InterfaceArtifact;
+use super::types::{DependencyContext, InterfaceArtifact};
+use config::node::Cardinality;
+
+/// A node dependency slot at the manifest's default `one` cardinality,
+/// for tests where cardinality is irrelevant to what is being verified.
+/// Cardinality-specific tests spell out [`DependencyContext::native`]
+/// with an explicit fourth argument instead.
+pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> DependencyContext {
+    DependencyContext::native(node_name, node_tag, link_id, Cardinality::One)
+}
+
+/// Contract twin of [`native_dep`]: a `depends_on.contracts` slot at the
+/// default `one` cardinality.
+pub fn contract_dep(contract_name: &str, contract_tag: &str, link_id: &str) -> DependencyContext {
+    DependencyContext::contract(contract_name, contract_tag, link_id, Cardinality::One)
+}
 
 pub const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",

@@ -29,6 +29,19 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
+/// A node dependency slot at the manifest's default `one` cardinality,
+/// for tests where cardinality is irrelevant to what is being verified.
+/// Cardinality-specific tests spell out `DependencyContext::native` with
+/// an explicit fourth argument instead.
+pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::DependencyContext {
+    generator::DependencyContext::native(
+        node_name,
+        node_tag,
+        link_id,
+        config::node::Cardinality::One,
+    )
+}
+
 /// Root for per-test scratch directories. Thin re-export of the shared
 /// [`config_test_support::test_tmp_root`] so the many generator test files can
 /// keep calling `crate::helpers::test_tmp_root()`.
@@ -57,30 +70,53 @@ pub fn apply_mode(
     config
 }
 
+/// The `execution` block body of every Rust consumer stub.
+const RUST_STUB_EXECUTION: &str = r#"language: "rust",
+    run_cmd: ["./target/release/generated_node"]"#;
+
 /// Consumer-side variant of [`STUB_NODE_CONFIG`]: declares one
 /// `depends_on.nodes` slot so the runtime resolves the slot's bound
 /// producers from the boot config's `slot_bindings` (an undeclared slot
 /// would stay silent). `link_id` must match the `DependencyContext`
 /// link_id the test's generator calls use.
 pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
+    consumer_stub_node_config_with_execution(dep_name, dep_tag, link_id, None, RUST_STUB_EXECUTION)
+}
+
+/// Variant of [`consumer_stub_node_config`] whose slot declares an
+/// explicit `cardinality`, so the runtime validates a multi-producer
+/// bound set (`bind_slot_many`) instead of the default exactly-one rule.
+pub fn multi_consumer_stub_node_config(
+    dep_name: &str,
+    dep_tag: &str,
+    link_id: &str,
+    cardinality: &str,
+) -> String {
     consumer_stub_node_config_with_execution(
         dep_name,
         dep_tag,
         link_id,
-        r#"language: "rust",
-    run_cmd: ["./target/release/generated_node"]"#,
+        Some(cardinality),
+        RUST_STUB_EXECUTION,
     )
 }
 
-/// Shared manifest template behind [`consumer_stub_node_config`] and
-/// [`python_consumer_stub_node_config`]; `execution` is the body of the
-/// `execution` block, the only per-toolchain part.
+/// Shared manifest template behind [`consumer_stub_node_config`],
+/// [`multi_consumer_stub_node_config`], and
+/// [`python_consumer_stub_node_config`]. `execution` is the body of the
+/// `execution` block and `cardinality` the slot's optional explicit
+/// declaration (`None` leaves the manifest's `one` default), the only
+/// per-caller parts.
 fn consumer_stub_node_config_with_execution(
     dep_name: &str,
     dep_tag: &str,
     link_id: &str,
+    cardinality: Option<&str>,
     execution: &str,
 ) -> String {
+    let cardinality_field = cardinality
+        .map(|cardinality| format!(r#", cardinality: "{cardinality}""#))
+        .unwrap_or_default();
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -88,7 +124,7 @@ fn consumer_stub_node_config_with_execution(
     name: "generated_node",
     tag: "v1",
     depends_on: {{
-      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}" }}]
+      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}"{cardinality_field} }}]
     }}
   }},
   execution: {{
@@ -101,7 +137,7 @@ fn consumer_stub_node_config_with_execution(
 
 /// Binds `link_id` to a single producer on the runtime config, exactly
 /// what the launcher's binding validator materializes for
-/// `--bind link_id@instance`.
+/// `--bind link_id@instance` on a `cardinality: "one"` slot.
 pub fn bind_slot(
     mut config: config::runtime::RuntimeConfig,
     link_id: &str,
@@ -110,7 +146,32 @@ pub fn bind_slot(
 ) -> config::runtime::RuntimeConfig {
     config.node_instance.slot_bindings.insert(
         link_id.to_string(),
-        config::runtime::ProducerRef::new(producer_core_node, producer_instance_id),
+        config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+            producer_core_node,
+            producer_instance_id,
+        )),
+    );
+    config
+}
+
+/// Binds `link_id` to an ordered producer set on the runtime config,
+/// exactly what the binding validator materializes for a multi-cardinality
+/// slot bound to `producer_instance_ids` (in declaration order, possibly
+/// empty for a `zero_or_more` slot).
+pub fn bind_slot_many(
+    mut config: config::runtime::RuntimeConfig,
+    link_id: &str,
+    producer_core_node: &str,
+    producer_instance_ids: &[&str],
+) -> config::runtime::RuntimeConfig {
+    let producers: Vec<config::runtime::ProducerRef> = producer_instance_ids
+        .iter()
+        .map(|instance_id| config::runtime::ProducerRef::new(producer_core_node, *instance_id))
+        .collect();
+    config.node_instance.slot_bindings.insert(
+        link_id.to_string(),
+        config::runtime::BoundProducers::try_from(producers)
+            .expect("test producer sets are duplicate-free"),
     );
     config
 }
@@ -955,6 +1016,7 @@ pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: 
         dep_name,
         dep_tag,
         link_id,
+        None,
         r#"language: "python",
     run_cmd: ["uv", "run", "python", "main.py"]"#,
     )
