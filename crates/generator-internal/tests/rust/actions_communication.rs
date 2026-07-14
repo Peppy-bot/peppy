@@ -95,9 +95,10 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            // The manifest link_id rides into codegen so the generated
-            // fire_goal resolves `bound_producer("brain")` at runtime
-            // instead of emitting a wildcard target.
+            // The manifest link_id rides into codegen so this `one` slot
+            // exposes the singular `bound_producer()` and fire_goal
+            // membership-checks the passed target instead of emitting a
+            // wildcard.
             &generator::DependencyContext::native(
                 "brain",
                 "v1",
@@ -157,9 +158,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         };
         let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
-            brain_move_arm::bound_producers(&node_runner)
-                .first()
-                .expect("a `one` slot binds exactly one producer"),
+            brain_move_arm::bound_producer(&node_runner),
             Duration::from_secs(5),
             request,
             peppygen::QoSProfile::SensorData,
@@ -512,9 +511,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
-        brain_move_arm::bound_producers(&node_runner)
-            .first()
-            .expect("a `one` slot binds exactly one producer"),
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -859,9 +856,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
-        brain_move_arm::bound_producers(&node_runner)
-            .first()
-            .expect("a `one` slot binds exactly one producer"),
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1213,9 +1208,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
-        brain_move_arm::bound_producers(&node_runner)
-            .first()
-            .expect("a `one` slot binds exactly one producer"),
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1613,9 +1606,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
-        brain_move_arm::bound_producers(&node_runner)
-            .first()
-            .expect("a `one` slot binds exactly one producer"),
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1997,9 +1988,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
-        brain_move_arm::bound_producers(&node_runner)
-            .first()
-            .expect("a `one` slot binds exactly one producer"),
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -2399,9 +2388,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
-        brain_move_arm::bound_producers(&node_runner)
-            .first()
-            .expect("a `one` slot binds exactly one producer"),
+        brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,

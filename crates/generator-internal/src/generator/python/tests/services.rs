@@ -420,18 +420,24 @@ fn consumed_service() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is bound_producers; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; got:\n{rendered}"
     );
 
-    // The uniform module surface plus the per-call membership check.
+    // The cardinality-typed module surface plus the per-call membership
+    // check: this `one` slot exposes the singular, infallible
+    // `bound_producer()`, never the plural accessor.
     assert_contains_all(
         &rendered,
         &[
             "LINK_ID = \"uvc_camera\"",
-            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
-            "return node_runner.bound_producers(\"uvc_camera\")",
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:",
+            "return node_runner.bound_producer(\"uvc_camera\")",
             "node_runner.ensure_target_bound(LINK_ID, target)",
         ],
+    );
+    assert!(
+        !rendered.contains("def bound_producers("),
+        "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
 
     // Request serialization
@@ -445,10 +451,6 @@ fn consumed_service() {
             "peppylib.ServiceMessenger.poll(",
             "SERVICE_NAME,\n        target,\n        request_payload,",
         ],
-    );
-    assert!(
-        !rendered.contains("node_runner.bound_producer("),
-        "the removed single-producer lookup must not be emitted; got:\n{rendered}"
     );
 
     // Response deserialization in poll body

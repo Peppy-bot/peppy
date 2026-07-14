@@ -129,8 +129,7 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let cameras = uvc_camera_enable_camera::bound_producers(&node_runner);
-        let camera = cameras.first().expect("a `one` slot binds exactly one producer");
+        let camera = uvc_camera_enable_camera::bound_producer(&node_runner);
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
             uvc_camera_enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)
@@ -448,8 +447,7 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let cameras = uvc_camera_get_system_status::bound_producers(&node_runner);
-        let camera = cameras.first().expect("a `one` slot binds exactly one producer");
+        let camera = uvc_camera_get_system_status::bound_producer(&node_runner);
         let response =
             uvc_camera_get_system_status::poll(&node_runner, camera, Duration::from_secs(5))
                 .await?;
@@ -757,8 +755,7 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let cameras = uvc_camera_enable_camera::bound_producers(&node_runner);
-        let camera = cameras.first().expect("a `one` slot binds exactly one producer");
+        let camera = uvc_camera_enable_camera::bound_producer(&node_runner);
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
             uvc_camera_enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)

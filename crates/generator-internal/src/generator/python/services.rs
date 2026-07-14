@@ -5,7 +5,7 @@ use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
 use crate::generator::types::{ContractOrigin, non_empty_message_format};
-use config::node::{ConsumedService, MessageFormat, NativeExposedService};
+use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
 /// generated `listen` / `poll` / `subscribe` / `emit` call:
@@ -28,16 +28,51 @@ pub(crate) fn sender_target_python_expr(
     }
 }
 
-/// Emits the module-level `bound_producers()` function every consumed
-/// topic, service, and action module exposes, regardless of cardinality:
-/// the slot's runtime-resolved, immutable, ordered producer set, identical
-/// for every module sharing the slot's `link_id`. Callers need
-/// `from typing import List` and `import peppylib`, which every consumed
-/// module already adds.
+/// Emits the module-level bound-producer accessor every consumed topic,
+/// service, and action module exposes. Mirroring the Rust codegen, the
+/// accessor encodes the slot's launch-validated cardinality: `one`
+/// generates the singular `bound_producer()` returning the sole
+/// `ProducerRef` directly, while `one_or_more` / `zero_or_more` generate
+/// `bound_producers()` returning the ordered list (documented never-empty
+/// or possibly-empty respectively; Python has no non-empty list type, so
+/// the name flip is what surfaces a cardinality change at call sites).
+/// Callers need `import peppylib`, which every consumed module already
+/// adds.
 pub(crate) fn emit_bound_producers_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
+    if dependency.cardinality == Cardinality::One {
+        builder.blank_line();
+        builder
+            .line("def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:");
+        builder.indent();
+        builder.line("\"\"\"The producer bound to this module's slot.");
+        builder.blank_line();
+        builder.line("The binding is fixed when the node starts (no live discovery; a");
+        builder.line("producer disconnecting never rebinds it) and shared by every");
+        builder.line("generated module referencing this slot. This slot declares");
+        builder.line("cardinality `one`: launch validation resolved exactly one producer,");
+        builder.line("so the accessor is singular and infallible.");
+        builder.line("\"\"\"");
+        builder.line(&format!(
+            "return node_runner.bound_producer({:?})",
+            dependency.link_id
+        ));
+        builder.dedent();
+        builder.blank_line();
+        return;
+    }
+
+    let cardinality_doc = match dependency.cardinality {
+        Cardinality::One => unreachable!("the singular accessor returned above"),
+        Cardinality::OneOrMore => {
+            "cardinality `one_or_more`: the list is never empty, so `[0]` is always valid."
+        }
+        Cardinality::ZeroOrMore => {
+            "cardinality `zero_or_more`: the list may be empty; handle the empty case."
+        }
+    };
     builder.add_import("from typing import List");
     builder.blank_line();
     builder.line(
@@ -48,10 +83,8 @@ pub(crate) fn emit_bound_producers_fn(
     builder.blank_line();
     builder.line("The set is fixed when the node starts (no live discovery; a producer");
     builder.line("disconnecting never shrinks it) and shared by every generated module");
-    builder.line(&format!(
-        "referencing this slot. {}",
-        dependency.bound_set_doc()
-    ));
+    builder.line("referencing this slot. This slot declares");
+    builder.line(cardinality_doc);
     builder.line("\"\"\"");
     builder.line(&format!(
         "return node_runner.bound_producers({:?})",
@@ -329,12 +362,12 @@ pub fn build_consumed_service(
     };
     builder.line(&signature);
     builder.indent();
-    builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound_producers().");
+    builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound set.");
     builder.blank_line();
-    builder.line("A target outside the set fails before anything reaches the wire; the");
-    builder.line("shape is identical for every cardinality, including `one`. Calling");
-    builder.line("more than one bound producer is a plain loop over bound_producers()");
-    builder.line("at the call site.");
+    builder.line("A target outside the set fails before anything reaches the wire.");
+    for doc_line in dependency.target_selection_doc() {
+        builder.line(doc_line);
+    }
     builder.line("\"\"\"");
     emit_target_membership_check(&mut builder);
 

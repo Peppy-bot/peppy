@@ -439,9 +439,9 @@ fn expose_two_actions() {
     );
 }
 
-/// A real manifest dep (link_id present) wires the runtime binding set
-/// into the module: `bound_producers()` reads
-/// `node_runner.bound_producers(<link_id>)`, and the caller-selected
+/// A real manifest dep (link_id present) wires the runtime binding into
+/// the module: this `one` slot's `bound_producer()` reads
+/// `node_runner.bound_producer(<link_id>)`, and the caller-selected
 /// `target` is membership-checked against the same slot before `send_goal`
 /// pins it on the wire with no discovery probe.
 #[test]
@@ -479,7 +479,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         &rendered,
         &[
             "LINK_ID = \"left_arm\"",
-            "return node_runner.bound_producers(\"left_arm\")",
+            "return node_runner.bound_producer(\"left_arm\")",
             "node_runner.ensure_target_bound(LINK_ID, target)",
             "target,",
         ],
@@ -651,15 +651,20 @@ fn consumed_action() {
         ],
     );
 
-    // The uniform module surface: the action module exposes the same
-    // slot-level `bound_producers()` as topics and services.
+    // The cardinality-typed module surface: the action module exposes the
+    // same slot-level accessor as topics and services, singular here
+    // because this is a `one` slot.
     assert_contains_all(
         &rendered,
         &[
             "LINK_ID = \"brain\"",
-            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
-            "return node_runner.bound_producers(\"brain\")",
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:",
+            "return node_runner.bound_producer(\"brain\")",
         ],
+    );
+    assert!(
+        !rendered.contains("def bound_producers("),
+        "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
     assert!(
         !rendered.contains("target_instance_id: Optional[str] = None"),
@@ -671,11 +676,7 @@ fn consumed_action() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is bound_producers; got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("node_runner.bound_producer("),
-        "the removed single-producer lookup must not be emitted; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; got:\n{rendered}"
     );
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.

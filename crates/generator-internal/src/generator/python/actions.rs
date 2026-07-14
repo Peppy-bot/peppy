@@ -538,11 +538,14 @@ pub fn build_consumed_action(
         builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
     }
     builder.indent();
-    builder.line("\"\"\"Fires this goal at `target`, a member of the slot's bound_producers().");
+    builder.line("\"\"\"Fires this goal at `target`, a member of the slot's bound set.");
     builder.blank_line();
-    builder.line("A target outside the set fails before anything reaches the wire; the");
-    builder.line("shape is identical for every cardinality, including `one`. The handle");
-    builder.line("retains the target: feedback, result, and cancel stay pinned to it.");
+    builder.line("A target outside the set fails before anything reaches the wire. The");
+    builder.line("handle retains the target: feedback, result, and cancel stay pinned");
+    builder.line("to it.");
+    for doc_line in dependency.target_selection_doc() {
+        builder.line(doc_line);
+    }
     builder.line("\"\"\"");
     crate::generator::python::services::emit_target_membership_check(&mut builder);
 

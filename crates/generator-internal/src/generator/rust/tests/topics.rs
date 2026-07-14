@@ -459,12 +459,69 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(&rendered, &[".bound_producers(\"cam_left\")"]);
+    assert_contains_all(
+        &rendered,
+        &[
+            ".bound_producers(\"cam_left\")",
+            ".sole_bound_producer(\"cam_left\")",
+        ],
+    );
     assert_rendered!(
         !rendered.contains("ConsumerFilter::Any"),
         rendered,
         "a linked dep must resolve its set from the bindings map, not emit a wildcard",
     );
+}
+
+/// The bound-producer accessor is cardinality-typed: a `one_or_more` slot
+/// generates `bound_producers()` returning the never-empty
+/// `NonEmptyProducers` view (infallible `first()`), and a `zero_or_more`
+/// slot the same name returning a plain, possibly empty slice. The
+/// accessor emission is shared by every consumed interface kind, so this
+/// topic-module test pins both multi shapes; `consumed_topic` below pins
+/// the singular `one` shape.
+#[test]
+fn consumed_topic_accessor_is_cardinality_typed() {
+    let cases = [
+        (
+            config::node::Cardinality::OneOrMore,
+            ") -> peppylib::messaging::NonEmptyProducers<'_>",
+            ".non_empty_bound_producers(\"cam_left\")",
+        ),
+        (
+            config::node::Cardinality::ZeroOrMore,
+            ") -> &[peppylib::messaging::ProducerRef]",
+            ".bound_producers(\"cam_left\")",
+        ),
+    ];
+    for (cardinality, expected_signature, expected_splice) in cases {
+        let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+        let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+
+        let mut generator = RustGenerator::new();
+        generator
+            .add_consumed_topic(
+                &topic,
+                format,
+                &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
+            )
+            .unwrap();
+        let artifacts = render_artifacts(generator.into_artifacts());
+        let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+        assert_contains_all(
+            &rendered,
+            &[
+                "pub fn bound_producers(",
+                expected_signature,
+                expected_splice,
+            ],
+        );
+        assert!(
+            !rendered.contains("pub fn bound_producer("),
+            "a {cardinality:?} slot must expose only the plural accessor; got: {rendered}"
+        );
+    }
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
@@ -528,15 +585,23 @@ fn consumed_topic() {
         ],
     );
 
-    // The uniform module surface: every consumed module exposes
-    // `bound_producers()` returning the slot's ordered set.
+    // The cardinality-typed module surface: this `one` slot exposes the
+    // singular, infallible `bound_producer()` (spliced from the
+    // sole-producer processor lookup), never the plural accessor. The
+    // subscribe call still covers the complete (single-member) set through
+    // the plain slice lookup.
     assert_contains_all(
         &rendered,
         &[
-            "pub fn bound_producers(",
-            ") -> &[peppylib::messaging::ProducerRef]",
+            "pub fn bound_producer(",
+            ") -> &peppylib::messaging::ProducerRef",
+            ".sole_bound_producer(\"uvc_camera\")",
             ".bound_producers(\"uvc_camera\")",
         ],
+    );
+    assert!(
+        !rendered.contains("pub fn bound_producers("),
+        "a `one` slot must expose only the singular accessor; got: {rendered}"
     );
     assert!(
         !rendered.contains("on_next_message_received"),
@@ -563,10 +628,6 @@ fn consumed_topic() {
             "peppylib::TopicMessenger::subscribe_bound_set(",
             "node_runner.cancellation_token().clone()",
         ],
-    );
-    assert!(
-        !rendered.contains("bound_producer(\"uvc_camera\")"),
-        "the removed single-producer lookup must not be emitted; got: {rendered}"
     );
 
     // Error variant: subscribing maps the failure to `TopicSubscribe`; a

@@ -336,20 +336,18 @@ from peppygen.parameters import Parameters
 from peppygen.consumed_topics import uvc_camera_video_stream
 
 
-async def receive_one_frame(node_runner: NodeRunner):
+async def receive_frames(node_runner: NodeRunner):
+    # Same subscribe() as every cardinality: it covers the slot's complete
+    # bound set, which for `one` is exactly one producer. The yielded
+    # ProducerRef is constant here, so the loop ignores it.
     subscription = await uvc_camera_video_stream.subscribe(node_runner)
 
-    received = await subscription.next()
-    if received is not None:
-        producer, frame = received
-        print(
-            f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} "
-            f"from {producer.core_node}/{producer.instance_id}"
-        )
+    async for _producer, frame in subscription:
+        print(f"frame: {frame.width}x{frame.height}")
 
 
 async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
-    return [asyncio.create_task(receive_one_frame(node_runner))]
+    return [asyncio.create_task(receive_frames(node_runner))]
 
 
 def main():
@@ -367,13 +365,13 @@ use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        // Same subscribe() as every cardinality: it covers the slot's complete
+        // bound set, which for `one` is exactly one producer. The yielded
+        // ProducerRef is constant here, so the loop ignores it.
         let mut subscription = uvc_camera_video_stream::subscribe(&node_runner).await?;
 
-        if let Some((producer, frame)) = subscription.next().await? {
-            println!(
-                "got {}x{} frame encoded as {} from {}/{}",
-                frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
-            );
+        while let Some((_, frame)) = subscription.next().await? {
+            println!("frame: {}x{}", frame.width, frame.height);
         }
 
         Ok(())
@@ -395,7 +393,26 @@ Each underlying subscription holds an in-order buffer, so a message published be
 
 There are no call-site producer-targeting arguments at all. Which producers reach a slot is decided entirely by application bindings (see [Bindings and routing](#bindings-and-routing) below): a slot receives messages only from the producer instances bound to it, and each resolved binding carries the producer's full `(core_node, instance_id)` wire address, so the slot can never match a producer that merely shares the instance_id on another core node. The producer segments of a keyexpr are never wildcarded: a federated router forwards traffic only for the explicitly bound producers, and every subscriber stays fully pinned (and auditable) in the zenoh admin space. That same full identity is what `next` returns with every message, so a consumer can pass it straight back into any producer-targeting call (a `ProducerRef` yielded by the slot's own subscription is a member of the slot's bound set by construction).
 
-Every generated consumed topic, service, and action module also exposes `bound_producers()`, which returns the slot's runtime-resolved, immutable, ordered producer set (application declaration order, so `.first()` is deterministic). The set is fixed when the node starts and is not live discovery: a producer disconnecting does not shrink it, trigger discovery, or cause automatic rebinding.
+Every generated consumed topic, service, and action module also exposes a bound-producer accessor for its slot, returning the runtime-resolved, immutable producer binding in application declaration order. The accessor's return type encodes exactly the guarantee [launch validation](#validator-rules) established for the slot's [cardinality](#dependency-cardinality), instead of restating it in comments:
+
+```rust
+// Generated for every consumed module of a `cardinality: "one"` slot,
+// replacing bound_producers() for that slot.
+pub fn bound_producer(node_runner: &crate::NodeRunner) -> &ProducerRef;
+
+// Generated for every consumed module of a `cardinality: "one_or_more"` slot:
+// a never-empty ordered set whose first() is infallible.
+pub fn bound_producers(node_runner: &crate::NodeRunner) -> NonEmptyProducers<'_>;
+
+// Generated for every consumed module of a `cardinality: "zero_or_more"` slot:
+// a plain, possibly empty slice, so the empty branch is forced by the type
+// and is never dead code.
+pub fn bound_producers(node_runner: &crate::NodeRunner) -> &[ProducerRef];
+```
+
+Python mirrors the split by name and annotation: a `one` slot generates `bound_producer(node_runner) -> peppylib.ProducerRef`, and the multi cardinalities generate `bound_producers(node_runner) -> List[peppylib.ProducerRef]` (documented never-empty for `one_or_more`).
+
+Every module sharing the slot's `link_id` returns the same set in the same order. The set is fixed when the node starts and is not live discovery: a producer disconnecting does not shrink it, trigger discovery, or cause automatic rebinding. A cardinality change is therefore visible at compile time in the consuming node: the accessor's type changes and every call site that relied on the old guarantee must be revisited. This is intended; a cardinality flip is a semantic change, not a rebinding.
 
 ### Receiving messages continuously
 
@@ -618,7 +635,7 @@ peppy node run --bind camera@front_camera --bind camera@rear_camera .
 
 Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances, and it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. `depends_on.pairings` entries have no cardinality (a pairing is strictly 1:1 and expresses absence with its `optional` flag; a `cardinality` key on a pairing entry is a manifest error).
 
-The generated API is the same for every cardinality, including the default `one`: topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, [services](/advanced_guides/services) and [actions](/advanced_guides/actions) require the caller to select one member of that set explicitly, and every consumed module exposes `bound_producers()`. For `one` the set contains exactly one member; for a `zero_or_more` slot bound to nothing, the subscription simply yields nothing until the node stops.
+The consuming API is uniform across cardinalities in everything except the [bound-producer accessor](#receiving-messages): topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, and [services](/advanced_guides/services) and [actions](/advanced_guides/actions) require the caller to select one explicit, membership-checked member of that set, whatever its size. The accessor itself is cardinality-typed: `one` generates the singular, infallible `bound_producer()`, `one_or_more` generates `bound_producers()` returning a never-empty set whose `first()` needs no unwrap, and `zero_or_more` generates `bound_producers()` returning a possibly empty slice, so the empty branch is forced by the type. For a `zero_or_more` slot bound to nothing, the subscription simply yields nothing until the node stops.
 
 ### Per-message routing
 

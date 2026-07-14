@@ -138,9 +138,15 @@ pub fn ensure_no_peer_collision(
 /// this dependency's bound producer set, sized per `cardinality`. In the
 /// harmonized wire model the consumer never pins by `link_id` on the wire
 /// (producers always advertise the `_` sentinel); instead the generated
-/// call sites splice `processor().bound_producers(<link_id>)` lookups.
-/// `cardinality` shapes the generated docs only — the API surface is
-/// identical for every cardinality.
+/// call sites splice processor bound-set lookups by `link_id`.
+/// `cardinality` picks the generated accessor shape so the launch-validated
+/// guarantee lives in the type: a `one` slot exposes `bound_producer()`
+/// returning the sole `&ProducerRef`, `one_or_more` exposes
+/// `bound_producers()` returning a never-empty `NonEmptyProducers`, and
+/// `zero_or_more` exposes `bound_producers()` returning a plain, possibly
+/// empty slice. Everything else is uniform across cardinalities: topics
+/// subscribe to the complete set, and services / actions take one
+/// explicit, membership-checked member of it.
 ///
 /// [`SenderTarget::Contract`]: pmi::SenderTarget::Contract
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
@@ -196,21 +202,30 @@ impl DependencyContext {
         }
     }
 
-    /// One doc sentence describing the slot's bound-set size, spliced into
-    /// the generated `bound_producers()` docs so each module states its own
-    /// cardinality contract.
-    pub fn bound_set_doc(&self) -> &'static str {
+    /// Pre-wrapped doc lines stating how a caller selects `target` from
+    /// this slot's bound set, spliced into the generated consumed service
+    /// `poll` and action `fire_goal` docs in both languages. Names the
+    /// slot's cardinality-typed accessor, so the sentence differs per
+    /// cardinality while the explicit `target` parameter stays uniform.
+    pub fn target_selection_doc(&self) -> &'static [&'static str] {
         match self.cardinality {
-            Cardinality::One => {
-                "This slot declares cardinality `one`: the set contains exactly one member."
-            }
-            Cardinality::OneOrMore => {
-                "This slot declares cardinality `one_or_more`: the set contains at least one \
-                 member."
-            }
-            Cardinality::ZeroOrMore => {
-                "This slot declares cardinality `zero_or_more`: the set may be empty."
-            }
+            Cardinality::One => &[
+                "This slot declares cardinality `one`: `target` is its sole bound",
+                "producer, returned by `bound_producer()`; the explicit parameter",
+                "keeps call sites uniform across cardinalities.",
+            ],
+            Cardinality::OneOrMore => &[
+                "This slot declares cardinality `one_or_more`: `target` is a",
+                "caller-selected member of the never-empty `bound_producers()`",
+                "set, and addressing several members is a plain loop at the call",
+                "site.",
+            ],
+            Cardinality::ZeroOrMore => &[
+                "This slot declares cardinality `zero_or_more`: `target` is a",
+                "caller-selected member of the possibly empty `bound_producers()`",
+                "set, and addressing several members is a plain loop at the call",
+                "site.",
+            ],
         }
     }
 }

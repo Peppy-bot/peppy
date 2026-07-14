@@ -294,15 +294,16 @@ impl RustGenerator {
         // submission, feedback, result retrieval, and cancellation all stay
         // pinned to that same producer.
         let to_target_expr = consumed_to_target_expression(dependency);
+        let target_selection_doc = target_selection_doc_attrs(dependency);
         let method_tokens = quote! {
-            /// Fires this goal at `target`, the caller-selected member of the
-            /// slot's `bound_producers()` set (a `ProducerRef` yielded by the
-            /// slot's own subscription is a member by construction). A target
-            /// outside the set fails before anything reaches the wire; the shape
-            /// is identical for every cardinality, including `one`. Firing at
-            /// more than one bound producer is a plain loop over
-            /// `bound_producers()` at the call site; each returned handle drives
-            /// its own feedback stream, cancel, and result.
+            /// Fires this goal at `target`, a member of this slot's bound set (a
+            /// `ProducerRef` yielded by the slot's own subscription is a member
+            /// by construction); a target outside the set fails before anything
+            /// reaches the wire. Each returned handle stays pinned to its
+            /// target: feedback, result retrieval, and cancellation all address
+            /// that producer directly.
+            ///
+            #(#target_selection_doc)*
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 target: &peppylib::messaging::ProducerRef,
@@ -1375,14 +1376,14 @@ impl LanguageGenerator for RustGenerator {
         let bound_producers_fn =
             crate::generator::rust::topics::build_bound_producers_fn(dependency);
 
+        let target_selection_doc = target_selection_doc_attrs(dependency);
         let function_token = quote! {
-            /// Polls this service on `target`, the caller-selected member of the
-            /// slot's `bound_producers()` set (a `ProducerRef` yielded by the
-            /// slot's own subscription is a member by construction). A target
-            /// outside the set fails before anything reaches the wire; the shape
-            /// is identical for every cardinality, including `one`. Calling more
-            /// than one bound producer is a plain loop over `bound_producers()`
-            /// at the call site.
+            /// Polls this service on `target`, a member of this slot's bound set
+            /// (a `ProducerRef` yielded by the slot's own subscription is a
+            /// member by construction); a target outside the set fails before
+            /// anything reaches the wire.
+            ///
+            #(#target_selection_doc)*
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
                 node_runner.processor().ensure_target_bound(LINK_ID, target)?;
 
@@ -1704,4 +1705,23 @@ impl LanguageGenerator for RustGenerator {
 fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
     let name = identifiers::prefixed_name(prefix, candidate, fallback);
     Ident::new(&name, Span::call_site())
+}
+
+/// One `#[doc = "..."]` attribute per pre-wrapped line of
+/// [`DependencyContext::target_selection_doc`], spliced after the generic
+/// `target` paragraph of the consumed `poll` / `fire_goal` docs (the
+/// renderer prints each attribute back as a `///` line).
+///
+/// [`DependencyContext::target_selection_doc`]: crate::generator::types::DependencyContext::target_selection_doc
+fn target_selection_doc_attrs(
+    dependency: &crate::generator::types::DependencyContext,
+) -> Vec<TokenStream> {
+    dependency
+        .target_selection_doc()
+        .iter()
+        .map(|line| {
+            let line = Literal::string(&format!(" {line}"));
+            quote!(#[doc = #line])
+        })
+        .collect()
 }

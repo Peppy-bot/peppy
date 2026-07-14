@@ -6,7 +6,9 @@
 //! - the manifest's `cardinality` parses and the runtime accepts a
 //!   two-producer bound set for the slot,
 //! - `bound_producers()` is one slot-level set, identical across the
-//!   topic and service modules, in binding declaration order,
+//!   topic and service modules, in binding declaration order; on this
+//!   `one_or_more` slot it returns the never-empty `NonEmptyProducers`
+//!   view, so `first()` needs no unwrap,
 //! - the single merged topic subscription yields frames from BOTH bound
 //!   producers, each tagged with the producer that published it,
 //! - directed service calls: one `poll` per bound producer, each answered
@@ -146,9 +148,12 @@ use std::time::Duration;
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         // One slot-level set, identical across every module sharing the
-        // slot's link_id, in binding declaration order.
+        // slot's link_id, in binding declaration order. This slot is
+        // `one_or_more`, so the accessor returns the never-empty
+        // `NonEmptyProducers` view and `first()` is infallible.
         let cameras = cameras_video_stream::bound_producers(&node_runner);
         assert_eq!(cameras, cameras_enable_camera::bound_producers(&node_runner));
+        println!("first bound: {}", cameras.first().instance_id);
         let bound_ids: Vec<&str> = cameras.iter().map(|p| p.instance_id.as_str()).collect();
         println!("bound producers: {}", bound_ids.join(","));
 
@@ -429,6 +434,12 @@ fn main() -> Result<()> {
     assert!(
         stdout.contains("bound producers: front_camera,rear_camera"),
         "bound_producers() must preserve binding declaration order.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The never-empty view's infallible `first()` is the first declared
+    // binding.
+    assert!(
+        stdout.contains("first bound: front_camera"),
+        "NonEmptyProducers::first() must be the first declared binding.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     // Fan-in: the one merged subscription delivered from BOTH producers.
     assert!(

@@ -502,26 +502,18 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-        // `one`: exactly one entry; `first()` always succeeds.
-        // `one_or_more`: at least one entry; `first()` always succeeds.
-        // `zero_or_more`: the set may be empty, so the `else` branch is the
-        // normal path when nothing is bound.
-        let arms = brain_move_arm::bound_producers(&node_runner);
-        let Some(arm) = arms.first() else {
-            println!("no producer bound to the `brain` slot, no goal to fire");
-            return Ok(());
-        };
-
+        // `one`: the accessor returns the slot's sole producer directly.
+        let arm = brain_move_arm::bound_producer(&node_runner);
         let request = brain_move_arm::GoalRequest {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
+        let action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
-            arm,                          // which bound instance executes the goal
-            Duration::from_secs(5),       // timeout
+            arm,                    // which bound instance executes the goal
+            Duration::from_secs(5), // timeout
             request,
-            QoSProfile::SensorData,        // QoS for the feedback topic
+            QoSProfile::SensorData, // QoS for the feedback topic
         )
         .await?;
 
@@ -541,18 +533,12 @@ from peppygen.consumed_actions import brain_move_arm
 
 
 async def run(node_runner):
-    # `one`: exactly one entry; [0] always succeeds.
-    # `one_or_more`: at least one entry; [0] always succeeds.
-    # `zero_or_more`: the set may be empty; check before selecting.
-    arms = brain_move_arm.bound_producers(node_runner)
-    if not arms:
-        print("no producer bound to the `brain` slot, no goal to fire")
-        return
-
+    # `one`: the accessor returns the slot's sole producer directly.
+    arm = brain_move_arm.bound_producer(node_runner)
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     action_handle = await brain_move_arm.ActionHandle.fire_goal(
         node_runner,
-        arms[0],                # which bound instance executes the goal
+        arm,                    # which bound instance executes the goal
         request,
         5.0,                    # timeout (seconds)
         QoSProfile.SensorData,  # QoS for the feedback topic
@@ -574,7 +560,7 @@ if __name__ == "__main__":
   </TabItem>
 </Tabs>
 
-`fire_goal` requires the caller to select one member of the slot's `bound_producers()` set explicitly, for every [cardinality](/advanced_guides/topics#dependency-cardinality) including the default `one`. The target must belong to the slot's own set; anything else fails with a runtime error before the goal reaches the wire. Firing a goal at every bound producer of a multi-cardinality slot is a plain loop over `bound_producers()`; each returned handle drives its own feedback stream, cancel, and result, exactly as a single goal does.
+`fire_goal` requires the caller to pass one explicit target for every [cardinality](/advanced_guides/topics#dependency-cardinality), including the default `one`; obtain it from the slot's cardinality-typed accessor (the singular, infallible `bound_producer()` on a `one` slot, `bound_producers()` on the multi cardinalities, never empty for `one_or_more`). The target must belong to the slot's own set; anything else fails with a runtime error before the goal reaches the wire. Firing a goal at every bound producer of a multi-cardinality slot is a plain loop over `bound_producers()`; each returned handle drives its own feedback stream, cancel, and result, exactly as a single goal does.
 
 `fire_goal` returns an `ActionHandle` whose `data` field holds the goal response (e.g. `data.accepted`). The handle retains the selected target: goal submission, feedback, result retrieval, and cancellation all stay pinned to that same producer; no stage uses a wildcard, fallback producer, discovery, or automatic retargeting. The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 

@@ -296,17 +296,23 @@ fn consumed_service() {
         "target_core_node should not appear in the generated API; got: {rendered}"
     );
 
-    // The uniform module surface plus the per-call membership check: the
-    // target must belong to the slot's own bound set before anything
-    // reaches the wire, and the wire call pins the selected target.
+    // The cardinality-typed module surface plus the per-call membership
+    // check: this `one` slot exposes the singular, infallible
+    // `bound_producer()` (never the plural accessor), and the target must
+    // belong to the slot's own bound set before anything reaches the wire.
     assert_contains_all(
         &rendered,
         &[
             "const LINK_ID: &str = \"uvc_camera\";",
-            "pub fn bound_producers(",
-            ".bound_producers(\"uvc_camera\")",
+            "pub fn bound_producer(",
+            ") -> &peppylib::messaging::ProducerRef",
+            ".sole_bound_producer(\"uvc_camera\")",
             ".ensure_target_bound(LINK_ID, target)?",
         ],
+    );
+    assert!(
+        !rendered.contains("pub fn bound_producers("),
+        "a `one` slot must expose only the singular accessor; got: {rendered}"
     );
 
     // Request serialization and messenger integration, with the selected
@@ -319,10 +325,6 @@ fn consumed_service() {
             "peppylib::messaging::ServiceTarget::Producer(target)",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
         ],
-    );
-    assert!(
-        !rendered.contains("bound_producer(\"uvc_camera\")"),
-        "the removed single-producer lookup must not be emitted; got: {rendered}"
     );
 }
 

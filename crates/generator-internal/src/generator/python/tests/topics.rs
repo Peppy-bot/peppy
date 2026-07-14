@@ -464,7 +464,62 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(&rendered, &["node_runner.bound_producers(\"cam_left\"),"]);
+    assert_contains_all(
+        &rendered,
+        &[
+            "node_runner.bound_producers(\"cam_left\"),",
+            "return node_runner.bound_producer(\"cam_left\")",
+        ],
+    );
+}
+
+/// The bound-producer accessor is cardinality-typed, mirroring the Rust
+/// codegen: `one_or_more` and `zero_or_more` slots generate the plural
+/// `bound_producers()` list accessor (documented never-empty or
+/// possibly-empty respectively), never the singular `bound_producer()`
+/// that `one` slots get. The accessor emission is shared by every consumed
+/// interface kind, so this topic-module test pins both multi shapes;
+/// `consumed_topic` below pins the singular `one` shape.
+#[test]
+fn consumed_topic_accessor_is_cardinality_typed() {
+    let cases = [
+        (
+            config::node::Cardinality::OneOrMore,
+            "cardinality `one_or_more`: the list is never empty, so `[0]` is always valid.",
+        ),
+        (
+            config::node::Cardinality::ZeroOrMore,
+            "cardinality `zero_or_more`: the list may be empty; handle the empty case.",
+        ),
+    ];
+    for (cardinality, expected_doc) in cases {
+        let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+        let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+
+        let mut generator = PythonGenerator::new();
+        generator
+            .add_consumed_topic(
+                &topic,
+                format,
+                &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
+            )
+            .unwrap();
+        let artifacts = render_artifacts(generator.into_artifacts());
+        let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+        assert_contains_all(
+            &rendered,
+            &[
+                "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
+                "return node_runner.bound_producers(\"cam_left\")",
+                expected_doc,
+            ],
+        );
+        assert!(
+            !rendered.contains("def bound_producer("),
+            "a {cardinality:?} slot must expose only the plural accessor; got:\n{rendered}"
+        );
+    }
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -617,14 +672,20 @@ fn consumed_topic() {
         ],
     );
 
-    // The uniform module surface: every consumed module exposes
-    // `bound_producers()` returning the slot's ordered set.
+    // The cardinality-typed module surface: this `one` slot exposes the
+    // singular, infallible `bound_producer()`, never the plural accessor.
+    // The subscribe splice above still covers the complete (single-member)
+    // set through the plain list lookup.
     assert_contains_all(
         &rendered,
         &[
-            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
-            "return node_runner.bound_producers(\"uvc_camera\")",
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:",
+            "return node_runner.bound_producer(\"uvc_camera\")",
         ],
+    );
+    assert!(
+        !rendered.contains("def bound_producers("),
+        "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
 
     // next() body: the merged subscription yields the (producer, message)
@@ -871,11 +932,11 @@ fn no_user_facing_producer_identity_params() {
     );
 
     // The fixtures supply real manifest link_ids, and every consumed call
-    // site resolves its target slot through `bound_producer(<link_id>)`.
-    // The generated API exposes no targeting parameters: `target_core_node`
-    // and `target_instance_id` must not appear, and a `pinned_target_for`
-    // accessor must never be emitted (the runtime helper is
-    // `bound_producer`).
+    // site resolves its bound set through the slot's cardinality-typed
+    // accessor. The generated API exposes no targeting parameters:
+    // `target_core_node` and `target_instance_id` must not appear, and a
+    // `pinned_target_for` accessor must never be emitted (the runtime
+    // helpers are the bound-producer accessors).
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
@@ -886,6 +947,6 @@ fn no_user_facing_producer_identity_params() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is bound_producer; rendered:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; rendered:\n{rendered}"
     );
 }

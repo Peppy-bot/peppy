@@ -613,15 +613,16 @@ fn consumed_action() {
         ],
     );
 
-    // The uniform module surface: the action module exposes the same
-    // slot-level `bound_producers()` as topics and services.
+    // The cardinality-typed module surface: the action module exposes the
+    // same slot-level accessor as topics and services, singular here
+    // because this is a `one` slot.
     assert_contains_all(
         &rendered,
-        &["pub fn bound_producers(", ".bound_producers(\"brain\")"],
+        &["pub fn bound_producer(", ".sole_bound_producer(\"brain\")"],
     );
     assert!(
-        !rendered.contains("bound_producer(\"brain\")"),
-        "the removed single-producer lookup must not be emitted; got: {rendered}"
+        !rendered.contains("pub fn bound_producers("),
+        "a `one` slot must expose only the singular accessor; got: {rendered}"
     );
 
     // cancel_goal method
@@ -873,7 +874,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         &[
             "const LINK_ID: &str = \"left_arm\";",
             ".ensure_target_bound(LINK_ID, target)?",
-            ".bound_producers(\"left_arm\")",
+            ".sole_bound_producer(\"left_arm\")",
             "Some(target),",
         ],
     );

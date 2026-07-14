@@ -144,6 +144,20 @@ async fn serve_control(
         path = %socket_path.display(),
         "federation control: listening for login/logout federation pokes"
     );
+    accept_loop(listener, trigger_tx, connect_timeout, restart_tx).await;
+}
+
+/// Accepts poke connections on an already-bound listener until cancelled.
+/// Split from [`serve_control`] so callers that need a ready-to-connect socket
+/// (the tests) can bind first and only then run the loop: once
+/// [`bind_listener`] returns, connects succeed and queue in the backlog even
+/// before this loop is scheduled.
+async fn accept_loop(
+    listener: UnixListener,
+    trigger_tx: TriggerSender,
+    connect_timeout: Duration,
+    restart_tx: watch::Sender<bool>,
+) {
     // Back off on a failed `accept()` so a *persistent* error (e.g. the process
     // ran out of file descriptors) can't spin this loop into a CPU/log storm.
     // Starts small, doubles on each consecutive failure up to a cap, and resets
@@ -321,29 +335,24 @@ mod tests {
             }
         });
 
-        // The control listener, bound on the temp socket.
-        let socket_for_listener = socket.clone();
+        // Bind before the client can run, so the connect below is deterministic:
+        // a bound listener queues connections in the backlog even while the
+        // accept loop is still waiting to be scheduled. (Polling for the socket
+        // *file* instead was flaky under load: the file appears between `bind`
+        // and `listen`, and the listener task may not even bind within a fixed
+        // poll window.)
+        let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
-        let control = tokio::spawn(async move {
-            serve_control(
-                &socket_for_listener,
-                trigger_tx,
-                Duration::from_secs(5),
-                restart_tx,
-            )
-            .await;
-        });
+        let control = tokio::spawn(accept_loop(
+            listener,
+            trigger_tx,
+            Duration::from_secs(5),
+            restart_tx,
+        ));
 
-        // Drive the blocking client off the async workers; it retries connect
-        // briefly to let the listener bind.
+        // Drive the blocking client off the async workers.
         let socket_for_client = socket.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            for _ in 0..100 {
-                if socket_for_client.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
             poke_refederate(&socket_for_client, Duration::from_secs(5))
         })
         .await
@@ -365,28 +374,20 @@ mod tests {
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<RefederateRequest>(8);
 
-        let socket_for_listener = socket.clone();
+        // Bind-before-client, as in `poke_crosses_the_socket_and_acks`.
+        let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
-        let control = tokio::spawn(async move {
-            serve_control(
-                &socket_for_listener,
-                trigger_tx,
-                Duration::from_secs(5),
-                restart_tx,
-            )
-            .await;
-        });
+        let control = tokio::spawn(accept_loop(
+            listener,
+            trigger_tx,
+            Duration::from_secs(5),
+            restart_tx,
+        ));
 
         let socket_for_client = socket.clone();
         let reply = tokio::task::spawn_blocking(move || {
             use std::io::{BufRead, BufReader, Write};
             use std::os::unix::net::UnixStream;
-            for _ in 0..100 {
-                if socket_for_client.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
             let mut stream = UnixStream::connect(&socket_for_client).unwrap();
             stream.write_all(b"bogus\n").unwrap();
             let mut reader = BufReader::new(stream);

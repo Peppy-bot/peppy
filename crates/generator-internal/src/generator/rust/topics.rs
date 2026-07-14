@@ -2,7 +2,7 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
-use config::node::{ConsumedTopic, NativeEmittedTopic, QoSProfile};
+use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
@@ -480,11 +480,11 @@ pub fn build_consumed_topic_subscription(
     let subscription_tokens = build_subscription_struct(
         quote! {
             /// A held subscription covering every producer bound to this slot: one
-            /// producer-pinned wire subscription per member of `bound_producers()`,
-            /// merged client-side. Message order is preserved independently per
-            /// producer (no total ordering across producers), ready producers are
-            /// merged fairly, and the bound set is fixed at startup. To follow a
-            /// single producer, filter on the yielded producer identity.
+            /// producer-pinned wire subscription per member of the slot's bound
+            /// set, merged client-side. Message order is preserved independently
+            /// per producer (no total ordering across producers), ready producers
+            /// are merged fairly, and the bound set is fixed at startup. To follow
+            /// a single producer, filter on the yielded producer identity.
         },
         quote!(peppylib::messaging::BoundSetSubscription),
         quote! {
@@ -551,13 +551,16 @@ pub fn build_consumed_topic_subscription(
 }
 
 /// Returns the `&[ProducerRef]` expression spliced into generated
-/// [`peppylib::TopicMessenger::subscribe_bound_set`] calls and the module's
-/// `bound_producers()` body: `Processor::bound_producers(<manifest
-/// link_id>)`, the slot's runtime-resolved ordered producer set. The
-/// validator pre-resolves the consumer's launcher / CLI binding map (sized
-/// per the slot's cardinality; anything else is rejected at launch) and the
-/// runtime processor caches the sets at startup, so the lookup is an
-/// infallible borrow shared by every interface kind.
+/// [`peppylib::TopicMessenger::subscribe_bound_set`] calls (and the public
+/// `bound_producers()` body of `zero_or_more` slots):
+/// `Processor::bound_producers(<manifest link_id>)`, the slot's
+/// runtime-resolved ordered producer set. The validator pre-resolves the
+/// consumer's launcher / CLI binding map (sized per the slot's cardinality;
+/// anything else is rejected at launch) and the runtime processor caches
+/// the sets at startup, so the lookup is an infallible borrow shared by
+/// every interface kind. `subscribe()` always takes the plain slice: the
+/// merged wire subscription covers the complete set whatever the
+/// cardinality, so only the public accessor is cardinality-typed.
 pub fn consumed_bound_producers_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
@@ -565,26 +568,64 @@ pub fn consumed_bound_producers_expression(
     quote!(node_runner.processor().bound_producers(#literal))
 }
 
-/// The module-level `bound_producers()` function every consumed topic,
-/// service, and action module exposes, regardless of cardinality. Every
+/// The module-level bound-producer accessor every consumed topic, service,
+/// and action module exposes. Its name and return type encode the slot's
+/// launch-validated cardinality instead of restating it in comments: `one`
+/// generates `bound_producer()` returning the sole producer directly,
+/// `one_or_more` generates `bound_producers()` returning a never-empty
+/// `NonEmptyProducers` whose `first()` is infallible, and `zero_or_more`
+/// generates `bound_producers()` returning a plain, possibly empty slice,
+/// so the empty branch is forced by the type and is never dead code. Every
 /// module sharing this slot's `link_id` returns the same set in the same
-/// application declaration order.
+/// application declaration order, and flipping a slot's cardinality
+/// surfaces every call site that relied on the old guarantee at compile
+/// time.
 pub fn build_bound_producers_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    let bound_producers_expr = consumed_bound_producers_expression(dependency);
-    let cardinality_doc = Literal::string(dependency.bound_set_doc());
-    quote! {
-        /// The runtime-resolved, immutable, ordered producer set bound to this
-        /// module's slot, in application declaration order (`.first()` is
-        /// deterministic). The set is fixed when the node starts: a producer
-        /// disconnecting never shrinks it, and there is no live discovery.
-        #[doc = #cardinality_doc]
-        pub fn bound_producers(
-            node_runner: &crate::NodeRunner,
-        ) -> &[peppylib::messaging::ProducerRef] {
-            #bound_producers_expr
-        }
+    let link_id_literal = Literal::string(&dependency.link_id);
+    match dependency.cardinality {
+        Cardinality::One => quote! {
+            /// The producer bound to this module's slot, fixed when the node
+            /// starts (a producer disconnecting never rebinds it, and there is
+            /// no live discovery) and shared by every generated module
+            /// referencing the slot. This slot declares cardinality `one`:
+            /// launch validation resolved exactly one producer, so the accessor
+            /// is singular and infallible.
+            pub fn bound_producer(
+                node_runner: &crate::NodeRunner,
+            ) -> &peppylib::messaging::ProducerRef {
+                node_runner.processor().sole_bound_producer(#link_id_literal)
+            }
+        },
+        Cardinality::OneOrMore => quote! {
+            /// The runtime-resolved, immutable producer set bound to this
+            /// module's slot, in application declaration order. The set is
+            /// fixed when the node starts (a producer disconnecting never
+            /// shrinks it, and there is no live discovery) and shared by every
+            /// generated module referencing the slot. This slot declares
+            /// cardinality `one_or_more`: the set is never empty, so `first()`
+            /// is infallible.
+            pub fn bound_producers(
+                node_runner: &crate::NodeRunner,
+            ) -> peppylib::messaging::NonEmptyProducers<'_> {
+                node_runner.processor().non_empty_bound_producers(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrMore => quote! {
+            /// The runtime-resolved, immutable producer set bound to this
+            /// module's slot, in application declaration order. The set is
+            /// fixed when the node starts (a producer disconnecting never
+            /// shrinks it, and there is no live discovery) and shared by every
+            /// generated module referencing the slot. This slot declares
+            /// cardinality `zero_or_more`: the slice may be empty (the launch
+            /// bound no producers), so callers handle the empty case.
+            pub fn bound_producers(
+                node_runner: &crate::NodeRunner,
+            ) -> &[peppylib::messaging::ProducerRef] {
+                node_runner.processor().bound_producers(#link_id_literal)
+            }
+        },
     }
 }
 

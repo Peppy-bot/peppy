@@ -159,7 +159,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
@@ -507,7 +507,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
@@ -837,7 +837,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
@@ -1196,7 +1196,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
@@ -1566,7 +1566,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
@@ -1956,7 +1956,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
@@ -2315,7 +2315,7 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    arm = brain_move_arm.bound_producers(node_runner)[0]
+    arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
