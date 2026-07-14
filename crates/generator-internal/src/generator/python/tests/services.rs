@@ -331,12 +331,7 @@ fn consumed_service() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -476,12 +471,7 @@ fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -522,12 +512,7 @@ fn consumed_two_services_same_node() {
             &service1,
             &request_format1,
             &response_format1,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -535,12 +520,7 @@ fn consumed_two_services_same_node() {
             &service2,
             &empty_format,
             &response_format2,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -614,12 +594,7 @@ fn consumed_service_without_response_payload() {
             &service,
             &empty_format,
             &empty_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .expect("generator should allow services without response format");
 

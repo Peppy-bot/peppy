@@ -228,6 +228,41 @@ impl DependencyContext {
             ],
         }
     }
+
+    /// Pre-wrapped doc lines for the module-level bound-producer accessor,
+    /// shared verbatim by both language generators (the same mechanism as
+    /// [`Self::target_selection_doc`]) so the bound-set guarantees are
+    /// stated once. The first line stands alone as the summary sentence.
+    /// The `one_or_more` prose deliberately stops mid-sentence ("so"): each
+    /// generator appends its own API-specific tail (`first()` for Rust,
+    /// `[0]` for Python).
+    pub fn bound_producers_doc(&self) -> &'static [&'static str] {
+        match self.cardinality {
+            Cardinality::One => &[
+                "The producer bound to this module's slot.",
+                "The binding is fixed when the node starts (no live discovery; a",
+                "producer disconnecting never rebinds it) and shared by every",
+                "generated module referencing this slot. This slot declares",
+                "cardinality `one`: launch validation resolved exactly one producer,",
+                "so the accessor is singular and infallible.",
+            ],
+            Cardinality::OneOrMore => &[
+                "The producer set bound to this module's slot, in declaration order.",
+                "The set is fixed when the node starts (no live discovery; a producer",
+                "disconnecting never shrinks it) and shared by every generated module",
+                "referencing this slot. This slot declares cardinality `one_or_more`:",
+                "the set is never empty, so",
+            ],
+            Cardinality::ZeroOrMore => &[
+                "The producer set bound to this module's slot, in declaration order.",
+                "The set is fixed when the node starts (no live discovery; a producer",
+                "disconnecting never shrinks it) and shared by every generated module",
+                "referencing this slot. This slot declares cardinality `zero_or_more`:",
+                "the set may be empty (the launch bound no producers), so callers",
+                "handle the empty case.",
+            ],
+        }
+    }
 }
 
 /// Describes a concrete subscriber/exposer interface that a deployment requires.

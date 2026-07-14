@@ -17,10 +17,12 @@
 //! references.
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
-use crate::helpers::{init_python_project_venv, init_python_user_node, test_peppy_dirs};
+use crate::helpers::{
+    init_python_project_venv, init_python_user_node, native_dep, test_peppy_dirs,
+};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
-use generator::{DependencyContext, DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
 use std::fs;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -111,22 +113,12 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
         DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
             topic: left_topic,
             message_format: shared_format.clone(),
-            dependency: DependencyContext::native(
-                "robot_arm",
-                "v1",
-                "robot_arm",
-                config::node::Cardinality::One,
-            ),
+            dependency: native_dep("robot_arm", "v1", "robot_arm"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
             topic: right_topic,
             message_format: shared_format,
-            dependency: DependencyContext::native(
-                "robot_arm",
-                "v1",
-                "robot_arm",
-                config::node::Cardinality::One,
-            ),
+            dependency: native_dep("robot_arm", "v1", "robot_arm"),
         }),
     ];
 

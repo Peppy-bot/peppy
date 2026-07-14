@@ -218,12 +218,7 @@ fn consumed_topic_via_contract_origin_targets_contract() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::contract(
-                "camera_contract",
-                "v2",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &contract_dep("camera_contract", "v2", "uvc_camera"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -445,16 +440,7 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_topic(
-            &topic,
-            format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "cam_left",
-                config::node::Cardinality::One,
-            ),
-        )
+        .add_consumed_topic(&topic, format, &native_dep("uvc_camera", "v1", "cam_left"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
@@ -535,12 +521,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -674,12 +655,7 @@ fn consumed_topic_escapes_rust_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native(
-                "keyword_source",
-                "v1",
-                "keyword_source",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -712,24 +688,14 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &sound_topic,
             sound_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -793,24 +759,14 @@ fn clippy_single_emitted_topic_empty_format() {
         .add_consumed_action(
             &consumed_action1,
             &action_messages,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &action_messages,
-            &crate::DependencyContext::native(
-                "controller",
-                "v1",
-                "controller",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -859,24 +815,14 @@ fn compile_lib_with_emitted_and_consumed_topics() {
         .add_consumed_topic(
             &consumed_topic1,
             subscribed_format1,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &consumed_topic2,
             subscribed_format2,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -973,12 +919,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -986,24 +927,14 @@ fn no_user_facing_producer_identity_params() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &action,
             &action_messages,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");

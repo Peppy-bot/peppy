@@ -294,7 +294,7 @@ impl RustGenerator {
         // submission, feedback, result retrieval, and cancellation all stay
         // pinned to that same producer.
         let to_target_expr = consumed_to_target_expression(dependency);
-        let target_selection_doc = target_selection_doc_attrs(dependency);
+        let target_selection_doc = doc_attrs(dependency.target_selection_doc());
         let method_tokens = quote! {
             /// Fires this goal at `target`, a member of this slot's bound set (a
             /// `ProducerRef` yielded by the slot's own subscription is a member
@@ -1376,7 +1376,7 @@ impl LanguageGenerator for RustGenerator {
         let bound_producers_fn =
             crate::generator::rust::topics::build_bound_producers_fn(dependency);
 
-        let target_selection_doc = target_selection_doc_attrs(dependency);
+        let target_selection_doc = doc_attrs(dependency.target_selection_doc());
         let function_token = quote! {
             /// Polls this service on `target`, a member of this slot's bound set
             /// (a `ProducerRef` yielded by the slot's own subscription is a
@@ -1707,17 +1707,15 @@ fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Iden
     Ident::new(&name, Span::call_site())
 }
 
-/// One `#[doc = "..."]` attribute per pre-wrapped line of
-/// [`DependencyContext::target_selection_doc`], spliced after the generic
-/// `target` paragraph of the consumed `poll` / `fire_goal` docs (the
-/// renderer prints each attribute back as a `///` line).
+/// One `#[doc = "..."]` attribute per pre-wrapped doc line (the renderer
+/// prints each attribute back as a `///` line). Splices the shared
+/// per-cardinality prose of [`DependencyContext::target_selection_doc`]
+/// and [`DependencyContext::bound_producers_doc`] into generated items.
 ///
 /// [`DependencyContext::target_selection_doc`]: crate::generator::types::DependencyContext::target_selection_doc
-fn target_selection_doc_attrs(
-    dependency: &crate::generator::types::DependencyContext,
-) -> Vec<TokenStream> {
-    dependency
-        .target_selection_doc()
+/// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
+fn doc_attrs(lines: &[&str]) -> Vec<TokenStream> {
+    lines
         .iter()
         .map(|line| {
             let line = Literal::string(&format!(" {line}"));

@@ -30,8 +30,9 @@
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, WaitContext, bind_slot, init_python_project_venv, init_python_user_node,
-    send_shutdown, spawn_python_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{
@@ -290,12 +291,7 @@ if __name__ == "__main__":
     let consumed_interface = DeploymentInterface::new(InterfaceVariant::ConsumedAction {
         action: consumed_action,
         messages: consumed_action_messages,
-        dependency: generator::DependencyContext::native(
-            PRODUCER_NODE_NAME,
-            "v1",
-            PRODUCER_NODE_NAME,
-            config::node::Cardinality::One,
-        ),
+        dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
     generate_peppygen_lib(
@@ -664,12 +660,7 @@ if __name__ == "__main__":
             .response_message_format
             .clone()
             .unwrap_or_default(),
-        dependency: generator::DependencyContext::native(
-            PRODUCER_NODE_NAME,
-            "v1",
-            PRODUCER_NODE_NAME,
-            config::node::Cardinality::One,
-        ),
+        dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
     generate_peppygen_lib(
@@ -1017,12 +1008,7 @@ if __name__ == "__main__":
             .message_format
             .clone()
             .expect("emitted topic has a message format"),
-        dependency: generator::DependencyContext::native(
-            PRODUCER_NODE_NAME,
-            "v1",
-            PRODUCER_NODE_NAME,
-            config::node::Cardinality::One,
-        ),
+        dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
     generate_peppygen_lib(

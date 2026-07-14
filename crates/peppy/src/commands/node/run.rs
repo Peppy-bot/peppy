@@ -8,7 +8,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
-    BindingValidationItem, BindingValue, DeploymentInstance, PairingValidationItem,
+    BindingTargets, BindingValidationItem, BindingValue, DeploymentInstance, PairingValidationItem,
     validate_bindings, validate_pairings,
 };
 use names_generator2::get_random;
@@ -272,27 +272,31 @@ fn parse_value(value: &str) -> AnyType {
 /// bound set, and `validate_bindings` checks the count against the slot's
 /// declared cardinality (more than one target on a `cardinality: "one"`
 /// slot fails there). Repeating the exact same `KEY@VALUE` pair is a hard
-/// error here, matching the parse-level rule that a slot's bound set lists
-/// each producer once.
+/// error, rejected by [`BindingTargets`] like every other path that builds
+/// a bound set.
 fn binds_to_map(
     binds: &[(String, String)],
     instance_id: &str,
 ) -> Result<BTreeMap<String, BindingValue>> {
-    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut accumulated: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, value) in binds {
-        let targets = map.entry(key.clone()).or_default();
-        if targets.contains(value) {
-            return Err(Error::ExecutionFailed(format!(
-                "duplicate binding `--bind {key}@{value}` on instance `{instance_id}`: a \
-                 slot's bound set lists each producer once"
-            )));
-        }
-        targets.push(value.clone());
+        accumulated
+            .entry(key.clone())
+            .or_default()
+            .push(value.clone());
     }
-    Ok(map
+    accumulated
         .into_iter()
-        .map(|(key, targets)| (key, BindingValue::Flags(targets)))
-        .collect())
+        .map(|(key, targets)| {
+            let targets = BindingTargets::new(targets).map_err(|err| {
+                Error::ExecutionFailed(format!(
+                    "`--bind {key}@{target}` on instance `{instance_id}`: {err}",
+                    target = err.target
+                ))
+            })?;
+            Ok((key, BindingValue::Flags(targets)))
+        })
+        .collect()
 }
 
 /// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
@@ -886,6 +890,14 @@ async fn run_node_async(
 mod tests {
     use super::*;
 
+    /// Test shorthand: the `Flags` value accumulated from unique targets.
+    fn flags(targets: &[&str]) -> BindingValue {
+        BindingValue::Flags(
+            BindingTargets::new(targets.iter().map(|t| t.to_string()).collect())
+                .expect("test targets are unique"),
+        )
+    }
+
     #[test]
     fn parse_bool_values() {
         assert_eq!(parse_value("true"), AnyType::Bool(true));
@@ -934,14 +946,8 @@ mod tests {
             ("grip".to_string(), "grip_1".to_string()),
         ];
         let map = binds_to_map(&distinct, "ctrl_1").expect("distinct keys should collect");
-        assert_eq!(
-            map.get("arm"),
-            Some(&BindingValue::Flags(vec!["arm_1".to_string()]))
-        );
-        assert_eq!(
-            map.get("grip"),
-            Some(&BindingValue::Flags(vec!["grip_1".to_string()]))
-        );
+        assert_eq!(map.get("arm"), Some(&flags(&["arm_1"])));
+        assert_eq!(map.get("grip"), Some(&flags(&["grip_1"])));
 
         // Different targets on one key accumulate in flag occurrence order.
         let accumulated = vec![
@@ -951,10 +957,7 @@ mod tests {
         let map = binds_to_map(&accumulated, "ctrl_1").expect("repeated keys accumulate");
         assert_eq!(
             map.get("cameras"),
-            Some(&BindingValue::Flags(vec![
-                "rear_camera".to_string(),
-                "front_camera".to_string()
-            ])),
+            Some(&flags(&["rear_camera", "front_camera"])),
             "flag occurrence order must be preserved"
         );
 

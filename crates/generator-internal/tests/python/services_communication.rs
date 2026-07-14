@@ -6,8 +6,8 @@ use crate::helpers::{
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
     copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
-    send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -81,12 +81,7 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -418,12 +413,7 @@ async fn services_communication_exposed_service_without_request_body(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -737,12 +727,7 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);

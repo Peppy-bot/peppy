@@ -5,8 +5,9 @@ use crate::helpers::{
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
     consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit,
+    native_dep, send_shutdown, spawn_cargo_run, test_peppy_dirs,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -99,12 +100,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
             // exposes the singular `bound_producer()` and fire_goal
             // membership-checks the passed target instead of emitting a
             // wildcard.
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -458,12 +454,7 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -803,12 +794,7 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1155,12 +1141,7 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1553,12 +1534,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1935,12 +1911,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -2335,12 +2306,7 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);

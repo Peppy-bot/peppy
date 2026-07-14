@@ -142,19 +142,19 @@ impl DeploymentInstance {
 /// still fail at parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindingValue {
-    /// `camera: "front_camera"` — the launch-file scalar shape, valid only
+    /// `camera: "front_camera"`: the launch-file scalar shape, valid only
     /// on a `cardinality: "one"` slot.
     Scalar(String),
-    /// `camera: ["front_camera", "rear_camera"]` — the launch-file array
+    /// `camera: ["front_camera", "rear_camera"]`: the launch-file array
     /// shape, valid only on `one_or_more` / `zero_or_more` slots (where
     /// `[]` is a valid definition for `zero_or_more`).
-    Array(Vec<String>),
+    Array(BindingTargets),
     /// Accumulated `--bind camera@front --bind camera@rear` occurrences in
     /// flag order. Flag repetition carries no scalar/array shape, so the
     /// validator checks it against the slot's cardinality by count alone.
     /// Built by the CLI; never parsed from a launch file. Non-empty by
     /// construction (zero occurrences is an omitted binding).
-    Flags(Vec<String>),
+    Flags(BindingTargets),
 }
 
 impl BindingValue {
@@ -162,13 +162,71 @@ impl BindingValue {
     pub fn targets(&self) -> &[String] {
         match self {
             BindingValue::Scalar(target) => std::slice::from_ref(target),
-            BindingValue::Array(targets) | BindingValue::Flags(targets) => targets,
+            BindingValue::Array(targets) | BindingValue::Flags(targets) => targets.as_slice(),
         }
     }
 }
 
+/// The target list of an [`BindingValue::Array`] / [`BindingValue::Flags`]
+/// value, duplicate-free by construction: every path that builds one (the
+/// launch-file value parser, CLI flag accumulation, programmatic plan
+/// building) funnels through [`BindingTargets::new`], so a slot's bound
+/// set naming a producer twice is unrepresentable rather than re-checked
+/// at each boundary. Declaration order is preserved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct BindingTargets(Vec<String>);
+
+impl BindingTargets {
+    /// Parses a raw target list, rejecting the first target that appears
+    /// more than once within it.
+    pub fn new(targets: Vec<String>) -> Result<Self, DuplicateBindingTarget> {
+        for (idx, target) in targets.iter().enumerate() {
+            if targets[..idx].contains(target) {
+                return Err(DuplicateBindingTarget {
+                    target: target.clone(),
+                });
+            }
+        }
+        Ok(Self(targets))
+    }
+
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Error from [`BindingTargets::new`]: `target` appears more than once
+/// within one slot's set. Boundaries prefix it with their own surface
+/// context (the binding key at launch-file parse, the `--bind` flag pair
+/// on the CLI); the rule sentence itself is stated only here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateBindingTarget {
+    pub target: String,
+}
+
+impl std::fmt::Display for DuplicateBindingTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "names target `{}` more than once: a slot's bound set lists each producer once",
+            self.target
+        )
+    }
+}
+
+impl std::error::Error for DuplicateBindingTarget {}
+
 /// Serializes back to the launch-file shapes: `Scalar` as a string,
-/// `Array` as an array. `Flags` also serializes as an array — it exists
+/// `Array` as an array. `Flags` also serializes as an array; it exists
 /// only on CLI-built plans, which are never round-tripped through a launch
 /// file, and the array form is its closest document equivalent.
 impl Serialize for BindingValue {
@@ -212,6 +270,7 @@ impl<'de> Deserialize<'de> for BindingValue {
                 while let Some(target) = seq.next_element::<String>()? {
                     targets.push(target);
                 }
+                let targets = BindingTargets::new(targets).map_err(de::Error::custom)?;
                 Ok(BindingValue::Array(targets))
             }
         }
@@ -262,11 +321,12 @@ pub struct DeploymentInstance {
 /// declared cardinality is enforced in `validate_bindings` at plan time.
 /// Shape-local rules fail at parse: keys are validated for non-emptiness
 /// and intra-collection duplicates via [`validate_named_items`], targets
-/// must be non-empty strings, and a target may appear at most once within
-/// one slot's array. The reserved producer-default sentinel
-/// ([`DEFAULT_LINK_ID_SENTINEL`]) is rejected as a key at the
-/// [`PeppyLauncher`] level, as is each target's existence as an
-/// `instance_id` once all deployments have been parsed.
+/// must be non-empty strings, and a target appearing more than once within
+/// one slot's array is rejected by [`BindingTargets`] as the value parses.
+/// The reserved producer-default sentinel ([`DEFAULT_LINK_ID_SENTINEL`])
+/// is rejected as a key at the [`PeppyLauncher`] level, as is each
+/// target's existence as an `instance_id` once all deployments have been
+/// parsed.
 fn deserialize_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, BindingValue>, D::Error>
 where
     D: Deserializer<'de>,
@@ -277,16 +337,10 @@ where
         .map_err(de::Error::custom)?;
     let mut out = BTreeMap::new();
     for (key, value) in entries {
-        for (idx, target) in value.targets().iter().enumerate() {
+        for target in value.targets() {
             if target.trim().is_empty() {
                 return Err(de::Error::custom(format!(
                     "binding target for key `{key}` cannot be empty"
-                )));
-            }
-            if value.targets()[..idx].contains(target) {
-                return Err(de::Error::custom(format!(
-                    "binding `{key}` names target `{target}` more than once: a slot's \
-                     bound set lists each producer once"
                 )));
             }
         }
@@ -418,6 +472,37 @@ mod tests {
     use super::*;
     use crate::error::ParsingError;
 
+    /// Test shorthand: an `Array` binding value from unique literals.
+    fn array(targets: &[&str]) -> BindingValue {
+        BindingValue::Array(
+            BindingTargets::new(targets.iter().map(|t| t.to_string()).collect())
+                .expect("test targets are unique"),
+        )
+    }
+
+    /// The each-producer-once rule lives in `BindingTargets::new`, the one
+    /// constructor every boundary (launch-file parse, CLI flags,
+    /// programmatic plan building) funnels through, so no path can build a
+    /// bound set naming a producer twice.
+    #[test]
+    fn binding_targets_reject_duplicates_at_construction() {
+        let err = BindingTargets::new(vec![
+            "prod1".to_string(),
+            "prod2".to_string(),
+            "prod1".to_string(),
+        ])
+        .expect_err("duplicate target must be rejected");
+        assert_eq!(err.target, "prod1");
+        assert!(
+            err.to_string().contains("once"),
+            "error must state the each-producer-once rule: {err}"
+        );
+
+        let targets = BindingTargets::new(vec!["prod1".to_string(), "prod2".to_string()])
+            .expect("unique targets construct");
+        assert_eq!(targets.as_slice(), ["prod1", "prod2"]);
+    }
+
     #[test]
     fn duplicate_instance_ids_are_rejected() {
         let duplicate_instances = r#"{
@@ -548,16 +633,10 @@ mod tests {
         );
         assert_eq!(
             instance.bindings.get("arm_states"),
-            Some(&BindingValue::Array(vec![
-                "right_arm_inst".to_string(),
-                "left_arm_inst".to_string()
-            ])),
+            Some(&array(&["right_arm_inst", "left_arm_inst"])),
             "array order must be preserved, not sorted"
         );
-        assert_eq!(
-            instance.bindings.get("spare_cameras"),
-            Some(&BindingValue::Array(Vec::new()))
-        );
+        assert_eq!(instance.bindings.get("spare_cameras"), Some(&array(&[])));
     }
 
     /// Shape-local parse rule: the same target twice within one slot's

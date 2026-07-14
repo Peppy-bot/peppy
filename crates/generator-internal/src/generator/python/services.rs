@@ -36,58 +36,45 @@ pub(crate) fn sender_target_python_expr(
 /// `bound_producers()` returning the ordered list (documented never-empty
 /// or possibly-empty respectively; Python has no non-empty list type, so
 /// the name flip is what surfaces a cardinality change at call sites).
-/// Callers need `import peppylib`, which every consumed module already
-/// adds.
+/// The docstring prose comes from
+/// `DependencyContext::bound_producers_doc` so both language generators
+/// state the same guarantees; only the Python-API tail sentence is added
+/// here. Callers need `import peppylib`, which every consumed module
+/// already adds.
 pub(crate) fn emit_bound_producers_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    if dependency.cardinality == Cardinality::One {
-        builder.blank_line();
-        builder
-            .line("def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:");
-        builder.indent();
-        builder.line("\"\"\"The producer bound to this module's slot.");
-        builder.blank_line();
-        builder.line("The binding is fixed when the node starts (no live discovery; a");
-        builder.line("producer disconnecting never rebinds it) and shared by every");
-        builder.line("generated module referencing this slot. This slot declares");
-        builder.line("cardinality `one`: launch validation resolved exactly one producer,");
-        builder.line("so the accessor is singular and infallible.");
-        builder.line("\"\"\"");
-        builder.line(&format!(
-            "return node_runner.bound_producer({:?})",
-            dependency.link_id
-        ));
-        builder.dedent();
-        builder.blank_line();
-        return;
+    let (fn_name, return_type, api_note) = match dependency.cardinality {
+        Cardinality::One => ("bound_producer", "peppylib.ProducerRef", None),
+        Cardinality::OneOrMore => (
+            "bound_producers",
+            "List[peppylib.ProducerRef]",
+            Some("`[0]` is always valid."),
+        ),
+        Cardinality::ZeroOrMore => ("bound_producers", "List[peppylib.ProducerRef]", None),
+    };
+    if !dependency.cardinality.is_one() {
+        builder.add_import("from typing import List");
     }
 
-    let cardinality_doc = match dependency.cardinality {
-        Cardinality::One => unreachable!("the singular accessor returned above"),
-        Cardinality::OneOrMore => {
-            "cardinality `one_or_more`: the list is never empty, so `[0]` is always valid."
-        }
-        Cardinality::ZeroOrMore => {
-            "cardinality `zero_or_more`: the list may be empty; handle the empty case."
-        }
-    };
-    builder.add_import("from typing import List");
+    let doc = dependency.bound_producers_doc();
     builder.blank_line();
-    builder.line(
-        "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
-    );
+    builder.line(&format!(
+        "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
+    ));
     builder.indent();
-    builder.line("\"\"\"The producer set bound to this module's slot, in declaration order.");
+    builder.line(&format!("\"\"\"{}", doc[0]));
     builder.blank_line();
-    builder.line("The set is fixed when the node starts (no live discovery; a producer");
-    builder.line("disconnecting never shrinks it) and shared by every generated module");
-    builder.line("referencing this slot. This slot declares");
-    builder.line(cardinality_doc);
+    for line in &doc[1..] {
+        builder.line(line);
+    }
+    if let Some(note) = api_note {
+        builder.line(note);
+    }
     builder.line("\"\"\"");
     builder.line(&format!(
-        "return node_runner.bound_producers({:?})",
+        "return node_runner.{fn_name}({:?})",
         dependency.link_id
     ));
     builder.dedent();

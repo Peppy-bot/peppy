@@ -450,16 +450,7 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_topic(
-            &topic,
-            format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "cam_left",
-                config::node::Cardinality::One,
-            ),
-        )
+        .add_consumed_topic(&topic, format, &native_dep("uvc_camera", "v1", "cam_left"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
@@ -485,14 +476,16 @@ fn consumed_topic_accessor_is_cardinality_typed() {
     let cases = [
         (
             config::node::Cardinality::OneOrMore,
-            "cardinality `one_or_more`: the list is never empty, so `[0]` is always valid.",
+            "This slot declares cardinality `one_or_more`:",
+            "`[0]` is always valid.",
         ),
         (
             config::node::Cardinality::ZeroOrMore,
-            "cardinality `zero_or_more`: the list may be empty; handle the empty case.",
+            "This slot declares cardinality `zero_or_more`:",
+            "handle the empty case.",
         ),
     ];
-    for (cardinality, expected_doc) in cases {
+    for (cardinality, expected_cardinality_doc, expected_emptiness_doc) in cases {
         let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
         let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -512,7 +505,8 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             &[
                 "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
                 "return node_runner.bound_producers(\"cam_left\")",
-                expected_doc,
+                expected_cardinality_doc,
+                expected_emptiness_doc,
             ],
         );
         assert!(
@@ -534,12 +528,7 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -740,12 +729,7 @@ fn consumed_topic_escapes_python_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native(
-                "keyword_source",
-                "v1",
-                "keyword_source",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("keyword_source", "v1", "keyword_source"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -777,24 +761,14 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &sound_topic,
             sound_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -883,12 +857,7 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -896,24 +865,14 @@ fn no_user_facing_producer_identity_params() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &action,
             &action_messages,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");

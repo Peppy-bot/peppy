@@ -9,7 +9,7 @@
 //! cardinality (a scalar for `one`, an array for `one_or_more` /
 //! `zero_or_more`; repeated `--bind` flags are checked by count instead),
 //! and every target must deploy the slot's node (node slots) or implement
-//! the slot's contract (contract slots) — conformance runs per bound
+//! the slot's contract (contract slots); conformance runs per bound
 //! instance. Every declared slot must resolve: `one` to exactly one
 //! producer, `one_or_more` to at least one, and `zero_or_more` to zero or
 //! more (an omitted binding and an empty array are both its valid empty
@@ -109,9 +109,9 @@ pub struct ValidatedBindings {
 ///    otherwise), contract slots match the target's
 ///    `manifest.implements`
 ///    ([`ParsingError::BindingContractNotImplemented`] otherwise).
-///    Duplicate targets within one slot are rejected
-///    ([`ParsingError::BindingDuplicateTarget`]) rather than
-///    deduplicated; declaration order is preserved into the resolution.
+///    Duplicate targets within one slot are unrepresentable
+///    ([`super::types::BindingTargets`] rejects them at construction);
+///    declaration order is preserved into the resolution.
 /// 4. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
@@ -175,21 +175,13 @@ pub fn validate_bindings(
                     continue;
                 }
 
-                // Rule 3: every target exists, satisfies the slot, and
-                // appears once. All-or-nothing: a slot with any bad target
-                // reports each offender and resolves nothing.
+                // Rule 3: every target exists and satisfies the slot
+                // (uniqueness holds by `BindingTargets` construction).
+                // All-or-nothing: a slot with any bad target reports each
+                // offender and resolves nothing.
                 let mut producers: Vec<ProducerRef> = Vec::with_capacity(value.targets().len());
                 let mut slot_failed = false;
-                for (idx, target_id) in value.targets().iter().enumerate() {
-                    if value.targets()[..idx].contains(target_id) {
-                        out.errors.push(ParsingError::BindingDuplicateTarget {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding_key.clone(),
-                            target_instance_id: target_id.clone(),
-                        });
-                        slot_failed = true;
-                        continue;
-                    }
+                for target_id in value.targets() {
                     let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
                         out.errors.push(ParsingError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -217,7 +209,7 @@ pub fn validate_bindings(
                 }
 
                 let bound = BoundProducers::try_from(producers)
-                    .expect("duplicate targets are rejected above");
+                    .expect("targets are duplicate-free by BindingTargets construction");
                 resolved.insert(binding_key.clone(), bound);
             }
 
@@ -241,7 +233,7 @@ pub fn validate_bindings(
                                 slot_kind: slot.kind,
                                 slot_name: slot.name.to_string(),
                                 slot_tag: slot.tag.to_string(),
-                                cardinality: slot.cardinality.as_str(),
+                                cardinality: slot.cardinality,
                             },
                         )));
                 }
@@ -259,8 +251,8 @@ pub fn validate_bindings(
 
 /// Rule 2: does the binding value's shape (launch file) or occurrence
 /// count (CLI flags) satisfy the slot's declared cardinality? Launch-file
-/// shapes are strict — a scalar is only valid on a `one` slot and an array
-/// only on a multi slot — while flag occurrences carry no shape and are
+/// shapes are strict (a scalar is only valid on a `one` slot and an array
+/// only on a multi slot), while flag occurrences carry no shape and are
 /// checked by count alone. `Flags` is non-empty by construction (zero
 /// occurrences is an omitted binding, handled by rule 5).
 fn check_value_matches_cardinality(
@@ -290,7 +282,7 @@ fn check_value_matches_cardinality(
             Err(ParsingError::BindingScalarOnMultiSlot {
                 owner_instance_id: instance.instance_id.to_string(),
                 binding: binding_key.to_string(),
-                cardinality: slot.cardinality.as_str(),
+                cardinality: slot.cardinality,
             })
         }
         (Cardinality::OneOrMore, BindingValue::Array(targets)) if targets.is_empty() => {
@@ -525,6 +517,17 @@ mod tests {
     /// Shorthand for the common single-producer expectation.
     fn single(core_node: &str, instance_id: &str) -> Option<Vec<ProducerRef>> {
         Some(vec![ProducerRef::new(core_node, instance_id)])
+    }
+
+    /// Test shorthand: a `Flags` binding value from unique literals, as
+    /// the CLI's flag accumulation would build it.
+    fn flags(targets: &[&str]) -> BindingValue {
+        BindingValue::Flags(
+            super::super::types::BindingTargets::new(
+                targets.iter().map(|t| t.to_string()).collect(),
+            )
+            .expect("test targets are unique"),
+        )
     }
 
     #[test]
@@ -836,7 +839,7 @@ mod tests {
         for (link_id, cardinality, cons_json) in [
             (
                 "cameras",
-                "one_or_more",
+                Cardinality::OneOrMore,
                 r#"[{
                     instance_id: "cons1",
                     bindings: { main: "prod1", cameras: "prod1", spare_cameras: [] }
@@ -844,7 +847,7 @@ mod tests {
             ),
             (
                 "spare_cameras",
-                "zero_or_more",
+                Cardinality::ZeroOrMore,
                 r#"[{
                     instance_id: "cons1",
                     bindings: { main: "prod1", cameras: ["prod1"], spare_cameras: "prod1" }
@@ -915,7 +918,7 @@ mod tests {
         let depends_on = all_cardinalities_depends_on();
         let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
         let out = validate_bindings(&items, TEST_CORE);
-        let unfulfilled: Vec<(&str, &str)> = out
+        let unfulfilled: Vec<(&str, Cardinality)> = out
             .errors
             .iter()
             .map(|e| match e {
@@ -927,7 +930,10 @@ mod tests {
             .collect();
         assert_eq!(
             unfulfilled,
-            [("cameras", "one_or_more"), ("main", "one")],
+            [
+                ("cameras", Cardinality::OneOrMore),
+                ("main", Cardinality::One)
+            ],
             "one error per non-zero_or_more slot, in link_id order"
         );
         assert_eq!(
@@ -952,14 +958,10 @@ mod tests {
 
         // Accumulated flags on the multi slot, one flag on the one slot.
         let mut valid = DeploymentInstance::empty(Name::new("cons1").unwrap());
-        valid.bindings.insert(
-            "main".to_string(),
-            BindingValue::Flags(vec!["prod1".to_string()]),
-        );
-        valid.bindings.insert(
-            "cameras".to_string(),
-            BindingValue::Flags(vec!["prod2".to_string(), "prod1".to_string()]),
-        );
+        valid.bindings.insert("main".to_string(), flags(&["prod1"]));
+        valid
+            .bindings
+            .insert("cameras".to_string(), flags(&["prod2", "prod1"]));
         let valid_instances = vec![valid];
         let items = vec![
             item("cons", "v1", &valid_instances, Some(&depends_on)),
@@ -982,14 +984,12 @@ mod tests {
 
         // Two flags on the `one` slot: hard error naming the count.
         let mut repeated = DeploymentInstance::empty(Name::new("cons1").unwrap());
-        repeated.bindings.insert(
-            "main".to_string(),
-            BindingValue::Flags(vec!["prod1".to_string(), "prod2".to_string()]),
-        );
-        repeated.bindings.insert(
-            "cameras".to_string(),
-            BindingValue::Flags(vec!["prod1".to_string()]),
-        );
+        repeated
+            .bindings
+            .insert("main".to_string(), flags(&["prod1", "prod2"]));
+        repeated
+            .bindings
+            .insert("cameras".to_string(), flags(&["prod1"]));
         let repeated_instances = vec![repeated];
         let items = vec![
             item("cons", "v1", &repeated_instances, Some(&depends_on)),
@@ -1099,48 +1099,6 @@ mod tests {
         };
         assert_eq!(info.target_instance_id, "not_a_camera");
         assert_eq!(info.contract_name, "uvc_camera");
-    }
-
-    /// Duplicate targets within one slot are rejected by the validator
-    /// (belt to the parse-level suspenders, for programmatically built
-    /// plans such as accumulated flags).
-    #[test]
-    fn duplicate_targets_within_one_slot_are_rejected() {
-        let depends_on = parse_depends_on(
-            r#"{
-                nodes: [
-                    { name: "camera", tag: "v1", link_id: "cameras", cardinality: "one_or_more" }
-                ]
-            }"#,
-        );
-        let mut instance = DeploymentInstance::empty(Name::new("cons1").unwrap());
-        instance.bindings.insert(
-            "cameras".to_string(),
-            BindingValue::Flags(vec!["prod1".to_string(), "prod1".to_string()]),
-        );
-        let cons_instances = vec![instance];
-        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
-        let items = vec![
-            item("cons", "v1", &cons_instances, Some(&depends_on)),
-            item("camera", "v1", &prod_instances, None),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingDuplicateTarget {
-            owner_instance_id,
-            binding,
-            target_instance_id,
-        } = &out.errors[0]
-        else {
-            panic!("expected BindingDuplicateTarget, got {:?}", out.errors[0]);
-        };
-        assert_eq!(owner_instance_id, "cons1");
-        assert_eq!(binding, "cameras");
-        assert_eq!(target_instance_id, "prod1");
-        assert!(
-            !out.slot_bindings.contains_key("cons1"),
-            "a slot with duplicate targets must resolve nothing"
-        );
     }
 
     /// Rule 5: pinned binding whose target deploys the wrong node.

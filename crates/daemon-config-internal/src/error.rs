@@ -9,6 +9,7 @@
 //! instances, bindings); general document errors raised by the shared node
 //! parser stay in `config::ParsingError`.
 
+use config::node::Cardinality;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -178,7 +179,7 @@ pub struct BindingSlotUnfulfilled {
     pub slot_kind: SlotKind,
     pub slot_name: String,
     pub slot_tag: String,
-    pub cardinality: &'static str,
+    pub cardinality: Cardinality,
 }
 
 /// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
@@ -366,7 +367,7 @@ pub enum ParsingError {
     BindingScalarOnMultiSlot {
         owner_instance_id: String,
         binding: String,
-        cardinality: &'static str,
+        cardinality: Cardinality,
     },
     /// An empty array on a `one_or_more` slot: the binding entry exists but
     /// its set does not meet the slot's minimum of one producer. (An empty
@@ -392,20 +393,6 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
         target_count: usize,
-    },
-    /// The same producer named twice within one slot's target set. Bound
-    /// sets list each producer once; duplicates are rejected rather than
-    /// deduplicated. Normally caught at parse (launch file) or flag
-    /// handling (CLI); the validator re-checks for programmatically built
-    /// plans.
-    #[error(
-        "binding `{binding}` on instance `{owner_instance_id}` names target \
-         `{target_instance_id}` more than once: a slot's bound set lists each producer once"
-    )]
-    BindingDuplicateTarget {
-        owner_instance_id: String,
-        binding: String,
-        target_instance_id: String,
     },
     /// Boxed payload so this variant does not grow `ParsingError` past the
     /// `clippy::result_large_err` threshold; without the indirection, the

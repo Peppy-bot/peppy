@@ -236,12 +236,7 @@ fn consumed_service() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -351,12 +346,7 @@ fn consumed_service_via_contract_origin_targets_contract() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::contract(
-                "camera_contract",
-                "v2",
-                "camera_contract",
-                config::node::Cardinality::One,
-            ),
+            &contract_dep("camera_contract", "v2", "camera_contract"),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -394,12 +384,7 @@ fn consumed_two_services_same_node() {
             &service1,
             &request_format1,
             &response_format1,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -407,12 +392,7 @@ fn consumed_two_services_same_node() {
             &service2,
             &empty_format,
             &response_format2,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -456,12 +436,7 @@ fn consumed_service_without_response_payload() {
             &service,
             &empty_format,
             &empty_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .expect("generator should allow services without response format");
 
@@ -491,12 +466,7 @@ fn consumed_service_rejects_optional_scalar_response_field() {
             &service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap_err();
 
@@ -553,24 +523,14 @@ fn clippy_single_exposed_service_without_request_body() {
         .add_consumed_action(
             &consumed_action1,
             &action_messages,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &consumed_action2,
             &action_messages,
-            &crate::DependencyContext::native(
-                "controller",
-                "v1",
-                "controller",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -639,12 +599,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service1,
             &consumed_service_request1,
             &consumed_service_response1,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator
@@ -652,12 +607,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service2,
             &empty_format,
             &consumed_service_response2,
-            &crate::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -740,12 +690,7 @@ fn clippy_consumed_service_empty_request_format() {
             &consumed_service,
             &empty_format,
             &response_format,
-            &crate::DependencyContext::native(
-                "sensor",
-                "v1",
-                "sensor",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -784,12 +729,7 @@ fn clippy_consumed_service_empty_response_format() {
             &consumed_service,
             &request_format,
             &empty_format,
-            &crate::DependencyContext::native(
-                "sensor",
-                "v1",
-                "sensor",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("sensor", "v1", "sensor"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);

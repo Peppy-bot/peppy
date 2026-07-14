@@ -4,7 +4,7 @@ use crate::helpers::{
     python_consumer_stub_node_config, send_shutdown, spawn_python_run, test_peppy_dirs,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
-use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE};
+use crate::helpers::{EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, native_dep};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
 use config::{
@@ -67,12 +67,7 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_topic(
             &consumed_topic,
             subscribed_format,
-            &generator::DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "uvc_camera",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
     generator

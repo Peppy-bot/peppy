@@ -579,53 +579,56 @@ pub fn consumed_bound_producers_expression(
 /// module sharing this slot's `link_id` returns the same set in the same
 /// application declaration order, and flipping a slot's cardinality
 /// surfaces every call site that relied on the old guarantee at compile
-/// time.
+/// time. The accessor doc comes from
+/// [`DependencyContext::bound_producers_doc`] so both language generators
+/// state the same guarantees; only the Rust-API tail sentence is added
+/// here.
+///
+/// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
 pub fn build_bound_producers_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
-    match dependency.cardinality {
-        Cardinality::One => quote! {
-            /// The producer bound to this module's slot, fixed when the node
-            /// starts (a producer disconnecting never rebinds it, and there is
-            /// no live discovery) and shared by every generated module
-            /// referencing the slot. This slot declares cardinality `one`:
-            /// launch validation resolved exactly one producer, so the accessor
-            /// is singular and infallible.
-            pub fn bound_producer(
-                node_runner: &crate::NodeRunner,
-            ) -> &peppylib::messaging::ProducerRef {
-                node_runner.processor().sole_bound_producer(#link_id_literal)
-            }
-        },
-        Cardinality::OneOrMore => quote! {
-            /// The runtime-resolved, immutable producer set bound to this
-            /// module's slot, in application declaration order. The set is
-            /// fixed when the node starts (a producer disconnecting never
-            /// shrinks it, and there is no live discovery) and shared by every
-            /// generated module referencing the slot. This slot declares
-            /// cardinality `one_or_more`: the set is never empty, so `first()`
-            /// is infallible.
-            pub fn bound_producers(
-                node_runner: &crate::NodeRunner,
-            ) -> peppylib::messaging::NonEmptyProducers<'_> {
-                node_runner.processor().non_empty_bound_producers(#link_id_literal)
-            }
-        },
-        Cardinality::ZeroOrMore => quote! {
-            /// The runtime-resolved, immutable producer set bound to this
-            /// module's slot, in application declaration order. The set is
-            /// fixed when the node starts (a producer disconnecting never
-            /// shrinks it, and there is no live discovery) and shared by every
-            /// generated module referencing the slot. This slot declares
-            /// cardinality `zero_or_more`: the slice may be empty (the launch
-            /// bound no producers), so callers handle the empty case.
-            pub fn bound_producers(
-                node_runner: &crate::NodeRunner,
-            ) -> &[peppylib::messaging::ProducerRef] {
-                node_runner.processor().bound_producers(#link_id_literal)
-            }
-        },
+    let (api_note, accessor) = match dependency.cardinality {
+        Cardinality::One => (
+            None,
+            quote! {
+                pub fn bound_producer(
+                    node_runner: &crate::NodeRunner,
+                ) -> &peppylib::messaging::ProducerRef {
+                    node_runner.processor().sole_bound_producer(#link_id_literal)
+                }
+            },
+        ),
+        Cardinality::OneOrMore => (
+            Some("`first()` is infallible."),
+            quote! {
+                pub fn bound_producers(
+                    node_runner: &crate::NodeRunner,
+                ) -> peppylib::messaging::NonEmptyProducers<'_> {
+                    node_runner.processor().non_empty_bound_producers(#link_id_literal)
+                }
+            },
+        ),
+        Cardinality::ZeroOrMore => (
+            None,
+            quote! {
+                pub fn bound_producers(
+                    node_runner: &crate::NodeRunner,
+                ) -> &[peppylib::messaging::ProducerRef] {
+                    node_runner.processor().bound_producers(#link_id_literal)
+                }
+            },
+        ),
+    };
+    let mut doc_lines: Vec<&str> = dependency.bound_producers_doc().to_vec();
+    if let Some(note) = api_note {
+        doc_lines.push(note);
+    }
+    let doc = super::doc_attrs(&doc_lines);
+    quote! {
+        #(#doc)*
+        #accessor
     }
 }
 

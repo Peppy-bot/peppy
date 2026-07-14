@@ -29,6 +29,19 @@ pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
+/// A node dependency slot at the manifest's default `one` cardinality,
+/// for tests where cardinality is irrelevant to what is being verified.
+/// Cardinality-specific tests spell out `DependencyContext::native` with
+/// an explicit fourth argument instead.
+pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::DependencyContext {
+    generator::DependencyContext::native(
+        node_name,
+        node_tag,
+        link_id,
+        config::node::Cardinality::One,
+    )
+}
+
 /// Root for per-test scratch directories. Thin re-export of the shared
 /// [`config_test_support::test_tmp_root`] so the many generator test files can
 /// keep calling `crate::helpers::test_tmp_root()`.
@@ -57,19 +70,17 @@ pub fn apply_mode(
     config
 }
 
+/// The `execution` block body of every Rust consumer stub.
+const RUST_STUB_EXECUTION: &str = r#"language: "rust",
+    run_cmd: ["./target/release/generated_node"]"#;
+
 /// Consumer-side variant of [`STUB_NODE_CONFIG`]: declares one
 /// `depends_on.nodes` slot so the runtime resolves the slot's bound
 /// producers from the boot config's `slot_bindings` (an undeclared slot
 /// would stay silent). `link_id` must match the `DependencyContext`
 /// link_id the test's generator calls use.
 pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
-    consumer_stub_node_config_with_execution(
-        dep_name,
-        dep_tag,
-        link_id,
-        r#"language: "rust",
-    run_cmd: ["./target/release/generated_node"]"#,
-    )
+    consumer_stub_node_config_with_execution(dep_name, dep_tag, link_id, None, RUST_STUB_EXECUTION)
 }
 
 /// Variant of [`consumer_stub_node_config`] whose slot declares an
@@ -81,34 +92,31 @@ pub fn multi_consumer_stub_node_config(
     link_id: &str,
     cardinality: &str,
 ) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "generated_node",
-    tag: "v1",
-    depends_on: {{
-      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}", cardinality: "{cardinality}" }}]
-    }}
-  }},
-  execution: {{
-    language: "rust",
-    run_cmd: ["./target/release/generated_node"]
-  }}
-}}
-"#
+    consumer_stub_node_config_with_execution(
+        dep_name,
+        dep_tag,
+        link_id,
+        Some(cardinality),
+        RUST_STUB_EXECUTION,
     )
 }
 
-/// Shared manifest template behind [`consumer_stub_node_config`] and
-/// [`python_consumer_stub_node_config`]; `execution` is the body of the
-/// `execution` block, the only per-toolchain part.
+/// Shared manifest template behind [`consumer_stub_node_config`],
+/// [`multi_consumer_stub_node_config`], and
+/// [`python_consumer_stub_node_config`]. `execution` is the body of the
+/// `execution` block and `cardinality` the slot's optional explicit
+/// declaration (`None` leaves the manifest's `one` default), the only
+/// per-caller parts.
 fn consumer_stub_node_config_with_execution(
     dep_name: &str,
     dep_tag: &str,
     link_id: &str,
+    cardinality: Option<&str>,
     execution: &str,
 ) -> String {
+    let cardinality_field = cardinality
+        .map(|cardinality| format!(r#", cardinality: "{cardinality}""#))
+        .unwrap_or_default();
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -116,7 +124,7 @@ fn consumer_stub_node_config_with_execution(
     name: "generated_node",
     tag: "v1",
     depends_on: {{
-      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}" }}]
+      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}"{cardinality_field} }}]
     }}
   }},
   execution: {{
@@ -1008,6 +1016,7 @@ pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: 
         dep_name,
         dep_tag,
         link_id,
+        None,
         r#"language: "python",
     run_cmd: ["uv", "run", "python", "main.py"]"#,
     )

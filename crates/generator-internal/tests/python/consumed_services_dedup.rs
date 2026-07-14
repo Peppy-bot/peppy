@@ -8,10 +8,12 @@
 //! consumed-topic divergence bug doesn't apply here even when the two
 //! producers expose services with completely different message formats.
 
-use crate::helpers::{init_python_project_venv, init_python_user_node, test_peppy_dirs};
+use crate::helpers::{
+    init_python_project_venv, init_python_user_node, native_dep, test_peppy_dirs,
+};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedService, MessageFormat, PeppygenLanguage};
-use generator::{DependencyContext, DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
 use std::fs;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -132,23 +134,13 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
             service: front_service,
             request_format: parse_fmt(FRONT_REQUEST_FORMAT),
             response_format: parse_fmt(FRONT_RESPONSE_FORMAT),
-            dependency: DependencyContext::native(
-                "uvc_camera",
-                "v1",
-                "front_cam",
-                config::node::Cardinality::One,
-            ),
+            dependency: native_dep("uvc_camera", "v1", "front_cam"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedService {
             service: rear_service,
             request_format: parse_fmt(REAR_REQUEST_FORMAT),
             response_format: parse_fmt(REAR_RESPONSE_FORMAT),
-            dependency: DependencyContext::native(
-                "rtsp_camera",
-                "v1",
-                "rear_cam",
-                config::node::Cardinality::One,
-            ),
+            dependency: native_dep("rtsp_camera", "v1", "rear_cam"),
         }),
     ];
 

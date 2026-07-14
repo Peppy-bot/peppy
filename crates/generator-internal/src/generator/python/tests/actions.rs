@@ -461,16 +461,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "left_arm",
-                config::node::Cardinality::One,
-            ),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "left_arm"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
@@ -503,16 +494,7 @@ fn consumed_action() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "brain"))
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -751,12 +733,7 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &move_arm_action,
             &move_arm_messages,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     // Both actions target the same upstream node.
@@ -764,12 +741,7 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &rotate_action,
             &rotate_messages,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
 
@@ -887,16 +859,7 @@ fn consumed_action_without_response_payload() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "brain"))
         .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -979,16 +942,7 @@ fn consumed_action_without_feedback() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(
-            &action,
-            &format,
-            &crate::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
-        )
+        .add_consumed_action(&action, &format, &native_dep("brain", "v1", "brain"))
         .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");

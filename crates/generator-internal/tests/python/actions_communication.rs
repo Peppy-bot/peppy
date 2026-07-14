@@ -5,7 +5,7 @@ use crate::helpers::{
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
     copy_config_to_output, init_python_project_venv, init_python_user_node, init_test_env,
-    send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown,
+    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs, try_send_shutdown,
     wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
@@ -108,12 +108,7 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -456,12 +451,7 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -786,12 +776,7 @@ async fn actions_communication_async_goal_decider(#[case] mode: crate::helpers::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -1145,12 +1130,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -1515,12 +1495,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -1905,12 +1880,7 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     generator
@@ -2267,12 +2237,7 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native(
-                "brain",
-                "v1",
-                "brain",
-                config::node::Cardinality::One,
-            ),
+            &native_dep("brain", "v1", "brain"),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
