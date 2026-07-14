@@ -1,10 +1,11 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, create_test_node_with_name, instance_state_in_any_state,
-    poll_until, send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
-    start_core_node_with_health_monitor, start_core_node_with_health_timeout,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger, write_peppy_json5,
+    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, create_test_node_with_name,
+    instance_state_in_any_state, poll_until, send_node_add_then_build, send_node_run_and_wait,
+    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
@@ -15,11 +16,6 @@ use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::sync::Mutex;
-
-/// Container tests share a single Lima VM instance and must run serially
-/// to avoid concurrent limactl operations (start/stop) that cause failures.
-static CONTAINER_TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
@@ -1294,7 +1290,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_with_container_success() {
-    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+    let _container_test_guard = acquire_container_test_guard().await;
 
     const TARGET_NODE_NAME: &str = "container_start_node";
     const TARGET_NODE_TAG: &str = "v1";
@@ -1509,7 +1505,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 /// if a future refactor drops the warning, this test must fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns() {
-    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+    let _container_test_guard = acquire_container_test_guard().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
     const TARGET_NODE_TAG: &str = "v1";
@@ -1673,7 +1669,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
-    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+    let _container_test_guard = acquire_container_test_guard().await;
 
     const TARGET_NODE_NAME: &str = "failing_container_node";
     const TARGET_NODE_TAG: &str = "v1";

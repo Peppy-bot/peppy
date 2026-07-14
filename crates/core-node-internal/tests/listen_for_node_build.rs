@@ -1,9 +1,10 @@
 mod common;
 
 use common::{
-    NodeAddSource, send_node_add_and_wait, send_node_add_and_wait_with_env,
-    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
-    start_core_node_with_mock_messenger_outside_home, write_peppy_json5,
+    NodeAddSource, acquire_container_test_guard, send_node_add_and_wait,
+    send_node_add_and_wait_with_env, send_node_build_and_wait, send_node_build_and_wait_forced,
+    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
+    write_peppy_json5,
 };
 use core_node_api::encoding::NodeBuildFeedback;
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
@@ -893,6 +894,8 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_with_container_success() {
+    let _container_test_guard = acquire_container_test_guard().await;
+
     const TARGET_NODE_NAME: &str = "container_node";
     const TARGET_NODE_TAG: &str = "v1";
 
@@ -1054,6 +1057,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 /// test fails without that fix ("cp: cannot stat './marker.txt'").
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_with_container_from_outside_home_root() {
+    let _container_test_guard = acquire_container_test_guard().await;
+
     const TARGET_NODE_NAME: &str = "outside_home_container_node";
     const TARGET_NODE_TAG: &str = "v1";
 
@@ -1141,8 +1146,11 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_container_build_failure_includes_stderr_in_error() {
+    let _container_test_guard = acquire_container_test_guard().await;
+
     const TARGET_NODE_NAME: &str = "broken_container_node";
     const TARGET_NODE_TAG: &str = "v1";
+    const INVALID_BOOTSTRAP_AGENT: &str = "invalid_bootstrap_agent_that_does_not_exist";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -1164,13 +1172,15 @@ async fn listen_for_node_build_container_build_failure_includes_stderr_in_error(
     .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let broken_def = "\
-Bootstrap: invalid_bootstrap_agent_that_does_not_exist
+    let broken_def = format!(
+        "\
+Bootstrap: {INVALID_BOOTSTRAP_AGENT}
 From: nowhere
 
 %runscript
     echo broken
-";
+"
+    );
     std::fs::write(source_dir.path().join("apptainer.def"), broken_def)
         .expect("failed to write broken apptainer definition");
 
@@ -1213,6 +1223,11 @@ From: nowhere
     assert!(
         error_msg.contains("stderr"),
         "error should include stderr output from apptainer build, got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains(INVALID_BOOTSTRAP_AGENT),
+        "error should identify the invalid bootstrap agent, got: {}",
         error_msg
     );
 
