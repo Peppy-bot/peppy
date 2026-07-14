@@ -225,7 +225,7 @@ Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A slot left without a `--bind` is an error: every declared slot must be bound, and the run is rejected before the node spawns.
+A slot left without a `--bind` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
 
 When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
