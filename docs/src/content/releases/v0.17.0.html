@@ -1,0 +1,25 @@
+<entry>
+  <title>v0.17.0</title>
+  <id>https://docs.peppy.bot/releases/v0-17-0/</id>
+  <updated>2026-07-14T00:00:00Z</updated>
+
+  <summary>Dependency slots gain explicit cardinality, letting a slot bind to multiple producers through a uniform consumer API.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.17.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Dependency slots gain explicit cardinality, letting a slot bind to multiple producers through a uniform consumer API.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 14, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Dependency-slot cardinality&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Dependency slots now support explicit cardinality, letting a slot bind to one or more producers instead of exactly one.&lt;/li&gt;
+&lt;li&gt;Bindings can target multiple producers, and consumers read them through a uniform &lt;code&gt;bound_producers()&lt;/code&gt; API regardless of cardinality.&lt;/li&gt;
+&lt;li&gt;Generated producer accessors reflect each slot's cardinality: single-producer slots expose &lt;code&gt;bound_producer()&lt;/code&gt; while multi-producer slots expose &lt;code&gt;bound_producers()&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;Bindings can now specify explicit service and action targets.&lt;/li&gt;
+&lt;li&gt;Slots declared &lt;code&gt;one_or_more&lt;/code&gt; must be non-empty, and this check now applies to programmatically supplied &lt;code&gt;Flags&lt;/code&gt; values as well as arrays.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
