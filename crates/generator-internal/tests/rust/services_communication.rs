@@ -81,7 +81,12 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &generator::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -124,9 +129,12 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let cameras = uvc_camera_enable_camera::bound_producers(&node_runner);
+        let camera = cameras.first().expect("a `one` slot binds exactly one producer");
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
-            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), request).await?;
+            uvc_camera_enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)
+                .await?;
         let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
         println!(
             "enable_camera result: service_id={} enabled={} error={}",
@@ -392,7 +400,12 @@ async fn services_communication_exposed_service_without_request_body(
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &generator::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -435,8 +448,11 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let cameras = uvc_camera_get_system_status::bound_producers(&node_runner);
+        let camera = cameras.first().expect("a `one` slot binds exactly one producer");
         let response =
-            uvc_camera_get_system_status::poll(&node_runner, Duration::from_secs(5)).await?;
+            uvc_camera_get_system_status::poll(&node_runner, camera, Duration::from_secs(5))
+                .await?;
         println!(
             "get_system_status result: service_id={} healthy={}",
             &response.instance_id,
@@ -692,7 +708,12 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
             &consumed_service,
             &consumed_request_format,
             &consumed_response_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &generator::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -736,9 +757,12 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let cameras = uvc_camera_enable_camera::bound_producers(&node_runner);
+        let camera = cameras.first().expect("a `one` slot binds exactly one producer");
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
-            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), request).await?;
+            uvc_camera_enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)
+                .await?;
         let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
         println!(
             "enable_camera result: enabled={} error={}",

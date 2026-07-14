@@ -400,6 +400,7 @@ pub fn build_consumed_action(
     // Constants
     builder.line(&format!("TARGET_NODE_NAME = \"{}\"", dependency_node_name));
     builder.line(&format!("TARGET_ACTION_NAME = \"{}\"", action.name));
+    builder.line(&format!("LINK_ID = \"{}\"", dependency.link_id));
     builder.blank_line();
 
     // GoalRequest class
@@ -523,6 +524,7 @@ pub fn build_consumed_action(
 
     builder.add_import("import peppylib");
     builder.add_import("from typing import Self");
+    crate::generator::python::services::emit_bound_producers_fn(&mut builder, dependency);
     builder.blank_line();
 
     builder.line("class ActionHandle:");
@@ -531,11 +533,18 @@ pub fn build_consumed_action(
     // fire_goal @classmethod
     builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
     }
     builder.indent();
+    builder.line("\"\"\"Fires this goal at `target`, a member of the slot's bound_producers().");
+    builder.blank_line();
+    builder.line("A target outside the set fails before anything reaches the wire; the");
+    builder.line("shape is identical for every cardinality, including `one`. The handle");
+    builder.line("retains the target: feedback, result, and cancel stay pinned to it.");
+    builder.line("\"\"\"");
+    crate::generator::python::services::emit_target_membership_check(&mut builder);
 
     // Serialize request payload
     if let Some((fmt, info)) = goal_request_format.zip(schema_info.goal_request) {
@@ -562,7 +571,6 @@ pub fn build_consumed_action(
         "TARGET_NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    crate::generator::python::services::emit_bound_producer_lookup(&mut builder, dependency);
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -570,7 +578,7 @@ pub fn build_consumed_action(
     builder.line("node_runner.bound_instance_id(),");
     builder.line(&format!("{send_goal_target_expr},"));
     builder.line("TARGET_ACTION_NAME,");
-    builder.line("bound_producer,");
+    builder.line("target,");
     builder.line("user_goal_payload,");
     builder.line("feedback_qos,");
     builder.line("timeout,");

@@ -60,7 +60,12 @@ async fn topics_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_topic(
             &consumed_topic,
             subscribed_format,
-            &generator::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &generator::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);

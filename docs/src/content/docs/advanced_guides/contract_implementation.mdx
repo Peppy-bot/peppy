@@ -272,7 +272,7 @@ If `depth_cam_inst1` were instead an instance of a node with no `implements`, th
 
 ### One slot per implementing producer
 
-A slot binds exactly one producer. A consumer that reads from several implementing producers declares one contract slot per producer and binds each separately. That keeps contract slots the natural shape for many-to-one consumption whose membership the launcher controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+How many implementing producers a slot binds is its declared [cardinality](/advanced_guides/topics#dependency-cardinality): exactly one by default, an application-selected set for `one_or_more` / `zero_or_more`. A consumer that reads from several implementing producers can either declare one contract slot per producer (giving each a distinct role in code) or one multi-cardinality slot bound to the whole set behind a single API. Both keep contract slots the natural shape for many-to-one consumption whose membership the application controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared `one` / `one_or_more` slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
 
 ```json5
 manifest: {

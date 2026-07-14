@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService, PrimitiveSchema, SchemaType, TypeToken,
 };
 use daemon_config::consts::PeppyDirs;
@@ -135,10 +135,12 @@ pub fn ensure_no_peer_collision(
 /// the `node`-shaped wire discriminator.
 ///
 /// `link_id` is the consumer manifest slot whose runtime binding resolves
-/// this dependency's one producer. In the harmonized wire model the consumer
-/// never pins by `link_id` on the wire (producers always advertise the `_`
-/// sentinel); instead the generated call sites splice
-/// `processor().bound_producer(<link_id>)` lookups.
+/// this dependency's bound producer set, sized per `cardinality`. In the
+/// harmonized wire model the consumer never pins by `link_id` on the wire
+/// (producers always advertise the `_` sentinel); instead the generated
+/// call sites splice `processor().bound_producers(<link_id>)` lookups.
+/// `cardinality` shapes the generated docs only — the API surface is
+/// identical for every cardinality.
 ///
 /// [`SenderTarget::Contract`]: pmi::SenderTarget::Contract
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
@@ -148,6 +150,7 @@ pub struct DependencyContext {
     pub producer_tag: String,
     pub origin: Option<ContractOrigin>,
     pub link_id: String,
+    pub cardinality: Cardinality,
 }
 
 impl DependencyContext {
@@ -157,12 +160,14 @@ impl DependencyContext {
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
         link_id: impl Into<String>,
+        cardinality: Cardinality,
     ) -> Self {
         Self {
             producer_name: node_name.into(),
             producer_tag: node_tag.into(),
             origin: None,
             link_id: link_id.into(),
+            cardinality,
         }
     }
 
@@ -175,6 +180,7 @@ impl DependencyContext {
         contract_name: impl Into<String>,
         contract_tag: impl Into<String>,
         link_id: impl Into<String>,
+        cardinality: Cardinality,
     ) -> Self {
         let contract_name = contract_name.into();
         let contract_tag = contract_tag.into();
@@ -186,6 +192,25 @@ impl DependencyContext {
                 contract_tag,
             }),
             link_id: link_id.into(),
+            cardinality,
+        }
+    }
+
+    /// One doc sentence describing the slot's bound-set size, spliced into
+    /// the generated `bound_producers()` docs so each module states its own
+    /// cardinality contract.
+    pub fn bound_set_doc(&self) -> &'static str {
+        match self.cardinality {
+            Cardinality::One => {
+                "This slot declares cardinality `one`: the set contains exactly one member."
+            }
+            Cardinality::OneOrMore => {
+                "This slot declares cardinality `one_or_more`: the set contains at least one \
+                 member."
+            }
+            Cardinality::ZeroOrMore => {
+                "This slot declares cardinality `zero_or_more`: the set may be empty."
+            }
         }
     }
 }
@@ -709,14 +734,24 @@ mod tests {
     #[test]
     fn dependency_context_constructors_set_origin_and_link_id() {
         // native: no origin.
-        let native = DependencyContext::native("uvc_camera", "v1", "cam_left");
+        let native = DependencyContext::native(
+            "uvc_camera",
+            "v1",
+            "cam_left",
+            config::node::Cardinality::One,
+        );
         assert_eq!(native.producer_name, "uvc_camera");
         assert_eq!(native.producer_tag, "v1");
         assert!(native.origin.is_none());
         assert_eq!(native.link_id, "cam_left");
 
         // contract: no producer node; (name, tag) double as producer identity and origin.
-        let contract = DependencyContext::contract("camera_contract", "v2", "cam_left");
+        let contract = DependencyContext::contract(
+            "camera_contract",
+            "v2",
+            "cam_left",
+            config::node::Cardinality::One,
+        );
         assert_eq!(contract.producer_name, "camera_contract");
         assert_eq!(contract.producer_tag, "v2");
         assert_eq!(

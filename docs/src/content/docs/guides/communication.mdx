@@ -251,7 +251,7 @@ Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 
-The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer: a slot binds exactly one producer, and only the bound producer reaches it. To read the new instance instead, restart the receiver bound to it:
+The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer: this slot has the default cardinality `one`, so it binds exactly one producer, and only the bound producer reaches it. To read the new instance instead, restart the receiver bound to it:
 ```sh
 ❯ peppy node stop vigorous-buck-8117
 ❯ peppy node run hello_receiver:v1 \

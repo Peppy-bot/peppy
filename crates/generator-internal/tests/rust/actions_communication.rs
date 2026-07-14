@@ -98,7 +98,12 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
             // The manifest link_id rides into codegen so the generated
             // fire_goal resolves `bound_producer("brain")` at runtime
             // instead of emitting a wildcard target.
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -152,6 +157,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         };
         let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
+            brain_move_arm::bound_producers(&node_runner)
+                .first()
+                .expect("a `one` slot binds exactly one producer"),
             Duration::from_secs(5),
             request,
             peppygen::QoSProfile::SensorData,
@@ -451,7 +459,12 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -499,6 +512,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producers(&node_runner)
+            .first()
+            .expect("a `one` slot binds exactly one producer"),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -790,7 +806,12 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -838,6 +859,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producers(&node_runner)
+            .first()
+            .expect("a `one` slot binds exactly one producer"),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1136,7 +1160,12 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1184,6 +1213,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producers(&node_runner)
+            .first()
+            .expect("a `one` slot binds exactly one producer"),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1528,7 +1560,12 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1576,6 +1613,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producers(&node_runner)
+            .first()
+            .expect("a `one` slot binds exactly one producer"),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -1904,7 +1944,12 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -1952,6 +1997,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producers(&node_runner)
+            .first()
+            .expect("a `one` slot binds exactly one producer"),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,
@@ -2298,7 +2346,12 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -2346,6 +2399,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     };
     let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
+        brain_move_arm::bound_producers(&node_runner)
+            .first()
+            .expect("a `one` slot binds exactly one producer"),
         Duration::from_secs(5),
         request,
         peppygen::QoSProfile::SensorData,

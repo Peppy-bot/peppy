@@ -386,14 +386,16 @@ fn main() -> Result<()> {
 `subscribe` takes:
 - `node_runner`: the node runner reference.
 
-and returns a `Subscription`. Awaiting `subscription.next()` yields:
-- a `(producer, message)` pair for each message (`Ok(Some((producer, message)))` in Rust), where `producer` is a `ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity (read straight from the message context), and `message` is the deserialized message, with fields matching the topic's `message_format`.
-- `None` (`Ok(None)` in Rust) once the subscription has closed.
-- an error if a received payload fails to deserialize: `Err(..)` in Rust, a raised exception in Python.
+and returns a `Subscription` covering the slot's **complete bound producer set**: one producer-pinned wire subscription per bound producer, merged client-side behind the single `subscribe()` API. The shape is identical for every [cardinality](#dependency-cardinality); only the size of the bound set changes. Awaiting `subscription.next()` yields:
+- a `(producer, message)` pair for each message (`Ok(Some((producer, message)))` in Rust), where `producer` is a `ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity, so the consumer can tell messages from different bound producers apart, and `message` is the deserialized message, with fields matching the topic's `message_format`.
+- `None` (`Ok(None)` in Rust) once the node is shutting down and no queued message remains, or when every source has closed.
+- an error if a received payload fails to deserialize: `Err(..)` in Rust, a raised exception in Python. The error carries producer context and neither tears down the subscription nor shrinks the bound set.
 
-The subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations.
+Each underlying subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations. Message order is preserved independently per producer (no total ordering across producers is promised), and ready producers are merged fairly so one busy producer cannot indefinitely starve another. `ProducerRef` is `Eq + Hash`, so it keys per-producer state directly; to follow a single producer, filter on the yielded producer.
 
-There are no call-site producer-targeting arguments at all. Which producers reach a slot is decided entirely by launcher bindings (see [Bindings and routing](#bindings-and-routing) below): a slot receives messages only from the producer instances bound to it, and each resolved binding carries the producer's full `(core_node, instance_id)` wire address, so the slot can never match a producer that merely shares the instance_id on another core node. That same full identity is what `next` returns with every message, so a consumer can pass it straight back into any producer-targeting slot.
+There are no call-site producer-targeting arguments at all. Which producers reach a slot is decided entirely by application bindings (see [Bindings and routing](#bindings-and-routing) below): a slot receives messages only from the producer instances bound to it, and each resolved binding carries the producer's full `(core_node, instance_id)` wire address, so the slot can never match a producer that merely shares the instance_id on another core node. The producer segments of a keyexpr are never wildcarded: a federated router forwards traffic only for the explicitly bound producers, and every subscriber stays fully pinned (and auditable) in the zenoh admin space. That same full identity is what `next` returns with every message, so a consumer can pass it straight back into any producer-targeting call (a `ProducerRef` yielded by the slot's own subscription is a member of the slot's bound set by construction).
+
+Every generated consumed topic, service, and action module also exposes `bound_producers()`, which returns the slot's runtime-resolved, immutable, ordered producer set (application declaration order, so `.first()` is deterministic). The set is fixed when the node starts and is not live discovery: a producer disconnecting does not shrink it, trigger discovery, or cause automatic rebinding.
 
 ### Receiving messages continuously
 
@@ -495,11 +497,74 @@ async fn receive_frames(node_runner: Arc<NodeRunner>) {
 
 In Python the `Subscription` is also an async iterator: `async for producer, message in subscription` is equivalent to looping on `next` and stops cleanly once the subscription closes.
 
+### Consuming a multi-cardinality bound set
+
+Nothing changes at the call site when the slot's [cardinality](#dependency-cardinality) allows several producers: the same single `subscribe()` covers every bound producer, and the yielded `ProducerRef` tells the streams apart. `ProducerRef` is `Eq + Hash`, so it keys per-producer state directly:
+
+<Tabs>
+  <TabItem label="Rust">
+```rust
+use peppygen::consumed_topics::camera_video_stream;
+use peppygen::{NodeBuilder, Parameters, ProducerRef, Result};
+use std::collections::HashMap;
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        // One subscription covering every producer bound to the `camera`
+        // slot. The shape is identical for every cardinality; only the
+        // size of the bound set changes.
+        // `one`: the subscription covers exactly one producer.
+        // `one_or_more`: the merged subscription covers at least one producer.
+        // `zero_or_more`: the slot may be empty; the subscription then
+        // yields nothing until the node stops.
+        let mut subscription = camera_video_stream::subscribe(&node_runner).await?;
+
+        let mut frames_per_camera: HashMap<ProducerRef, u64> = HashMap::new();
+        while let Some((producer, frame)) = subscription.next().await? {
+            *frames_per_camera.entry(producer.clone()).or_insert(0) += 1;
+            println!(
+                "frame from {}@{}: {}x{} (total from this camera: {})",
+                producer.instance_id,
+                producer.core_node,
+                frame.width,
+                frame.height,
+                frames_per_camera[&producer],
+            );
+        }
+        Ok(())
+    })
+}
+```
+  </TabItem>
+  <TabItem label="Python">
+```python
+from peppygen.consumed_topics import camera_video_stream
+
+
+async def count_frames(node_runner):
+    # One subscription covering every producer bound to the `camera`
+    # slot; the yielded producer tells per-camera streams apart.
+    subscription = await camera_video_stream.subscribe(node_runner)
+
+    frames_per_camera: dict = {}
+    async for producer, frame in subscription:
+        frames_per_camera[producer] = frames_per_camera.get(producer, 0) + 1
+        print(
+            f"frame from {producer.instance_id}@{producer.core_node}: "
+            f"{frame.width}x{frame.height} "
+            f"(total from this camera: {frames_per_camera[producer]})"
+        )
+```
+  </TabItem>
+</Tabs>
+
+To follow a single camera instead, filter on the yielded producer (`bound_producers()` lists the members in binding order).
+
 ## Bindings and routing
 
-Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the launcher bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--pair` at instance start, not by a binding.)
+Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the application bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--pair` at instance start, not by a binding.)
 
-A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` names exactly one target producer `instance_id`. Each binding creates a private one-way channel from that producer instance to the consumer's slot. **Every declared slot must be bound, to exactly one producer**: a launch that leaves a slot without a binding is rejected before anything starts; there is no wildcard fallback, no unbound state, and no fan-in. A consumer that reads several producers declares one slot per producer.
+A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` selects the slot's target producer instance(s). Each bound target creates a private one-way channel from that producer instance to the consumer's slot: a multi-cardinality slot expands into N independent application-selected bound edges sharing the same `link_id`. How many targets a slot takes is the slot's declared [cardinality](#dependency-cardinality); there is no wildcard fallback and no discovery, only explicitly bound producers.
 
 In a launcher / stack config:
 
@@ -519,9 +584,45 @@ or, when launching a single node during development:
 peppy node run --bind uvc_camera@my-camera-instance .
 ```
 
+### Dependency cardinality
+
+Every `depends_on.contracts` and `depends_on.nodes` entry may declare a `cardinality`, constraining how many producers the application may bind to the slot:
+
+```json5
+depends_on: {
+  contracts: [
+    { name: "uvc_camera", tag: "v1", link_id: "camera", cardinality: "one_or_more" },
+  ],
+}
+```
+
+| Cardinality     | Valid unique targets | Omitted binding |
+| --------------- | -------------------- | --------------- |
+| `one` / omitted | exactly 1            | error           |
+| `one_or_more`   | 1 or more            | error           |
+| `zero_or_more`  | 0 or more            | empty set       |
+
+The binding value's shape mirrors the slot's cardinality. A `one` slot takes a scalar string only, exactly as above. A `one_or_more` or `zero_or_more` slot takes an **array** of instance ids; for `zero_or_more` the empty array `[]` is a valid definition, equivalent to omitting the binding entirely:
+
+```json5
+bindings: {
+  camera: ["front_camera", "rear_camera"],
+}
+```
+
+Any other combination is an error: an array on a `one` slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a `one` slot; the empty set has no flag spelling, omission is it:
+
+```sh
+peppy node run --bind camera@front_camera --bind camera@rear_camera .
+```
+
+Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances, and it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. `depends_on.pairings` entries have no cardinality (a pairing is strictly 1:1 and expresses absence with its `optional` flag; a `cardinality` key on a pairing entry is a manifest error).
+
+The generated API is the same for every cardinality, including the default `one`: topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, [services](/advanced_guides/services) and [actions](/advanced_guides/actions) require the caller to select one member of that set explicitly, and every consumed module exposes `bound_producers()`. For `one` the set contains exactly one member; for a `zero_or_more` slot bound to nothing, the subscription simply yields nothing until the node stops.
+
 ### Per-message routing
 
-For every message a producer publishes, each consumer instance applies one rule on its own slots: the message is delivered to every slot whose binding names the producer, and to no other slot. A producer named by no binding is ignored by the consumer entirely; there is no wildcard fallback.
+For every message a producer publishes, each consumer instance applies one rule on its own slots: the message is delivered to every slot whose bound set names the producer, and to no other slot. A producer named by no binding is ignored by the consumer entirely; there is no wildcard fallback. Wildcard-subscribe-and-filter-in-process is deliberately not offered: a wildcard expresses interest in every same-namespace producer of the contract, so a federated router would forward traffic from unbound producers across the mesh, and the bound set would stop being auditable from the zenoh admin space.
 
 ### Worked example: `openarm01_backbone`
 
@@ -568,17 +669,19 @@ Three contract statements follow from this manifest:
 
 1. A frame from `left_cam` arrives only on the `wrist_left_camera_video_stream` slot.
 2. A frame from `right_cam` arrives only on the `wrist_right_camera_video_stream` slot.
-3. If the `wrist_right_camera` binding line were removed, the launch would be rejected: every declared slot must be bound. A producer named by no binding is simply ignored, but a declared slot with no binding is an error, not a silent gap.
+3. If the `wrist_right_camera` binding line were removed, the launch would be rejected: every declared slot except `zero_or_more` must be bound. A producer named by no binding is simply ignored, but a declared `one` or `one_or_more` slot with no binding is an error, not a silent gap.
+
+Dedicated slots (one `link_id` per camera, as here) and one multi-cardinality slot (`cameras: ["left_cam", "right_cam"]`) are both valid designs. Dedicated slots give each producer a distinct role in code; a multi slot treats the producers as an N-of-a-kind set behind one API.
 
 ### Validator rules
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot, and every declared slot must have a binding.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared slot the bindings leave out fails the launch with one error per unfulfilled slot.
-2. **Every target must satisfy the slot.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `manifest.implements` must include the slot's `(name, tag)` (`BindingContractNotImplemented` otherwise); see [Contract implementation](/advanced_guides/contract_implementation) for the implementation rules.
-3. **One producer per slot.** Each `KEY` appears at most once per invocation; a repeated `--bind KEY@…` (or a duplicate `bindings:` key in a launcher) is rejected, because a slot binds exactly one producer.
+1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared `one` or `one_or_more` slot the bindings leave out fails the launch with one error per unfulfilled slot; a `zero_or_more` slot with no binding resolves to the empty set.
+2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar only (an array is rejected, single-element and empty included), a multi slot takes an array only (a scalar is rejected), and an empty array meets only `zero_or_more` (on `one_or_more` it is a cardinality-unmet error). Repeated `--bind KEY@…` flags carry no shape and are checked by count: more than one occurrence on a `one` slot is rejected. Duplicate targets within one slot are rejected rather than deduplicated.
+3. **Every target must satisfy the slot, checked per bound instance.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `manifest.implements` must include the slot's `(name, tag)` (`BindingContractNotImplemented` otherwise); see [Contract implementation](/advanced_guides/contract_implementation) for the implementation rules.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
-5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot.
+5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot. Bound-set member order is the application declaration order (launcher array order / CLI flag occurrence order), preserved verbatim into the runtime configuration.
 
 ## Message format types
 

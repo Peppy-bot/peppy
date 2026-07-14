@@ -439,11 +439,11 @@ fn expose_two_actions() {
     );
 }
 
-/// A real manifest dep (link_id present) splices the runtime binding
-/// lookup as the single `target` argument of the generated `send_goal`:
-/// `node_runner.bound_producer(<link_id>)` resolves at runtime to
-/// the bound producer's full `(core_node, instance_id)` tuple, so a
-/// pinned slot addresses exactly one producer with no discovery probe.
+/// A real manifest dep (link_id present) wires the runtime binding set
+/// into the module: `bound_producers()` reads
+/// `node_runner.bound_producers(<link_id>)`, and the caller-selected
+/// `target` is membership-checked against the same slot before `send_goal`
+/// pins it on the wire with no discovery probe.
 #[test]
 fn consumed_action_with_link_id_splices_runtime_binding_target() {
     let mut action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
@@ -464,7 +464,12 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1", "left_arm"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "left_arm",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -473,8 +478,10 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
     assert_contains_all(
         &rendered,
         &[
-            "bound_producer = node_runner.bound_producer(\"left_arm\")",
-            "bound_producer,",
+            "LINK_ID = \"left_arm\"",
+            "return node_runner.bound_producers(\"left_arm\")",
+            "node_runner.ensure_target_bound(LINK_ID, target)",
+            "target,",
         ],
     );
 }
@@ -499,7 +506,12 @@ fn consumed_action() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -608,27 +620,27 @@ fn consumed_action() {
     assert_contains_all(&rendered, &["class ActionHandle:"]);
 
     // fire_goal @classmethod with typed signature, serialization, and
-    // ActionHandle construction. The slot's single bound producer is
-    // resolved into `bound_producer` (an infallible lookup: launch and
-    // to exactly one) and spliced at the single target slot; the
-    // user-facing `target_instance_id` parameter is gone.
-    // `target_core_node` is never exposed in the generated API, and the
-    // renamed `pinned_target_for` accessor must never be emitted (the
-    // startup guarantee exactly one producer per declared slot).
+    // ActionHandle construction: the caller passes the selected member of
+    // the slot's bound set explicitly (every cardinality, `one` included),
+    // membership-checked before the goal reaches the wire. No
+    // implicit-target overload is generated; `target_core_node` /
+    // `target_instance_id` never appear as string parameters, and the
+    // renamed `pinned_target_for` accessor must never be emitted.
     assert_contains_all(
         &rendered,
         &[
             "@classmethod",
             "async def fire_goal(cls,",
             "node_runner: peppylib.NodeRunner",
+            "target: peppylib.ProducerRef",
             "request: GoalRequest",
             "timeout: float",
             "feedback_qos: peppylib.QoSProfile",
             ") -> Self:",
+            "node_runner.ensure_target_bound(LINK_ID, target)",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
-            "bound_producer = node_runner.bound_producer(\"brain\")",
-            "TARGET_ACTION_NAME,\n            bound_producer,\n            user_goal_payload,",
+            "TARGET_ACTION_NAME,\n            target,\n            user_goal_payload,",
             "feedback_qos,",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
@@ -636,6 +648,17 @@ fn consumed_action() {
             "goal_response_data = _deserialize_goal_response(payload)",
             "handle.data = goal_response_data",
             "return handle",
+        ],
+    );
+
+    // The uniform module surface: the action module exposes the same
+    // slot-level `bound_producers()` as topics and services.
+    assert_contains_all(
+        &rendered,
+        &[
+            "LINK_ID = \"brain\"",
+            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
+            "return node_runner.bound_producers(\"brain\")",
         ],
     );
     assert!(
@@ -648,7 +671,11 @@ fn consumed_action() {
     );
     assert!(
         !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helper is bound_producer; got:\n{rendered}"
+        "pinned_target_for should never be emitted; the runtime helper is bound_producers; got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("node_runner.bound_producer("),
+        "the removed single-producer lookup must not be emitted; got:\n{rendered}"
     );
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.
@@ -723,7 +750,12 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &move_arm_action,
             &move_arm_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     // Both actions target the same upstream node.
@@ -731,7 +763,12 @@ fn consumed_two_actions_same_node() {
         .add_consumed_action(
             &rotate_action,
             &rotate_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
 
@@ -852,7 +889,12 @@ fn consumed_action_without_response_payload() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -939,7 +981,12 @@ fn consumed_action_without_feedback() {
         .add_consumed_action(
             &action,
             &format,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());

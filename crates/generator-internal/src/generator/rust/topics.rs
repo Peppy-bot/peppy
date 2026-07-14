@@ -350,6 +350,15 @@ pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Res
             /// received payload fails to deserialize. `producer` is always
             /// the paired peer's identity.
         },
+        quote! {
+            let Some(message) = self.inner.on_next_message().await else {
+                return Ok(None);
+            };
+            let producer = peppylib::messaging::ProducerRef::new(
+                message.core_node(),
+                message.instance_id(),
+            );
+        },
         helper_fn_ident,
         args_struct_ident,
     );
@@ -381,13 +390,16 @@ pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Res
 }
 
 /// The held-`Subscription` struct plus its `next()` impl, shared by the
-/// plain and peer consumer modules: same buffer/decode contract, differing
-/// only in the inner subscription type and the doc text (passed as
-/// `quote!`d `///` blocks so the generated docs stay per-module).
+/// bound-set and peer consumer modules: same decode contract, differing in
+/// the inner subscription type, how `(producer, message)` is received from
+/// it (`recv_tokens`, statements that bind `producer` and `message` or
+/// early-return `Ok(None)`), and the doc text (passed as `quote!`d `///`
+/// blocks so the generated docs stay per-module).
 fn build_subscription_struct(
     struct_doc: TokenStream,
     inner_type: TokenStream,
     next_doc: TokenStream,
+    recv_tokens: TokenStream,
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
 ) -> TokenStream {
@@ -405,15 +417,9 @@ fn build_subscription_struct(
             pub async fn next(
                 &mut self,
             ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
-                let Some(message) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
+                #recv_tokens
 
                 let payload = message.payload();
-                let producer = peppylib::messaging::ProducerRef::new(
-                    message.core_node(),
-                    message.instance_id(),
-                );
                 let message = #helper_fn_ident(payload.as_ref())?;
                 Ok(Some((producer, message)))
             }
@@ -468,35 +474,51 @@ pub fn build_consumed_topic_subscription(
     )?;
 
     let from_target_expr = consumed_to_target_expression(dependency);
-    let bound_producer_expr = consumed_bound_producer_expression(dependency);
+    let bound_producers_expr = consumed_bound_producers_expression(dependency);
+    let bound_producers_fn = build_bound_producers_fn(dependency);
 
     let subscription_tokens = build_subscription_struct(
         quote! {
-            /// A held subscription to this topic. Declared once via `subscribe`; its
-            /// buffer keeps every message in arrival order, so looping on `next` never
-            /// drops a message published between calls. Filter inside the loop on the
-            /// returned producer identity or the message fields.
+            /// A held subscription covering every producer bound to this slot: one
+            /// producer-pinned wire subscription per member of `bound_producers()`,
+            /// merged client-side. Message order is preserved independently per
+            /// producer (no total ordering across producers), ready producers are
+            /// merged fairly, and the bound set is fixed at startup. To follow a
+            /// single producer, filter on the yielded producer identity.
         },
-        quote!(peppylib::messaging::Subscription),
+        quote!(peppylib::messaging::BoundSetSubscription),
         quote! {
-            /// Awaits the next message on this subscription.
+            /// Awaits the next message from any producer bound to this slot.
             ///
-            /// Returns `Ok(Some((producer, message)))` for each message in arrival
-            /// order, `Ok(None)` once the subscription has closed, and `Err(..)` if
-            /// a received payload fails to deserialize.
+            /// Returns `Ok(Some((producer, message)))` for each message (the
+            /// producer that published it always rides along), `Ok(None)` once the
+            /// node is shutting down and no queued message remains, and `Err(..)`
+            /// if a received payload fails to deserialize; a decode error does not
+            /// tear down the subscription or shrink the bound set. On an empty
+            /// `zero_or_more` set this pends until shutdown, then returns
+            /// `Ok(None)`.
+        },
+        quote! {
+            let Some((producer, message)) = self.inner.on_next_message().await else {
+                return Ok(None);
+            };
         },
         helper_fn_ident,
         args_struct_ident,
     );
 
     Ok(quote! {
+        #bound_producers_fn
+
         #subscription_tokens
 
-        /// Subscribes to this topic and returns a held `Subscription`.
+        /// Subscribes to this topic across the slot's complete bound producer
+        /// set and returns a held `Subscription` yielding `(producer, message)`.
         ///
-        /// Call this once, then loop on `Subscription::next`; the subscription's
-        /// buffer retains messages published between calls, so nothing is lost to a
-        /// re-subscribe gap.
+        /// The shape is identical for every cardinality; only the size of the
+        /// bound set changes. Call this once, then loop on `Subscription::next`;
+        /// each underlying subscription's buffer retains messages published
+        /// between calls, so nothing is lost to a re-subscribe gap.
         pub async fn subscribe(
             node_runner: &crate::NodeRunner,
         ) -> crate::Result<Subscription> {
@@ -504,14 +526,15 @@ pub fn build_consumed_topic_subscription(
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
-            let inner = peppylib::TopicMessenger::subscribe(
+            let inner = peppylib::TopicMessenger::subscribe_bound_set(
                 node_runner.messenger(),
                 node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 #from_target_expr,
                 topic_name,
-                #bound_producer_expr,
+                #bound_producers_expr,
                 qos,
+                node_runner.cancellation_token().clone(),
             )
             .await
             .map_err(|source| crate::Error::TopicSubscribe {
@@ -527,21 +550,42 @@ pub fn build_consumed_topic_subscription(
     })
 }
 
-/// Returns the `&ProducerRef` expression spliced into generated
-/// [`peppylib::TopicMessenger::subscribe`],
-/// [`peppylib::ServiceMessenger::poll`], and
-/// [`peppylib::ActionMessenger::send_goal`] calls at the producer slot:
-/// `Processor::bound_producer(<manifest link_id>)`, the slot's one bound
-/// producer. The validator pre-resolves the consumer's launcher / CLI
-/// binding map — every declared slot bound to exactly one producer
-/// (anything else is rejected at launch) — and the runtime processor
-/// caches the producers at startup, so the lookup is an infallible
-/// borrow shared by every interface kind.
-pub fn consumed_bound_producer_expression(
+/// Returns the `&[ProducerRef]` expression spliced into generated
+/// [`peppylib::TopicMessenger::subscribe_bound_set`] calls and the module's
+/// `bound_producers()` body: `Processor::bound_producers(<manifest
+/// link_id>)`, the slot's runtime-resolved ordered producer set. The
+/// validator pre-resolves the consumer's launcher / CLI binding map (sized
+/// per the slot's cardinality; anything else is rejected at launch) and the
+/// runtime processor caches the sets at startup, so the lookup is an
+/// infallible borrow shared by every interface kind.
+pub fn consumed_bound_producers_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let literal = Literal::string(&dependency.link_id);
-    quote!(node_runner.processor().bound_producer(#literal))
+    quote!(node_runner.processor().bound_producers(#literal))
+}
+
+/// The module-level `bound_producers()` function every consumed topic,
+/// service, and action module exposes, regardless of cardinality. Every
+/// module sharing this slot's `link_id` returns the same set in the same
+/// application declaration order.
+pub fn build_bound_producers_fn(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    let bound_producers_expr = consumed_bound_producers_expression(dependency);
+    let cardinality_doc = Literal::string(dependency.bound_set_doc());
+    quote! {
+        /// The runtime-resolved, immutable, ordered producer set bound to this
+        /// module's slot, in application declaration order (`.first()` is
+        /// deterministic). The set is fixed when the node starts: a producer
+        /// disconnecting never shrinks it, and there is no live discovery.
+        #[doc = #cardinality_doc]
+        pub fn bound_producers(
+            node_runner: &crate::NodeRunner,
+        ) -> &[peppylib::messaging::ProducerRef] {
+            #bound_producers_expr
+        }
+    }
 }
 
 /// Returns the `SenderTarget` expression spliced into a generated

@@ -14,7 +14,7 @@ pub use pairings::{
 };
 pub use parse::PeppyLauncherParser;
 pub use types::{
-    Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
+    BindingValue, Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
     DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, FrameworkOverrides, PeppyLauncher,
     split_pair_target,
 };

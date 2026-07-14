@@ -132,13 +132,23 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
             service: front_service,
             request_format: parse_fmt(FRONT_REQUEST_FORMAT),
             response_format: parse_fmt(FRONT_RESPONSE_FORMAT),
-            dependency: DependencyContext::native("uvc_camera", "v1", "front_cam"),
+            dependency: DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "front_cam",
+                config::node::Cardinality::One,
+            ),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedService {
             service: rear_service,
             request_format: parse_fmt(REAR_REQUEST_FORMAT),
             response_format: parse_fmt(REAR_RESPONSE_FORMAT),
-            dependency: DependencyContext::native("rtsp_camera", "v1", "rear_cam"),
+            dependency: DependencyContext::native(
+                "rtsp_camera",
+                "v1",
+                "rear_cam",
+                config::node::Cardinality::One,
+            ),
         }),
     ];
 

@@ -108,7 +108,12 @@ async fn actions_communication(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -154,8 +159,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -450,7 +456,12 @@ async fn actions_communication_cancel_goal(#[case] mode: crate::helpers::Mode) {
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -496,8 +507,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -774,7 +786,12 @@ async fn actions_communication_async_goal_decider(#[case] mode: crate::helpers::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -820,8 +837,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -1127,7 +1145,12 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -1173,8 +1196,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -1491,7 +1515,12 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -1537,8 +1566,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -1875,7 +1905,12 @@ async fn actions_communication_drain_loop_until_end_signal(#[case] mode: crate::
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -1921,8 +1956,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -2231,7 +2267,12 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
         .add_consumed_action(
             &consumed_action,
             &action_messages,
-            &generator::DependencyContext::native("brain", "v1", "brain"),
+            &generator::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
@@ -2274,8 +2315,9 @@ from peppygen.consumed_actions import brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    arm = brain_move_arm.bound_producers(node_runner)[0]
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted} t={time.monotonic():.3f}", flush=True)
 

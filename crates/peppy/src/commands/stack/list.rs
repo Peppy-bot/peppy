@@ -343,10 +343,10 @@ fn format_instance_health(instance: &SerializedInstance, colorize: bool) -> Stri
 }
 
 /// One display string per slot binding on the instance, in `link_id →
-/// producer` form and ordered by link id (`BTreeMap` iteration order). Each
+/// producers` form and ordered by link id (`BTreeMap` iteration order). Each
 /// side is tinted by what it denotes: the link id in the binding color, the
-/// producer in the instance color (it names another instance), so the line is
-/// readable by hue rather than by column. The `→` arrow is deliberately
+/// producers in the instance color (they name other instances), so the line
+/// is readable by hue rather than by column. The `→` arrow is deliberately
 /// lighter than the `➔` used for dependencies so the two relationships read
 /// differently. Returns `["(none)"]` when the instance has no bindings so its
 /// row still renders.
@@ -357,21 +357,30 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
     instance
         .slot_bindings
         .iter()
-        .map(|(link_id, binding)| {
+        .map(|(link_id, bound)| {
             format!(
                 "{} → {}",
                 paint(colorize, BINDING_COLOR, link_id),
-                paint(colorize, INSTANCE_COLOR, &format_slot_binding(binding)),
+                paint(colorize, INSTANCE_COLOR, &format_slot_binding(bound)),
             )
         })
         .collect()
 }
 
-/// Right-hand side of a `link_id -> …` binding line: the one producer the
-/// slot is bound to, rendered as `instance_id@core_node` (the full wire
-/// address every binding carries).
-fn format_slot_binding(producer: &config::runtime::ProducerRef) -> String {
-    format!("{}@{}", producer.instance_id, producer.core_node)
+/// Right-hand side of a `link_id -> …` binding line: the slot's bound
+/// producer set in declaration order, each member rendered as
+/// `instance_id@core_node` (the full wire address every binding carries)
+/// and joined with commas. An empty set (a `zero_or_more` slot bound to
+/// nothing) renders as `(empty set)` so it never reads as a missing row.
+fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
+    if bound.is_empty() {
+        return "(empty set)".to_string();
+    }
+    bound
+        .iter()
+        .map(|producer| format!("{}@{}", producer.instance_id, producer.core_node))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -492,8 +501,9 @@ mod tests {
         }
     }
 
-    /// `(instance_id, state, [(slot, producer)])` rows fed to [`binding_node`].
-    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, ProducerRef)>);
+    /// `(instance_id, state, [(slot, producers)])` rows fed to
+    /// [`binding_node`]; each slot carries its ordered bound set.
+    type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, Vec<ProducerRef>)>);
 
     /// Like [`node`] but lets each instance carry slot bindings, for
     /// exercising the bindings table. Always `Ready`/`v1`.
@@ -512,7 +522,13 @@ mod tests {
                     healthy: true,
                     slot_bindings: binds
                         .into_iter()
-                        .map(|(slot, producer)| (slot.to_string(), producer))
+                        .map(|(slot, producers)| {
+                            (
+                                slot.to_string(),
+                                config::runtime::BoundProducers::try_from(producers)
+                                    .expect("test producer sets are duplicate-free"),
+                            )
+                        })
                         .collect(),
                     pairing_slots: std::collections::BTreeMap::new(),
                 })
@@ -727,7 +743,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![("arm", ProducerRef::new("core_a", "arm-1"))],
+                vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
         let out = format_stack_list(&nodes, &[], false);
@@ -757,8 +773,8 @@ mod tests {
                     "br-1",
                     InstanceState::Running,
                     vec![
-                        ("camera", ProducerRef::new("core_a", "cam-1")),
-                        ("controller", ProducerRef::new("core_a", "ctl-1")),
+                        ("camera", vec![ProducerRef::new("core_a", "cam-1")]),
+                        ("controller", vec![ProducerRef::new("core_a", "ctl-1")]),
                     ],
                 )],
             ),
@@ -842,8 +858,8 @@ mod tests {
                 // Inserted out of sorted order so the assertion below fails if
                 // the BTreeMap link-id sort is ever dropped.
                 vec![
-                    ("clock", ProducerRef::new("core_a", "clk-1")),
-                    ("backbone", ProducerRef::new("core_a", "bb-1")),
+                    ("clock", vec![ProducerRef::new("core_a", "clk-1")]),
+                    ("backbone", vec![ProducerRef::new("core_a", "bb-1")]),
                 ],
             )],
         )];
@@ -895,8 +911,8 @@ mod tests {
                 "nav-1",
                 InstanceState::Running,
                 vec![
-                    ("sensors", ProducerRef::new("core_a", "cam-1")),
-                    ("extra", ProducerRef::new("core_a", "lidar-1")),
+                    ("sensors", vec![ProducerRef::new("core_a", "cam-1")]),
+                    ("extra", vec![ProducerRef::new("core_a", "lidar-1")]),
                 ],
             )],
         )];
@@ -1025,7 +1041,7 @@ mod tests {
                     (
                         "alpha-1",
                         InstanceState::Running,
-                        vec![("dep", ProducerRef::new("core_a", "beta-1"))],
+                        vec![("dep", vec![ProducerRef::new("core_a", "beta-1")])],
                     ),
                     // Second instance, no bindings: stays inside alpha's group
                     // with no separator before it.
@@ -1079,7 +1095,7 @@ mod tests {
             vec![(
                 "实例-uno",
                 InstanceState::Running,
-                vec![("传感器", ProducerRef::new("core_a", "相机-1"))],
+                vec![("传感器", vec![ProducerRef::new("core_a", "相机-1")])],
             )],
         )];
         // A pairing row mixes the `⇌` separator with CJK link and peer ids,
@@ -1165,7 +1181,7 @@ mod tests {
             vec![(
                 "bk-1",
                 InstanceState::Running,
-                vec![("arm", ProducerRef::new("core_a", "arm-1"))],
+                vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
         let from = node("brain", "v1", NodeStage::Ready, vec![]);

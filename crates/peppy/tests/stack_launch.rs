@@ -965,12 +965,290 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&config::runtime::ProducerRef::new(
-            &core_node_name,
-            producer_instance_id
+        Some(&config::runtime::BoundProducers::from(
+            config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
         )),
         "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
          consumer's runtime config as a Pinned slot binding stamped with the daemon's core_node",
+    );
+}
+
+/// A `one_or_more` slot bound to two producer instances through the real
+/// daemon launch path: the launcher's array binding must reach the
+/// consumer's runtime config as the ordered two-member producer set, each
+/// member stamped with the daemon's core_node. This is the daemon-side
+/// twin of the validator unit tests: it proves the array shape survives
+/// launcher parse, plan validation, and boot-config serialization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let consumer_dump = dump_dir.path().join("consumer.json5");
+
+    let producer_name = "multi_binding_producer";
+    let consumer_name = "multi_binding_consumer";
+    let node_tag = "v1";
+    let front_instance_id = "front_camera";
+    let rear_instance_id = "rear_camera";
+    let consumer_instance_id = "multi_cons_inst";
+    let link_id = "cameras";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    let producer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "exec sleep 30".to_string(),
+    ];
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &producer_run_cmd,
+        None,
+        None,
+        None,
+    );
+
+    let consumer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
+            consumer_dump.display()
+        ),
+    ];
+    let consumer_depends_on = format!(
+        r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "one_or_more" }}] }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+        None,
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // Impersonate the framework services the dummy `sh` subprocesses do
+    // not expose, for all three spawned instances.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let mut service_guards = Vec::new();
+    for (node_name, instance_id) in [
+        (producer_name, front_instance_id),
+        (producer_name, rear_instance_id),
+        (consumer_name, consumer_instance_id),
+    ] {
+        let ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+        service_guards.push((ready, health, shutdown));
+    }
+
+    // The binding array deliberately lists `rear` before `front` so the
+    // order assertion below cannot pass by accident (BTreeMap iteration or
+    // spawn order would both yield `front` first).
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer_path}" }},
+                    instances: [
+                        {{ instance_id: "{front_instance_id}" }},
+                        {{ instance_id: "{rear_instance_id}" }}
+                    ]
+                }},
+                {{
+                    source: {{ local: "{consumer_path}" }},
+                    instances: [{{
+                        instance_id: "{consumer_instance_id}",
+                        bindings: {{ {link_id}: ["{rear_instance_id}", "{front_instance_id}"] }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        producer_path = producer_path.display(),
+        consumer_path = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch command should succeed");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if let Ok(content) = fs::read_to_string(&consumer_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            consumer_config = Some(cfg);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    for instance_id in [consumer_instance_id, front_instance_id, rear_instance_id] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let consumer_config = consumer_config.unwrap_or_else(|| {
+        panic!(
+            "consumer runtime config dump never appeared / parsed at {}",
+            consumer_dump.display()
+        )
+    });
+    let expected = config::runtime::BoundProducers::try_from(vec![
+        config::runtime::ProducerRef::new(&core_node_name, rear_instance_id),
+        config::runtime::ProducerRef::new(&core_node_name, front_instance_id),
+    ])
+    .expect("distinct producers");
+    assert_eq!(
+        consumer_config.node_instance.slot_bindings.get(link_id),
+        Some(&expected),
+        "the launcher's array binding must reach the consumer's boot config as the \
+         ordered two-member set, in binding declaration order",
+    );
+}
+
+/// The value-shape rule at the daemon boundary: an array binding on a
+/// default-cardinality (`one`) slot must fail the launch at plan
+/// validation, before any node is added, built, or spawned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_array_binding_on_a_one_slot() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+    assert!(!core_node_name.is_empty());
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let producer_name = "one_slot_producer";
+    let consumer_name = "one_slot_consumer";
+    let node_tag = "v1";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    let run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "exec sleep 30".to_string(),
+    ];
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &run_cmd,
+        None,
+        None,
+        None,
+    );
+    // No `cardinality` on the slot: the default is `one`.
+    let consumer_depends_on = format!(
+        r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "main" }}] }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &run_cmd,
+        Some(&consumer_depends_on),
+        None,
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ local: "{producer_path}" }},
+                    instances: [{{ instance_id: "solo_prod" }}]
+                }},
+                {{
+                    source: {{ local: "{consumer_path}" }},
+                    instances: [{{
+                        instance_id: "solo_cons",
+                        bindings: {{ main: ["solo_prod"] }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        producer_path = producer_path.display(),
+        consumer_path = consumer_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let err = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect_err("an array binding on a `one` slot must fail the launch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("main") && msg.contains("cardinality") && msg.contains("one"),
+        "error should name the slot and the cardinality rule: {msg}"
     );
 }
 
@@ -1371,9 +1649,8 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     });
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
-        Some(&config::runtime::ProducerRef::new(
-            &core_node_name,
-            producer_instance_id
+        Some(&config::runtime::BoundProducers::from(
+            config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
         )),
         "contract dep `{link_id}` should resolve to the implementing producer's instance \
          stamped with the daemon's core_node",
@@ -1921,9 +2198,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             .node_instance
             .slot_bindings
             .get(controller_link_id),
-        Some(&config::runtime::ProducerRef::new(
-            &core_node_name,
-            arm_instance_id,
+        Some(&config::runtime::BoundProducers::from(
+            config::runtime::ProducerRef::new(&core_node_name, arm_instance_id),
         )),
         "arm_controller's `{controller_link_id}` interface slot should materialize with \
          the bound producer's full wire address",
@@ -1937,9 +2213,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     });
     assert_eq!(
         arm_config.node_instance.slot_bindings.get(arm_link_id),
-        Some(&config::runtime::ProducerRef::new(
-            &core_node_name,
-            controller_instance_id,
+        Some(&config::runtime::BoundProducers::from(
+            config::runtime::ProducerRef::new(&core_node_name, controller_instance_id),
         )),
         "robot_arm's `{arm_link_id}` interface slot should materialize with the bound \
          producer's full wire address",

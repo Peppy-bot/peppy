@@ -417,6 +417,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
             EXPOSED_NODE_NAME,
             "v1",
             EXPOSED_NODE_NAME,
+            config::node::Cardinality::One,
         ),
     })];
 
@@ -544,6 +545,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
                 EXPOSED_NODE_NAME,
                 "v1",
                 EXPOSED_NODE_NAME,
+                config::node::Cardinality::One,
             ),
         },
     )];
@@ -696,6 +698,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             EXPOSED_NODE_NAME,
             "v1",
             EXPOSED_NODE_NAME,
+            config::node::Cardinality::One,
         ),
     })];
 

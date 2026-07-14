@@ -66,8 +66,8 @@ use peppygen::consumed_services::{front_cam_enable, rear_cam_enable};
 
 #[allow(dead_code)]
 fn _references_both_link_keyed_modules() {
-    let _front: fn(_, _, _) -> _ = front_cam_enable::poll;
-    let _rear: fn(_, _, _) -> _ = rear_cam_enable::poll;
+    let _front: fn(_, _, _, _) -> _ = front_cam_enable::poll;
+    let _rear: fn(_, _, _, _) -> _ = rear_cam_enable::poll;
 }
 
 fn main() {}
@@ -96,13 +96,23 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
             service: front_service,
             request_format: parse_fmt(FRONT_REQUEST_FORMAT),
             response_format: parse_fmt(FRONT_RESPONSE_FORMAT),
-            dependency: DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            dependency: DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedService {
             service: rear_service,
             request_format: parse_fmt(REAR_REQUEST_FORMAT),
             response_format: parse_fmt(REAR_RESPONSE_FORMAT),
-            dependency: DependencyContext::native("rtsp_camera", "v1", "rtsp_camera"),
+            dependency: DependencyContext::native(
+                "rtsp_camera",
+                "v1",
+                "rtsp_camera",
+                config::node::Cardinality::One,
+            ),
         }),
     ];
 

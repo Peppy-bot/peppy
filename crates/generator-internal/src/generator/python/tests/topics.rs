@@ -439,11 +439,10 @@ fn emit_topic_with_dynamic_object_array() {
 }
 
 /// The generated subscribe splices the slot's runtime binding lookup as
-/// the `from_producers` argument:
-/// `node_runner.bound_producer(<link_id>)` resolves at runtime to
-/// the bound producers' full `(core_node, instance_id)` tuples, so a
-/// bound topic slot only ever receives from producers the launcher bound
-/// to it.
+/// the bound-set argument: `node_runner.bound_producers(<link_id>)`
+/// resolves at runtime to the bound producers' full
+/// `(core_node, instance_id)` tuples, so a bound topic slot only ever
+/// receives from producers the application bound to it.
 #[test]
 fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -454,13 +453,18 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "cam_left"),
+            &crate::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "cam_left",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_contains_all(&rendered, &["node_runner.bound_producer(\"cam_left\"),"]);
+    assert_contains_all(&rendered, &["node_runner.bound_producers(\"cam_left\"),"]);
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -475,7 +479,12 @@ fn consumed_topic() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &crate::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -594,26 +603,39 @@ fn consumed_topic() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Topic metadata and subscribe call: the slot's bound producers are
-    // resolved at runtime via `bound_producer(<link_id>)`.
+    // Topic metadata and subscribe call: the merged subscription covers the
+    // slot's complete bound set (resolved at runtime via
+    // `bound_producers(<link_id>)`) and threads the node's cancellation
+    // token so an empty `zero_or_more` set pends until shutdown.
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
-            "peppylib.TopicMessenger.subscribe(",
-            "topic_name,\n        node_runner.bound_producer(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,",
+            "peppylib.TopicMessenger.subscribe_bound_set(",
+            "topic_name,\n        node_runner.bound_producers(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,\n        node_runner.cancellation_token(),",
         ],
     );
 
-    // next() body: receive (None once closed), deserialize, return.
+    // The uniform module surface: every consumed module exposes
+    // `bound_producers()` returning the slot's ordered set.
     assert_contains_all(
         &rendered,
         &[
-            "raw_message = await self._inner.on_next_message()",
-            "if raw_message is None:",
+            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
+            "return node_runner.bound_producers(\"uvc_camera\")",
+        ],
+    );
+
+    // next() body: the merged subscription yields the (producer, message)
+    // pair pre-tagged by the source that delivered it (None once closed).
+    assert_contains_all(
+        &rendered,
+        &[
+            "item = await self._inner.on_next_message()",
+            "if item is None:",
             "return None",
-            "producer = raw_message.producer",
+            "producer, raw_message = item",
             "message = _deserialize_payload(raw_message.payload)",
             "return producer, message",
         ],
@@ -626,7 +648,7 @@ fn consumed_topic() {
     // subscription the buffer keeps every message between `next` calls.
     assert_eq!(
         rendered
-            .matches("peppylib.TopicMessenger.subscribe(")
+            .matches("peppylib.TopicMessenger.subscribe_bound_set(")
             .count(),
         1,
         "topic must be subscribed once, not per next() call; rendered:\n{rendered}"
@@ -657,7 +679,12 @@ fn consumed_topic_escapes_python_keyword_fields() {
         .add_consumed_topic(
             &topic,
             format,
-            &crate::DependencyContext::native("keyword_source", "v1", "keyword_source"),
+            &crate::DependencyContext::native(
+                "keyword_source",
+                "v1",
+                "keyword_source",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
@@ -689,14 +716,24 @@ fn consumed_two_topics_same_node() {
         .add_consumed_topic(
             &video_topic,
             video_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &crate::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
         .add_consumed_topic(
             &sound_topic,
             sound_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &crate::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -785,7 +822,12 @@ fn no_user_facing_producer_identity_params() {
         .add_consumed_topic(
             &topic,
             topic_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &crate::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
@@ -793,14 +835,24 @@ fn no_user_facing_producer_identity_params() {
             &service,
             &request_format,
             &response_format,
-            &crate::DependencyContext::native("uvc_camera", "v1", "uvc_camera"),
+            &crate::DependencyContext::native(
+                "uvc_camera",
+                "v1",
+                "uvc_camera",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     generator
         .add_consumed_action(
             &action,
             &action_messages,
-            &crate::DependencyContext::native("brain", "v1", "brain"),
+            &crate::DependencyContext::native(
+                "brain",
+                "v1",
+                "brain",
+                config::node::Cardinality::One,
+            ),
         )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
