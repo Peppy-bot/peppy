@@ -10,9 +10,11 @@
 //! peppy before a new knob existed) is completed in place: the missing entries
 //! are appended with their default values and explanatory comments, so the file
 //! on disk always lists every available knob. The user's own values, comments,
-//! and unknown keys are preserved byte-for-byte (see [`completion`]). Each
-//! setting added this way is logged at info level, so the first start after a
-//! peppy upgrade shows exactly which new settings appeared in the file.
+//! and unknown keys are otherwise preserved byte-for-byte (see [`completion`]);
+//! when appending defaults, completion may add a structural separator comma
+//! after the prior final entry. Each setting added this way is logged at info
+//! level, so the first start after a peppy upgrade shows exactly which new
+//! settings appeared in the file.
 //!
 //! Unlike `repositories.json5`, a malformed `peppy_config.json5` fails loud at
 //! startup ([`load_or_create`] returns `Err`) instead of falling back to
