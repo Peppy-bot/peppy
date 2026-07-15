@@ -16,7 +16,7 @@ The daemon reads its settings (`core_node_name`, `mode`, `peer`, `lifecycle`, `f
 You never need to create or migrate this file by hand:
 
 - **First start.** If the file does not exist, the daemon creates it with every setting at its default value, annotated with explanatory comments.
-- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), the daemon appends each missing setting with its default value and comments. Your own values, comments, formatting, and any unrecognized keys are preserved exactly as you wrote them.
+- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), the daemon appends each missing setting with its default value and comments. Your own values, comments, formatting, and any unrecognized keys are preserved exactly as you wrote them. Every setting a peppy release understands is guaranteed to be covered by this mechanism (enforced by tests), so the file is brought up to the running release's full set of settings on the next daemon start, and the daemon logs each setting it added.
 - **Malformed file.** If the file cannot be parsed, or a value is out of range, the daemon refuses to start and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
 
 A setting you delete from the file therefore comes back with its default on the next daemon start. To change a setting, edit its value instead of removing it.

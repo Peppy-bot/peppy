@@ -107,14 +107,28 @@ const SECTIONS: &[SectionSpec] = &[
     },
 ];
 
+/// A completion result: the rewritten file content plus what was spliced in.
+///
+/// `added_paths` names each spliced entry, whole top-level entries first and
+/// then nested fields, both in template order: a bare key for a whole entry
+/// ("federation"), `section.field` for a single nested field
+/// ("lifecycle.shutdown_grace_secs"). It reflects what was actually inserted,
+/// not merely what was absent: a field whose parent block the scanner could
+/// not locate is skipped by the splice and therefore not listed.
+#[derive(Debug)]
+pub(super) struct Completion {
+    pub(super) content: String,
+    pub(super) added_paths: Vec<String>,
+}
+
 /// Returns `content` with every missing known section or field appended from
-/// the bundled template, or `None` when the file already spells out all of them
-/// (or, defensively, when the content cannot be analyzed; the caller treats
-/// both as "leave the file alone").
+/// the bundled template (plus the paths that were appended), or `None` when
+/// the file already spells out all of them (or, defensively, when the content
+/// cannot be analyzed; the caller treats both as "leave the file alone").
 ///
 /// Expects `content` to already have parsed successfully as a `PeppyConfig`;
 /// malformed input simply returns `None` rather than guessing at splice points.
-pub(super) fn complete_config_content(content: &str) -> Option<String> {
+pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
     let doc: Value = serde_json5::from_str(content).ok()?;
     let doc = doc.as_object()?;
 
@@ -153,12 +167,16 @@ pub(super) fn complete_config_content(content: &str) -> Option<String> {
     // output; every comma is therefore pushed after its snippet, so it always
     // ends up immediately behind the existing last entry.
     let mut insertions: Vec<(usize, String)> = Vec::new();
+    // Collected alongside the insertions, not from the classification above,
+    // so a skipped splice (unlocatable block) is never reported as added.
+    let mut added_paths: Vec<String> = Vec::new();
 
     if !missing_sections.is_empty() {
         let mut text = String::new();
         for section in &missing_sections {
             text.push('\n');
             text.push_str(section.snippet);
+            added_paths.push(section.key.to_string());
         }
         insertions.push((layout.root.close, text));
         if let Some(at) = layout.root.trailing_comma_insertion() {
@@ -177,6 +195,7 @@ pub(super) fn complete_config_content(content: &str) -> Option<String> {
         for field in fields {
             text.push('\n');
             text.push_str(field.snippet);
+            added_paths.push(format!("{}.{}", section.key, field.key));
         }
         insertions.push((block.close, text));
         if let Some(at) = block.trailing_comma_insertion() {
@@ -192,7 +211,10 @@ pub(super) fn complete_config_content(content: &str) -> Option<String> {
     for (at, text) in insertions {
         completed.insert_str(at, &text);
     }
-    Some(completed)
+    Some(Completion {
+        content: completed,
+        added_paths,
+    })
 }
 
 /// Whether `completed` is a faithful completion of `original`, parsed as
@@ -470,11 +492,39 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
     })
 }
 
+/// Flattens a serialized config document into dot-separated leaf paths
+/// ("lifecycle.daemon_grace_secs"). Objects recurse; everything else (numbers,
+/// strings, nulls, arrays) is a leaf, matching what completion can splice as a
+/// single value. Test-only: the schema walk behind the struct/table/template
+/// coverage pins here and the end-to-end upgrade test in `peppy_config`.
+#[cfg(test)]
+pub(super) fn leaf_paths(value: &Value) -> Vec<String> {
+    fn walk(value: &Value, prefix: &str, paths: &mut Vec<String>) {
+        match value.as_object() {
+            Some(entries) => {
+                for (key, nested) in entries {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(nested, &path, paths);
+                }
+            }
+            None => paths.push(prefix.to_string()),
+        }
+    }
+    let mut paths = Vec::new();
+    walk(value, "", &mut paths);
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{
         DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PeppyConfig, TEMPLATE_HEADER,
+        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE, PeppyConfig,
+        TEMPLATE_HEADER,
     };
     use super::*;
 
@@ -501,27 +551,120 @@ mod tests {
         assert_eq!(composed, DEFAULT_PEPPY_CONFIG_TEMPLATE);
     }
 
+    /// A `PeppyConfig` field the section table does not cover would ship a
+    /// release whose user files silently never gain the setting; a table entry
+    /// without a struct field would splice a knob the parser ignores. The
+    /// schema is enumerated by serializing `PeppyConfig::default()`, which is
+    /// why every field must serialize under `Default` (no
+    /// `skip_serializing_if`; that invariant is recorded on the struct).
+    #[test]
+    fn section_table_matches_config_struct() {
+        let schema =
+            serde_json::to_value(PeppyConfig::default()).expect("PeppyConfig must serialize");
+        let mut schema_paths = leaf_paths(&schema);
+
+        let mut table_paths: Vec<String> = Vec::new();
+        for section in SECTIONS {
+            if section.fields.is_empty() {
+                table_paths.push(section.key.to_string());
+            } else {
+                for field in section.fields {
+                    table_paths.push(format!("{}.{}", section.key, field.key));
+                }
+            }
+        }
+
+        let missing_from_table: Vec<&String> = schema_paths
+            .iter()
+            .filter(|path| !table_paths.contains(path))
+            .collect();
+        assert!(
+            missing_from_table.is_empty(),
+            "PeppyConfig fields that completion cannot splice into user files: \
+             {missing_from_table:?}. Files written by older releases would never gain \
+             them in {PEPPY_CONFIG_FILE}. For each field: add a snippet const next to \
+             the others in peppy_config.rs, splice it into DEFAULT_PEPPY_CONFIG_TEMPLATE, \
+             and register it in SECTIONS (template_matches_section_table pins the \
+             template side; a field nested deeper than section.field first needs the \
+             two-level FieldSpec model extended)."
+        );
+
+        let stale_table_entries: Vec<&String> = table_paths
+            .iter()
+            .filter(|path| !schema_paths.contains(path))
+            .collect();
+        assert!(
+            stale_table_entries.is_empty(),
+            "SECTIONS entries that are not PeppyConfig fields: {stale_table_entries:?}. \
+             Remove each one together with its template snippet; a renamed or removed \
+             setting is a breaking change handled by fail-loud validation and a runbook, \
+             not by completion."
+        );
+
+        // Sorted equality on top of the set differences above: a duplicate
+        // SECTIONS key would pass both filters yet splice twice.
+        schema_paths.sort();
+        table_paths.sort();
+        assert_eq!(schema_paths, table_paths);
+    }
+
+    /// The template must spell out exactly the struct's settings: a snippet
+    /// carrying a stray key the table never declared would ship unknown keys
+    /// in fresh files, and a field skipped from serialization would desync the
+    /// pins while `section_table_matches_config_struct` still passes.
+    #[test]
+    fn template_matches_config_struct() {
+        let template: Value = serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE)
+            .expect("bundled template must parse");
+        let mut template_paths = leaf_paths(&template);
+        template_paths.sort();
+
+        let schema =
+            serde_json::to_value(PeppyConfig::default()).expect("PeppyConfig must serialize");
+        let mut schema_paths = leaf_paths(&schema);
+        schema_paths.sort();
+
+        assert_eq!(template_paths, schema_paths);
+    }
+
+    /// Pins the payload of the "added settings" log line `load_or_create`
+    /// emits: whole missing entries first, then nested fields, template order.
+    #[test]
+    fn completion_reports_the_paths_it_added() {
+        let completion =
+            complete_config_content(r#"{ mode: "peer", lifecycle: { daemon_grace_secs: 60 } }"#)
+                .expect("sections and a lifecycle field missing");
+        assert_eq!(
+            completion.added_paths,
+            [
+                "core_node_name",
+                "peer",
+                "resource_servers",
+                "federation",
+                "lifecycle.shutdown_grace_secs",
+            ]
+        );
+        // A fully completed file reports nothing to add.
+        assert!(complete_config_content(&completion.content).is_none());
+    }
+
     #[test]
     fn complete_template_needs_no_completion() {
-        assert_eq!(complete_config_content(DEFAULT_PEPPY_CONFIG_TEMPLATE), None);
+        assert!(complete_config_content(DEFAULT_PEPPY_CONFIG_TEMPLATE).is_none());
     }
 
     #[test]
     fn empty_object_gains_every_section() {
-        let completed = complete_config_content("{}").expect("everything is missing");
+        let completed = complete_config_content("{}")
+            .expect("everything is missing")
+            .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
-        for key in [
-            "core_node_name:",
-            "mode:",
-            "peer:",
-            "lifecycle:",
-            "resource_servers:",
-            "federation:",
-        ] {
-            assert!(completed.contains(key), "expected {key} in:\n{completed}");
+        for section in SECTIONS {
+            let key = format!("{}:", section.key);
+            assert!(completed.contains(&key), "expected {key} in:\n{completed}");
         }
         // A completed file needs no further completion.
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
@@ -529,16 +672,18 @@ mod tests {
         // The knob's default is spelled as `null`, not omitted; a file that
         // already carries the null line must not gain a second one.
         let completed = complete_config_content("{ core_node_name: null }")
-            .expect("every other section missing");
+            .expect("every other section missing")
+            .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
         assert_eq!(completed.matches("core_node_name:").count(), 1);
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn missing_trailing_comma_gets_one_before_appending() {
-        let completed =
-            complete_config_content(r#"{ mode: "router" }"#).expect("peer and lifecycle missing");
+        let completed = complete_config_content(r#"{ mode: "router" }"#)
+            .expect("peer and lifecycle missing")
+            .content;
         let config = parse(&completed);
         assert_eq!(config.mode, super::super::Mode::Router);
         assert_eq!(
@@ -551,20 +696,22 @@ mod tests {
     #[test]
     fn partial_peer_block_gains_missing_field() {
         let completed = complete_config_content(r#"{ peer: { standard_buffer_size: 64 } }"#)
-            .expect("high_throughput_buffer_size missing");
+            .expect("high_throughput_buffer_size missing")
+            .content;
         let config = parse(&completed);
         assert_eq!(config.peer.standard_buffer_size, 64);
         assert_eq!(
             config.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn partial_lifecycle_block_gains_field_with_its_comment() {
         let completed = complete_config_content(r#"{ lifecycle: { daemon_grace_secs: 600, } }"#)
-            .expect("shutdown_grace_secs missing");
+            .expect("shutdown_grace_secs missing")
+            .content;
         let config = parse(&completed);
         assert_eq!(config.lifecycle.daemon_grace_secs, 600);
         assert_eq!(
@@ -577,10 +724,11 @@ mod tests {
 
     #[test]
     fn empty_nested_blocks_gain_their_fields() {
-        let completed =
-            complete_config_content("{ peer: {}, lifecycle: {} }").expect("fields missing");
+        let completed = complete_config_content("{ peer: {}, lifecycle: {} }")
+            .expect("fields missing")
+            .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
@@ -594,7 +742,8 @@ mod tests {
 // trailing remark
 "#;
         let completed = complete_config_content(content)
-            .expect("core_node_name, peer, lifecycle, resource_servers, federation missing");
+            .expect("core_node_name, peer, lifecycle, resource_servers, federation missing")
+            .content;
         parse(&completed);
 
         // Pin the exact splice: the missing sections go in front of the root's
@@ -619,7 +768,8 @@ mod tests {
     fn comma_lands_before_a_trailing_comment() {
         // Also covers JSON5 single-quoted strings.
         let completed = complete_config_content("{ mode: 'router' // why router\n}")
-            .expect("peer and lifecycle missing");
+            .expect("peer and lifecycle missing")
+            .content;
         let config = parse(&completed);
         assert_eq!(config.mode, super::super::Mode::Router);
         // The separating comma goes right after the value, not after the
@@ -637,7 +787,9 @@ mod tests {
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {
         let content = "{\npeer: { standard_buffer_size: 1 // X\r },\njunk: // Y\r {\nb: 2 },\nmode: \"router\"\n}\n";
-        let completed = complete_config_content(content).expect("fields missing");
+        let completed = complete_config_content(content)
+            .expect("fields missing")
+            .content;
         let config = parse(&completed);
         assert_eq!(config.peer.standard_buffer_size, 1);
         assert_eq!(
@@ -654,22 +806,26 @@ mod tests {
             "spliced into junk:\n{completed}"
         );
         assert!(verify_completion(content, &completed, &config));
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn u2028_terminates_line_comments_like_serde() {
         let content = "{ mode: \"peer\" // note\u{2028}}";
-        let completed = complete_config_content(content).expect("peer and lifecycle missing");
+        let completed = complete_config_content(content)
+            .expect("peer and lifecycle missing")
+            .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn verify_completion_rejects_unfaithful_results() {
         let original = r#"{ note: "keep me" }"#;
         let config: PeppyConfig = serde_json5::from_str(original).unwrap();
-        let completed = complete_config_content(original).expect("everything missing");
+        let completed = complete_config_content(original)
+            .expect("everything missing")
+            .content;
         assert!(verify_completion(original, &completed, &config));
 
         // Still missing knobs: would splice again on every start.
@@ -690,7 +846,8 @@ mod tests {
     #[test]
     fn quoted_keys_are_recognized() {
         let completed = complete_config_content(r#"{ "lifecycle": { "daemon_grace_secs": 60 } }"#)
-            .expect("shutdown_grace_secs missing");
+            .expect("shutdown_grace_secs missing")
+            .content;
         let config = parse(&completed);
         assert_eq!(config.lifecycle.daemon_grace_secs, 60);
         assert_eq!(
@@ -705,23 +862,26 @@ mod tests {
     fn adjacent_closing_braces_get_comma_between_entries() {
         // Worst-case offsets: the block close, the root's comma insertion, and
         // the root's section insertion all touch neighboring bytes.
-        let completed = complete_config_content("{peer:{}}").expect("everything else missing");
+        let completed = complete_config_content("{peer:{}}")
+            .expect("everything else missing")
+            .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
-        assert_eq!(complete_config_content(&completed), None);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn arrays_in_unknown_keys_do_not_confuse_the_scanner() {
         let completed = complete_config_content(r#"{ tags: ["a", "b", { x: 1 }], mode: "peer" }"#)
-            .expect("peer and lifecycle missing");
+            .expect("peer and lifecycle missing")
+            .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
         assert!(completed.contains(r#"tags: ["a", "b", { x: 1 }]"#));
     }
 
     #[test]
     fn malformed_content_is_left_alone() {
-        assert_eq!(complete_config_content("{ mode: "), None);
-        assert_eq!(complete_config_content(""), None);
-        assert_eq!(complete_config_content("[1, 2]"), None);
+        assert!(complete_config_content("{ mode: ").is_none());
+        assert!(complete_config_content("").is_none());
+        assert!(complete_config_content("[1, 2]").is_none());
     }
 }
