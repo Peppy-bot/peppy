@@ -88,8 +88,9 @@ impl AppContext {
         }
     }
 
-    async fn connect_with_port(
+    async fn connect_with_endpoint(
         &self,
+        messaging_host: &str,
         messaging_port: u16,
         organization_namespace: &str,
     ) -> crate::error::Result<()> {
@@ -100,7 +101,7 @@ impl AppContext {
         let namespace = config::org::resolve_session_namespace(Some(organization_namespace));
         self.messenger_handle
             .get_or_try_init(|| async {
-                MessengerHandle::connect(config::consts::DEFAULT_MESSAGING_HOST, messaging_port)
+                MessengerHandle::connect(messaging_host, messaging_port)
                     .scope(SessionScope::Namespace(namespace))
                     .await
             })
@@ -140,7 +141,8 @@ pub(crate) struct DaemonConnection<'a> {
 impl AppContext {
     pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
         let daemon_state = self.read_daemon_state()?;
-        self.connect_with_port(
+        self.connect_with_endpoint(
+            &daemon_state.messaging_host,
             daemon_state.messaging_port,
             &daemon_state.organization_namespace,
         )
@@ -186,6 +188,7 @@ mod tests {
         let state_path = dir.join("daemon_state.json5");
         let state = DaemonState::new(
             "local-daemon",
+            config::consts::DEFAULT_MESSAGING_HOST,
             0,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,

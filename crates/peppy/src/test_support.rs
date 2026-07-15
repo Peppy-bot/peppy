@@ -228,6 +228,7 @@ impl ServeCommandEmulation {
 
         let daemon_state = DaemonState::new(
             &core_node_name,
+            config::consts::DEFAULT_MESSAGING_HOST,
             port,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,

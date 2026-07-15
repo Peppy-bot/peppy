@@ -24,7 +24,7 @@ use super::{
     FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET, MODE_SECTION_SNIPPET,
     PEER_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
-    STANDARD_BUFFER_FIELD_SNIPPET, ZENOHD_PATH_FIELD_SNIPPET, ZENOHD_SECTION_SNIPPET,
+    STANDARD_BUFFER_FIELD_SNIPPET, ZENOHD_MODE_FIELD_SNIPPET, ZENOHD_SECTION_SNIPPET,
 };
 
 /// A nested field of a top-level section, with the template snippet to splice
@@ -109,8 +109,8 @@ const SECTIONS: &[SectionSpec] = &[
         key: "zenohd",
         snippet: ZENOHD_SECTION_SNIPPET,
         fields: &[FieldSpec {
-            key: "path",
-            snippet: ZENOHD_PATH_FIELD_SNIPPET,
+            key: "mode",
+            snippet: ZENOHD_MODE_FIELD_SNIPPET,
         }],
     },
 ];
@@ -559,12 +559,11 @@ mod tests {
         assert_eq!(composed, DEFAULT_PEPPY_CONFIG_TEMPLATE);
     }
 
-    /// A `PeppyConfig` field the section table does not cover would ship a
-    /// release whose user files silently never gain the setting; a table entry
-    /// without a struct field would splice a knob the parser ignores. The
-    /// schema is enumerated by serializing `PeppyConfig::default()`, which is
-    /// why every field must serialize under `Default` (no
-    /// `skip_serializing_if`; that invariant is recorded on the struct).
+    /// A defaulted `PeppyConfig` field the section table does not cover would
+    /// ship a release whose user files silently never gain the setting; a table
+    /// entry without a default field would splice a knob the parser ignores.
+    /// The default schema is enumerated by serializing `PeppyConfig::default()`
+    /// (variant-specific required fields are pinned separately below).
     #[test]
     fn section_table_matches_config_struct() {
         let schema =
@@ -633,6 +632,25 @@ mod tests {
         schema_paths.sort();
 
         assert_eq!(template_paths, schema_paths);
+    }
+
+    /// `zenohd.endpoint` is required only by the non-default external variant,
+    /// so it must not appear in the managed template or be invented by config
+    /// completion. Pin that exceptional schema surface explicitly instead of
+    /// weakening the default-schema coverage tests above.
+    #[test]
+    fn external_zenohd_variant_schema_is_pinned() {
+        let external = serde_json::to_value(super::super::ZenohdConfig::External {
+            endpoint: "tcp/router.internal:7448".to_string(),
+        })
+        .expect("external zenohd config must serialize");
+        assert_eq!(
+            external,
+            serde_json::json!({
+                "mode": "external",
+                "endpoint": "tcp/router.internal:7448",
+            })
+        );
     }
 
     /// Pins the payload of the "added settings" log line `load_or_create`

@@ -27,6 +27,7 @@ use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::net::IpAddr;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -57,6 +58,22 @@ fn drain_quiet_window(is_container: bool) -> Duration {
     } else {
         PROCESS_DRAIN_QUIET_WINDOW
     }
+}
+
+/// Whether a router dial host names this machine. A Lima container must replace
+/// such a host with the VM's host gateway; a genuinely remote external-router
+/// host must be kept verbatim so the container dials that router directly.
+fn is_host_local_router(host: &str) -> bool {
+    let host = host.trim();
+    let ip_host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("localhost.")
+        || ip_host
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
 /// Defaults the peppy daemon resolves from its `peppy_config` and ships to
@@ -820,11 +837,12 @@ async fn process_node_run(
     // namespace, which `host_gateway()` reports:
     //
     //  - Lima (macOS): `Some(gateway)`: the container runs in a VM, a separate
-    //    namespace. It reaches the host router only through the Lima gateway,
-    //    and a loopback peer locator advertised inside the guest is unreachable
-    //    from the host (and vice versa), so it cannot form direct peer links.
-    //    Route it through the router as a client (gossip forced off) and rewrite
-    //    `messaging_host` to the gateway, regardless of the daemon's mode.
+    //    namespace. It reaches a router on the macOS host only through the Lima
+    //    gateway, and a loopback peer locator advertised inside the guest is
+    //    unreachable from the host (and vice versa), so it cannot form direct
+    //    peer links. Route it through the router as a client (gossip forced off).
+    //    A host-local router address is rewritten to the gateway; an external
+    //    router on another host stays unchanged.
     //  - Native (Linux): `None`: Apptainer shares the host network namespace,
     //    so `127.0.0.1` already reaches the host router and the node follows the
     //    daemon's messaging mode exactly like a process node.
@@ -859,7 +877,9 @@ async fn process_node_run(
         ctx.action.daemon_defaults,
         container_gateway.is_some(),
     );
-    if let Some(gateway) = &container_gateway {
+    if let Some(gateway) = &container_gateway
+        && is_host_local_router(&launch_config.messaging_host)
+    {
         launch_config.messaging_host = gateway.to_string();
     }
 
@@ -1775,6 +1795,37 @@ mod tests {
             "core_node",
         )
         .expect("valid test runtime config")
+    }
+
+    #[test]
+    fn host_local_router_detection_covers_loopback_and_wildcards() {
+        for host in [
+            "localhost",
+            "LOCALHOST.",
+            "127.0.0.1",
+            "0.0.0.0",
+            "::1",
+            "[::1]",
+            "::",
+            "[::]",
+        ] {
+            assert!(is_host_local_router(host), "expected {host} to be local");
+        }
+    }
+
+    #[test]
+    fn host_local_router_detection_preserves_remote_endpoints() {
+        for host in [
+            "router.internal",
+            "192.0.2.10",
+            "2001:db8::10",
+            "[2001:db8::10]",
+        ] {
+            assert!(
+                !is_host_local_router(host),
+                "expected {host} to remain a remote endpoint"
+            );
+        }
     }
 
     /// `DaemonDefaults` with the given mode/buffers and arbitrary

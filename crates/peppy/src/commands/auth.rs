@@ -26,7 +26,7 @@ use daemon::state::DaemonState;
 /// Shown when the daemon's router is operator-managed, so the CLI does not
 /// auto-manage federation. Used by both login and logout reporting.
 const PINNED_NOTE: &str = "Note: this daemon's router is operator-managed (ZENOH_CONFIG pin or \
-     an adopted zenohd.path router); federation is not auto-managed.";
+     an adopted external endpoint); federation is not auto-managed.";
 
 /// Re-poke cadence and overall deadline while waiting for the daemon to restart
 /// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)

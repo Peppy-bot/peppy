@@ -134,7 +134,7 @@ pub(crate) enum FederationOutcome {
     /// link to the upstream was also verified to validate.
     Applied(Option<String>),
     /// The router is operator-managed, either by a pinned `ZENOH_CONFIG` or an
-    /// adopted `zenohd.path` router; nothing changed.
+    /// adopted external endpoint; nothing changed.
     Pinned,
     /// The resolve or apply failed; the periodic loop will keep retrying.
     Failed(String),
@@ -319,7 +319,7 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, probe_gate: &Option<watch::
 /// identical repeat (the same desired upstream) is answered from the fast path
 /// without re-applying. Richer than the bare endpoint string: it also remembers
 /// whether the router is *operator-managed* (through a `ZENOH_CONFIG` pin or an
-/// adopted `zenohd.path` router, so we did not actually apply the upstream).
+/// adopted external endpoint, so we did not actually apply the upstream).
 /// Without the `pinned` bit a repeat of such a target would match on endpoint
 /// alone and be misreported as [`FederationOutcome::Applied`] instead of
 /// [`FederationOutcome::Pinned`].
@@ -574,7 +574,7 @@ async fn poll_and_apply(
                 // federation is not being auto-managed.
                 warn!(
                     "router federation: the router is operator-managed (ZENOH_CONFIG pin or \
-                     adopted zenohd.path router); the desired federation change was not applied"
+                     adopted external endpoint); the desired federation change was not applied"
                 );
                 *applied = AppliedState {
                     endpoint: desired,

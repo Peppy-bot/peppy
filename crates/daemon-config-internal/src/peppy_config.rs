@@ -33,8 +33,10 @@ use config::peppy_config::{
     DEFAULT_STANDARD_BUFFER_SIZE, PeerConfig,
 };
 use config::runtime::Name;
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
@@ -101,8 +103,8 @@ pub const MAX_CORE_NODE_NAME_LEN: usize = 63;
 // the serde `Default` impls the parser falls back to when an entry is absent.
 
 /// Comment block at the top of the bundled config file.
-const TEMPLATE_HEADER: &str = r#"// Read once when the peppy daemon starts, so any edit below (mode or buffer
-// sizes) takes effect only after you restart the daemon.
+const TEMPLATE_HEADER: &str = r#"// Read once when the peppy daemon starts, so edits below take effect only after
+// you restart the daemon.
 "#;
 
 /// The `core_node_name` entry with its explanatory comment. Spelled out as an
@@ -233,20 +235,16 @@ const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
-/// The `zenohd.path` entry with its comment, indented for the `zenohd` block.
-/// The explicit `null` makes completion idempotent while documenting the
-/// managed-router default.
-const ZENOHD_PATH_FIELD_SNIPPET: &str = r#"    // Absolute path or `~/...` to a zenohd binary you run yourself, or null to
-    // let peppy start and manage its bundled zenohd. When set, peppy never
-    // starts any zenoh router: the daemon requires yours to already be serving
-    // the messaging port and adopts it. It is left running on daemon exit and
-    // never restarted by peppy.
-    path: null,
+/// The `zenohd.mode` entry with its comment, indented for the `zenohd` block.
+const ZENOHD_MODE_FIELD_SNIPPET: &str = r#"    // "managed": peppy starts, monitors, and stops its bundled zenohd.
+    // "external": peppy connects to a router you run at `endpoint` and never
+    //             starts, reconfigures, restarts, or stops it.
+    mode: "managed",
 "#;
 
 /// The whole `zenohd` block.
 const ZENOHD_SECTION_SNIPPET: &str =
-    const_format::concatcp!("  zenohd: {\n", ZENOHD_PATH_FIELD_SNIPPET, "  },\n");
+    const_format::concatcp!("  zenohd: {\n", ZENOHD_MODE_FIELD_SNIPPET, "  },\n");
 
 /// The full bundled default config, composed from the snippets above.
 const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
@@ -363,61 +361,210 @@ impl Default for FederationConfig {
     }
 }
 
-/// Configuration for adopting a zenoh router that the operator runs.
-///
-/// `path` selects external-router mode and is used only for startup guidance;
-/// peppy never executes the configured binary. [`resolved_path`](Self::resolved_path)
-/// therefore parses the supported path forms without checking the filesystem.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ZenohdConfig {
-    pub path: Option<String>,
+/// Whether peppy owns the local zenoh router or connects to one the operator
+/// owns. The internally tagged variants make ownership explicit and ensure an
+/// external router carries the network address peppy must dial.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ZenohdConfig {
+    /// Peppy starts, monitors, restarts, and stops its bundled zenohd.
+    #[default]
+    Managed,
+    /// Peppy adopts a responsive router at `endpoint` without managing its
+    /// process or configuration.
+    External { endpoint: String },
+}
+
+impl<'de> Deserialize<'de> for ZenohdConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize the tagged shape manually so invalid combinations fail
+        // loud while future, unknown fields retain the config document's usual
+        // forward-compatible behavior. In particular, `endpoint` beside
+        // `managed` and the branch's former `path` sentinel are not ignored.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Ownership {
+            Managed,
+            External,
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            mode: Option<Ownership>,
+            #[serde(flatten)]
+            fields: HashMap<String, serde_json::Value>,
+        }
+
+        let mut wire = Wire::deserialize(deserializer)?;
+        if wire.fields.contains_key("path") {
+            return Err(serde::de::Error::custom(
+                "zenohd.path is unsupported; use mode and endpoint",
+            ));
+        }
+
+        match wire.mode.unwrap_or(Ownership::Managed) {
+            Ownership::Managed => {
+                if wire.fields.contains_key("endpoint") {
+                    return Err(serde::de::Error::custom(
+                        "zenohd.endpoint is only valid in external mode",
+                    ));
+                }
+                Ok(Self::Managed)
+            }
+            Ownership::External => match wire.fields.remove("endpoint") {
+                Some(serde_json::Value::String(endpoint)) => Ok(Self::External { endpoint }),
+                Some(_) => Err(serde::de::Error::custom("zenohd.endpoint must be a string")),
+                None => Err(serde::de::Error::custom(
+                    "zenohd.endpoint is required in external mode",
+                )),
+            },
+        }
+    }
 }
 
 impl ZenohdConfig {
-    /// Resolves the configured path's supported syntax without checking whether
-    /// the path exists or is executable. The value gates external-router mode
-    /// and is shown in startup error hints; peppy never runs it.
-    pub fn resolved_path(&self) -> std::result::Result<Option<PathBuf>, String> {
-        let Some(path) = self.path.as_deref() else {
-            return Ok(None);
-        };
-        let path = path.trim();
-        if path.is_empty() {
-            return Err("must not be empty; use null".to_string());
+    /// The full Zenoh locator peppy should dial when the router is externally
+    /// managed, or `None` when peppy should manage its own router.
+    pub fn external_endpoint(&self) -> Option<&str> {
+        match self {
+            Self::Managed => None,
+            Self::External { endpoint } => Some(endpoint),
         }
-
-        if path == "~" {
-            return dirs::home_dir().map(Some).ok_or_else(|| {
-                "cannot resolve ~ because the home directory is unavailable".into()
-            });
-        }
-        if let Some(path_from_home) = path.strip_prefix("~/") {
-            let home = dirs::home_dir().ok_or_else(|| {
-                "cannot resolve ~/ because the home directory is unavailable".to_string()
-            })?;
-            return Ok(Some(home.join(path_from_home)));
-        }
-        if path.starts_with('~') {
-            return Err("~user paths are not supported; use an absolute path or ~/...".to_string());
-        }
-
-        let path = PathBuf::from(path);
-        if !path.is_absolute() {
-            return Err("must be absolute or start with ~/".to_string());
-        }
-        Ok(Some(path))
     }
+
+    fn validate(&self) -> std::result::Result<(), String> {
+        let Some(endpoint) = self.external_endpoint() else {
+            return Ok(());
+        };
+        validate_tcp_dial_endpoint(endpoint)
+    }
+}
+
+/// Validates the deliberately narrow locator surface supported for an external
+/// router. Peppy currently transports its daemon and node sessions over TCP, so
+/// accepting another Zenoh protocol here would create a config the rest of the
+/// stack cannot honor. This is syntax-only: hostnames are not resolved while
+/// loading the config.
+fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String> {
+    if endpoint.is_empty() {
+        return Err("must not be empty".to_string());
+    }
+    if endpoint.trim() != endpoint {
+        return Err("must not contain leading or trailing whitespace".to_string());
+    }
+
+    let Some(address) = endpoint.strip_prefix("tcp/") else {
+        return Err("must use the tcp/<host>:<port> locator form".to_string());
+    };
+    if address.contains(['?', '#']) {
+        return Err("metadata and endpoint configuration are not supported".to_string());
+    }
+
+    let (host, port, bracketed) = split_tcp_host_port(address)?;
+    validate_dial_host(host, bracketed)?;
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("port must be an integer from 1 through 65535".to_string());
+    }
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| "port must be an integer from 1 through 65535".to_string())?;
+    if port == 0 {
+        return Err("port must be an integer from 1 through 65535".to_string());
+    }
+    Ok(())
+}
+
+fn split_tcp_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
+    if let Some(bracketed) = address.strip_prefix('[') {
+        let Some(close) = bracketed.find(']') else {
+            return Err("IPv6 addresses must be enclosed in matching brackets".to_string());
+        };
+        let host = &bracketed[..close];
+        let suffix = &bracketed[close + 1..];
+        let Some(port) = suffix.strip_prefix(':') else {
+            return Err("must include a port after the host".to_string());
+        };
+        if port.contains(':') {
+            return Err("must contain exactly one port".to_string());
+        }
+        return Ok((host, port, true));
+    }
+
+    let Some((host, port)) = address.rsplit_once(':') else {
+        return Err("must include a host and port".to_string());
+    };
+    if host.contains(':') {
+        return Err("IPv6 addresses must be enclosed in brackets".to_string());
+    }
+    Ok((host, port, false))
+}
+
+fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
+    if host.is_empty() {
+        return Err("host must not be empty".to_string());
+    }
+
+    if bracketed {
+        let address = host
+            .parse::<Ipv6Addr>()
+            .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
+        return if address.is_unspecified() {
+            Err(
+                "host must be dialable; the wildcard address [::] is only valid for listening"
+                    .to_string(),
+            )
+        } else {
+            Ok(())
+        };
+    }
+
+    if let Ok(address) = host.parse::<Ipv4Addr>() {
+        return if address.is_unspecified() {
+            Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string())
+        } else {
+            Ok(())
+        };
+    }
+    if host
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err("host is not a valid IPv4 address".to_string());
+    }
+    if host == "*" {
+        return Err("host must be dialable; * is only valid for listening".to_string());
+    }
+    let hostname = host.strip_suffix('.').unwrap_or(host);
+    if host.len() > 253
+        || hostname.ends_with('.')
+        || hostname.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err("host must be a valid hostname or IP address".to_string());
+    }
+    Ok(())
 }
 
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
 ///
-/// Every field must also SERIALIZE under `Default` (no `skip_serializing_if`):
-/// the schema-coverage pin in [`completion`] enumerates the settings by
-/// serializing this struct's default value, and a field it cannot see would
-/// escape the guarantee that older files gain every new setting on upgrade.
+/// Every DEFAULTED field must also serialize under `Default` (no
+/// `skip_serializing_if`): the schema-coverage pin in [`completion`] enumerates
+/// those settings by serializing this struct's default value, and a field it
+/// cannot see would escape the guarantee that older files gain every new
+/// default on upgrade. Required fields that exist only in a non-default tagged
+/// variant (currently `zenohd.endpoint`) are pinned separately and deliberately
+/// are not invented by completion.
 ///
 /// Not `Copy`: `resource_servers` owns heap strings. The daemon reads this once
 /// and moves it into the core node, and the CLI clones it field-by-field, so the
@@ -503,9 +650,9 @@ impl PeppyConfig {
                 "invalid federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
             ))));
         }
-        self.zenohd.resolved_path().map_err(|message| {
+        self.zenohd.validate().map_err(|message| {
             Error::Parsing(ParsingError::CannotParseConfig(format!(
-                "{PEPPY_CONFIG_FILE}: invalid zenohd.path: {message}"
+                "{PEPPY_CONFIG_FILE}: invalid zenohd.endpoint: {message}"
             )))
         })?;
         Ok(())
@@ -618,6 +765,7 @@ fn write_config_file(path: &Path, content: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     /// Writes `content` as the config file in a fresh `~/.peppy`-style tempdir.
@@ -655,8 +803,8 @@ mod tests {
             cfg.federation.connect_timeout_secs,
             DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
         );
-        assert_eq!(cfg.zenohd.path, None);
-        assert_eq!(cfg.zenohd.resolved_path().unwrap(), None);
+        assert_eq!(cfg.zenohd, ZenohdConfig::Managed);
+        assert_eq!(cfg.zenohd.external_endpoint(), None);
     }
 
     #[test]
@@ -688,84 +836,162 @@ mod tests {
 
     #[test]
     fn zenohd_section_defaults_and_completes() {
-        // An older file gains the explicit null default, and loading the
+        // An older file gains the explicit managed default, and loading the
         // completed file again leaves it byte-for-byte unchanged.
         let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.zenohd.path, None);
+        assert_eq!(cfg.zenohd, ZenohdConfig::Managed);
         let completed = std::fs::read_to_string(&path).unwrap();
         assert!(completed.contains("zenohd: {"));
-        assert!(completed.contains("path: null,"));
+        assert!(completed.contains("mode: \"managed\","));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
 
-        // An explicit path is honored without checking whether it exists.
-        let configured_path = "/does/not/need/to/exist/zenohd";
-        let (_tmp, peppy_dirs, _) =
-            dirs_with_config(&format!(r#"{{ zenohd: {{ path: "{configured_path}" }} }}"#));
+        // A present but empty section receives the missing defaulted field,
+        // just like a wholly absent section.
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ zenohd: {} }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.zenohd.path.as_deref(), Some(configured_path));
-        assert_eq!(
-            cfg.zenohd.resolved_path().unwrap(),
-            Some(PathBuf::from(configured_path))
-        );
-    }
-
-    #[test]
-    fn empty_zenohd_path_fails_loud_and_leaves_file_untouched() {
-        let content = r#"{ zenohd: { path: "   " } }"#;
-        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert_eq!(cfg.zenohd, ZenohdConfig::Managed);
         assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                if message.contains(PEPPY_CONFIG_FILE)
-                    && message.contains("zenohd.path")
-                    && message.contains("must not be empty; use null")),
-            "expected an empty zenohd.path error, got: {err:?}"
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("mode: \"managed\",")
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+        // External mode carries the exact dial endpoint downstream.
+        let endpoint = "tcp/router.internal:7448";
+        let (_tmp, peppy_dirs, _) = dirs_with_config(&format!(
+            r#"{{ zenohd: {{ mode: "external", endpoint: "{endpoint}" }} }}"#
+        ));
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(
+            cfg.zenohd,
+            ZenohdConfig::External {
+                endpoint: endpoint.to_string()
+            }
+        );
+        assert_eq!(cfg.zenohd.external_endpoint(), Some(endpoint));
     }
 
     #[test]
-    fn unsupported_zenohd_paths_fail_loud_and_leave_files_untouched() {
-        for (configured_path, expected_message) in [
-            ("relative/zenohd", "must be absolute or start with ~/"),
+    fn external_zenohd_accepts_tcp_dial_locators() {
+        for endpoint in [
+            "tcp/127.0.0.1:7448",
+            "tcp/localhost:1",
+            "tcp/router-1.internal.example:7448",
+            "tcp/[::1]:65535",
+            "tcp/[2001:db8::1]:7448",
+        ] {
+            let content =
+                format!(r#"{{ zenohd: {{ mode: "external", endpoint: "{endpoint}" }} }}"#);
+            let (_tmp, peppy_dirs, _) = dirs_with_config(&content);
+            let config = load_or_create(&peppy_dirs).unwrap();
+            assert_eq!(config.zenohd.external_endpoint(), Some(endpoint));
+        }
+    }
+
+    #[test]
+    fn invalid_external_zenohd_endpoints_fail_loud_and_leave_files_untouched() {
+        for (endpoint, expected_message) in [
+            ("", "must not be empty"),
             (
-                "~operator/bin/zenohd",
-                "~user paths are not supported; use an absolute path or ~/...",
+                " tcp/127.0.0.1:7448",
+                "must not contain leading or trailing whitespace",
+            ),
+            (
+                "tcp/127.0.0.1:7448 ",
+                "must not contain leading or trailing whitespace",
+            ),
+            ("udp/127.0.0.1:7448", "tcp/<host>:<port>"),
+            ("127.0.0.1:7448", "tcp/<host>:<port>"),
+            ("tcp/127.0.0.1", "must include a host and port"),
+            ("tcp/:7448", "host must not be empty"),
+            ("tcp/127.0.0.1:", "port must be an integer"),
+            ("tcp/127.0.0.1:+1", "port must be an integer"),
+            ("tcp/127.0.0.1:0", "port must be an integer"),
+            ("tcp/127.0.0.1:65536", "port must be an integer"),
+            ("tcp/0.0.0.0:7448", "0.0.0.0 is only valid for listening"),
+            ("tcp/*:7448", "* is only valid for listening"),
+            ("tcp/[::]:7448", "[::] is only valid for listening"),
+            (
+                "tcp/::1:7448",
+                "IPv6 addresses must be enclosed in brackets",
+            ),
+            ("tcp/[::1]7448", "must include a port after the host"),
+            ("tcp/[not-ip]:7448", "must be a valid IPv6 address"),
+            ("tcp/999.0.0.1:7448", "not a valid IPv4 address"),
+            (
+                "tcp/bad_host:7448",
+                "must be a valid hostname or IP address",
+            ),
+            (
+                "tcp/router.example..:7448",
+                "must be a valid hostname or IP address",
+            ),
+            (
+                "tcp/127.0.0.1:7448?prio=1",
+                "metadata and endpoint configuration are not supported",
             ),
         ] {
-            let content = format!(r#"{{ zenohd: {{ path: "{configured_path}" }} }}"#);
+            let content =
+                format!(r#"{{ zenohd: {{ mode: "external", endpoint: "{endpoint}" }} }}"#);
             let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
 
             let err = load_or_create(&peppy_dirs).unwrap_err();
             assert!(
                 matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
                     if message.contains(PEPPY_CONFIG_FILE)
-                        && message.contains("zenohd.path")
+                        && message.contains("zenohd.endpoint")
                         && message.contains(expected_message)),
-                "expected a zenohd.path form error for {configured_path}, got: {err:?}"
+                "expected a zenohd endpoint error for {endpoint:?}, got: {err:?}"
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
     }
 
     #[test]
-    fn zenohd_tilde_path_resolves_under_home() {
-        let home = dirs::home_dir().expect("test process must have a home directory");
-        let config = ZenohdConfig {
-            path: Some("~/debug/bin/zenohd".to_string()),
-        };
-        assert_eq!(
-            config.resolved_path().unwrap(),
-            Some(home.join("debug/bin/zenohd"))
+    fn invalid_zenohd_shapes_fail_loud_and_leave_files_untouched() {
+        let legacy = r#"{ zenohd: { path: "/opt/zenohd" } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(legacy);
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                if message.contains("zenohd.path is unsupported; use mode and endpoint")),
+            "expected an actionable legacy zenohd.path error, got: {err:?}"
         );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), legacy);
 
-        let home_config = ZenohdConfig {
-            path: Some("~".to_string()),
-        };
-        assert_eq!(home_config.resolved_path().unwrap(), Some(home));
+        for content in [
+            r#"{ zenohd: { mode: "managed", path: null } }"#,
+            r#"{ zenohd: { mode: "managed", endpoint: "tcp/127.0.0.1:7448" } }"#,
+            r#"{ zenohd: { mode: "external" } }"#,
+            r#"{ zenohd: { mode: "something_else" } }"#,
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(PEPPY_CONFIG_FILE)),
+                "expected a zenohd shape error for {content}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn zenohd_unknown_fields_remain_forward_compatible() {
+        let content = r#"{
+  zenohd: {
+    future_router_option: { enabled: true },
+  },
+}"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+        let config = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(config.zenohd, ZenohdConfig::Managed);
+
+        let completed = std::fs::read_to_string(path).unwrap();
+        assert!(completed.contains("future_router_option: { enabled: true }"));
+        assert!(completed.contains("mode: \"managed\","));
     }
 
     #[test]
@@ -1061,8 +1287,8 @@ mod tests {
             federation: FederationConfig {
                 connect_timeout_secs: 45,
             },
-            zenohd: ZenohdConfig {
-                path: Some("/opt/debug/zenohd".to_string()),
+            zenohd: ZenohdConfig::External {
+                endpoint: "tcp/router.internal:7448".to_string(),
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();

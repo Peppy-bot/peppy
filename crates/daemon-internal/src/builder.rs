@@ -125,17 +125,13 @@ impl ServeCommandBuilder {
                 // daemon-global config read at startup.
                 let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.peer);
 
-                // The local router always starts STANDALONE here. Federating it to
-                // the caller's per-user cloud router (so messages cross both routers
-                // as one network; only the inter-router hop is TLS, local nodes stay
-                // plaintext loopback) needs a backend round-trip, done *off* this
-                // synchronous startup path by the `RouterFederation` task (registered
-                // in `build`), which applies the initial federation as soon as the
-                // router is up and re-applies it live on login/logout. Resolving it
-                // here instead would block daemon startup on a slow/unreachable
-                // backend (the config pull's timeout). `resolve_api_url` is a local
-                // config/env lookup (no I/O), so it's safe to keep on this path; a
-                // `Some` url arms the federation task.
+                // A managed local router starts STANDALONE here. Federating it to
+                // the caller's per-user cloud router needs a backend round-trip,
+                // done off this synchronous startup path by `RouterFederation`.
+                // An external router is operator-owned, so that task observes it
+                // as pinned and never rewrites or restarts it. `resolve_api_url` is
+                // a local config/env lookup (no I/O), so it is safe here; a `Some`
+                // URL arms the federation task for either ownership mode.
                 let api_url =
                     auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers).ok();
                 self.federation_api_url = api_url;
@@ -156,24 +152,23 @@ impl ServeCommandBuilder {
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
-                let external_zenohd = self.peppy_config.zenohd.resolved_path().map_err(|msg| {
-                    Error::ExecutionFailed(format!(
-                        "invalid zenohd.path in peppy_config.json5: {msg}"
-                    ))
-                })?;
-
-                let adapter = ZenohAdapter::with_router(
-                    ZenohNetProtocol::Tcp,
-                    "0.0.0.0",
-                    listening_port,
-                    self.peppy_config.mode.gossip(),
-                    buffer_sizes,
-                    // Standalone: local nodes reach this router over plaintext
-                    // loopback TCP. The federation task adds the TLS upstream later.
-                    Vec::new(),
-                    None,
-                    external_zenohd,
-                )?
+                let gossip = self.peppy_config.mode.gossip();
+                let adapter = match self.peppy_config.zenohd.external_endpoint() {
+                    Some(endpoint) => {
+                        ZenohAdapter::with_external_router(endpoint, gossip, buffer_sizes)?
+                    }
+                    None => ZenohAdapter::with_router(
+                        ZenohNetProtocol::Tcp,
+                        "0.0.0.0",
+                        listening_port,
+                        gossip,
+                        buffer_sizes,
+                        // Standalone: local nodes reach this router over plaintext
+                        // loopback TCP. The federation task adds TLS upstream later.
+                        Vec::new(),
+                        None,
+                    )?,
+                }
                 .with_session_reconnect()
                 .with_namespace(Some(namespace));
                 MessengerAdapter::Zenoh(adapter)
@@ -283,13 +278,16 @@ impl ServeCommandBuilder {
                 // socket binds (below), so a CLI control session that reads it
                 // never sees a half-set generation.
                 let core_node_name = core_node.node_name().to_string();
-                let daemon_state = DaemonState::new(
-                    &core_node_name,
-                    messenger.blocking_lock().messaging_port(),
-                    &self.git_hash,
-                    shutdown_grace_secs,
-                    &self.organization_namespace,
-                );
+                let daemon_state = {
+                    let messenger = messenger.blocking_lock();
+                    daemon_state_for_messenger(
+                        &messenger,
+                        &core_node_name,
+                        &self.git_hash,
+                        shutdown_grace_secs,
+                        &self.organization_namespace,
+                    )
+                };
                 let state_path = daemon_state.write().map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
                 })?;
@@ -393,6 +391,37 @@ impl ServeCommandBuilder {
     }
 }
 
+/// Builds the state-file payload from the messenger endpoint selected by the
+/// builder. Keeping endpoint extraction and [`DaemonState::new`] together makes
+/// the full locator (including an operator-configured host and port) the single
+/// source used by [`ServeCommandBuilder::build`]. Mock backends retain the
+/// historical loopback-host fallback.
+fn daemon_state_for_messenger(
+    messenger: &Messenger,
+    core_node_name: &str,
+    git_hash: &str,
+    shutdown_grace_secs: u64,
+    organization_namespace: &str,
+) -> DaemonState {
+    let (messaging_host, messaging_port) = messenger
+        .messaging_locator()
+        .map(|endpoint| (endpoint.host().to_string(), endpoint.port()))
+        .unwrap_or_else(|| {
+            (
+                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+                messenger.messaging_port(),
+            )
+        });
+    DaemonState::new(
+        core_node_name,
+        messaging_host,
+        messaging_port,
+        git_hash,
+        shutdown_grace_secs,
+        organization_namespace,
+    )
+}
+
 /// Extracts the messaging port from the environment variable, falling back to the default port.
 pub(crate) fn extract_messaging_port() -> u16 {
     std::env::var(daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
@@ -493,5 +522,56 @@ mod tests {
                 .contains("core_node_name in peppy_config.json5"),
             "the error names the config source: {err}"
         );
+    }
+
+    /// Pins the complete production handoff for an operator-run router:
+    /// `PeppyConfig` selects the external PMI constructor, that constructor
+    /// retains the non-default dial locator, and the same helper `build()` calls
+    /// copies its host + port into `DaemonState`.
+    #[test]
+    fn external_router_endpoint_flows_from_config_through_builder_into_daemon_state() {
+        const ENDPOINT: &str = "tcp/zenoh-router.regression.test:17555";
+        let peppy_config = PeppyConfig {
+            zenohd: daemon_config::peppy_config::ZenohdConfig::External {
+                endpoint: ENDPOINT.to_string(),
+            },
+            ..PeppyConfig::default()
+        };
+
+        let builder = ServeCommandBuilder::new("/unused", "regression-git-hash")
+            .expect("create builder")
+            .with_peppy_config(peppy_config)
+            .with_messaging_router("zenoh".to_string())
+            .expect("build external messaging adapter without starting it");
+        let messenger = builder
+            .messenger_handle()
+            .expect("builder retains its messenger");
+        let mut messenger = messenger.blocking_lock();
+
+        let adapter = match &messenger.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter,
+            MessengerAdapter::Mock(_) => panic!("zenoh config must select the Zenoh adapter"),
+        };
+        assert_eq!(adapter.client_locator().to_string(), ENDPOINT);
+        assert_eq!(
+            adapter.client_endpoint(),
+            ("zenoh-router.regression.test", 17555)
+        );
+        assert!(
+            !messenger
+                .refederate(vec!["tcp/unused.example:7448".to_string()], None)
+                .expect("external refederation is a no-op"),
+            "an external adapter must not own a router config to rewrite"
+        );
+
+        let state = daemon_state_for_messenger(
+            &messenger,
+            "regression-core",
+            "regression-git-hash",
+            42,
+            config::org::LOCAL_NAMESPACE,
+        );
+        assert_eq!(state.messaging_host, "zenoh-router.regression.test");
+        assert_eq!(state.messaging_port, 17555);
     }
 }

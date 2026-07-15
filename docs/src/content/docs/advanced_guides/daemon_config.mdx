@@ -16,16 +16,16 @@ The daemon reads its settings (`core_node_name`, `mode`, `peer`, `lifecycle`, `f
 You never need to create or migrate this file by hand:
 
 - **First start.** If the file does not exist, the daemon creates it with every setting at its default value, annotated with explanatory comments.
-- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), the daemon appends each missing setting with its default value and comments. Your own values, comments, formatting, and any unrecognized keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Every setting a peppy release understands is guaranteed to be covered by this mechanism (enforced by tests), so the file is brought up to the running release's full set of settings on the next daemon start, and the daemon logs each setting it added.
+- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), the daemon appends each missing defaulted setting with its default value and comments. Your own values, comments, formatting, and any unrecognized keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Every defaulted setting a peppy release understands is guaranteed to be covered by this mechanism (enforced by tests), so the file is brought up to the running release's full set of defaults on the next daemon start, and the daemon logs each setting it added. Fields required only by a non-default mode are not invented: for example, selecting `zenohd.mode: "external"` requires you to supply its `endpoint`.
 - **Malformed file.** If the file cannot be parsed, or a value is out of range, the daemon refuses to start and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
 
-A setting you delete from the file therefore comes back with its default on the next daemon start. To change a setting, edit its value instead of removing it.
+A defaulted setting you delete from the file therefore comes back with its default on the next daemon start. To change one, edit its value instead of removing it. Removing a mode-specific required field instead makes the file invalid and leaves it untouched.
 
 ## The default file
 
 ```json5
-// Read once when the peppy daemon starts, so any edit below (mode or buffer
-// sizes) takes effect only after you restart the daemon.
+// Read once when the peppy daemon starts, so edits below take effect only after
+// you restart the daemon.
 {
   // Fixed name for this daemon's core node, or null to derive a
   // machine-specific default (core-node-...). Names must be unique across all
@@ -85,12 +85,10 @@ A setting you delete from the file therefore comes back with its default on the 
   },
 
   zenohd: {
-    // Absolute path or `~/...` to a zenohd binary you run yourself, or null to
-    // let peppy start and manage its bundled zenohd. When set, peppy never
-    // starts any zenoh router: the daemon requires yours to already be serving
-    // the messaging port and adopts it. It is left running on daemon exit and
-    // never restarted by peppy.
-    path: null,
+    // "managed": peppy starts, monitors, and stops its bundled zenohd.
+    // "external": peppy connects to a router you run at `endpoint` and never
+    //             starts, reconfigures, restarts, or stops it.
+    mode: "managed",
   },
 }
 ```
@@ -148,19 +146,38 @@ When you are logged in, the daemon links ("federates") its local messaging route
 
 ## `zenohd`: use an operator-run router
 
-Leave `zenohd.path` as `null` (the default) for peppy to start and manage its bundled `zenohd`. In this mode, the messaging port must be free when the daemon starts, and peppy stops or restarts the router as needed.
+Leave `zenohd.mode` as `"managed"` (the default) for peppy to start and manage its bundled `zenohd`:
 
-Set `path` to an absolute path or a path beginning with `~/` when you want peppy to use a zenoh router that you start yourself. The configured value selects external-router mode and appears in startup hints, but peppy never executes it or checks whether that file exists or is executable. Empty strings, relative paths, and `~user/...` paths are rejected when the config loads.
-
-While `path` is set, peppy never starts any zenoh router. Start yours before the daemon and listen on the messaging port (`PEPPY_MESSAGING_PORT`, default `7448`) at `0.0.0.0` or `127.0.0.1`, for example:
-
-```sh
-/absolute/path/to/zenohd -l tcp/0.0.0.0:7448
+```json5
+zenohd: {
+  mode: "managed",
+},
 ```
 
-At startup, peppy requires a responsive zenoh router on that port. Nothing listening is a startup error with a command hint based on `path`; a non-zenoh process holding the port is a distinct startup error. A responsive router is adopted for observation only. Peppy never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator owns the router's lifecycle and federation configuration. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
+In managed mode, the configured messaging port must be free when the daemon starts, and peppy stops or restarts the router as needed.
 
-Adoption depends on the responsive router, not on how it was started. This means a bundled `zenohd` orphaned when a previous daemon was killed with `SIGKILL` is adopted if `path` is set on the next start. Login and logout also leave an adopted router unchanged and report that federation is operator-managed.
+To use a router you start yourself, select external mode and give peppy the Zenoh endpoint it should dial:
+
+```json5
+zenohd: {
+  mode: "external",
+  endpoint: "tcp/127.0.0.1:7448",
+},
+```
+
+`endpoint` is a **dial address**, not a listener bind address. It must use `tcp/<host>:<port>` with a hostname, an IPv4 address, or a bracketed IPv6 address, for example `tcp/router.internal:7448` or `tcp/[::1]:7448`. The port is required and must be from `1` through `65535`. Listener wildcards such as `0.0.0.0`, `[::]`, and `*` are rejected because peppy cannot connect to them. Metadata/config suffixes (`?…` or `#…`) and non-TCP transports are not currently supported.
+
+Peppy propagates this host and port to its CLI sessions and spawned nodes, so the address must be reachable from every environment that runs a node. For Lima containers on macOS, peppy rewrites a host-local address such as `127.0.0.1` to the VM's host gateway; a genuinely remote hostname or IP address is preserved.
+
+Start the external router before peppy. Its listener may bind a wildcard even though peppy's dial endpoint must be connectable. For a router on the same machine, for example:
+
+```sh
+zenohd -l tcp/0.0.0.0:7448
+```
+
+At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. A responsive router is adopted for observation only. Peppy never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator owns the router's lifecycle and federation configuration. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
+
+Adoption depends on the responsive router, not on how it was started. Login and logout leave an adopted router unchanged and report that federation is operator-managed. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router; external mode uses the port written in `zenohd.endpoint` instead.
 
 ## Reference
 
@@ -174,6 +191,7 @@ Adoption depends on the responsive router, not on how it was started. This means
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
 | `federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
-| `zenohd.path` | `null` (peppy-managed router) | Absolute path or `~/...`; `null` for managed mode | Selects an operator-run router that must already be serving the messaging port. Peppy adopts it without executing the path, changing its federation, or managing its lifecycle. |
+| `zenohd.mode` | `"managed"` | `"managed"` or `"external"` | Selects whether peppy owns the router lifecycle or adopts an operator-owned router. |
+| `zenohd.endpoint` | — | Required in external mode; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy adopts it without changing its federation or managing its lifecycle. |
 
-A value outside its constraint, an unsupported `zenohd.path`, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.
+A value outside its constraint, an unsupported `zenohd.endpoint`, an unknown top-level or `zenohd` mode, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.

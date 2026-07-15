@@ -442,7 +442,8 @@ impl FlapWindow {
 
 /// Between-generations finalizer for a restart: reap straggler children, then
 /// confirm a managed router released the messaging port before the next
-/// `start_router`. An adopted router remains bound across generations.
+/// `start_router`. An adopted router remains outside peppy's lifecycle across
+/// generations and may be local or remote.
 fn finalize_before_restart(router_adopted: bool) {
     // Node children were reaped only by detached exit-watcher tasks that died with
     // the just-dropped runtime; because the process is long-lived (no execv/exit
@@ -453,7 +454,7 @@ fn finalize_before_restart(router_adopted: bool) {
 
     if router_adopted {
         info!(
-            "adopted external router keeps the messaging port bound; skipping the port-free wait"
+            "adopted external router remains operator-managed; skipping the managed-port-free wait"
         );
         return;
     }
