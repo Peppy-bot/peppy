@@ -71,9 +71,16 @@ fn is_host_local_router(host: &str) -> bool {
         .unwrap_or(host);
     host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("localhost.")
-        || ip_host
-            .parse::<IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
+        || ip_host.parse::<IpAddr>().is_ok_and(|ip| {
+            let ip = match ip {
+                IpAddr::V6(ip) => ip
+                    .to_ipv4_mapped()
+                    .map(IpAddr::V4)
+                    .unwrap_or(IpAddr::V6(ip)),
+                ip => ip,
+            };
+            ip.is_loopback() || ip.is_unspecified()
+        })
 }
 
 /// Defaults the peppy daemon resolves from its `peppy_config` and ships to
@@ -1808,6 +1815,8 @@ mod tests {
             "[::1]",
             "::",
             "[::]",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
         ] {
             assert!(is_host_local_router(host), "expected {host} to be local");
         }

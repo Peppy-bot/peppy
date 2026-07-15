@@ -34,7 +34,7 @@ use config::peppy_config::{
 };
 use config::runtime::Name;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
@@ -103,8 +103,8 @@ pub const MAX_CORE_NODE_NAME_LEN: usize = 63;
 // the serde `Default` impls the parser falls back to when an entry is absent.
 
 /// Comment block at the top of the bundled config file.
-const TEMPLATE_HEADER: &str = r#"// Read once when the peppy daemon starts, so edits below take effect only after
-// you restart the daemon.
+const TEMPLATE_HEADER: &str = r#"// Daemon settings are read once at startup, so edits to them take effect only
+// after restart. resource_servers is refreshed by each CLI authentication command.
 "#;
 
 /// The `core_node_name` entry with its explanatory comment. Spelled out as an
@@ -380,10 +380,9 @@ impl<'de> Deserialize<'de> for ZenohdConfig {
     where
         D: Deserializer<'de>,
     {
-        // Deserialize the tagged shape manually so invalid combinations fail
-        // loud while future, unknown fields retain the config document's usual
-        // forward-compatible behavior. In particular, `endpoint` beside
-        // `managed` and the branch's former `path` sentinel are not ignored.
+        // Deserialize the tagged shape manually so invalid combinations and
+        // unknown fields inside the ownership block fail loud. Unknown
+        // top-level config fields remain forward compatible.
         #[derive(Deserialize)]
         #[serde(rename_all = "snake_case")]
         enum Ownership {
@@ -394,26 +393,27 @@ impl<'de> Deserialize<'de> for ZenohdConfig {
         struct Wire {
             mode: Option<Ownership>,
             #[serde(flatten)]
-            fields: HashMap<String, serde_json::Value>,
+            fields: BTreeMap<String, serde_json::Value>,
         }
 
         let mut wire = Wire::deserialize(deserializer)?;
-        if wire.fields.contains_key("path") {
-            return Err(serde::de::Error::custom(
-                "zenohd.path is unsupported; use mode and endpoint",
-            ));
+        let endpoint = wire.fields.remove("endpoint");
+        if let Some(field) = wire.fields.keys().next() {
+            return Err(serde::de::Error::custom(format!(
+                "unknown field `zenohd.{field}`"
+            )));
         }
 
         match wire.mode.unwrap_or(Ownership::Managed) {
             Ownership::Managed => {
-                if wire.fields.contains_key("endpoint") {
+                if endpoint.is_some() {
                     return Err(serde::de::Error::custom(
                         "zenohd.endpoint is only valid in external mode",
                     ));
                 }
                 Ok(Self::Managed)
             }
-            Ownership::External => match wire.fields.remove("endpoint") {
+            Ownership::External => match endpoint {
                 Some(serde_json::Value::String(endpoint)) => Ok(Self::External { endpoint }),
                 Some(_) => Err(serde::de::Error::custom("zenohd.endpoint must be a string")),
                 None => Err(serde::de::Error::custom(
@@ -951,18 +951,7 @@ mod tests {
 
     #[test]
     fn invalid_zenohd_shapes_fail_loud_and_leave_files_untouched() {
-        let legacy = r#"{ zenohd: { path: "/opt/zenohd" } }"#;
-        let (_tmp, peppy_dirs, path) = dirs_with_config(legacy);
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                if message.contains("zenohd.path is unsupported; use mode and endpoint")),
-            "expected an actionable legacy zenohd.path error, got: {err:?}"
-        );
-        assert_eq!(std::fs::read_to_string(path).unwrap(), legacy);
-
         for content in [
-            r#"{ zenohd: { mode: "managed", path: null } }"#,
             r#"{ zenohd: { mode: "managed", endpoint: "tcp/127.0.0.1:7448" } }"#,
             r#"{ zenohd: { mode: "external" } }"#,
             r#"{ zenohd: { mode: "something_else" } }"#,
@@ -979,19 +968,26 @@ mod tests {
     }
 
     #[test]
-    fn zenohd_unknown_fields_remain_forward_compatible() {
-        let content = r#"{
+    fn zenohd_unknown_fields_fail_loud_in_every_mode() {
+        for content in [
+            r#"{ zenohd: { future_router_option: { enabled: true } } }"#,
+            r#"{
   zenohd: {
+    mode: "external",
+    endpoint: "tcp/router.internal:7448",
     future_router_option: { enabled: true },
   },
-}"#;
-        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-        let config = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(config.zenohd, ZenohdConfig::Managed);
-
-        let completed = std::fs::read_to_string(path).unwrap();
-        assert!(completed.contains("future_router_option: { enabled: true }"));
-        assert!(completed.contains("mode: \"managed\","));
+}"#,
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains("unknown field `zenohd.future_router_option`")),
+                "expected an unknown zenohd field error for {content}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+        }
     }
 
     #[test]

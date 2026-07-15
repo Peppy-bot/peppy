@@ -24,8 +24,8 @@ A defaulted setting you delete from the file therefore comes back with its defau
 ## The default file
 
 ```json5
-// Read once when the peppy daemon starts, so edits below take effect only after
-// you restart the daemon.
+// Daemon settings are read once at startup, so edits to them take effect only
+// after restart. resource_servers is refreshed by each CLI authentication command.
 {
   // Fixed name for this daemon's core node, or null to derive a
   // machine-specific default (core-node-...). Names must be unique across all
@@ -194,4 +194,4 @@ Adoption depends on the responsive router, not on how it was started. Login and 
 | `zenohd.mode` | `"managed"` | `"managed"` or `"external"` | Selects whether peppy owns the router lifecycle or adopts an operator-owned router. |
 | `zenohd.endpoint` | — | Required in external mode; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy adopts it without changing its federation or managing its lifecycle. |
 
-A value outside its constraint, an unsupported `zenohd.endpoint`, an unknown top-level or `zenohd` mode, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.
+A value outside its constraint, an unsupported `zenohd.endpoint`, an unknown value for top-level `mode` or `zenohd.mode`, an unknown key inside `zenohd`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.
