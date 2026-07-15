@@ -1,14 +1,14 @@
 ---
 title: Daemon configuration
-description: Tune the daemon's messaging topology, peer-mode buffer sizes, and node lifecycle grace periods through peppy_config.json5.
+description: Tune the daemon's messaging topology, router ownership, peer-mode buffer sizes, and node lifecycle grace periods through peppy_config.json5.
 sidebar:
   order: 9
 ---
 
-The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, controls the messaging topology of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
+The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, controls the messaging topology and router ownership of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
 
 :::note
-The daemon reads its settings (`core_node_name`, `mode`, `peer`, `lifecycle`, `federation`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
+The daemon reads its settings (`core_node_name`, `mode`, `peer`, `lifecycle`, `federation`, `zenohd`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
 :::
 
 ## How the file is managed
@@ -83,6 +83,15 @@ A setting you delete from the file therefore comes back with its default on the 
     // stays standalone rather than blocking.
     connect_timeout_secs: 30,
   },
+
+  zenohd: {
+    // Absolute path or `~/...` to a zenohd binary you run yourself, or null to
+    // let peppy start and manage its bundled zenohd. When set, peppy never
+    // starts any zenoh router: the daemon requires yours to already be serving
+    // the messaging port and adopts it. It is left running on daemon exit and
+    // never restarted by peppy.
+    path: null,
+  },
 }
 ```
 
@@ -137,6 +146,22 @@ When you are logged in, the daemon links ("federates") its local messaging route
 
 - **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
 
+## `zenohd`: use an operator-run router
+
+Leave `zenohd.path` as `null` (the default) for peppy to start and manage its bundled `zenohd`. In this mode, the messaging port must be free when the daemon starts, and peppy stops or restarts the router as needed.
+
+Set `path` to an absolute path or a path beginning with `~/` when you want peppy to use a zenoh router that you start yourself. The configured value selects external-router mode and appears in startup hints, but peppy never executes it or checks whether that file exists or is executable. Empty strings, relative paths, and `~user/...` paths are rejected when the config loads.
+
+While `path` is set, peppy never starts any zenoh router. Start yours before the daemon and listen on the messaging port (`PEPPY_MESSAGING_PORT`, default `7448`) at `0.0.0.0` or `127.0.0.1`, for example:
+
+```sh
+/absolute/path/to/zenohd -l tcp/0.0.0.0:7448
+```
+
+At startup, peppy requires a responsive zenoh router on that port. Nothing listening is a startup error with a command hint based on `path`; a non-zenoh process holding the port is a distinct startup error. A responsive router is adopted for observation only. Peppy never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator owns the router's lifecycle and federation configuration. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
+
+Adoption depends on the responsive router, not on how it was started. This means a bundled `zenohd` orphaned when a previous daemon was killed with `SIGKILL` is adopted if `path` is set on the next start. Login and logout also leave an adopted router unchanged and report that federation is operator-managed.
+
 ## Reference
 
 | Setting | Default | Constraint | Effect |
@@ -149,5 +174,6 @@ When you are logged in, the daemon links ("federates") its local messaging route
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
 | `federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
+| `zenohd.path` | `null` (peppy-managed router) | Absolute path or `~/...`; `null` for managed mode | Selects an operator-run router that must already be serving the messaging port. Peppy adopts it without executing the path, changing its federation, or managing its lifecycle. |
 
-A value outside its constraint, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.
+A value outside its constraint, an unsupported `zenohd.path`, an unknown `mode`, or a syntax error all stop the daemon at startup with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults.

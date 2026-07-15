@@ -61,7 +61,7 @@ pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
         FederationConfig, LifecycleConfig, MAX_CORE_NODE_NAME_LEN, Mode, PeppyConfig,
-        ResourceServers, load_or_create,
+        ResourceServers, ZenohdConfig, load_or_create,
     };
 }
 

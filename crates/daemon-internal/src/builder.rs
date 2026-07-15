@@ -108,6 +108,10 @@ impl ServeCommandBuilder {
         self
     }
 
+    pub(crate) fn messenger_handle(&self) -> Option<Arc<Mutex<Messenger>>> {
+        self.messenger.clone()
+    }
+
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
     pub fn with_messaging_router(mut self, engine: String) -> Result<Self> {
         let engine = engine.to_lowercase();
@@ -152,6 +156,12 @@ impl ServeCommandBuilder {
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
+                let external_zenohd = self.peppy_config.zenohd.resolved_path().map_err(|msg| {
+                    Error::ExecutionFailed(format!(
+                        "invalid zenohd.path in peppy_config.json5: {msg}"
+                    ))
+                })?;
+
                 let adapter = ZenohAdapter::with_router(
                     ZenohNetProtocol::Tcp,
                     "0.0.0.0",
@@ -162,6 +172,7 @@ impl ServeCommandBuilder {
                     // loopback TCP. The federation task adds the TLS upstream later.
                     Vec::new(),
                     None,
+                    external_zenohd,
                 )?
                 .with_session_reconnect()
                 .with_namespace(Some(namespace));

@@ -24,7 +24,7 @@ use super::{
     FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET, MODE_SECTION_SNIPPET,
     PEER_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
-    STANDARD_BUFFER_FIELD_SNIPPET,
+    STANDARD_BUFFER_FIELD_SNIPPET, ZENOHD_PATH_FIELD_SNIPPET, ZENOHD_SECTION_SNIPPET,
 };
 
 /// A nested field of a top-level section, with the template snippet to splice
@@ -103,6 +103,14 @@ const SECTIONS: &[SectionSpec] = &[
         fields: &[FieldSpec {
             key: "connect_timeout_secs",
             snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+        }],
+    },
+    SectionSpec {
+        key: "zenohd",
+        snippet: ZENOHD_SECTION_SNIPPET,
+        fields: &[FieldSpec {
+            key: "path",
+            snippet: ZENOHD_PATH_FIELD_SNIPPET,
         }],
     },
 ];
@@ -641,6 +649,7 @@ mod tests {
                 "peer",
                 "resource_servers",
                 "federation",
+                "zenohd",
                 "lifecycle.shutdown_grace_secs",
             ]
         );
@@ -742,7 +751,7 @@ mod tests {
 // trailing remark
 "#;
         let completed = complete_config_content(content)
-            .expect("core_node_name, peer, lifecycle, resource_servers, federation missing")
+            .expect("core_node_name, peer, lifecycle, resource_servers, federation, zenohd missing")
             .content;
         parse(&completed);
 
@@ -752,13 +761,14 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::CORE_NODE_NAME_SECTION_SNIPPET,
             super::super::PEER_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
             super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
             super::super::FEDERATION_SECTION_SNIPPET,
+            super::super::ZENOHD_SECTION_SNIPPET,
             &content[close..]
         );
         assert_eq!(completed, expected);

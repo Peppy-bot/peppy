@@ -34,7 +34,7 @@ use config::peppy_config::{
 };
 use config::runtime::Name;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
@@ -233,6 +233,21 @@ const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
+/// The `zenohd.path` entry with its comment, indented for the `zenohd` block.
+/// The explicit `null` makes completion idempotent while documenting the
+/// managed-router default.
+const ZENOHD_PATH_FIELD_SNIPPET: &str = r#"    // Absolute path or `~/...` to a zenohd binary you run yourself, or null to
+    // let peppy start and manage its bundled zenohd. When set, peppy never
+    // starts any zenoh router: the daemon requires yours to already be serving
+    // the messaging port and adopts it. It is left running on daemon exit and
+    // never restarted by peppy.
+    path: null,
+"#;
+
+/// The whole `zenohd` block.
+const ZENOHD_SECTION_SNIPPET: &str =
+    const_format::concatcp!("  zenohd: {\n", ZENOHD_PATH_FIELD_SNIPPET, "  },\n");
+
 /// The full bundled default config, composed from the snippets above.
 const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     TEMPLATE_HEADER,
@@ -248,6 +263,8 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     RESOURCE_SERVERS_SECTION_SNIPPET,
     "\n",
     FEDERATION_SECTION_SNIPPET,
+    "\n",
+    ZENOHD_SECTION_SNIPPET,
     "}\n"
 );
 
@@ -346,6 +363,53 @@ impl Default for FederationConfig {
     }
 }
 
+/// Configuration for adopting a zenoh router that the operator runs.
+///
+/// `path` selects external-router mode and is used only for startup guidance;
+/// peppy never executes the configured binary. [`resolved_path`](Self::resolved_path)
+/// therefore parses the supported path forms without checking the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ZenohdConfig {
+    pub path: Option<String>,
+}
+
+impl ZenohdConfig {
+    /// Resolves the configured path's supported syntax without checking whether
+    /// the path exists or is executable. The value gates external-router mode
+    /// and is shown in startup error hints; peppy never runs it.
+    pub fn resolved_path(&self) -> std::result::Result<Option<PathBuf>, String> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(None);
+        };
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("must not be empty; use null".to_string());
+        }
+
+        if path == "~" {
+            return dirs::home_dir().map(Some).ok_or_else(|| {
+                "cannot resolve ~ because the home directory is unavailable".into()
+            });
+        }
+        if let Some(path_from_home) = path.strip_prefix("~/") {
+            let home = dirs::home_dir().ok_or_else(|| {
+                "cannot resolve ~/ because the home directory is unavailable".to_string()
+            })?;
+            return Ok(Some(home.join(path_from_home)));
+        }
+        if path.starts_with('~') {
+            return Err("~user paths are not supported; use an absolute path or ~/...".to_string());
+        }
+
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err("must be absolute or start with ~/".to_string());
+        }
+        Ok(Some(path))
+    }
+}
+
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
@@ -378,6 +442,8 @@ pub struct PeppyConfig {
     pub resource_servers: ResourceServers,
     #[serde(default)]
     pub federation: FederationConfig,
+    #[serde(default)]
+    pub zenohd: ZenohdConfig,
 }
 
 impl PeppyConfig {
@@ -437,6 +503,11 @@ impl PeppyConfig {
                 "invalid federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
             ))));
         }
+        self.zenohd.resolved_path().map_err(|message| {
+            Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "{PEPPY_CONFIG_FILE}: invalid zenohd.path: {message}"
+            )))
+        })?;
         Ok(())
     }
 }
@@ -547,7 +618,6 @@ fn write_config_file(path: &Path, content: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::tempdir;
 
     /// Writes `content` as the config file in a fresh `~/.peppy`-style tempdir.
@@ -585,6 +655,8 @@ mod tests {
             cfg.federation.connect_timeout_secs,
             DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
         );
+        assert_eq!(cfg.zenohd.path, None);
+        assert_eq!(cfg.zenohd.resolved_path().unwrap(), None);
     }
 
     #[test]
@@ -612,6 +684,88 @@ mod tests {
             dirs_with_config(r#"{ federation: { connect_timeout_secs: 5 } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.federation.connect_timeout_secs, 5);
+    }
+
+    #[test]
+    fn zenohd_section_defaults_and_completes() {
+        // An older file gains the explicit null default, and loading the
+        // completed file again leaves it byte-for-byte unchanged.
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.zenohd.path, None);
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("zenohd: {"));
+        assert!(completed.contains("path: null,"));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+
+        // An explicit path is honored without checking whether it exists.
+        let configured_path = "/does/not/need/to/exist/zenohd";
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(&format!(r#"{{ zenohd: {{ path: "{configured_path}" }} }}"#));
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.zenohd.path.as_deref(), Some(configured_path));
+        assert_eq!(
+            cfg.zenohd.resolved_path().unwrap(),
+            Some(PathBuf::from(configured_path))
+        );
+    }
+
+    #[test]
+    fn empty_zenohd_path_fails_loud_and_leaves_file_untouched() {
+        let content = r#"{ zenohd: { path: "   " } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                if message.contains(PEPPY_CONFIG_FILE)
+                    && message.contains("zenohd.path")
+                    && message.contains("must not be empty; use null")),
+            "expected an empty zenohd.path error, got: {err:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn unsupported_zenohd_paths_fail_loud_and_leave_files_untouched() {
+        for (configured_path, expected_message) in [
+            ("relative/zenohd", "must be absolute or start with ~/"),
+            (
+                "~operator/bin/zenohd",
+                "~user paths are not supported; use an absolute path or ~/...",
+            ),
+        ] {
+            let content = format!(r#"{{ zenohd: {{ path: "{configured_path}" }} }}"#);
+            let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
+
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(PEPPY_CONFIG_FILE)
+                        && message.contains("zenohd.path")
+                        && message.contains(expected_message)),
+                "expected a zenohd.path form error for {configured_path}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn zenohd_tilde_path_resolves_under_home() {
+        let home = dirs::home_dir().expect("test process must have a home directory");
+        let config = ZenohdConfig {
+            path: Some("~/debug/bin/zenohd".to_string()),
+        };
+        assert_eq!(
+            config.resolved_path().unwrap(),
+            Some(home.join("debug/bin/zenohd"))
+        );
+
+        let home_config = ZenohdConfig {
+            path: Some("~".to_string()),
+        };
+        assert_eq!(home_config.resolved_path().unwrap(), Some(home));
     }
 
     #[test]
@@ -906,6 +1060,9 @@ mod tests {
             },
             federation: FederationConfig {
                 connect_timeout_secs: 45,
+            },
+            zenohd: ZenohdConfig {
+                path: Some("/opt/debug/zenohd".to_string()),
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();
