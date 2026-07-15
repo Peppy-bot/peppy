@@ -83,7 +83,13 @@ pub fn init_tracing(style: LogStyle) {
         // `zenoh`, and genuine Zenoh warnings/errors still surface. Override with
         // `RUST_LOG=info` to see the full Zenoh output when debugging the router.
         LogStyle::Verbose => default_env_filter("info,zenoh=warn"),
-        LogStyle::Compact => default_env_filter("peppy=info,daemon=info,auth=info"),
+        // `daemon_config` is included because the auth commands also load (and
+        // complete) peppy_config.json5: without it, the one-time "added
+        // settings" line after an upgrade, and even this crate's warnings,
+        // would be invisible in release CLI runs.
+        LogStyle::Compact => {
+            default_env_filter("peppy=info,daemon=info,auth=info,daemon_config=info")
+        }
     };
 
     match style {

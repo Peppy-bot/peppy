@@ -10,7 +10,11 @@
 //! peppy before a new knob existed) is completed in place: the missing entries
 //! are appended with their default values and explanatory comments, so the file
 //! on disk always lists every available knob. The user's own values, comments,
-//! and unknown keys are preserved byte-for-byte (see [`completion`]).
+//! and unknown keys are otherwise preserved byte-for-byte (see [`completion`]);
+//! when appending defaults, completion may add a structural separator comma
+//! after the prior final entry. Each setting added this way is logged at info
+//! level, so the first start after a peppy upgrade shows exactly which new
+//! settings appeared in the file.
 //!
 //! Unlike `repositories.json5`, a malformed `peppy_config.json5` fails loud at
 //! startup ([`load_or_create`] returns `Err`) instead of falling back to
@@ -346,6 +350,11 @@ impl Default for FederationConfig {
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
 ///
+/// Every field must also SERIALIZE under `Default` (no `skip_serializing_if`):
+/// the schema-coverage pin in [`completion`] enumerates the settings by
+/// serializing this struct's default value, and a field it cannot see would
+/// escape the guarantee that older files gain every new setting on upgrade.
+///
 /// Not `Copy`: `resource_servers` owns heap strings. The daemon reads this once
 /// and moves it into the core node, and the CLI clones it field-by-field, so the
 /// lost `Copy` costs nothing.
@@ -450,6 +459,7 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
         // Plain write: there is no user-authored content to protect yet, and
         // it leaves the new file with normal umask-derived permissions.
         std::fs::write(&path, DEFAULT_PEPPY_CONFIG_TEMPLATE)?;
+        tracing::info!("created {PEPPY_CONFIG_FILE} with the bundled defaults");
         // The bundled template is a compile-time invariant; a parse failure here
         // means the shipped asset is broken, not the user's file.
         let config: PeppyConfig =
@@ -476,7 +486,8 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
 }
 
 /// Appends template defaults for every setting the user's file omits, so the
-/// on-disk file spells out all available knobs.
+/// on-disk file spells out all available knobs, and logs at info level which
+/// settings were added so a release upgrade leaves a visible trace.
 ///
 /// Best effort by design: `config` (parsed from `content`) is already complete
 /// in memory via the serde defaults, so this only improves the FILE. The result
@@ -485,10 +496,10 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
 /// untouched and a warning is logged instead of taking the daemon down over a
 /// cosmetic rewrite.
 fn complete_file_with_defaults(path: &Path, content: &str, config: &PeppyConfig) {
-    let Some(completed) = completion::complete_config_content(content) else {
+    let Some(completion) = completion::complete_config_content(content) else {
         return;
     };
-    if !completion::verify_completion(content, &completed, config) {
+    if !completion::verify_completion(content, &completion.content, config) {
         tracing::warn!(
             "adding missing defaults to {PEPPY_CONFIG_FILE} produced inconsistent \
              content, leaving the file untouched"
@@ -506,12 +517,17 @@ fn complete_file_with_defaults(path: &Path, content: &str, config: &PeppyConfig)
             return;
         }
     };
-    if let Err(e) = write_config_file(&target, &completed) {
+    if let Err(e) = write_config_file(&target, &completion.content) {
         tracing::warn!(
             "could not add missing defaults to {PEPPY_CONFIG_FILE}, \
              continuing with the in-memory defaults: {e}"
         );
+        return;
     }
+    tracing::info!(
+        "{PEPPY_CONFIG_FILE}: added settings new to this peppy release: {}",
+        completion.added_paths.join(", ")
+    );
 }
 
 /// Replaces an existing config through a staged sibling tmp file and an atomic
@@ -810,6 +826,43 @@ mod tests {
         // longer rewrites it.
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+    }
+
+    /// The cross-release guarantee end to end: one load brings a file written
+    /// by an older release (settings missing) up to the full current schema on
+    /// disk, with the user's values preserved. The expected settings are
+    /// derived from the struct itself, so this test never needs editing when a
+    /// field is added.
+    #[test]
+    fn old_release_file_gains_every_current_schema_leaf() {
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ mode: "router", lifecycle: { daemon_grace_secs: 45 } }"#);
+
+        load_or_create(&peppy_dirs).unwrap();
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json5::from_str(&on_disk).unwrap();
+        let schema = serde_json::to_value(PeppyConfig::default()).unwrap();
+        for leaf in completion::leaf_paths(&schema) {
+            // Presence is what matters: `core_node_name` is spelled as an
+            // explicit null, so its key must exist while its value stays null.
+            let mut value = Some(&doc);
+            for segment in leaf.split('.') {
+                value = value.and_then(|nested| nested.get(segment));
+            }
+            assert!(
+                value.is_some(),
+                "setting {leaf} missing from completed file:\n{on_disk}"
+            );
+        }
+
+        // The old release's values survived the completion.
+        assert_eq!(doc["mode"], serde_json::json!("router"));
+        assert_eq!(doc["lifecycle"]["daemon_grace_secs"], serde_json::json!(45));
+
+        // A second load has nothing left to add and leaves the bytes alone.
+        load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), on_disk);
     }
 
     #[test]
