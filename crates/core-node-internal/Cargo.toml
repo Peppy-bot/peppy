@@ -50,6 +50,9 @@ sha2 = "0.11"
 parking_lot = { workspace = true }
 dirs = "6"
 ignore = "0.4"
+# Only for the `test-support` log-capture helpers; the daemon's own tracing
+# setup lives in the binary crate.
+tracing-subscriber = { version = "0.3", optional = true }
 # Safe wrapper for the process-group SIGKILL in node teardown (replaces a raw
 # `libc::kill` FFI call), letting the crate adopt `#![forbid(unsafe_code)]`.
 nix = { version = "0.31", default-features = false, features = ["signal"] }
@@ -70,6 +73,9 @@ tracing-subscriber = "0.3"
 
 [features]
 container_e2e = []
+# Test-only scaffolding (`test_support` module) for downstream crates' tests;
+# this crate's own unit tests see the module via `cfg(test)` instead.
+test-support = ["dep:tracing-subscriber"]
 
 # Roundtrip latency benchmark: spins up two real peppy nodes (a Rust driver +
 # a Rust or Python responder), measures topic/service roundtrip latency, and

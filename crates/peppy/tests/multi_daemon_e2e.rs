@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
 use daemon_config::peppy_config::{LocalNodesTopology, PeppyConfig, ZenohdConfig};
 use pmi::ZenohAdapter;
 
@@ -143,11 +144,11 @@ fn start_daemon(
             "-v",
             &newuidmap_mount,
             "-e",
-            "PEPPY_HOME=/data",
+            &format!("{PEPPY_HOME_ENV}=/data"),
             "-e",
             "PEPPY_APPTAINER_DIR=/opt/peppy-apptainer",
             "-e",
-            &format!("PEPPY_CONFIG={config}"),
+            &format!("{PEPPY_CONFIG_ENV}={config}"),
             launch.image,
             "/usr/local/bin/peppy",
             "service",

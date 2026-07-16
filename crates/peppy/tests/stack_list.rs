@@ -110,16 +110,17 @@ fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
     .expect("node add should succeed");
 }
 
+/// Installs the ready/health listeners a running instance is expected to
+/// serve. The returned task handles detach on drop, so discarding them keeps
+/// the services listening for the rest of the test (the same pattern
+/// `node_pair.rs` uses).
 async fn install_node_services(
     messenger: &MessengerHandle,
     core_node: &str,
     node_name: &str,
     instance_id: &str,
-) -> (
-    impl std::any::Any + Send + Sync,
-    impl std::any::Any + Send + Sync,
 ) {
-    let ready = listen_for_node_ready(
+    listen_for_node_ready(
         messenger,
         core_node,
         instance_id,
@@ -127,7 +128,7 @@ async fn install_node_services(
     )
     .await
     .expect("node ready service should start");
-    let health = listen_for_node_health(
+    listen_for_node_health(
         messenger,
         core_node,
         instance_id,
@@ -135,7 +136,6 @@ async fn install_node_services(
     )
     .await
     .expect("node health service should start");
-    (ready, health)
 }
 
 /// A node's row parsed from the rendered stack inventory table.
@@ -290,7 +290,8 @@ async fn node_list_command_succeeds() {
     // text regardless of whether the test runs attached to a terminal.
     let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false)
         .await
-        .expect("node list command should succeed");
+        .expect("node list command should succeed")
+        .output;
 
     let provider_label = format!("{provider_name}:v1");
     let consumer_label = format!("{consumer_name}:v1");
@@ -390,7 +391,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     add_ready_node(&remote_ctx, &consumer_path);
 
     let messenger_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _provider_services = install_node_services(
+    install_node_services(
         &messenger_handle,
         "z-local",
         provider_name,
@@ -416,7 +417,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     .await
     .expect("local producer should start");
 
-    let _consumer_services = install_node_services(
+    install_node_services(
         &messenger_handle,
         "a-remote",
         consumer_name,
@@ -448,9 +449,15 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         AppContext::with_messenger(local.temp_dir(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(local.daemon_state_path()),
     );
-    let output = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
         .expect("multi-daemon stack list should succeed");
+    assert!(
+        report.failed_names.is_empty(),
+        "every daemon section must succeed:\n{}",
+        report.output
+    );
+    let output = report.output;
 
     let local_header = output
         .find("Core node: z-local (host:")
@@ -491,9 +498,15 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
             .with_daemon_state_file(local.daemon_state_path())
             .with_core_node_override(Some("a-remote".to_string())),
     );
-    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+    let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
         .await
         .expect("explicit remote stack list should succeed");
+    assert!(
+        targeted_report.failed_names.is_empty(),
+        "the targeted section must succeed:\n{}",
+        targeted_report.output
+    );
+    let targeted = targeted_report.output;
     assert!(targeted.contains("Core node: a-remote (host:"));
     assert!(!targeted.contains("Core node: z-local"));
     assert_eq!(targeted.matches("Core node:").count(), 1);
@@ -517,9 +530,15 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
             .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    let output = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
         .expect("duplicate tokens should not duplicate or fail the section");
+    assert!(
+        report.failed_names.is_empty(),
+        "the duplicated name must still be answered by the live daemon:\n{}",
+        report.output
+    );
+    let output = report.output;
     assert_eq!(output.matches("Core node: claimed-core").count(), 1);
     assert!(
         output.contains("warning: 2 live daemons currently claim this name"),
@@ -544,19 +563,28 @@ async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answ
             .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    let error = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
-        .expect_err("one failed daemon must make the command non-zero");
-    let rendered = error.to_string();
-    assert!(rendered.contains("Core node: healthy-core (host:"));
+        .expect("collection succeeds even when one section fails");
+    assert!(report.output.contains("Core node: healthy-core (host:"));
     assert!(
-        rendered.contains("healthy-core:"),
-        "healthy graph missing:\n{rendered}"
+        report.output.contains("healthy-core:"),
+        "healthy graph missing:\n{}",
+        report.output
     );
-    assert!(rendered.contains("Core node: gone-core (host: unknown)"));
     assert!(
-        rendered.contains("error:"),
-        "failed section missing:\n{rendered}"
+        report
+            .output
+            .contains("Core node: gone-core (host: unknown)")
     );
-    assert!(rendered.contains("stack list failed for: gone-core"));
+    assert!(
+        report.output.contains("error:"),
+        "failed section missing:\n{}",
+        report.output
+    );
+    assert_eq!(
+        report.failed_names,
+        vec!["gone-core".to_string()],
+        "the failed daemon must drive the CLI's non-zero exit"
+    );
 }

@@ -13,7 +13,6 @@ use futures::future::join_all;
 use peppylib::{CoreNodePresenceMessenger, core_node::transport::poll};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const CORE_NODE_LIST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One independently queried core-node stack. Query and decode failures stay
 /// in their section so a disappearing daemon does not hide healthy peers.
@@ -21,55 +20,59 @@ const CORE_NODE_LIST_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct StackSection {
     pub core_node: String,
     pub host_name: String,
-    /// Total number of live claimants when more than one token advertises this
-    /// name; zero for the normal, unique case.
-    pub duplicate_instances: usize,
+    /// Live tokens advertising this name at enumeration time; more than one
+    /// means an active collision. Zero when the name was not enumerated (an
+    /// explicit `--core-node` target, or a local daemon with no live token).
+    pub live_claimants: usize,
     pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
 
-struct StackListReport {
-    output: String,
-    failed_names: Vec<String>,
+/// Rendered `stack list` output plus the core nodes whose section failed.
+/// Callers own the failure policy: the CLI prints the output and exits
+/// non-zero on any failed name, tests assert on the fields directly.
+pub struct StackListReport {
+    pub output: String,
+    pub failed_names: Vec<String>,
 }
 
 pub fn list_nodes(ctx: &Arc<AppContext>) -> Result<()> {
     let colorize = crate::terminal::colors_enabled();
-    let report = crate::commands::block_on(collect_stack_list(ctx, colorize))?;
+    let report = crate::commands::block_on(list_nodes_collecting(ctx, colorize))?;
     print!("{}", report.output);
-    failure_result(report.failed_names)
-}
-
-/// Like [`list_nodes`] but returns the rendered output as a `String` instead
-/// of printing it. `colorize` is passed in rather than read from the ambient
-/// terminal so the result is deterministic: the CLI passes
-/// [`crate::terminal::colors_enabled`], while integration tests pass `false`
-/// for stable, color-free assertions.
-pub async fn list_nodes_collecting(ctx: &Arc<AppContext>, colorize: bool) -> Result<String> {
-    let report = collect_stack_list(ctx, colorize).await?;
     if report.failed_names.is_empty() {
-        Ok(report.output)
+        Ok(())
     } else {
         Err(Error::ExecutionFailed(format!(
-            "{}stack list failed for: {}",
-            report.output,
+            "stack list failed for: {}",
             report.failed_names.join(", ")
         )))
     }
 }
 
-async fn collect_stack_list(ctx: &Arc<AppContext>, colorize: bool) -> Result<StackListReport> {
+/// Like [`list_nodes`] but returns the [`StackListReport`] instead of printing
+/// and deciding the exit status. `colorize` is passed in rather than read from
+/// the ambient terminal so the result is deterministic: the CLI passes
+/// [`crate::terminal::colors_enabled`], while integration tests pass `false`
+/// for stable, color-free assertions.
+pub async fn list_nodes_collecting(
+    ctx: &Arc<AppContext>,
+    colorize: bool,
+) -> Result<StackListReport> {
     let conn = ctx.connect_to_daemon().await?;
 
     let targets = if conn.target_is_override {
         vec![(conn.target_core_node.clone(), 0)]
     } else {
-        let live =
-            CoreNodePresenceMessenger::list_live(conn.messenger, None, CORE_NODE_LIST_TIMEOUT)
-                .await?;
+        let live = CoreNodePresenceMessenger::list_live(
+            conn.messenger,
+            None,
+            CoreNodePresenceMessenger::LIST_TIMEOUT,
+        )
+        .await?;
         ordered_targets(&conn.core_node_name, live)
     };
 
-    let sections = join_all(targets.into_iter().map(|(core_node, duplicate_instances)| {
+    let sections = join_all(targets.into_iter().map(|(core_node, live_claimants)| {
         let messenger = conn.messenger;
         let caller_core_node = &conn.core_node_name;
         async move {
@@ -83,33 +86,23 @@ async fn collect_stack_list(ctx: &Arc<AppContext>, colorize: bool) -> Result<Sta
             )
             .await;
 
-            match response {
-                Ok(response) => {
-                    let host_name = response.host_name;
-                    match crate::commands::parse_stack_graph(&response.graph_json) {
-                        Ok(mut graph) => {
+            let (host_name, outcome) = match response {
+                Ok(response) => (
+                    response.host_name,
+                    crate::commands::parse_stack_graph(&response.graph_json)
+                        .map(|mut graph| {
                             sort_graph(&mut graph.nodes, &mut graph.edges);
-                            StackSection {
-                                core_node,
-                                host_name,
-                                duplicate_instances,
-                                outcome: Ok((graph.nodes, graph.edges)),
-                            }
-                        }
-                        Err(error) => StackSection {
-                            core_node,
-                            host_name,
-                            duplicate_instances,
-                            outcome: Err(error.to_string()),
-                        },
-                    }
-                }
-                Err(error) => StackSection {
-                    core_node,
-                    host_name: "unknown".to_string(),
-                    duplicate_instances,
-                    outcome: Err(error.to_string()),
-                },
+                            (graph.nodes, graph.edges)
+                        })
+                        .map_err(|error| error.to_string()),
+                ),
+                Err(error) => ("unknown".to_string(), Err(error.to_string())),
+            };
+            StackSection {
+                core_node,
+                host_name,
+                live_claimants,
+                outcome,
             }
         }
     }))
@@ -139,25 +132,10 @@ fn ordered_targets(
             .insert(presence.instance_id);
     }
 
-    let duplicate_count = |instances: &BTreeSet<String>| {
-        if instances.len() > 1 {
-            instances.len()
-        } else {
-            0
-        }
-    };
-
     let mut targets = Vec::with_capacity(claims.len().max(1));
-    let local_instances = claims.remove(local_core_node).unwrap_or_default();
-    targets.push((
-        local_core_node.to_string(),
-        duplicate_count(&local_instances),
-    ));
-    targets.extend(
-        claims
-            .into_iter()
-            .map(|(name, instances)| (name, duplicate_count(&instances))),
-    );
+    let local_claimants = claims.remove(local_core_node).map_or(0, |ids| ids.len());
+    targets.push((local_core_node.to_string(), local_claimants));
+    targets.extend(claims.into_iter().map(|(name, ids)| (name, ids.len())));
     targets
 }
 
@@ -172,17 +150,6 @@ fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
         }
     });
     edges.sort_by_key(|edge| (edge.from.label(), edge.to.label()));
-}
-
-fn failure_result(failed_names: Vec<String>) -> Result<()> {
-    if failed_names.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::ExecutionFailed(format!(
-            "stack list failed for: {}",
-            failed_names.join(", ")
-        )))
-    }
 }
 
 /// Pure multi-daemon formatter for `peppy stack list`. Sections are never
@@ -202,11 +169,11 @@ pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
             paint(colorize, NODE_COLOR, &section.core_node),
             section.host_name
         );
-        if section.duplicate_instances > 0 {
+        if section.live_claimants > 1 {
             let _ = writeln!(
                 out,
                 "  warning: {} live daemons currently claim this name",
-                section.duplicate_instances
+                section.live_claimants
             );
         }
 
@@ -678,7 +645,7 @@ mod tests {
         StackSection {
             core_node: core_node.to_string(),
             host_name: host_name.to_string(),
-            duplicate_instances: 0,
+            live_claimants: 1,
             outcome: Ok((
                 vec![node(core_node, "v1", NodeStage::Root, vec![])],
                 Vec::new(),
@@ -715,7 +682,7 @@ mod tests {
         let sections = vec![StackSection {
             core_node: "claimed".to_string(),
             host_name: "unknown".to_string(),
-            duplicate_instances: 3,
+            live_claimants: 3,
             outcome: Err("daemon disappeared".to_string()),
         }];
         let out = format_stack_list(&sections, false);
@@ -750,9 +717,9 @@ mod tests {
         assert_eq!(
             targets,
             vec![
-                ("z-local".to_string(), 0),
+                ("z-local".to_string(), 1),
                 ("a-remote".to_string(), 2),
-                ("b-remote".to_string(), 0),
+                ("b-remote".to_string(), 1),
             ]
         );
     }

@@ -171,8 +171,9 @@ pub struct CoreNode {
     /// Holding the token advertises this daemon's core-node name for the
     /// lifetime of the daemon generation. It is installed during boot before
     /// any destructive setup and removed when the core node is dropped (or the
-    /// messaging session closes).
-    presence_token: Mutex<Option<LivelinessToken>>,
+    /// messaging session closes). A `std` mutex suffices: the slot is written
+    /// once in [`CoreNode::start_with_ready`] and never read, only dropped.
+    presence_token: std::sync::Mutex<Option<LivelinessToken>>,
     /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
     /// instance is rejected rather than silently re-registering listeners.
     started: AtomicBool,
@@ -354,7 +355,7 @@ impl CoreNode {
             peppy_config,
             organization_namespace,
             shutdown_token,
-            presence_token: Mutex::new(None),
+            presence_token: std::sync::Mutex::new(None),
             started: AtomicBool::new(false),
         }
     }
@@ -718,7 +719,11 @@ impl CoreNode {
         // entire daemon generation.
         let token =
             presence::claim_name(&self.messenger, self.node_name(), self.instance_id()).await?;
-        *self.presence_token.lock().await = Some(token);
+        *self
+            .presence_token
+            .lock()
+            .expect("presence token lock never poisoned: the write-once holder cannot panic") =
+            Some(token);
 
         clear_instances_dir(&self.peppy_dirs);
 

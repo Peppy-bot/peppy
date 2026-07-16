@@ -6,10 +6,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
-/// Upper bound for the boot-time router-state query. Liveliness state normally
-/// answers immediately; the timeout only bounds a stalled transport.
-pub(crate) const PRESENCE_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// Minimum interval between successive name-collision alarms. A reconnect can
 /// replay the same live token, so rate limiting keeps router flapping from
 /// flooding the daemon log.
@@ -25,7 +21,7 @@ pub(crate) async fn claim_name(
     let claimed = CoreNodePresenceMessenger::list_live(
         messenger,
         Some(core_node_name),
-        PRESENCE_QUERY_TIMEOUT,
+        CoreNodePresenceMessenger::LIST_TIMEOUT,
     )
     .await?;
     if !claimed.is_empty() {
@@ -39,14 +35,8 @@ pub(crate) async fn claim_name(
         .map_err(Into::into)
 }
 
-fn duplicate_alarm_due(
-    own_instance_id: &str,
-    observed_instance_id: &str,
-    last_alarm: Option<Instant>,
-    now: Instant,
-) -> bool {
-    observed_instance_id != own_instance_id
-        && last_alarm.is_none_or(|at| now.duration_since(at) >= NAME_COLLISION_ALARM_COOLDOWN)
+fn alarm_cooldown_elapsed(last_alarm: Option<Instant>, now: Instant) -> bool {
+    last_alarm.is_none_or(|at| now.duration_since(at) >= NAME_COLLISION_ALARM_COOLDOWN)
 }
 
 /// Watches this daemon's presence name with history replay and raises a
@@ -90,7 +80,7 @@ pub(crate) async fn watch_for_duplicate_name(
                 "observed foreign core-node presence claim"
             );
             let now = Instant::now();
-            if duplicate_alarm_due(&own_instance_id, &presence.instance_id, last_alarm, now) {
+            if alarm_cooldown_elapsed(last_alarm, now) {
                 last_alarm = Some(now);
                 error!(
                     "core-node name collision: daemon instance '{}' is advertising presence \
@@ -109,18 +99,7 @@ pub(crate) async fn watch_for_duplicate_name(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    async fn started_mock_messenger() -> MessengerHandle {
-        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
-        messenger
-            .start_session()
-            .await
-            .expect("mock session should start");
-        MessengerHandle::from_shared(Arc::new(Mutex::new(messenger)))
-    }
+    use crate::services::tests::started_mock_messenger;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn duplicate_watch_stops_promptly_on_cancel() {
@@ -146,34 +125,17 @@ mod tests {
     #[test]
     fn duplicate_alarm_is_rate_limited() {
         let fired_at = Instant::now();
-        assert!(!duplicate_alarm_due(
-            "own_instance",
-            "foreign_instance",
+        assert!(
+            alarm_cooldown_elapsed(None, fired_at),
+            "a first alarm has no cooldown to wait out"
+        );
+        assert!(!alarm_cooldown_elapsed(
             Some(fired_at),
             fired_at + Duration::from_secs(1),
         ));
-        assert!(duplicate_alarm_due(
-            "own_instance",
-            "foreign_instance",
+        assert!(alarm_cooldown_elapsed(
             Some(fired_at),
             fired_at + NAME_COLLISION_ALARM_COOLDOWN,
-        ));
-    }
-
-    #[test]
-    fn only_foreign_presence_alarms() {
-        let now = Instant::now();
-        assert!(duplicate_alarm_due(
-            "own_instance",
-            "foreign_instance",
-            None,
-            now,
-        ));
-        assert!(!duplicate_alarm_due(
-            "own_instance",
-            "own_instance",
-            None,
-            now,
         ));
     }
 }

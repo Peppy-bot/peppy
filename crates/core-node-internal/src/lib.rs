@@ -3,6 +3,8 @@
 
 mod error;
 mod services;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use error::{Error, Result};
 pub use services::repo::cache::{

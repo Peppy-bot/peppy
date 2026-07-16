@@ -3031,7 +3031,6 @@ dependencies = [
  "names-generator2",
  "node-stack",
  "open",
- "parking_lot",
  "peppy",
  "peppy-config-model",
  "peppylib-rs",

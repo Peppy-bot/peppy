@@ -4,7 +4,7 @@ mod launch;
 mod list;
 mod table;
 
-pub use list::list_nodes_collecting;
+pub use list::{StackListReport, list_nodes_collecting};
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -230,7 +230,8 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     // slot carrying its core node like the bindings table's producers.
     let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
-        .expect("stack list should succeed");
+        .expect("stack list should succeed")
+        .output;
     assert!(
         listing.contains(&format!(
             "controller ⇌ ctrl_1:arm@{core_node_name} (arm_link:v1)"
@@ -274,7 +275,8 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     );
     let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
-        .expect("stack list should succeed");
+        .expect("stack list should succeed")
+        .output;
     assert!(
         listing.contains("controller ⇌ (unpaired) [role arm of arm_link:v1]"),
         "stack list should show the survivor's slot unpaired:\n{listing}"

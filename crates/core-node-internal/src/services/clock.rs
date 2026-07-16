@@ -356,19 +356,7 @@ pub async fn subscribe_external_clock(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
-    use tokio::sync::Mutex;
-
-    /// A messenger handle over a started in-memory mock session, enough for the
-    /// publisher loops to declare a publisher and tick.
-    async fn started_mock_messenger() -> MessengerHandle {
-        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
-        messenger
-            .start_session()
-            .await
-            .expect("mock session should start");
-        MessengerHandle::from_shared(Arc::new(Mutex::new(messenger)))
-    }
+    use crate::services::tests::started_mock_messenger;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn clock_publisher_stops_promptly_on_cancel() {

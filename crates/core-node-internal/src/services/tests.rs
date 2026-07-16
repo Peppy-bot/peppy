@@ -1,47 +1,10 @@
 use super::*;
+use crate::test_support::LogCapture;
 use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
-use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing_subscriber::fmt::MakeWriter;
-
-#[derive(Clone, Default)]
-struct LogCapture {
-    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
-}
-
-impl LogCapture {
-    fn logs(&self) -> String {
-        String::from_utf8(self.buffer.lock().clone()).expect("captured logs are valid UTF-8")
-    }
-}
-
-struct LogCaptureWriter {
-    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
-}
-
-impl<'a> MakeWriter<'a> for LogCapture {
-    type Writer = LogCaptureWriter;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        LogCaptureWriter {
-            buffer: Arc::clone(&self.buffer),
-        }
-    }
-}
-
-impl Write for LogCaptureWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.lock().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 async fn wait_for_log(capture: &LogCapture, needle: &str) {
     let observed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -69,6 +32,69 @@ async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
         .await
         .expect("failed to start mock session");
     Arc::new(Mutex::new(messenger))
+}
+
+/// A messenger handle over a started in-memory mock session, enough for
+/// service listeners and publisher loops to register and exchange messages.
+/// Shared with the sibling modules' unit tests (clock, presence).
+pub(crate) async fn started_mock_messenger() -> MessengerHandle {
+    MessengerHandle::from_shared(create_mock_messenger().await)
+}
+
+/// A named core node booted to its ready signal on a fresh mock messenger,
+/// holding the pieces the presence tests poke afterwards.
+struct BootedCoreNode {
+    /// Owns the on-disk layout backing the boot's `PeppyDirs`.
+    _root: tempfile::TempDir,
+    core_node: Arc<CoreNode>,
+    /// Second handle on the boot messenger, for presence queries.
+    presence_handle: MessengerHandle,
+    boot_task: tokio::task::JoinHandle<crate::Result<()>>,
+}
+
+impl BootedCoreNode {
+    async fn start(core_node_name: &str) -> Self {
+        let root = tempfile::tempdir().expect("tempdir");
+        let messenger = create_mock_messenger().await;
+        let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
+        let core_node = Arc::new(CoreNode::new(test_core_node_config(
+            messenger,
+            Some(core_node_name),
+            PeppyDirs::new(root.path()),
+        )));
+
+        let boot = Arc::clone(&core_node);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("presence-based boot should reach ready promptly")
+            .expect("ready signal should fire");
+
+        Self {
+            _root: root,
+            core_node,
+            presence_handle,
+            boot_task,
+        }
+    }
+
+    /// Stops the serving task and drops the core node, modeling the serve
+    /// runner's shutdown boundary (the last owner releases the retained
+    /// presence token).
+    async fn shut_down(self) {
+        self.boot_task.abort();
+        let _ = self.boot_task.await;
+        drop(self.core_node);
+    }
+}
+
+/// Live presence claims for one name, bounded for a mock router that answers
+/// immediately.
+async fn live_claims(handle: &MessengerHandle, core_node_name: &str) -> Vec<pmi::CoreNodePresence> {
+    CoreNodePresenceMessenger::list_live(handle, Some(core_node_name), Duration::from_secs(1))
+        .await
+        .expect("presence list should succeed")
 }
 
 fn test_node_arguments() -> CoreNodeArguments {
@@ -312,86 +338,34 @@ async fn start_refuses_to_boot_when_name_already_claimed() {
 /// signal and the daemon's own presence token is live immediately.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_boots_clean_when_name_unclaimed() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let messenger = create_mock_messenger().await;
-    let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
-    let core_node = Arc::new(CoreNode::new(test_core_node_config(
-        messenger,
-        Some("unclaimed_node"),
-        PeppyDirs::new(root.path()),
-    )));
-    let own_instance_id = core_node.instance_id().to_string();
+    let booted = BootedCoreNode::start("unclaimed_node").await;
 
-    let boot = Arc::clone(&core_node);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
-
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("presence-based boot should reach ready promptly")
-        .expect("ready signal should fire");
-
-    let live = CoreNodePresenceMessenger::list_live(
-        &presence_handle,
-        Some("unclaimed_node"),
-        Duration::from_secs(1),
-    )
-    .await
-    .expect("own presence should be listable after ready");
+    let live = live_claims(&booted.presence_handle, "unclaimed_node").await;
     assert_eq!(live.len(), 1, "exactly this daemon should claim the name");
     assert_eq!(live[0].core_node, "unclaimed_node");
-    assert_eq!(live[0].instance_id, own_instance_id);
+    assert_eq!(live[0].instance_id, booted.core_node.instance_id());
 
-    boot_task.abort();
-    let _ = boot_task.await;
+    booted.shut_down().await;
 }
 
 /// Dropping a stopped core node drops its retained token, removing the daemon
 /// generation from presence enumeration without an explicit heartbeat grace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn presence_token_is_released_when_core_node_drops() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let messenger = create_mock_messenger().await;
-    let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
-    let core_node = Arc::new(CoreNode::new(test_core_node_config(
-        messenger,
-        Some("released_node"),
-        PeppyDirs::new(root.path()),
-    )));
-
-    let boot = Arc::clone(&core_node);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
-    ready_rx.await.expect("core node should become ready");
+    let booted = BootedCoreNode::start("released_node").await;
+    let presence_handle = booted.presence_handle.clone();
 
     assert_eq!(
-        CoreNodePresenceMessenger::list_live(
-            &presence_handle,
-            Some("released_node"),
-            Duration::from_secs(1),
-        )
-        .await
-        .expect("presence list should succeed")
-        .len(),
-        1,
+        live_claims(&presence_handle, "released_node").await.len(),
+        1
     );
 
-    // The serve runner drops the core node when its shutdown branch returns.
-    // Abort the serving future, wait for its Arc to be released, then drop the
-    // last owner to model that lifecycle boundary.
-    boot_task.abort();
-    let _ = boot_task.await;
-    drop(core_node);
+    booted.shut_down().await;
 
     assert!(
-        CoreNodePresenceMessenger::list_live(
-            &presence_handle,
-            Some("released_node"),
-            Duration::from_secs(1),
-        )
-        .await
-        .expect("presence list should succeed after shutdown")
-        .is_empty(),
+        live_claims(&presence_handle, "released_node")
+            .await
+            .is_empty(),
         "dropping the core node must release its retained presence token"
     );
 }
@@ -418,22 +392,10 @@ async fn duplicate_name_presence_alarm_is_rate_limited() {
         .finish();
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
 
-    let root = tempfile::tempdir().expect("tempdir");
-    let messenger = create_mock_messenger().await;
-    let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
-    let core_node = Arc::new(CoreNode::new(test_core_node_config(
-        messenger,
-        Some(CORE_NODE_NAME),
-        PeppyDirs::new(root.path()),
-    )));
-
-    let boot = Arc::clone(&core_node);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
-    ready_rx.await.expect("core node should become ready");
+    let booted = BootedCoreNode::start(CORE_NODE_NAME).await;
 
     let _first_foreign = CoreNodePresenceMessenger::declare(
-        &presence_handle,
+        &booted.presence_handle,
         CORE_NODE_NAME,
         FIRST_FOREIGN_INSTANCE,
     )
@@ -448,7 +410,7 @@ async fn duplicate_name_presence_alarm_is_rate_limited() {
     );
 
     let _second_foreign = CoreNodePresenceMessenger::declare(
-        &presence_handle,
+        &booted.presence_handle,
         CORE_NODE_NAME,
         SECOND_FOREIGN_INSTANCE,
     )
@@ -464,7 +426,5 @@ async fn duplicate_name_presence_alarm_is_rate_limited() {
         log_capture.logs()
     );
 
-    boot_task.abort();
-    let _ = boot_task.await;
-    drop(core_node);
+    booted.shut_down().await;
 }

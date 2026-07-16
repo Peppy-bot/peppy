@@ -4,7 +4,6 @@ use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -12,7 +11,10 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
-use tracing_subscriber::fmt::MakeWriter;
+
+// In-memory `tracing` sink shared with the daemon crates' own tests; this
+// crate's integration tests reach it as `peppy::test_support::LogCapture`.
+pub use core_node::test_support::LogCapture;
 
 /// Reads a node config, applies a mutation, writes it back, and regenerates the fingerprint.
 fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node::NodeConfig)) {
@@ -61,46 +63,6 @@ pub fn override_run_cmd_silent(peppy_json5: &Path) {
         cfg.execution.run_cmd = Some(vec!["sleep".to_string(), "30".to_string()]);
         cfg.execution.build_cmd = None;
     });
-}
-
-#[derive(Clone, Default)]
-pub struct LogCapture {
-    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
-}
-
-impl LogCapture {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn logs(&self) -> String {
-        String::from_utf8(self.buffer.lock().clone()).expect("captured logs are valid UTF-8")
-    }
-}
-
-pub struct LogCaptureWriter {
-    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
-}
-
-impl<'a> MakeWriter<'a> for LogCapture {
-    type Writer = LogCaptureWriter;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        LogCaptureWriter {
-            buffer: Arc::clone(&self.buffer),
-        }
-    }
-}
-
-impl Write for LogCaptureWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.lock().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Blocks until `needle` appears in the snapshot returned by `logs`, or panics
