@@ -113,7 +113,7 @@ impl Command for LoginCommand {
         // authenticated; only the command fails.
         super::poke_federation_and_report(
             &dirs,
-            config.federation.connect_timeout_secs,
+            config.zenoh.federation.connect_timeout_secs,
             super::FederationPokeAction::Login,
         )
     }

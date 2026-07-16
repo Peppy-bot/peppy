@@ -10,17 +10,18 @@
 //! peppy before a new knob existed) is completed in place: the missing entries
 //! are appended with their default values and explanatory comments, so the file
 //! on disk always lists every available knob. The user's own values, comments,
-//! and unknown keys are otherwise preserved byte-for-byte (see [`completion`]);
-//! when appending defaults, completion may add a structural separator comma
-//! after the prior final entry. Each setting added this way is logged at info
-//! level, so the first start after a peppy upgrade shows exactly which new
-//! settings appeared in the file.
+//! and unknown root-level keys are otherwise preserved byte-for-byte (see
+//! [`completion`]); when appending defaults, completion may add a structural
+//! separator comma after the prior final entry. Each setting added this way is
+//! logged at info level, so the first start after a peppy upgrade shows exactly
+//! which new settings appeared in the file.
 //!
 //! Unlike `repositories.json5`, a malformed `peppy_config.json5` fails loud at
 //! startup ([`load_or_create`] returns `Err`) instead of falling back to
-//! defaults: the mode and buffer sizes determine the whole mesh's routing model
-//! and backpressure, so a hand-edited typo must surface immediately rather than
-//! silently reverting to peer mode. A malformed file is never rewritten.
+//! defaults: the topology and buffer sizes determine the whole mesh's routing
+//! model and backpressure, so a hand-edited typo must surface immediately rather
+//! than silently reverting to the peer topology. A malformed file is never
+//! rewritten.
 
 mod completion;
 
@@ -33,7 +34,9 @@ use config::peppy_config::{
     DEFAULT_STANDARD_BUFFER_SIZE, PeerConfig,
 };
 use config::runtime::Name;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
 /// File name of the global daemon config under `~/.peppy/conf`.
@@ -101,8 +104,8 @@ pub const MAX_CORE_NODE_NAME_LEN: usize = 63;
 // the serde `Default` impls the parser falls back to when an entry is absent.
 
 /// Comment block at the top of the bundled config file.
-const TEMPLATE_HEADER: &str = r#"// Read once when the peppy daemon starts, so any edit below (mode or buffer
-// sizes) takes effect only after you restart the daemon.
+const TEMPLATE_HEADER: &str = r#"// Daemon settings are read once at startup, so edits to them take effect only
+// after restart. resource_servers is refreshed by each CLI authentication command.
 "#;
 
 /// The `core_node_name` entry with its explanatory comment. Spelled out as an
@@ -124,41 +127,47 @@ const CORE_NODE_NAME_SECTION_SNIPPET: &str = const_format::concatcp!(
 "#
 );
 
-/// The `mode` entry with its explanatory comment.
-const MODE_SECTION_SNIPPET: &str = r#"  //   "peer"   - Zenoh peer sessions with gossip: nodes form direct
-  //              peer-to-peer links and data stops relaying through the router.
-  //   "router" - gossip off: all traffic relays through the central zenohd
-  //              router.
-  // Container nodes in a separate network namespace (Lima on macOS) always use
-  // the router path regardless of this setting.
-  mode: "peer",
+/// The `zenoh.local_nodes_topology` entry with its explanatory comment,
+/// indented for the `zenoh` block.
+const LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET: &str = r#"    // How the nodes on this machine exchange data with each other. Traffic to
+    // and from other machines always relays through the local zenohd router and
+    // its federation, regardless of this setting (node sessions only accept
+    // direct links over loopback).
+    //   "peer"   - Zenoh peer sessions with gossip: local nodes form direct
+    //              peer-to-peer links and data stops relaying through the router.
+    //   "router" - gossip off: all traffic relays through the central zenohd
+    //              router.
+    // Container nodes in a separate network namespace (Lima on macOS) always use
+    // the router path regardless of this setting.
+    local_nodes_topology: "peer",
 "#;
 
-/// The `peer.standard_buffer_size` entry, indented for the `peer` block.
+/// The `zenoh.peer.standard_buffer_size` entry, indented for the `peer` block.
 const STANDARD_BUFFER_FIELD_SNIPPET: &str = const_format::concatcp!(
-    "    standard_buffer_size: ",
+    "      standard_buffer_size: ",
     DEFAULT_STANDARD_BUFFER_SIZE,
     ",\n"
 );
 
-/// The `peer.high_throughput_buffer_size` entry, indented for the `peer` block.
+/// The `zenoh.peer.high_throughput_buffer_size` entry, indented for the `peer`
+/// block.
 const HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET: &str = const_format::concatcp!(
-    "    high_throughput_buffer_size: ",
+    "      high_throughput_buffer_size: ",
     DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
     ",\n"
 );
 
-/// The whole `peer` block with its explanatory comment.
+/// The whole `zenoh.peer` block with its explanatory comment.
 const PEER_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Subscriber channel buffer sizes (number of in-flight messages) per QoS
-  // tier, used in peer mode where there is no router relay to buffer between a
-  // publisher and a subscriber. Defaults match peppy's built-in behavior; only
-  // edit to tune backpressure.
-  peer: {
+    r#"    // Subscriber channel buffer sizes (number of in-flight messages) per QoS
+    // tier, used in the peer topology where there is no router relay to buffer
+    // between a publisher and a subscriber. Defaults match peppy's built-in
+    // behavior; only edit to tune backpressure.
+    peer: {
 "#,
     STANDARD_BUFFER_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
-    "  },\n"
+    "    },\n"
 );
 
 /// The `lifecycle.daemon_grace_secs` entry with its comment, indented for the
@@ -209,27 +218,61 @@ const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
-/// The `federation.connect_timeout_secs` entry with its comment, indented for
-/// the `federation` block.
+/// The `zenoh.federation.connect_timeout_secs` entry with its comment,
+/// indented for the `federation` block.
 const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
-    r#"    // Seconds the daemon spends resolving your per-user cloud router before
-    // giving up for this attempt (it retries in the background). Bounds the
-    // federation done at startup and on each `peppy auth login`/`logout`;
-    // minimum 1. If the backend is unreachable within this window the daemon
-    // stays standalone rather than blocking.
-    connect_timeout_secs: "#,
+    r#"      // Seconds the daemon spends resolving your per-user cloud router before
+      // giving up for this attempt (it retries in the background). Bounds the
+      // federation done at startup and on each `peppy auth login`/`logout`;
+      // minimum 1. If the backend is unreachable within this window the daemon
+      // stays standalone rather than blocking.
+      connect_timeout_secs: "#,
     DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
     ",\n"
 );
 
-/// The whole `federation` block with its explanatory comment.
+/// The whole `zenoh.federation` block with its explanatory comment.
 const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Per-user zenoh-router federation: how the daemon links its local router to
-  // your private cloud router. Only tuned to bound a slow/unreachable backend
-  // during the federation step.
-  federation: {
+    r#"    // Per-user zenoh-router federation: how the daemon links its local router to
+    // your private cloud router. Only tuned to bound a slow/unreachable backend
+    // during the federation step.
+    federation: {
 "#,
     FEDERATION_TIMEOUT_FIELD_SNIPPET,
+    "    },\n"
+);
+
+/// The `zenoh.zenohd.ownership` entry with its comment, indented for the
+/// `zenohd` block.
+const ZENOHD_OWNERSHIP_FIELD_SNIPPET: &str = r#"      // "managed": peppy starts, monitors, and stops its bundled zenohd.
+      // "external": peppy connects to a router you run at `endpoint` and never
+      //             starts, reconfigures, restarts, or stops it.
+      ownership: "managed",
+"#;
+
+/// The whole `zenoh.zenohd` block.
+const ZENOHD_SECTION_SNIPPET: &str = const_format::concatcp!(
+    "    zenohd: {\n",
+    ZENOHD_OWNERSHIP_FIELD_SNIPPET,
+    "    },\n"
+);
+
+/// The whole `zenoh` block, composed from its child snippets exactly like the
+/// template composes the top-level sections, so a splice into a partial `zenoh`
+/// block matches what a fresh template spells out.
+const ZENOH_SECTION_SNIPPET: &str = const_format::concatcp!(
+    r#"  // The zenoh messaging transport: the local nodes' topology, peer-topology
+  // buffering, per-user router federation, and who owns the local zenohd
+  // router.
+  zenoh: {
+"#,
+    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET,
+    "\n",
+    PEER_SECTION_SNIPPET,
+    "\n",
+    FEDERATION_SECTION_SNIPPET,
+    "\n",
+    ZENOHD_SECTION_SNIPPET,
     "  },\n"
 );
 
@@ -239,39 +282,38 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     "{\n",
     CORE_NODE_NAME_SECTION_SNIPPET,
     "\n",
-    MODE_SECTION_SNIPPET,
-    "\n",
-    PEER_SECTION_SNIPPET,
+    ZENOH_SECTION_SNIPPET,
     "\n",
     LIFECYCLE_SECTION_SNIPPET,
     "\n",
     RESOURCE_SERVERS_SECTION_SNIPPET,
-    "\n",
-    FEDERATION_SECTION_SNIPPET,
     "}\n"
 );
 
-/// The messaging topology the daemon runs in.
+/// The messaging topology of the nodes local to this machine.
 ///
-/// `Peer` keeps gossip on so nodes form direct peer-to-peer links; `Router`
-/// turns gossip off so every node routes through the central `zenohd`. The
-/// `gossip()` mapping is the single source of truth tying this user-facing
-/// choice to the `DiscoveryConfig.gossip` flag the sessions actually read.
+/// `Peer` keeps gossip on so co-located nodes form direct peer-to-peer links;
+/// `Router` turns gossip off so every node routes through the central
+/// `zenohd`. Local-only by construction: node sessions accept direct links
+/// over a loopback-bound listener, so cross-machine traffic always relays
+/// through the routers regardless of this choice. The `gossip()` mapping is
+/// the single source of truth tying this user-facing choice to the
+/// `DiscoveryConfig.gossip` flag the sessions actually read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Mode {
+pub enum LocalNodesTopology {
     #[default]
     Peer,
     Router,
 }
 
-impl Mode {
-    /// Whether this is peer mode (direct peer-to-peer links).
+impl LocalNodesTopology {
+    /// Whether this is the peer topology (direct peer-to-peer links).
     pub fn is_peer(self) -> bool {
-        matches!(self, Mode::Peer)
+        matches!(self, LocalNodesTopology::Peer)
     }
 
-    /// Mode to gossip mapping: peer enables gossip, router disables it.
+    /// LocalNodesTopology to gossip mapping: peer enables gossip, router disables it.
     pub fn gossip(self) -> bool {
         self.is_peer()
     }
@@ -333,7 +375,7 @@ impl Default for ResourceServers {
 /// `#[serde(default)]` fills any field a partial `federation` block omits from
 /// [`FederationConfig::default`], matching the `LifecycleConfig` pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FederationConfig {
     pub connect_timeout_secs: u64,
 }
@@ -346,14 +388,261 @@ impl Default for FederationConfig {
     }
 }
 
+/// Whether peppy owns the local zenoh router or connects to one the operator
+/// owns. The internally tagged variants make ownership explicit and ensure an
+/// external router carries the network address peppy must dial.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(tag = "ownership", rename_all = "snake_case")]
+pub enum ZenohdConfig {
+    /// Peppy starts, monitors, restarts, and stops its bundled zenohd.
+    #[default]
+    Managed,
+    /// Peppy adopts a responsive router at `endpoint` without managing its
+    /// process or configuration.
+    External { endpoint: String },
+}
+
+impl<'de> Deserialize<'de> for ZenohdConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize the tagged shape manually so invalid combinations and
+        // unknown fields inside the zenohd block fail loud. Unknown top-level
+        // config fields remain forward compatible.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Ownership {
+            Managed,
+            External,
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            ownership: Option<Ownership>,
+            #[serde(flatten)]
+            fields: BTreeMap<String, serde_json::Value>,
+        }
+
+        let mut wire = Wire::deserialize(deserializer)?;
+        let endpoint = wire.fields.remove("endpoint");
+        if let Some(field) = wire.fields.keys().next() {
+            return Err(serde::de::Error::custom(format!(
+                "unknown field `zenoh.zenohd.{field}`"
+            )));
+        }
+
+        match wire.ownership.unwrap_or(Ownership::Managed) {
+            Ownership::Managed => {
+                if endpoint.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "zenoh.zenohd.endpoint is only valid with external ownership",
+                    ));
+                }
+                Ok(Self::Managed)
+            }
+            Ownership::External => match endpoint {
+                Some(serde_json::Value::String(endpoint)) => Ok(Self::External { endpoint }),
+                Some(_) => Err(serde::de::Error::custom(
+                    "zenoh.zenohd.endpoint must be a string",
+                )),
+                None => Err(serde::de::Error::custom(
+                    "zenoh.zenohd.endpoint is required with external ownership",
+                )),
+            },
+        }
+    }
+}
+
+impl ZenohdConfig {
+    /// The full Zenoh locator peppy should dial when the router is externally
+    /// managed, or `None` when peppy should manage its own router.
+    pub fn external_endpoint(&self) -> Option<&str> {
+        match self {
+            Self::Managed => None,
+            Self::External { endpoint } => Some(endpoint),
+        }
+    }
+
+    fn validate(&self) -> std::result::Result<(), String> {
+        let Some(endpoint) = self.external_endpoint() else {
+            return Ok(());
+        };
+        validate_tcp_dial_endpoint(endpoint)
+    }
+}
+
+/// Validates the deliberately narrow locator surface supported for an external
+/// router. Peppy currently transports its daemon and node sessions over TCP, so
+/// accepting another Zenoh protocol here would create a config the rest of the
+/// stack cannot honor. This is syntax-only: hostnames are not resolved while
+/// loading the config.
+fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String> {
+    if endpoint.is_empty() {
+        return Err("must not be empty".to_string());
+    }
+    if endpoint.trim() != endpoint {
+        return Err("must not contain leading or trailing whitespace".to_string());
+    }
+
+    let Some(address) = endpoint.strip_prefix("tcp/") else {
+        return Err("must use the tcp/<host>:<port> locator form".to_string());
+    };
+    if address.contains(['?', '#']) {
+        return Err("metadata and endpoint configuration are not supported".to_string());
+    }
+
+    let (host, port, bracketed) = split_tcp_host_port(address)?;
+    validate_dial_host(host, bracketed)?;
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("port must be an integer from 1 through 65535".to_string());
+    }
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| "port must be an integer from 1 through 65535".to_string())?;
+    if port == 0 {
+        return Err("port must be an integer from 1 through 65535".to_string());
+    }
+    Ok(())
+}
+
+fn split_tcp_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
+    if let Some(bracketed) = address.strip_prefix('[') {
+        let Some(close) = bracketed.find(']') else {
+            return Err("IPv6 addresses must be enclosed in matching brackets".to_string());
+        };
+        let host = &bracketed[..close];
+        let suffix = &bracketed[close + 1..];
+        let Some(port) = suffix.strip_prefix(':') else {
+            return Err("must include a port after the host".to_string());
+        };
+        if port.contains(':') {
+            return Err("must contain exactly one port".to_string());
+        }
+        return Ok((host, port, true));
+    }
+
+    let Some((host, port)) = address.rsplit_once(':') else {
+        return Err("must include a host and port".to_string());
+    };
+    if host.contains(':') {
+        return Err("IPv6 addresses must be enclosed in brackets".to_string());
+    }
+    Ok((host, port, false))
+}
+
+fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
+    if host.is_empty() {
+        return Err("host must not be empty".to_string());
+    }
+
+    if bracketed {
+        let address = host
+            .parse::<Ipv6Addr>()
+            .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
+        return if address.is_unspecified() {
+            Err(
+                "host must be dialable; the wildcard address [::] is only valid for listening"
+                    .to_string(),
+            )
+        } else {
+            Ok(())
+        };
+    }
+
+    if let Ok(address) = host.parse::<Ipv4Addr>() {
+        return if address.is_unspecified() {
+            Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string())
+        } else {
+            Ok(())
+        };
+    }
+    if host
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err("host is not a valid IPv4 address".to_string());
+    }
+    if host == "*" {
+        return Err("host must be dialable; * is only valid for listening".to_string());
+    }
+    let hostname = host.strip_suffix('.').unwrap_or(host);
+    if host.len() > 253
+        || hostname.ends_with('.')
+        || hostname.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err("host must be a valid hostname or IP address".to_string());
+    }
+    Ok(())
+}
+
+/// The `zenoh` section: everything about the messaging transport, grouped
+/// because these knobs tune one zenoh mesh. `local_nodes_topology` and `peer`
+/// shape the sessions of every node the daemon spawns; `federation` and
+/// `zenohd` govern the local router. `local_nodes_topology` (how co-located
+/// node sessions link up) and `zenohd.ownership` (who runs the router process)
+/// are deliberately separate axes: every combination of the two is valid.
+///
+/// `#[serde(default)]` fills any field a partial `zenoh` block omits, matching
+/// the `LifecycleConfig` pattern.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ZenohConfig {
+    pub local_nodes_topology: LocalNodesTopology,
+    #[serde(deserialize_with = "deserialize_peer_config")]
+    pub peer: PeerConfig,
+    pub federation: FederationConfig,
+    pub zenohd: ZenohdConfig,
+}
+
+/// Deserializes the shared [`PeerConfig`] through a strict local wire type so
+/// typos in this user-edited file cannot silently fall back to defaults.
+fn deserialize_peer_config<'de, D>(deserializer: D) -> std::result::Result<PeerConfig, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(default, deny_unknown_fields)]
+    struct Wire {
+        standard_buffer_size: usize,
+        high_throughput_buffer_size: usize,
+    }
+
+    impl Default for Wire {
+        fn default() -> Self {
+            let defaults = PeerConfig::default();
+            Self {
+                standard_buffer_size: defaults.standard_buffer_size,
+                high_throughput_buffer_size: defaults.high_throughput_buffer_size,
+            }
+        }
+    }
+
+    let wire = Wire::deserialize(deserializer)?;
+    Ok(PeerConfig {
+        standard_buffer_size: wire.standard_buffer_size,
+        high_throughput_buffer_size: wire.high_throughput_buffer_size,
+    })
+}
+
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
 ///
-/// Every field must also SERIALIZE under `Default` (no `skip_serializing_if`):
-/// the schema-coverage pin in [`completion`] enumerates the settings by
-/// serializing this struct's default value, and a field it cannot see would
-/// escape the guarantee that older files gain every new setting on upgrade.
+/// Every DEFAULTED field must also serialize under `Default` (no
+/// `skip_serializing_if`): the schema-coverage pin in [`completion`] enumerates
+/// those settings by serializing this struct's default value, and a field it
+/// cannot see would escape the guarantee that older files gain every new
+/// default on upgrade. Required fields that exist only in a non-default tagged
+/// variant (currently `zenoh.zenohd.endpoint`) are pinned separately and
+/// deliberately are not invented by completion.
 ///
 /// Not `Copy`: `resource_servers` owns heap strings. The daemon reads this once
 /// and moves it into the core node, and the CLI clones it field-by-field, so the
@@ -369,15 +658,11 @@ pub struct PeppyConfig {
     #[serde(default)]
     pub core_node_name: Option<String>,
     #[serde(default)]
-    pub mode: Mode,
-    #[serde(default)]
-    pub peer: PeerConfig,
+    pub zenoh: ZenohConfig,
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
     #[serde(default)]
     pub resource_servers: ResourceServers,
-    #[serde(default)]
-    pub federation: FederationConfig,
 }
 
 impl PeppyConfig {
@@ -402,16 +687,16 @@ impl PeppyConfig {
         }
 
         let buffer_sizes = [
-            ("standard_buffer_size", self.peer.standard_buffer_size),
+            ("standard_buffer_size", self.zenoh.peer.standard_buffer_size),
             (
                 "high_throughput_buffer_size",
-                self.peer.high_throughput_buffer_size,
+                self.zenoh.peer.high_throughput_buffer_size,
             ),
         ];
         for (field, value) in buffer_sizes {
             if value == 0 {
                 return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
-                    "invalid peer buffer size: {field} must be > 0"
+                    "invalid zenoh.peer.{field}: must be > 0"
                 ))));
             }
         }
@@ -432,11 +717,16 @@ impl PeppyConfig {
         // A 0 bound would make the federation pull either give up instantly or
         // (to the HTTP client) wait forever; reject a hand-edited too-small value
         // loud at load time, same as the grace periods.
-        if self.federation.connect_timeout_secs < MIN_FEDERATION_CONNECT_TIMEOUT_SECS {
+        if self.zenoh.federation.connect_timeout_secs < MIN_FEDERATION_CONNECT_TIMEOUT_SECS {
             return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
-                "invalid federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
+                "invalid zenoh.federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
             ))));
         }
+        self.zenoh.zenohd.validate().map_err(|message| {
+            Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "{PEPPY_CONFIG_FILE}: invalid zenoh.zenohd.endpoint: {message}"
+            )))
+        })?;
         Ok(())
     }
 }
@@ -563,16 +853,19 @@ mod tests {
     }
 
     #[test]
-    fn default_mode_is_peer_and_buffers_match_constants() {
+    fn default_topology_is_peer_and_buffers_match_constants() {
         let cfg = PeppyConfig::default();
         assert_eq!(cfg.core_node_name, None);
-        assert_eq!(cfg.mode, Mode::Peer);
-        assert!(cfg.mode.is_peer());
-        assert!(cfg.mode.gossip());
-        assert!(!Mode::Router.gossip());
-        assert_eq!(cfg.peer.standard_buffer_size, DEFAULT_STANDARD_BUFFER_SIZE);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Peer);
+        assert!(cfg.zenoh.local_nodes_topology.is_peer());
+        assert!(cfg.zenoh.local_nodes_topology.gossip());
+        assert!(!LocalNodesTopology::Router.gossip());
         assert_eq!(
-            cfg.peer.high_throughput_buffer_size,
+            cfg.zenoh.peer.standard_buffer_size,
+            DEFAULT_STANDARD_BUFFER_SIZE
+        );
+        assert_eq!(
+            cfg.zenoh.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
         assert_eq!(cfg.lifecycle.daemon_grace_secs, DEFAULT_DAEMON_GRACE_SECS);
@@ -582,20 +875,23 @@ mod tests {
         );
         assert_eq!(cfg.resource_servers.api, DEFAULT_API_URL);
         assert_eq!(
-            cfg.federation.connect_timeout_secs,
+            cfg.zenoh.federation.connect_timeout_secs,
             DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
         );
+        assert_eq!(cfg.zenoh.zenohd, ZenohdConfig::Managed);
+        assert_eq!(cfg.zenoh.zenohd.external_endpoint(), None);
     }
 
     #[test]
     fn federation_section_defaults_and_completes() {
-        // An existing file with no `federation` block parses with the default
-        // and is completed in place with the section (the auto-complete path
-        // older files rely on).
-        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        // An existing file with no `federation` block inside `zenoh` parses
+        // with the default and is completed in place with the section (the
+        // auto-complete path older files rely on).
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ zenoh: { local_nodes_topology: "router" } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(
-            cfg.federation.connect_timeout_secs,
+            cfg.zenoh.federation.connect_timeout_secs,
             DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
         );
         let completed = std::fs::read_to_string(&path).unwrap();
@@ -609,9 +905,198 @@ mod tests {
 
         // An explicit value is honored.
         let (_tmp, peppy_dirs, _) =
-            dirs_with_config(r#"{ federation: { connect_timeout_secs: 5 } }"#);
+            dirs_with_config(r#"{ zenoh: { federation: { connect_timeout_secs: 5 } } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.federation.connect_timeout_secs, 5);
+        assert_eq!(cfg.zenoh.federation.connect_timeout_secs, 5);
+    }
+
+    #[test]
+    fn zenohd_section_defaults_and_completes() {
+        // An older file gains the explicit managed default, and loading the
+        // completed file again leaves it byte-for-byte unchanged.
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ zenoh: { local_nodes_topology: "router" } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.zenoh.zenohd, ZenohdConfig::Managed);
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("zenohd: {"));
+        assert!(completed.contains("ownership: \"managed\","));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+
+        // A present but empty section receives the missing defaulted field,
+        // just like a wholly absent section.
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ zenoh: { zenohd: {} } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.zenoh.zenohd, ZenohdConfig::Managed);
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("ownership: \"managed\",")
+        );
+
+        // External ownership carries the exact dial endpoint downstream.
+        let endpoint = "tcp/router.internal:7448";
+        let (_tmp, peppy_dirs, _) = dirs_with_config(&format!(
+            r#"{{ zenoh: {{ zenohd: {{ ownership: "external", endpoint: "{endpoint}" }} }} }}"#
+        ));
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(
+            cfg.zenoh.zenohd,
+            ZenohdConfig::External {
+                endpoint: endpoint.to_string()
+            }
+        );
+        assert_eq!(cfg.zenoh.zenohd.external_endpoint(), Some(endpoint));
+    }
+
+    #[test]
+    fn external_zenohd_accepts_tcp_dial_locators() {
+        for endpoint in [
+            "tcp/127.0.0.1:7448",
+            "tcp/localhost:1",
+            "tcp/router-1.internal.example:7448",
+            "tcp/[::1]:65535",
+            "tcp/[2001:db8::1]:7448",
+        ] {
+            let content = format!(
+                r#"{{ zenoh: {{ zenohd: {{ ownership: "external", endpoint: "{endpoint}" }} }} }}"#
+            );
+            let (_tmp, peppy_dirs, _) = dirs_with_config(&content);
+            let config = load_or_create(&peppy_dirs).unwrap();
+            assert_eq!(config.zenoh.zenohd.external_endpoint(), Some(endpoint));
+        }
+    }
+
+    #[test]
+    fn invalid_external_zenohd_endpoints_fail_loud_and_leave_files_untouched() {
+        for (endpoint, expected_message) in [
+            ("", "must not be empty"),
+            (
+                " tcp/127.0.0.1:7448",
+                "must not contain leading or trailing whitespace",
+            ),
+            (
+                "tcp/127.0.0.1:7448 ",
+                "must not contain leading or trailing whitespace",
+            ),
+            ("udp/127.0.0.1:7448", "tcp/<host>:<port>"),
+            ("127.0.0.1:7448", "tcp/<host>:<port>"),
+            ("tcp/127.0.0.1", "must include a host and port"),
+            ("tcp/:7448", "host must not be empty"),
+            ("tcp/127.0.0.1:", "port must be an integer"),
+            ("tcp/127.0.0.1:+1", "port must be an integer"),
+            ("tcp/127.0.0.1:0", "port must be an integer"),
+            ("tcp/127.0.0.1:65536", "port must be an integer"),
+            ("tcp/0.0.0.0:7448", "0.0.0.0 is only valid for listening"),
+            ("tcp/*:7448", "* is only valid for listening"),
+            ("tcp/[::]:7448", "[::] is only valid for listening"),
+            (
+                "tcp/::1:7448",
+                "IPv6 addresses must be enclosed in brackets",
+            ),
+            ("tcp/[::1]7448", "must include a port after the host"),
+            ("tcp/[not-ip]:7448", "must be a valid IPv6 address"),
+            ("tcp/999.0.0.1:7448", "not a valid IPv4 address"),
+            (
+                "tcp/bad_host:7448",
+                "must be a valid hostname or IP address",
+            ),
+            (
+                "tcp/router.example..:7448",
+                "must be a valid hostname or IP address",
+            ),
+            (
+                "tcp/127.0.0.1:7448?prio=1",
+                "metadata and endpoint configuration are not supported",
+            ),
+        ] {
+            let content = format!(
+                r#"{{ zenoh: {{ zenohd: {{ ownership: "external", endpoint: "{endpoint}" }} }} }}"#
+            );
+            let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
+
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(PEPPY_CONFIG_FILE)
+                        && message.contains("zenoh.zenohd.endpoint")
+                        && message.contains(expected_message)),
+                "expected a zenohd endpoint error for {endpoint:?}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn invalid_zenohd_shapes_fail_loud_and_leave_files_untouched() {
+        for content in [
+            r#"{ zenoh: { zenohd: { ownership: "managed", endpoint: "tcp/127.0.0.1:7448" } } }"#,
+            r#"{ zenoh: { zenohd: { ownership: "external" } } }"#,
+            r#"{ zenoh: { zenohd: { ownership: "something_else" } } }"#,
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(PEPPY_CONFIG_FILE)),
+                "expected a zenohd shape error for {content}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn zenohd_unknown_fields_fail_loud_under_every_ownership() {
+        for content in [
+            r#"{ zenoh: { zenohd: { future_router_option: { enabled: true } } } }"#,
+            r#"{
+  zenoh: {
+    zenohd: {
+      ownership: "external",
+      endpoint: "tcp/router.internal:7448",
+      future_router_option: { enabled: true },
+    },
+  },
+}"#,
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains("unknown field `zenoh.zenohd.future_router_option`")),
+                "expected an unknown zenohd field error for {content}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn zenoh_unknown_fields_fail_loud_and_leave_files_untouched() {
+        for (content, unknown_field) in [
+            (
+                r#"{ zenoh: { local_nodes_toplogy: "router" } }"#,
+                "local_nodes_toplogy",
+            ),
+            (
+                r#"{ zenoh: { peer: { standard_buffer_sze: 64 } } }"#,
+                "standard_buffer_sze",
+            ),
+            (
+                r#"{ zenoh: { federation: { connect_timeout_sec: 5 } } }"#,
+                "connect_timeout_sec",
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(unknown_field)),
+                "expected an unknown-field error for {unknown_field}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+        }
     }
 
     #[test]
@@ -619,7 +1104,8 @@ mod tests {
         // An older file without the knob gains the explicit `null` line
         // (null = derive the default), and a second load parses to the same
         // config without rewriting the file again.
-        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ zenoh: { local_nodes_topology: "router" } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.core_node_name, None);
         let completed = std::fs::read_to_string(&path).unwrap();
@@ -697,7 +1183,7 @@ mod tests {
     #[test]
     fn zero_federation_timeout_fails_loud() {
         let (_tmp, peppy_dirs, _) =
-            dirs_with_config(r#"{ federation: { connect_timeout_secs: 0 } }"#);
+            dirs_with_config(r#"{ zenoh: { federation: { connect_timeout_secs: 0 } } }"#);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
         assert!(
@@ -713,7 +1199,7 @@ mod tests {
             dirs_with_config(r#"{ resource_servers: { api: "http://localhost:9000" } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.resource_servers.api, "http://localhost:9000");
-        assert_eq!(cfg.mode, Mode::Peer);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Peer);
 
         // An empty block falls back to the build's default backend URL.
         let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ resource_servers: {} }"#);
@@ -734,8 +1220,8 @@ mod tests {
             DEFAULT_SHUTDOWN_GRACE_SECS
         );
         // Omitted blocks still fall back to their defaults.
-        assert_eq!(cfg.mode, Mode::Peer);
-        assert_eq!(cfg.peer, PeerConfig::default());
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Peer);
+        assert_eq!(cfg.zenoh.peer, PeerConfig::default());
     }
 
     #[test]
@@ -798,22 +1284,23 @@ mod tests {
 
     #[test]
     fn completes_missing_fields_while_preserving_user_values() {
-        let (_tmp, peppy_dirs, path) =
-            dirs_with_config(r#"{ mode: "router", lifecycle: { daemon_grace_secs: 45 } }"#);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(
+            r#"{ zenoh: { local_nodes_topology: "router" }, lifecycle: { daemon_grace_secs: 45 } }"#,
+        );
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.mode, Mode::Router);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Router);
         assert_eq!(cfg.lifecycle.daemon_grace_secs, 45);
         assert_eq!(
             cfg.lifecycle.shutdown_grace_secs,
             DEFAULT_SHUTDOWN_GRACE_SECS
         );
-        assert_eq!(cfg.peer, PeerConfig::default());
+        assert_eq!(cfg.zenoh.peer, PeerConfig::default());
 
         // The user's values survive in the file and the omitted knobs now
         // appear in it with their defaults.
         let completed = std::fs::read_to_string(&path).unwrap();
-        assert!(completed.contains(r#"mode: "router""#));
+        assert!(completed.contains(r#"local_nodes_topology: "router""#));
         assert!(completed.contains("daemon_grace_secs: 45"));
         assert!(completed.contains(&format!(
             "standard_buffer_size: {DEFAULT_STANDARD_BUFFER_SIZE},"
@@ -835,8 +1322,9 @@ mod tests {
     /// field is added.
     #[test]
     fn old_release_file_gains_every_current_schema_leaf() {
-        let (_tmp, peppy_dirs, path) =
-            dirs_with_config(r#"{ mode: "router", lifecycle: { daemon_grace_secs: 45 } }"#);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(
+            r#"{ zenoh: { local_nodes_topology: "router" }, lifecycle: { daemon_grace_secs: 45 } }"#,
+        );
 
         load_or_create(&peppy_dirs).unwrap();
 
@@ -857,7 +1345,10 @@ mod tests {
         }
 
         // The old release's values survived the completion.
-        assert_eq!(doc["mode"], serde_json::json!("router"));
+        assert_eq!(
+            doc["zenoh"]["local_nodes_topology"],
+            serde_json::json!("router")
+        );
         assert_eq!(doc["lifecycle"]["daemon_grace_secs"], serde_json::json!(45));
 
         // A second load has nothing left to add and leaves the bytes alone.
@@ -867,15 +1358,19 @@ mod tests {
 
     #[test]
     fn parses_partial_file_filling_defaults() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ mode: "router" }"#);
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ zenoh: { local_nodes_topology: "router" } }"#);
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.mode, Mode::Router);
-        assert!(!cfg.mode.gossip());
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Router);
+        assert!(!cfg.zenoh.local_nodes_topology.gossip());
         // Missing peer block falls back to the built-in defaults.
-        assert_eq!(cfg.peer.standard_buffer_size, DEFAULT_STANDARD_BUFFER_SIZE);
         assert_eq!(
-            cfg.peer.high_throughput_buffer_size,
+            cfg.zenoh.peer.standard_buffer_size,
+            DEFAULT_STANDARD_BUFFER_SIZE
+        );
+        assert_eq!(
+            cfg.zenoh.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
     }
@@ -892,10 +1387,18 @@ mod tests {
     fn round_trips_custom_config() {
         let custom = PeppyConfig {
             core_node_name: Some("lab-bench-1".to_string()),
-            mode: Mode::Router,
-            peer: PeerConfig {
-                standard_buffer_size: 64,
-                high_throughput_buffer_size: 4096,
+            zenoh: ZenohConfig {
+                local_nodes_topology: LocalNodesTopology::Router,
+                peer: PeerConfig {
+                    standard_buffer_size: 64,
+                    high_throughput_buffer_size: 4096,
+                },
+                federation: FederationConfig {
+                    connect_timeout_secs: 45,
+                },
+                zenohd: ZenohdConfig::External {
+                    endpoint: "tcp/router.internal:7448".to_string(),
+                },
             },
             lifecycle: LifecycleConfig {
                 daemon_grace_secs: 240,
@@ -904,9 +1407,6 @@ mod tests {
             resource_servers: ResourceServers {
                 api: "http://localhost:9000".to_string(),
             },
-            federation: FederationConfig {
-                connect_timeout_secs: 45,
-            },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();
         let reparsed: PeppyConfig = serde_json5::from_str(&serialized).unwrap();
@@ -914,20 +1414,20 @@ mod tests {
     }
 
     #[test]
-    fn mode_serializes_snake_case() {
+    fn topology_serializes_snake_case() {
         assert_eq!(
-            serde_json::to_value(Mode::Router).unwrap(),
+            serde_json::to_value(LocalNodesTopology::Router).unwrap(),
             serde_json::json!("router")
         );
         assert_eq!(
-            serde_json::to_value(Mode::Peer).unwrap(),
+            serde_json::to_value(LocalNodesTopology::Peer).unwrap(),
             serde_json::json!("peer")
         );
     }
 
     #[test]
     fn malformed_file_fails_loud_and_is_left_untouched() {
-        let malformed = r#"{ mode: "router", peer: { standard_buffer_size: "not a number" } }"#;
+        let malformed = r#"{ zenoh: { local_nodes_topology: "router", peer: { standard_buffer_size: "not a number" } } }"#;
         let (_tmp, peppy_dirs, path) = dirs_with_config(malformed);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
@@ -941,7 +1441,8 @@ mod tests {
 
     #[test]
     fn zero_standard_buffer_size_fails_loud() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ peer: { standard_buffer_size: 0 } }"#);
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ zenoh: { peer: { standard_buffer_size: 0 } } }"#);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
         assert!(
@@ -953,7 +1454,7 @@ mod tests {
     #[test]
     fn zero_high_throughput_buffer_size_fails_loud() {
         let (_tmp, peppy_dirs, _) =
-            dirs_with_config(r#"{ peer: { high_throughput_buffer_size: 0 } }"#);
+            dirs_with_config(r#"{ zenoh: { peer: { high_throughput_buffer_size: 0 } } }"#);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
         assert!(
@@ -965,12 +1466,12 @@ mod tests {
     #[test]
     fn accepts_minimal_nonzero_buffer_sizes() {
         let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ peer: { standard_buffer_size: 1, high_throughput_buffer_size: 1 } }"#,
+            r#"{ zenoh: { peer: { standard_buffer_size: 1, high_throughput_buffer_size: 1 } } }"#,
         );
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.peer.standard_buffer_size, 1);
-        assert_eq!(cfg.peer.high_throughput_buffer_size, 1);
+        assert_eq!(cfg.zenoh.peer.standard_buffer_size, 1);
+        assert_eq!(cfg.zenoh.peer.high_throughput_buffer_size, 1);
     }
 
     #[cfg(unix)]
@@ -978,7 +1479,8 @@ mod tests {
     fn completion_preserves_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ zenoh: { local_nodes_topology: "router" } }"#);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
 
         load_or_create(&peppy_dirs).unwrap();
@@ -1005,12 +1507,12 @@ mod tests {
         // A dotfiles-style setup: the file under conf/ is a symlink to a
         // config managed elsewhere.
         let real = tmp.path().join("dotfiles_peppy.json5");
-        std::fs::write(&real, r#"{ mode: "router" }"#).unwrap();
+        std::fs::write(&real, r#"{ zenoh: { local_nodes_topology: "router" } }"#).unwrap();
         let link = conf_dir.join(PEPPY_CONFIG_FILE);
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.mode, Mode::Router);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Router);
 
         // The symlink survives and the completed content landed in its target.
         assert!(

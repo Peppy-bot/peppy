@@ -18,7 +18,12 @@ pub struct DaemonState {
     /// The name of the node currently acting as the core node.
     pub core_node_name: String,
     pub daemon_pid: Option<u32>,
-    /// The port the messaging router is listening on.
+    /// The dial host the daemon, CLI, and spawned nodes use for the messaging
+    /// router. Older state files predate this field and therefore resolve to the
+    /// historical loopback host.
+    #[serde(default = "default_messaging_host")]
+    pub messaging_host: String,
+    /// The dial port the messaging router is serving.
     #[serde(default = "default_messaging_port")]
     pub messaging_port: u16,
     /// The git hash of the peppy binary at compile time.
@@ -58,6 +63,10 @@ fn default_messaging_port() -> u16 {
     config::consts::DEFAULT_MESSAGING_PORT
 }
 
+fn default_messaging_host() -> String {
+    config::consts::DEFAULT_MESSAGING_HOST.to_string()
+}
+
 fn default_shutdown_grace_secs() -> u64 {
     config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
 }
@@ -74,6 +83,7 @@ fn now_epoch_ms() -> u64 {
 impl DaemonState {
     pub fn new(
         core_node_name: impl Into<String>,
+        messaging_host: impl Into<String>,
         messaging_port: u16,
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
@@ -82,6 +92,7 @@ impl DaemonState {
         Self {
             core_node_name: core_node_name.into(),
             daemon_pid: Some(std::process::id()),
+            messaging_host: messaging_host.into(),
             messaging_port,
             git_hash: git_hash.into(),
             shutdown_grace_secs,
@@ -275,6 +286,7 @@ mod tests {
         DaemonState {
             core_node_name: format!("node-{}", pid.unwrap_or(0)),
             daemon_pid: pid,
+            messaging_host: "127.0.0.1".to_string(),
             messaging_port: 7447,
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
@@ -363,11 +375,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
         let mut original = state(Some(42), 0);
+        original.messaging_host = "router.internal".to_string();
         original.written_at_ms = 1_234_567;
         DaemonState::write_to(&path, &original).expect("write");
 
         let read = DaemonState::read_from(&path).expect("read");
         assert_eq!(read.written_at_ms, 1_234_567);
+        assert_eq!(read.messaging_host, "router.internal");
+        assert_eq!(read.messaging_port, 7447);
     }
 
     #[test]
@@ -380,6 +395,8 @@ mod tests {
 
         let read = DaemonState::read_from(&path).expect("read");
         assert_eq!(read.written_at_ms, 0);
+        assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
+        assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);
     }
 
     #[cfg(unix)]

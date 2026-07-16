@@ -23,11 +23,10 @@ use crate::{context::AppContext, error::Result};
 use daemon::control::{self as daemon_control, PokeOutcome};
 use daemon::state::DaemonState;
 
-/// Shown when the daemon's router config is operator-pinned via `ZENOH_CONFIG`,
-/// so the CLI does not auto-manage federation. Used by both login and logout
-/// reporting.
-const PINNED_NOTE: &str = "Note: this daemon's router config is operator-pinned (ZENOH_CONFIG); \
-     federation is not auto-managed.";
+/// Shown when the daemon's router is operator-managed, so the CLI does not
+/// auto-manage federation. Used by both login and logout reporting.
+const PINNED_NOTE: &str = "Note: this daemon's router is operator-managed (ZENOH_CONFIG pin or \
+     an adopted external endpoint); federation is not auto-managed.";
 
 /// Re-poke cadence and overall deadline while waiting for the daemon to restart
 /// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)
@@ -290,7 +289,7 @@ fn await_restart(
     result
 }
 
-/// Strict reporting for a login poke: success and the operator-pinned case print
+/// Strict reporting for a login poke: success and the operator-managed case print
 /// and return `Ok`; every "federation not in effect" outcome returns an
 /// actionable [`Error::Auth`] (credentials are already saved by the caller, so
 /// the identity is kept; only the command fails).
@@ -301,8 +300,8 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
             Ok(())
         }
         PokeOutcome::Pinned => {
-            // The operator owns this router's config via ZENOH_CONFIG, so the CLI
-            // is not responsible for federating it. Treat as non-fatal.
+            // The operator owns this router, so the CLI is not responsible for
+            // federating it. Treat as non-fatal.
             println!("{PINNED_NOTE}");
             Ok(())
         }
@@ -508,7 +507,7 @@ mod tests {
         );
         assert!(
             report_login(PokeOutcome::Pinned).is_ok(),
-            "an operator-pinned router is non-fatal for login"
+            "an operator-managed router is non-fatal for login"
         );
     }
 

@@ -365,10 +365,11 @@ pub struct ServeOptions {
 pub fn serve(options: ServeOptions) -> Result<()> {
     let mut flap = FlapWindow::new();
     loop {
-        match run_one_generation(&options)? {
+        let (outcome, router_adopted) = run_one_generation(&options)?;
+        match outcome {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
-                finalize_before_restart();
+                finalize_before_restart(router_adopted);
                 if flap.record_and_is_flapping() {
                     error!(
                         "daemon restarted more than {FLAP_CAP} times within {:?}; \
@@ -387,7 +388,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
 /// is a clean generation: fresh sessions, a fresh `CoreNode` (so its
 /// declaration guard re-runs), and the namespace + federation gate re-resolved
 /// from the credentials at the top of the build.
-fn run_one_generation(options: &ServeOptions) -> Result<ServeOutcome> {
+fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
     // Read the daemon-global config, creating it with defaults if missing.
     // Resolved from `PeppyDirs::default()` (the same ~/.peppy the core node
     // uses), applied to the daemon's own session and every spawned node.
@@ -404,10 +405,15 @@ fn run_one_generation(options: &ServeOptions) -> Result<ServeOutcome> {
         builder = builder.with_shutdown_token(token.clone());
     }
 
+    let messenger = builder.messenger_handle();
     let executor = builder.build()?;
-    executor
+    let outcome = executor
         .execute()
-        .inspect_err(|e| error!("Serve command failed: {}", e))
+        .inspect_err(|e| error!("Serve command failed: {}", e))?;
+    let router_adopted = messenger
+        .map(|messenger| messenger.blocking_lock().router_is_adopted())
+        .unwrap_or(false);
+    Ok((outcome, router_adopted))
 }
 
 /// In-process flap backstop: more than [`FLAP_CAP`] restarts within
@@ -435,15 +441,23 @@ impl FlapWindow {
 }
 
 /// Between-generations finalizer for a restart: reap straggler children, then
-/// confirm the messaging port is free before the next `start_router`. A still-
-/// bound port the loop cannot recover from exits with [`RESTART_EXIT_CODE`].
-fn finalize_before_restart() {
+/// confirm a managed router released the messaging port before the next
+/// `start_router`. An adopted router remains outside peppy's lifecycle across
+/// generations and may be local or remote.
+fn finalize_before_restart(router_adopted: bool) {
     // Node children were reaped only by detached exit-watcher tasks that died with
     // the just-dropped runtime; because the process is long-lived (no execv/exit
     // re-parenting to init) an un-reaped child becomes a persistent zombie. A
     // single WNOHANG pass can miss a killed-but-not-yet-zombie child, so loop with
     // a short sleep until no children remain or the deadline.
     reap_stragglers(Duration::from_secs(2));
+
+    if router_adopted {
+        info!(
+            "adopted external router remains operator-managed; skipping the managed-port-free wait"
+        );
+        return;
+    }
 
     // Verify the messaging listen endpoint is free before the next generation's
     // start_router. TCP-only today (the local router listens on tcp/); if the old

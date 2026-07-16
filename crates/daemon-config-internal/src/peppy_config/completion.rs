@@ -1,10 +1,11 @@
 //! Comment-preserving completion of a user's `peppy_config.json5`.
 //!
-//! [`complete_config_content`] splices every missing known section or nested
-//! field into the file content, copying the snippet (explanatory comments
-//! included) from the bundled template, so the file on disk always lists every
-//! available knob. Everything the user wrote survives byte-for-byte: their
-//! values, their comments, their formatting, and any unknown keys.
+//! [`complete_config_content`] splices every missing known entry, at any
+//! nesting depth, into the file content, copying the snippet (explanatory
+//! comments included) from the bundled template, so the file on disk always
+//! lists every available knob. Everything the user wrote survives
+//! byte-for-byte: their values, their comments, their formatting, and any
+//! unknown keys.
 //!
 //! Rewriting the file through serde would destroy comments, and no
 //! comment-preserving JSON5 editor crate exists, so this works directly on the
@@ -22,109 +23,180 @@ use std::collections::HashMap;
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
     FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
-    HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET, MODE_SECTION_SNIPPET,
-    PEER_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
-    STANDARD_BUFFER_FIELD_SNIPPET,
+    HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
+    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, PEER_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
+    SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET, ZENOH_SECTION_SNIPPET,
+    ZENOHD_OWNERSHIP_FIELD_SNIPPET, ZENOHD_SECTION_SNIPPET,
 };
 
-/// A nested field of a top-level section, with the template snippet to splice
-/// into the section's block when the field is absent.
-struct FieldSpec {
+/// One known config entry: the template snippet to splice into its parent
+/// block when the entry is absent, and the nested entries to complete
+/// individually when it is present but incomplete. A leaf has no children; an
+/// entry with children must have a snippet that embeds every child snippet
+/// (`nested_snippets_compose_their_parents` pins that), so splicing a whole
+/// missing branch and completing it field-by-field agree.
+struct EntrySpec {
     key: &'static str,
     snippet: &'static str,
-}
-
-/// A top-level entry of the bundled template: the snippet to splice into the
-/// root object when the whole entry is absent, and the nested fields to splice
-/// individually when the entry exists but is incomplete.
-struct SectionSpec {
-    key: &'static str,
-    snippet: &'static str,
-    fields: &'static [FieldSpec],
+    children: &'static [EntrySpec],
 }
 
 /// Every known config entry, in template order. New knobs must be added here
 /// (and to the template composition) to be auto-completed into user files;
 /// `template_matches_section_table` pins the two against each other.
-const SECTIONS: &[SectionSpec] = &[
+const SECTIONS: &[EntrySpec] = &[
     // The template materializes this entry as an explicit `core_node_name:
-    // null,`: [`complete_config_content`] counts a null value as present (its
-    // `as_object()` guard then skips field-level completion), so the splice
-    // cannot repeat once the line exists.
-    SectionSpec {
+    // null,`: [`complete_config_content`] counts a null value as present (a
+    // leaf spec never descends into its value), so the splice cannot repeat
+    // once the line exists.
+    EntrySpec {
         key: "core_node_name",
         snippet: CORE_NODE_NAME_SECTION_SNIPPET,
-        fields: &[],
+        children: &[],
     },
-    SectionSpec {
-        key: "mode",
-        snippet: MODE_SECTION_SNIPPET,
-        fields: &[],
-    },
-    SectionSpec {
-        key: "peer",
-        snippet: PEER_SECTION_SNIPPET,
-        fields: &[
-            FieldSpec {
-                key: "standard_buffer_size",
-                snippet: STANDARD_BUFFER_FIELD_SNIPPET,
+    EntrySpec {
+        key: "zenoh",
+        snippet: ZENOH_SECTION_SNIPPET,
+        children: &[
+            EntrySpec {
+                key: "local_nodes_topology",
+                snippet: LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET,
+                children: &[],
             },
-            FieldSpec {
-                key: "high_throughput_buffer_size",
-                snippet: HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
+            EntrySpec {
+                key: "peer",
+                snippet: PEER_SECTION_SNIPPET,
+                children: &[
+                    EntrySpec {
+                        key: "standard_buffer_size",
+                        snippet: STANDARD_BUFFER_FIELD_SNIPPET,
+                        children: &[],
+                    },
+                    EntrySpec {
+                        key: "high_throughput_buffer_size",
+                        snippet: HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
+                        children: &[],
+                    },
+                ],
+            },
+            EntrySpec {
+                key: "federation",
+                snippet: FEDERATION_SECTION_SNIPPET,
+                children: &[EntrySpec {
+                    key: "connect_timeout_secs",
+                    snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+                    children: &[],
+                }],
+            },
+            EntrySpec {
+                key: "zenohd",
+                snippet: ZENOHD_SECTION_SNIPPET,
+                children: &[EntrySpec {
+                    key: "ownership",
+                    snippet: ZENOHD_OWNERSHIP_FIELD_SNIPPET,
+                    children: &[],
+                }],
             },
         ],
     },
-    SectionSpec {
+    EntrySpec {
         key: "lifecycle",
         snippet: LIFECYCLE_SECTION_SNIPPET,
-        fields: &[
-            FieldSpec {
+        children: &[
+            EntrySpec {
                 key: "daemon_grace_secs",
                 snippet: DAEMON_GRACE_FIELD_SNIPPET,
+                children: &[],
             },
-            FieldSpec {
+            EntrySpec {
                 key: "shutdown_grace_secs",
                 snippet: SHUTDOWN_GRACE_FIELD_SNIPPET,
+                children: &[],
             },
         ],
     },
-    SectionSpec {
+    EntrySpec {
         key: "resource_servers",
         snippet: RESOURCE_SERVERS_SECTION_SNIPPET,
-        fields: &[FieldSpec {
+        children: &[EntrySpec {
             key: "api",
             snippet: API_FIELD_SNIPPET,
-        }],
-    },
-    SectionSpec {
-        key: "federation",
-        snippet: FEDERATION_SECTION_SNIPPET,
-        fields: &[FieldSpec {
-            key: "connect_timeout_secs",
-            snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+            children: &[],
         }],
     },
 ];
 
 /// A completion result: the rewritten file content plus what was spliced in.
 ///
-/// `added_paths` names each spliced entry, whole top-level entries first and
-/// then nested fields, both in template order: a bare key for a whole entry
-/// ("federation"), `section.field` for a single nested field
-/// ("lifecycle.shutdown_grace_secs"). It reflects what was actually inserted,
-/// not merely what was absent: a field whose parent block the scanner could
-/// not locate is skipped by the splice and therefore not listed.
+/// `added_paths` names each spliced entry as a dot-separated path
+/// ("federation" spelled "zenoh.federation", a nested field
+/// "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
+/// (outer blocks first) and in template order within a block. It reflects what
+/// was actually inserted, not merely what was absent: an entry whose parent
+/// block the scanner could not locate is skipped by the splice and therefore
+/// not listed.
 #[derive(Debug)]
 pub(super) struct Completion {
     pub(super) content: String,
     pub(super) added_paths: Vec<String>,
 }
 
-/// Returns `content` with every missing known section or field appended from
-/// the bundled template (plus the paths that were appended), or `None` when
-/// the file already spells out all of them (or, defensively, when the content
-/// cannot be analyzed; the caller treats both as "leave the file alone").
+/// A known entry absent from the document: the path of the block it splices
+/// into (root = empty), its template snippet, and its dotted path for the
+/// added-settings log.
+struct MissingEntry {
+    parent_path: Vec<String>,
+    snippet: &'static str,
+    path: String,
+}
+
+/// Walks `specs` against `block`, recording every absent entry and descending
+/// into present entries that have children. Per level, the absent entries come
+/// first and the descents after, so the added-settings log lists each block's
+/// own gaps before its children's.
+fn collect_missing(
+    specs: &'static [EntrySpec],
+    block: &serde_json::Map<String, Value>,
+    parent_path: &[String],
+    missing: &mut Vec<MissingEntry>,
+) {
+    for spec in specs {
+        if !block.contains_key(spec.key) {
+            let path = if parent_path.is_empty() {
+                spec.key.to_string()
+            } else {
+                format!("{}.{}", parent_path.join("."), spec.key)
+            };
+            missing.push(MissingEntry {
+                parent_path: parent_path.to_vec(),
+                snippet: spec.snippet,
+                path,
+            });
+        }
+    }
+    for spec in specs {
+        if spec.children.is_empty() {
+            continue;
+        }
+        let Some(value) = block.get(spec.key) else {
+            continue;
+        };
+        // A present-but-non-object entry cannot have parsed as a
+        // `PeppyConfig`; covered here anyway so this function never relies on
+        // its caller's checks.
+        let Some(child_block) = value.as_object() else {
+            continue;
+        };
+        let mut child_path = parent_path.to_vec();
+        child_path.push(spec.key.to_string());
+        collect_missing(spec.children, child_block, &child_path, missing);
+    }
+}
+
+/// Returns `content` with every missing known entry appended from the bundled
+/// template (plus the paths that were appended), or `None` when the file
+/// already spells out all of them (or, defensively, when the content cannot be
+/// analyzed; the caller treats both as "leave the file alone").
 ///
 /// Expects `content` to already have parsed successfully as a `PeppyConfig`;
 /// malformed input simply returns `None` rather than guessing at splice points.
@@ -132,34 +204,27 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
     let doc: Value = serde_json5::from_str(content).ok()?;
     let doc = doc.as_object()?;
 
-    let mut missing_sections: Vec<&SectionSpec> = Vec::new();
-    let mut incomplete_sections: Vec<(&SectionSpec, Vec<&FieldSpec>)> = Vec::new();
-    for section in SECTIONS {
-        match doc.get(section.key) {
-            None => missing_sections.push(section),
-            Some(value) => {
-                // A present-but-non-object section cannot have parsed as a
-                // `PeppyConfig`; covered here anyway so this function never
-                // relies on its caller's checks.
-                let Some(block) = value.as_object() else {
-                    continue;
-                };
-                let absent: Vec<&FieldSpec> = section
-                    .fields
-                    .iter()
-                    .filter(|field| !block.contains_key(field.key))
-                    .collect();
-                if !absent.is_empty() {
-                    incomplete_sections.push((section, absent));
-                }
-            }
-        }
-    }
-    if missing_sections.is_empty() && incomplete_sections.is_empty() {
+    let mut missing: Vec<MissingEntry> = Vec::new();
+    collect_missing(SECTIONS, doc, &[], &mut missing);
+    if missing.is_empty() {
         return None;
     }
 
     let layout = scan_layout(content)?;
+
+    // One insertion per target block: group the missing entries by their
+    // parent path, preserving first-encounter order, so siblings share a
+    // single splice (and at most one separating comma).
+    let mut groups: Vec<(Vec<String>, Vec<MissingEntry>)> = Vec::new();
+    for entry in missing {
+        match groups
+            .iter_mut()
+            .find(|(path, _)| *path == entry.parent_path)
+        {
+            Some((_, entries)) => entries.push(entry),
+            None => groups.push((entry.parent_path.clone(), vec![entry])),
+        }
+    }
 
     // Each entry is (byte offset in `content`, text to insert there). Applied
     // in descending offset order so earlier offsets stay valid. When two
@@ -171,31 +236,18 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
     // so a skipped splice (unlocatable block) is never reported as added.
     let mut added_paths: Vec<String> = Vec::new();
 
-    if !missing_sections.is_empty() {
-        let mut text = String::new();
-        for section in &missing_sections {
-            text.push('\n');
-            text.push_str(section.snippet);
-            added_paths.push(section.key.to_string());
-        }
-        insertions.push((layout.root.close, text));
-        if let Some(at) = layout.root.trailing_comma_insertion() {
-            insertions.push((at, ",".to_string()));
-        }
-    }
-
-    for (section, fields) in &incomplete_sections {
-        // A block the scanner could not pair with this key (say, a key spelled
-        // with string escapes) is skipped: the in-memory defaults still apply,
-        // the file just keeps omitting the field.
-        let Some(block) = layout.blocks.get(section.key) else {
+    for (parent_path, entries) in groups {
+        // A block the scanner could not pair with its key chain (say, a key
+        // spelled with string escapes) is skipped: the in-memory defaults
+        // still apply, the file just keeps omitting the entry.
+        let Some(block) = layout.block_at(&parent_path) else {
             continue;
         };
         let mut text = String::new();
-        for field in fields {
+        for entry in entries {
             text.push('\n');
-            text.push_str(field.snippet);
-            added_paths.push(format!("{}.{}", section.key, field.key));
+            text.push_str(entry.snippet);
+            added_paths.push(entry.path);
         }
         insertions.push((block.close, text));
         if let Some(at) = block.trailing_comma_insertion() {
@@ -292,11 +344,21 @@ impl BlockSpan {
 }
 
 /// The insertion points of a config document: the root object, and every
-/// top-level key whose value is an object literal (keyed by name, last
-/// occurrence winning to match serde's duplicate-key behavior).
+/// object literal reachable from it through a chain of object keys, keyed by
+/// that chain (last occurrence winning to match serde's duplicate-key
+/// behavior). Objects inside arrays have no key chain and are not recorded.
 struct DocumentLayout {
     root: BlockSpan,
-    blocks: HashMap<String, BlockSpan>,
+    blocks: HashMap<Vec<String>, BlockSpan>,
+}
+
+impl DocumentLayout {
+    fn block_at(&self, path: &[String]) -> Option<&BlockSpan> {
+        if path.is_empty() {
+            return Some(&self.root);
+        }
+        self.blocks.get(path)
+    }
 }
 
 /// Scanner state: inside code, a string literal, or a comment.
@@ -307,12 +369,18 @@ enum ScanState {
     BlockComment,
 }
 
-/// One unclosed `{` or `[`. `key` is set for an object that is the value of a
-/// top-level entry (and left `None` for the root, arrays, and deeper nesting).
+/// One unclosed `{` or `[`, with the key-tracking state of its own entries.
+/// `key` is set for an object that is the value of a keyed entry in an object
+/// (and left `None` for the root, arrays, and array elements).
 struct OpenDelimiter {
     is_object: bool,
     open_end: usize,
     key: Option<String>,
+    /// The most recent completed identifier or string token directly inside
+    /// this block; a following `:` turns it into `pending_key`.
+    last_token: Option<String>,
+    /// Set between `key:` and its value, for object blocks only.
+    pending_key: Option<String>,
 }
 
 /// Single-pass scan of JSON5 text for the structure [`complete_config_content`]
@@ -323,17 +391,12 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
     let mut state = ScanState::Code;
     let mut stack: Vec<OpenDelimiter> = Vec::new();
     let mut root: Option<BlockSpan> = None;
-    let mut blocks: HashMap<String, BlockSpan> = HashMap::new();
+    let mut blocks: HashMap<Vec<String>, BlockSpan> = HashMap::new();
 
     // Last significant char seen anywhere (offset-just-past, char).
     let mut last_significant: Option<(usize, char)> = None;
     // An identifier-ish token currently being accumulated (start offset).
     let mut word_start: Option<usize> = None;
-    // The most recent completed identifier or string token at root level; a
-    // following `:` turns it into `pending_key`.
-    let mut last_root_token: Option<String> = None;
-    // Set between `key:` and its value, at root level only.
-    let mut pending_key: Option<String> = None;
     // Start offset of the string literal currently being scanned.
     let mut string_start = 0usize;
 
@@ -352,8 +415,10 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
                         escaped: true,
                     };
                 } else if c == quote {
-                    if stack.len() == 1 {
-                        last_root_token = Some(content[string_start + 1..i].to_string());
+                    if let Some(frame) = stack.last_mut()
+                        && frame.is_object
+                    {
+                        frame.last_token = Some(content[string_start + 1..i].to_string());
                     }
                     last_significant = Some((i + c.len_utf8(), quote));
                     state = ScanState::Code;
@@ -381,12 +446,13 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
                     || matches!(c, '{' | '}' | '[' | ']' | ',' | ':' | '"' | '\'')
                     || (c == '/' && matches!(chars.peek(), Some((_, '/' | '*'))));
                 // `take()` must run for every word end so the word is cleared
-                // even outside root level; the `&&` chain keeps that order.
+                // even inside arrays; the `&&` chain keeps that order.
                 if ends_word
                     && let Some(start) = word_start.take()
-                    && stack.len() == 1
+                    && let Some(frame) = stack.last_mut()
+                    && frame.is_object
                 {
-                    last_root_token = Some(content[start..i].to_string());
+                    frame.last_token = Some(content[start..i].to_string());
                 }
 
                 if c == '/' && matches!(chars.peek(), Some((_, '/'))) {
@@ -413,24 +479,28 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
 
                 match c {
                     '{' => {
-                        let key = if stack.len() == 1 {
-                            pending_key.take()
-                        } else {
-                            pending_key = None;
-                            None
-                        };
+                        let key = stack
+                            .last_mut()
+                            .filter(|parent| parent.is_object)
+                            .and_then(|parent| parent.pending_key.take());
                         stack.push(OpenDelimiter {
                             is_object: true,
                             open_end: i + 1,
                             key,
+                            last_token: None,
+                            pending_key: None,
                         });
                     }
                     '[' => {
-                        pending_key = None;
+                        if let Some(parent) = stack.last_mut() {
+                            parent.pending_key = None;
+                        }
                         stack.push(OpenDelimiter {
                             is_object: false,
                             open_end: i + 1,
                             key: None,
+                            last_token: None,
+                            pending_key: None,
                         });
                     }
                     '}' => {
@@ -449,10 +519,19 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
                         };
                         if stack.is_empty() {
                             root = Some(span);
-                        } else if stack.len() == 1
-                            && let Some(key) = frame.key
+                        } else if let Some(key) = frame.key
+                            && stack[1..]
+                                .iter()
+                                .all(|ancestor| ancestor.is_object && ancestor.key.is_some())
                         {
-                            blocks.insert(key, span);
+                            // The full key chain from the root: every ancestor
+                            // besides the root object contributes its key.
+                            let mut path: Vec<String> = stack[1..]
+                                .iter()
+                                .map(|ancestor| ancestor.key.clone().expect("checked above"))
+                                .collect();
+                            path.push(key);
+                            blocks.insert(path, span);
                         }
                     }
                     ']' => {
@@ -462,14 +541,16 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
                         }
                     }
                     ',' => {
-                        if stack.len() == 1 {
-                            last_root_token = None;
-                            pending_key = None;
+                        if let Some(frame) = stack.last_mut() {
+                            frame.last_token = None;
+                            frame.pending_key = None;
                         }
                     }
                     ':' => {
-                        if stack.len() == 1 {
-                            pending_key = last_root_token.take();
+                        if let Some(frame) = stack.last_mut()
+                            && frame.is_object
+                        {
+                            frame.pending_key = frame.last_token.take();
                         }
                     }
                     _ => {
@@ -551,28 +632,54 @@ mod tests {
         assert_eq!(composed, DEFAULT_PEPPY_CONFIG_TEMPLATE);
     }
 
-    /// A `PeppyConfig` field the section table does not cover would ship a
-    /// release whose user files silently never gain the setting; a table entry
-    /// without a struct field would splice a knob the parser ignores. The
-    /// schema is enumerated by serializing `PeppyConfig::default()`, which is
-    /// why every field must serialize under `Default` (no
-    /// `skip_serializing_if`; that invariant is recorded on the struct).
+    /// A parent snippet that does not embed one of its children would make a
+    /// whole-branch splice disagree with a field-by-field completion of the
+    /// same branch (and desync fresh files from completed ones).
+    #[test]
+    fn nested_snippets_compose_their_parents() {
+        fn assert_children_embedded(spec: &EntrySpec) {
+            for child in spec.children {
+                assert!(
+                    spec.snippet.contains(child.snippet),
+                    "snippet for `{}` does not embed its child `{}`",
+                    spec.key,
+                    child.key
+                );
+                assert_children_embedded(child);
+            }
+        }
+        for section in SECTIONS {
+            assert_children_embedded(section);
+        }
+    }
+
+    /// A defaulted `PeppyConfig` field the section table does not cover would
+    /// ship a release whose user files silently never gain the setting; a table
+    /// entry without a default field would splice a knob the parser ignores.
+    /// The default schema is enumerated by serializing `PeppyConfig::default()`
+    /// (variant-specific required fields are pinned separately below).
     #[test]
     fn section_table_matches_config_struct() {
         let schema =
             serde_json::to_value(PeppyConfig::default()).expect("PeppyConfig must serialize");
         let mut schema_paths = leaf_paths(&schema);
 
-        let mut table_paths: Vec<String> = Vec::new();
-        for section in SECTIONS {
-            if section.fields.is_empty() {
-                table_paths.push(section.key.to_string());
-            } else {
-                for field in section.fields {
-                    table_paths.push(format!("{}.{}", section.key, field.key));
+        fn table_leaf_paths(specs: &[EntrySpec], prefix: &str, out: &mut Vec<String>) {
+            for spec in specs {
+                let path = if prefix.is_empty() {
+                    spec.key.to_string()
+                } else {
+                    format!("{prefix}.{}", spec.key)
+                };
+                if spec.children.is_empty() {
+                    out.push(path);
+                } else {
+                    table_leaf_paths(spec.children, &path, out);
                 }
             }
         }
+        let mut table_paths: Vec<String> = Vec::new();
+        table_leaf_paths(SECTIONS, "", &mut table_paths);
 
         let missing_from_table: Vec<&String> = schema_paths
             .iter()
@@ -583,10 +690,9 @@ mod tests {
             "PeppyConfig fields that completion cannot splice into user files: \
              {missing_from_table:?}. Files written by older releases would never gain \
              them in {PEPPY_CONFIG_FILE}. For each field: add a snippet const next to \
-             the others in peppy_config.rs, splice it into DEFAULT_PEPPY_CONFIG_TEMPLATE, \
-             and register it in SECTIONS (template_matches_section_table pins the \
-             template side; a field nested deeper than section.field first needs the \
-             two-level FieldSpec model extended)."
+             the others in peppy_config.rs, splice it into the parent section snippet \
+             (or DEFAULT_PEPPY_CONFIG_TEMPLATE for a new top-level entry), and register \
+             it in SECTIONS under its parent's `children`."
         );
 
         let stale_table_entries: Vec<&String> = table_paths
@@ -627,20 +733,42 @@ mod tests {
         assert_eq!(template_paths, schema_paths);
     }
 
+    /// `zenoh.zenohd.endpoint` is required only by the non-default external
+    /// variant, so it must not appear in the managed template or be invented by
+    /// config completion. Pin that exceptional schema surface explicitly
+    /// instead of weakening the default-schema coverage tests above.
+    #[test]
+    fn external_zenohd_variant_schema_is_pinned() {
+        let external = serde_json::to_value(super::super::ZenohdConfig::External {
+            endpoint: "tcp/router.internal:7448".to_string(),
+        })
+        .expect("external zenohd config must serialize");
+        assert_eq!(
+            external,
+            serde_json::json!({
+                "ownership": "external",
+                "endpoint": "tcp/router.internal:7448",
+            })
+        );
+    }
+
     /// Pins the payload of the "added settings" log line `load_or_create`
-    /// emits: whole missing entries first, then nested fields, template order.
+    /// emits: grouped by target block (outer blocks first), template order
+    /// within a block.
     #[test]
     fn completion_reports_the_paths_it_added() {
-        let completion =
-            complete_config_content(r#"{ mode: "peer", lifecycle: { daemon_grace_secs: 60 } }"#)
-                .expect("sections and a lifecycle field missing");
+        let completion = complete_config_content(
+            r#"{ zenoh: { local_nodes_topology: "peer" }, lifecycle: { daemon_grace_secs: 60 } }"#,
+        )
+        .expect("sections, zenoh entries, and a lifecycle field missing");
         assert_eq!(
             completion.added_paths,
             [
                 "core_node_name",
-                "peer",
                 "resource_servers",
-                "federation",
+                "zenoh.peer",
+                "zenoh.federation",
+                "zenoh.zenohd",
                 "lifecycle.shutdown_grace_secs",
             ]
         );
@@ -681,29 +809,52 @@ mod tests {
 
     #[test]
     fn missing_trailing_comma_gets_one_before_appending() {
-        let completed = complete_config_content(r#"{ mode: "router" }"#)
-            .expect("peer and lifecycle missing")
+        let completed = complete_config_content(r#"{ zenoh: { local_nodes_topology: "router" } }"#)
+            .expect("everything else missing")
             .content;
         let config = parse(&completed);
-        assert_eq!(config.mode, super::super::Mode::Router);
+        assert_eq!(
+            config.zenoh.local_nodes_topology,
+            super::super::LocalNodesTopology::Router
+        );
         assert_eq!(
             config.lifecycle.daemon_grace_secs,
             DEFAULT_DAEMON_GRACE_SECS
         );
-        assert!(completed.contains(r#"mode: "router","#));
+        // Both the root's last entry and the zenoh block's last entry gained a
+        // separating comma before their spliced siblings.
+        assert!(completed.contains(r#"local_nodes_topology: "router","#));
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn partial_peer_block_gains_missing_field() {
-        let completed = complete_config_content(r#"{ peer: { standard_buffer_size: 64 } }"#)
-            .expect("high_throughput_buffer_size missing")
-            .content;
+        let completed =
+            complete_config_content(r#"{ zenoh: { peer: { standard_buffer_size: 64 } } }"#)
+                .expect("high_throughput_buffer_size missing")
+                .content;
         let config = parse(&completed);
-        assert_eq!(config.peer.standard_buffer_size, 64);
+        assert_eq!(config.zenoh.peer.standard_buffer_size, 64);
         assert_eq!(
-            config.peer.high_throughput_buffer_size,
+            config.zenoh.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
+        assert!(complete_config_content(&completed).is_none());
+    }
+
+    /// The deepest schema path (`zenoh.zenohd.ownership`, three levels) is
+    /// spliced into its doubly-nested block, not a shallower one.
+    #[test]
+    fn empty_zenohd_block_gains_ownership_at_depth_three() {
+        let completed = complete_config_content(r#"{ zenoh: { zenohd: {} } }"#)
+            .expect("ownership and everything else missing")
+            .content;
+        let config = parse(&completed);
+        assert_eq!(config, PeppyConfig::default());
+        // The field landed inside the existing zenohd block (which the user
+        // spelled compactly), not as a second zenohd block.
+        assert_eq!(completed.matches("zenohd:").count(), 1);
+        assert!(completed.contains(r#"ownership: "managed","#));
         assert!(complete_config_content(&completed).is_none());
     }
 
@@ -724,25 +875,26 @@ mod tests {
 
     #[test]
     fn empty_nested_blocks_gain_their_fields() {
-        let completed = complete_config_content("{ peer: {}, lifecycle: {} }")
-            .expect("fields missing")
-            .content;
+        let completed =
+            complete_config_content("{ zenoh: { peer: {}, zenohd: {} }, lifecycle: {} }")
+                .expect("fields missing")
+                .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
         assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn user_content_survives_byte_for_byte() {
-        let content = r#"// my own note about why router mode
+        let content = r#"// my own note about the old mode knob
 {
-  mode: "router", // pinned during the lab demo
+  mode: "router", // an unknown key now, preserved verbatim
   future_knob: { nested: "}{" },
   /* braces in comments: } { */
 }
 // trailing remark
 "#;
         let completed = complete_config_content(content)
-            .expect("core_node_name, peer, lifecycle, resource_servers, federation missing")
+            .expect("core_node_name, zenoh, lifecycle, resource_servers missing")
             .content;
         parse(&completed);
 
@@ -752,13 +904,12 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::CORE_NODE_NAME_SECTION_SNIPPET,
-            super::super::PEER_SECTION_SNIPPET,
+            super::super::ZENOH_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
             super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
-            super::super::FEDERATION_SECTION_SNIPPET,
             &content[close..]
         );
         assert_eq!(completed, expected);
@@ -767,15 +918,15 @@ mod tests {
     #[test]
     fn comma_lands_before_a_trailing_comment() {
         // Also covers JSON5 single-quoted strings.
-        let completed = complete_config_content("{ mode: 'router' // why router\n}")
-            .expect("peer and lifecycle missing")
+        let completed = complete_config_content("{ core_node_name: 'robot-7' // why named\n}")
+            .expect("everything else missing")
             .content;
         let config = parse(&completed);
-        assert_eq!(config.mode, super::super::Mode::Router);
+        assert_eq!(config.core_node_name.as_deref(), Some("robot-7"));
         // The separating comma goes right after the value, not after the
         // comment that trails it.
         assert!(
-            completed.contains("mode: 'router', // why router"),
+            completed.contains("core_node_name: 'robot-7', // why named"),
             "comma landed elsewhere in:\n{completed}"
         );
     }
@@ -786,21 +937,21 @@ mod tests {
     /// used to rotate brace pairings and splice into the wrong user object.
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {
-        let content = "{\npeer: { standard_buffer_size: 1 // X\r },\njunk: // Y\r {\nb: 2 },\nmode: \"router\"\n}\n";
+        let content = "{\nzenoh: { peer: { standard_buffer_size: 1 // X\r } },\njunk: // Y\r {\nb: 2 },\ncore_node_name: null\n}\n";
         let completed = complete_config_content(content)
             .expect("fields missing")
             .content;
         let config = parse(&completed);
-        assert_eq!(config.peer.standard_buffer_size, 1);
+        assert_eq!(config.zenoh.peer.standard_buffer_size, 1);
         assert_eq!(
-            config.peer.high_throughput_buffer_size,
+            config.zenoh.peer.high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
 
-        // The buffer field belongs inside `peer`, not inside the unknown
+        // The buffer field belongs inside `zenoh.peer`, not inside the unknown
         // `junk` object whose braces sit behind the CR-terminated comments.
         let junk_block =
-            &completed[completed.find("junk").unwrap()..completed.find("mode").unwrap()];
+            &completed[completed.find("junk").unwrap()..completed.find("core_node_name").unwrap()];
         assert!(
             !junk_block.contains("high_throughput_buffer_size"),
             "spliced into junk:\n{completed}"
@@ -811,9 +962,9 @@ mod tests {
 
     #[test]
     fn u2028_terminates_line_comments_like_serde() {
-        let content = "{ mode: \"peer\" // note\u{2028}}";
+        let content = "{ core_node_name: null // note\u{2028}}";
         let completed = complete_config_content(content)
-            .expect("peer and lifecycle missing")
+            .expect("everything else missing")
             .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
         assert!(complete_config_content(&completed).is_none());
@@ -831,7 +982,7 @@ mod tests {
         // Still missing knobs: would splice again on every start.
         assert!(!verify_completion(
             original,
-            r#"{ note: "keep me", mode: "peer" }"#,
+            r#"{ note: "keep me", core_node_name: null }"#,
             &config
         ));
         // An altered unknown-key value is corruption even though the typed
@@ -839,8 +990,11 @@ mod tests {
         let tampered = completed.replace("keep me", "lost");
         assert!(!verify_completion(original, &tampered, &config));
         // A different parsed config is rejected outright.
-        let mode_flipped = completed.replace(r#"mode: "peer""#, r#"mode: "router""#);
-        assert!(!verify_completion(original, &mode_flipped, &config));
+        let topology_flipped = completed.replace(
+            r#"local_nodes_topology: "peer""#,
+            r#"local_nodes_topology: "router""#,
+        );
+        assert!(!verify_completion(original, &topology_flipped, &config));
     }
 
     #[test]
@@ -856,13 +1010,27 @@ mod tests {
         );
         // The existing quoted block was completed in place, not duplicated.
         assert_eq!(completed.matches("lifecycle").count(), 1);
+
+        // Quoted keys pair up along the whole nested chain too: the missing
+        // buffer field joins the user's quoted block instead of a freshly
+        // spliced duplicate `peer` block (which would repeat both fields).
+        let completed =
+            complete_config_content(r#"{ "zenoh": { "peer": { "standard_buffer_size": 64 } } }"#)
+                .expect("high_throughput_buffer_size missing")
+                .content;
+        let config = parse(&completed);
+        assert_eq!(config.zenoh.peer.standard_buffer_size, 64);
+        assert_eq!(completed.matches("standard_buffer_size").count(), 1);
+        assert_eq!(completed.matches("high_throughput_buffer_size").count(), 1);
+        assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn adjacent_closing_braces_get_comma_between_entries() {
-        // Worst-case offsets: the block close, the root's comma insertion, and
-        // the root's section insertion all touch neighboring bytes.
-        let completed = complete_config_content("{peer:{}}")
+        // Worst-case offsets: the doubly-nested block close, its parents'
+        // closes, the comma insertions, and the root's section insertion all
+        // touch neighboring bytes.
+        let completed = complete_config_content("{zenoh:{peer:{}}}")
             .expect("everything else missing")
             .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
@@ -871,16 +1039,17 @@ mod tests {
 
     #[test]
     fn arrays_in_unknown_keys_do_not_confuse_the_scanner() {
-        let completed = complete_config_content(r#"{ tags: ["a", "b", { x: 1 }], mode: "peer" }"#)
-            .expect("peer and lifecycle missing")
-            .content;
+        let completed =
+            complete_config_content(r#"{ tags: ["a", "b", { x: 1 }], core_node_name: null }"#)
+                .expect("everything else missing")
+                .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
         assert!(completed.contains(r#"tags: ["a", "b", { x: 1 }]"#));
     }
 
     #[test]
     fn malformed_content_is_left_alone() {
-        assert!(complete_config_content("{ mode: ").is_none());
+        assert!(complete_config_content("{ zenoh: ").is_none());
         assert!(complete_config_content("").is_none());
         assert!(complete_config_content("[1, 2]").is_none());
     }
