@@ -1,4 +1,5 @@
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -7,10 +8,17 @@ use config::node::{
     ConsumedTopic, DependsOn, EmittedTopic, NodeConfigParser, NodeDependency, Toolchain,
     TopicInterfaces,
 };
-use config::runtime::Name as ConfigName;
+use config::runtime::{BoundProducers, Name as ConfigName, ProducerRef};
 use peppy::commands::Command;
-use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::node::{
+    NodeCommand, NodeCommands, NodeName, TimeoutConfig, run_instance_async,
+};
 use peppy::context::AppContext;
+use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
+use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
+
+use super::common::test_node_target;
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
@@ -78,6 +86,56 @@ fn make_consumer_depend_on_provider(
         consumer_peppy_json5,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
+}
+
+fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(source.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            binds: Vec::new(),
+            pairs: Vec::new(),
+            defer_pairs: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(ctx)
+    .expect("node add should succeed");
+}
+
+async fn install_node_services(
+    messenger: &MessengerHandle,
+    core_node: &str,
+    node_name: &str,
+    instance_id: &str,
+) -> (
+    impl std::any::Any + Send + Sync,
+    impl std::any::Any + Send + Sync,
+) {
+    let ready = listen_for_node_ready(
+        messenger,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let health = listen_for_node_health(
+        messenger,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
+    (ready, health)
 }
 
 /// A node's row parsed from the rendered stack inventory table.
@@ -230,7 +288,7 @@ async fn node_list_command_succeeds() {
     // assert on the exact text the CLI would print without capturing stdout.
     // `false`: render without ANSI color so the assertions match plain table
     // text regardless of whether the test runs attached to a terminal.
-    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, None, false)
+    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false)
         .await
         .expect("node list command should succeed");
 
@@ -279,224 +337,226 @@ async fn node_list_command_succeeds() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_list_command_with_dot_representation_succeeds() {
-    let serve = ServeCommandEmulation::with_mock()
+async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() {
+    let local = ServeCommandEmulation::with_mock_named("z-local")
         .await
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
-    assert!(
-        !core_node_name.is_empty(),
-        "core_node_name should not be empty"
+        .expect("local daemon should start");
+    let shared_messenger = local.messenger();
+    let remote = ServeCommandEmulation::with_shared_mock(Arc::clone(&shared_messenger), "a-remote")
+        .await
+        .expect("remote daemon should start");
+
+    // Put a real bound consumer in the remote stack whose producer address
+    // points at the local daemon. The list fan-out must preserve that
+    // cross-daemon address as `instance@core_node` inside the remote section.
+    let work_dir = tempfile::tempdir().expect("node work dir");
+    let provider_name = "shared-provider";
+    let consumer_name = "remote-consumer";
+    let provider_instance = "provider-instance";
+    let consumer_instance = "consumer-instance";
+    let local_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(local.daemon_state_path()),
+    );
+    let remote_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(remote.daemon_state_path()),
     );
 
-    // Create a temp directory for the nodes
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
-    let provider_name = "test_list_dot_provider";
-    let consumer_name = "test_list_dot_consumer";
-
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
+    for node_name in [provider_name, consumer_name] {
+        NodeCommand {
+            command: NodeCommands::Init {
+                node_name: NodeName::new(node_name).expect("valid node name"),
+                to_dir: None,
+                toolchain: Toolchain::Cargo,
+                with_container: false,
+            },
+        }
+        .execute(&local_ctx)
+        .expect("node init should succeed");
+    }
+    let provider_path = work_dir.path().join(provider_name);
+    let consumer_path = work_dir.path().join(consumer_name);
+    make_consumer_depend_on_provider(
+        &provider_path.join("peppy.json5"),
+        &consumer_path.join("peppy.json5"),
+        provider_name,
     );
+    peppy::test_support::override_run_cmd(&provider_path.join("peppy.json5"));
+    peppy::test_support::override_run_cmd(&consumer_path.join("peppy.json5"));
 
-    // Set up logging
-    let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    add_ready_node(&local_ctx, &provider_path);
+    add_ready_node(&remote_ctx, &provider_path);
+    add_ready_node(&remote_ctx, &consumer_path);
 
-    // Create both nodes using the init command
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(provider_name).expect("valid node name"),
-            to_dir: None,
-            toolchain: Toolchain::Cargo,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("provider node init command should succeed");
-
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(consumer_name).expect("valid node name"),
-            to_dir: None,
-            toolchain: Toolchain::Cargo,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("consumer node init command should succeed");
-
-    let provider_path = node_dir.path().join(provider_name);
-    let provider_peppy_json5 = provider_path.join("peppy.json5");
-    assert!(
-        provider_peppy_json5.exists(),
-        "provider peppy.json5 should exist at {}",
-        provider_peppy_json5.display()
-    );
-
-    let consumer_path = node_dir.path().join(consumer_name);
-    let consumer_peppy_json5 = consumer_path.join("peppy.json5");
-    assert!(
-        consumer_peppy_json5.exists(),
-        "consumer peppy.json5 should exist at {}",
-        consumer_peppy_json5.display()
-    );
-
-    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
-
-    NodeCommand {
-        command: NodeCommands::Add {
-            source: Some(provider_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("provider node add command should succeed");
-
-    NodeCommand {
-        command: NodeCommands::Add {
-            source: Some(consumer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("consumer node add command should succeed");
-
-    let dot_graph_path = node_dir.path().join("node_stack.dot");
-
-    let output = peppy::commands::stack::list_nodes_collecting(
-        &node_ctx,
-        Some(dot_graph_path.clone()),
-        false,
+    let messenger_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _provider_services = install_node_services(
+        &messenger_handle,
+        "z-local",
+        provider_name,
+        provider_instance,
+    )
+    .await;
+    let timeouts = TimeoutConfig {
+        idle_secs: 30,
+        max_secs: 60,
+    };
+    run_instance_async(
+        &messenger_handle,
+        "z-local",
+        provider_name,
+        "v1",
+        &[],
+        Some(provider_instance.to_string()),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Vec::new(),
+        &timeouts,
     )
     .await
-    .expect("node list command should succeed");
+    .expect("local producer should start");
 
+    let _consumer_services = install_node_services(
+        &messenger_handle,
+        "a-remote",
+        consumer_name,
+        consumer_instance,
+    )
+    .await;
+    let mut slot_bindings = BTreeMap::new();
+    slot_bindings.insert(
+        provider_name.to_string(),
+        BoundProducers::try_from(vec![ProducerRef::new("z-local", provider_instance)])
+            .expect("one producer is a valid binding set"),
+    );
+    run_instance_async(
+        &messenger_handle,
+        "a-remote",
+        consumer_name,
+        "v1",
+        &[],
+        Some(consumer_instance.to_string()),
+        slot_bindings,
+        BTreeMap::new(),
+        Vec::new(),
+        &timeouts,
+    )
+    .await
+    .expect("remote consumer should start");
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(local.temp_dir(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(local.daemon_state_path()),
+    );
+    let output = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+        .await
+        .expect("multi-daemon stack list should succeed");
+
+    let local_header = output
+        .find("Core node: z-local (host:")
+        .expect("local header");
+    let remote_header = output
+        .find("Core node: a-remote (host:")
+        .expect("remote header");
     assert!(
-        dot_graph_path.exists(),
-        "DOT graph output should exist at {}",
-        dot_graph_path.display()
+        local_header < remote_header,
+        "local daemon must render before lexicographically earlier peers:\n{output}"
+    );
+    let local_section = &output[local_header..remote_header];
+    let remote_section = &output[remote_header..];
+    assert_eq!(
+        output.matches("Core node:").count(),
+        2,
+        "one section per daemon:\n{output}"
+    );
+    assert!(
+        local_section.contains("z-local:"),
+        "local root row missing:\n{output}"
+    );
+    assert!(
+        remote_section.contains("a-remote:"),
+        "remote root row missing:\n{output}"
+    );
+    assert!(
+        remote_section.contains(&format!("{provider_name} → {provider_instance}@z-local")),
+        "cross-daemon binding missing from remote section:\n{output}"
+    );
+    assert!(
+        !local_section.contains(&format!("{provider_name} → {provider_instance}@z-local")),
+        "remote consumer binding leaked into the local section:\n{output}"
     );
 
-    let dot_graph =
-        std::fs::read_to_string(&dot_graph_path).expect("DOT graph output should be readable");
-    assert!(
-        !dot_graph.trim().is_empty(),
-        "DOT graph output should not be empty"
+    let targeted_ctx = Arc::new(
+        AppContext::with_messenger(local.temp_dir(), shared_messenger)
+            .with_daemon_state_file(local.daemon_state_path())
+            .with_core_node_override(Some("a-remote".to_string())),
+    );
+    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+        .await
+        .expect("explicit remote stack list should succeed");
+    assert!(targeted.contains("Core node: a-remote (host:"));
+    assert!(!targeted.contains("Core node: z-local"));
+    assert_eq!(targeted.matches("Core node:").count(), 1);
+
+    drop(remote);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
+    let daemon = ServeCommandEmulation::with_mock_named("claimed-core")
+        .await
+        .expect("daemon should start");
+    let shared_messenger = daemon.messenger();
+    let handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _foreign_claim =
+        CoreNodePresenceMessenger::declare(&handle, "claimed-core", "foreign-instance")
+            .await
+            .expect("foreign presence should be declared");
+    let ctx = Arc::new(
+        AppContext::with_messenger(daemon.temp_dir(), shared_messenger)
+            .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    // Verify the DOT graph contains both nodes.
-    let provider_label_fragment = format!("{provider_name}:v1\\n[Ready] (0 instances)");
-    let consumer_label_fragment = format!("{consumer_name}:v1\\n[Ready] (0 instances)");
+    let output = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+        .await
+        .expect("duplicate tokens should not duplicate or fail the section");
+    assert_eq!(output.matches("Core node: claimed-core").count(), 1);
     assert!(
-        dot_graph.contains(&provider_label_fragment),
-        "DOT graph should contain provider label fragment '{}'. DOT:\n{}",
-        provider_label_fragment,
-        dot_graph
+        output.contains("warning: 2 live daemons currently claim this name"),
+        "duplicate warning missing:\n{output}"
     );
-    assert!(
-        dot_graph.contains(&consumer_label_fragment),
-        "DOT graph should contain consumer label fragment '{}'. DOT:\n{}",
-        consumer_label_fragment,
-        dot_graph
-    );
+}
 
-    // Verify the DOT graph contains the dependency edge (consumer -> provider).
-    let provider_id = dot_graph
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.contains(&provider_label_fragment) {
-                return None;
-            }
-            let token = trimmed.split_whitespace().next()?;
-            let id = token
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>();
-            if id.is_empty() { None } else { Some(id) }
-        })
-        .expect("provider node id should be present in DOT graph");
-
-    let consumer_id = dot_graph
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.contains(&consumer_label_fragment) {
-                return None;
-            }
-            let token = trimmed.split_whitespace().next()?;
-            let id = token
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>();
-            if id.is_empty() { None } else { Some(id) }
-        })
-        .expect("consumer node id should be present in DOT graph");
-
-    let has_edge = dot_graph.lines().any(|line| {
-        let trimmed = line.trim();
-        let Some((lhs, rhs)) = trimmed.split_once("->") else {
-            return false;
-        };
-        let src = lhs
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>();
-        let dst = rhs
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>();
-        src == consumer_id && dst == provider_id
-    });
-
-    assert!(
-        has_edge,
-        "DOT graph should contain dependency edge {} -> {}. DOT:\n{}",
-        consumer_id, provider_id, dot_graph
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answer() {
+    let daemon = ServeCommandEmulation::with_mock_named("healthy-core")
+        .await
+        .expect("daemon should start");
+    let shared_messenger = daemon.messenger();
+    let handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    // A retained presence token with no matching stack-list listener models
+    // the narrow enumerate-to-query race where a daemon vanishes.
+    let _stale_claim = CoreNodePresenceMessenger::declare(&handle, "gone-core", "gone-instance")
+        .await
+        .expect("stale presence should be declared");
+    let ctx = Arc::new(
+        AppContext::with_messenger(daemon.temp_dir(), shared_messenger)
+            .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
+    let error = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+        .await
+        .expect_err("one failed daemon must make the command non-zero");
+    let rendered = error.to_string();
+    assert!(rendered.contains("Core node: healthy-core (host:"));
     assert!(
-        output.contains("DOT graph saved to"),
-        "output should mention DOT graph output path:\n{output}"
+        rendered.contains("healthy-core:"),
+        "healthy graph missing:\n{rendered}"
     );
-
-    // LogCapture is still wired up for other tests in this file; keep it
-    // referenced so the compiler doesn't complain about unused vars.
-    let _ = log_capture;
+    assert!(rendered.contains("Core node: gone-core (host: unknown)"));
+    assert!(
+        rendered.contains("error:"),
+        "failed section missing:\n{rendered}"
+    );
+    assert!(rendered.contains("stack list failed for: gone-core"));
 }

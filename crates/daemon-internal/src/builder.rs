@@ -45,9 +45,9 @@ pub struct ServeCommandBuilder {
     /// federated across login/logout). The local router is always started
     /// *standalone*; the task applies the federation off the startup path so a
     /// slow/unreachable backend can never stall daemon startup beyond the
-    /// federation connect timeout (the core node's boot self-probe waits — that
-    /// bounded long at most — for the initial federation to settle, so name
-    /// collisions across the federated mesh refuse boot; see `build`).
+    /// federation connect timeout (the core node's boot presence check waits —
+    /// that bounded long at most — for the initial federation to settle, so
+    /// name collisions across the federated mesh refuse boot; see `build`).
     federation_api_url: Option<String>,
     /// Bound on the federation backend round-trip (the startup gate and each
     /// resolve). Read from `peppy_config.zenoh.federation` in
@@ -221,13 +221,13 @@ impl ServeCommandBuilder {
         // core-node registry. `None` only when no core node was requested, in
         // which case there is nothing to register and federation stays unarmed.
         let mut federation_core_node_name: Option<String> = None;
-        // Boot-probe ordering gate: when a federation task will be armed below,
-        // the core node delays its boot-time name-collision self-probe until the
-        // *initial* federation poll has settled, so the probe sees the federated
-        // mesh rather than the always-standalone just-started local router (a
-        // same-name daemon reachable only through the per-user cloud router must
-        // refuse boot). RouterFederation fires the sender in lockstep with its
-        // startup readiness gate, so the wait is bounded by
+        // Presence-check ordering gate: when a federation task will be armed
+        // below, the core node delays its boot-time presence check and token
+        // declaration until the *initial* federation poll has settled, so it
+        // sees the federated mesh rather than the always-standalone just-started
+        // local router (a same-name daemon reachable only through the per-user
+        // cloud router must refuse boot). RouterFederation fires the sender in
+        // lockstep with its startup readiness gate, so the wait is bounded by
         // `federation_connect_timeout` and fail-open (dropped sender ⇒ the core
         // node proceeds standalone).
         let (federation_settled_tx, federation_settled_rx) =
@@ -357,7 +357,7 @@ impl ServeCommandBuilder {
                         // that differs from this generation's (the steady-state
                         // poke path leaves the restart to the control handler).
                         restart_tx.clone(),
-                        // Opens the core node's boot-probe gate once the initial
+                        // Opens the core node's presence-check gate once the initial
                         // federation poll settles (see above).
                         federation_settled_tx,
                         self.teardown_token.clone(),

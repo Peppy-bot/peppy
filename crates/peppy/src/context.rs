@@ -126,6 +126,11 @@ pub(crate) struct DaemonConnection<'a> {
     /// *target* of a request follows the override — the connection still
     /// dials the local daemon's router and the caller identity stays local.
     pub target_core_node: String,
+    /// Whether `target_core_node` came from an explicit `--core-node`
+    /// override. This stays distinct from comparing the two names because an
+    /// explicit override may name the local daemon; `stack list` must still
+    /// honor that as a single-target request.
+    pub target_is_override: bool,
     pub git_hash: String,
     /// Cooperative-shutdown grace the daemon will wait before force-killing a
     /// node, from its `peppy_config`. Lets `node stop` size its request timeout
@@ -151,6 +156,7 @@ impl AppContext {
         let messenger = self
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+        let target_is_override = self.core_node_override.is_some();
         let target_core_node = self
             .core_node_override
             .clone()
@@ -159,6 +165,7 @@ impl AppContext {
             messenger,
             core_node_name: daemon_state.core_node_name,
             target_core_node,
+            target_is_override,
             git_hash: daemon_state.git_hash,
             shutdown_grace_secs: daemon_state.shutdown_grace_secs,
             organization_namespace: daemon_state.organization_namespace,
@@ -212,6 +219,7 @@ mod tests {
                 conn.target_core_node, "local-daemon",
                 "without --core-node the target is the local daemon"
             );
+            assert!(!conn.target_is_override);
             Ok(())
         })
         .expect("connecting without an override should succeed");
@@ -227,6 +235,7 @@ mod tests {
             // The caller identity stays the local daemon; only the target moves.
             assert_eq!(conn.core_node_name, "local-daemon");
             assert_eq!(conn.target_core_node, "robot-7");
+            assert!(conn.target_is_override);
             Ok(())
         })
         .expect("connecting with an override should succeed");
@@ -240,6 +249,21 @@ mod tests {
             let ctx = ctx.with_core_node_override(None);
             let conn = ctx.connect_to_daemon().await?;
             assert_eq!(conn.target_core_node, conn.core_node_name);
+            assert!(!conn.target_is_override);
+            Ok(())
+        })
+        .expect("connecting should succeed");
+    }
+
+    #[test]
+    fn an_explicit_local_name_is_still_an_override() {
+        crate::commands::block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (ctx, _router) = context_with_state(dir.path()).await;
+            let ctx = ctx.with_core_node_override(Some("local-daemon".to_string()));
+            let conn = ctx.connect_to_daemon().await?;
+            assert_eq!(conn.target_core_node, conn.core_node_name);
+            assert!(conn.target_is_override);
             Ok(())
         })
         .expect("connecting should succeed");

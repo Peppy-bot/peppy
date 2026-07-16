@@ -100,7 +100,7 @@ async fn node_run_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -178,7 +178,7 @@ async fn node_run_command_succeeds() {
 
     // Query the node stack to verify the node now has an instance
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -327,7 +327,7 @@ async fn node_run_command_with_args_succeeds() {
         .expect("messenger handle should be available");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -416,7 +416,7 @@ async fn node_run_command_with_args_succeeds() {
 
     // Query the node stack to verify the node now has an instance
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -529,7 +529,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .expect("messenger handle should be available");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -613,7 +613,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Query the node stack to verify the node now has an instance
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -798,7 +798,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     );
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -967,7 +967,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     );
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,

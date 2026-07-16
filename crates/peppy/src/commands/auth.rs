@@ -126,7 +126,7 @@ fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
         // this probe backs the "login/logout restarts the local daemon" warning,
         // so a global `--core-node` override must not redirect it.
         let response = poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             conn.messenger,
             &conn.core_node_name,
             CALLER_INSTANCE_ID,
@@ -445,6 +445,7 @@ mod tests {
         SerializedNode {
             name: name.to_string(),
             tag: "v1".to_string(),
+            core_node: "test-core".to_string(),
             config_path: format!("/tmp/{name}.json5"),
             artifact_path: None,
             stage: Some(stage),

@@ -127,7 +127,7 @@ async fn service_reset_command_resets_node_stack() {
         .expect("messenger handle should be available");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -156,7 +156,7 @@ async fn service_reset_command_resets_node_stack() {
     .expect("service reset command should succeed");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,

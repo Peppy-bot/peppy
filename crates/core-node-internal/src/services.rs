@@ -4,6 +4,7 @@ mod datastore;
 mod health;
 mod info;
 mod node;
+mod presence;
 pub(crate) mod repo;
 mod response;
 mod stack;
@@ -19,15 +20,13 @@ use config::{
     runtime::Name,
     schema::PeppySchema,
 };
-use core_node_api::names;
 use core_node_api::{ActionId, ServiceId, TopicId};
 use daemon_config::consts::PeppyDirs;
 use futures::future::{BoxFuture, FutureExt, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
-use peppylib::messaging::{SenderTarget, ServiceTarget};
-use peppylib::{MessengerHandle, ServiceMessenger};
-use pmi::Messenger;
+use peppylib::MessengerHandle;
+use pmi::{LivelinessToken, Messenger};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rng;
@@ -48,11 +47,6 @@ const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
     None => "dev",
 };
 
-/// Boot-time self-probes sent before concluding the core-node name is
-/// unclaimed. Each unanswered probe costs peppylib's probe timeout (500ms),
-/// so a clean boot pays ~2s; a claimed name is refused on the first reply.
-const SELF_PROBE_ATTEMPTS: u32 = 4;
-
 #[cfg(test)]
 mod tests;
 
@@ -64,6 +58,19 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     {
         tracing::warn!("Failed to clear instances directory: {}", e);
     }
+}
+
+/// Returns this daemon's hostname for operator-facing annotations.
+///
+/// Hostname is not part of core-node identity; callers must continue to route
+/// by the core-node name. Keeping the fallback here makes `info` and
+/// `stack list` report the same value when the OS hostname is unavailable or
+/// not valid Unicode.
+pub(crate) fn current_host_name() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|host| host.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 pub struct CoreNodeArguments {
@@ -161,6 +168,11 @@ pub struct CoreNode {
     /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
     /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
     shutdown_token: CancellationToken,
+    /// Holding the token advertises this daemon's core-node name for the
+    /// lifetime of the daemon generation. It is installed during boot before
+    /// any destructive setup and removed when the core node is dropped (or the
+    /// messaging session closes).
+    presence_token: Mutex<Option<LivelinessToken>>,
     /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
     /// instance is rejected rather than silently re-registering listeners.
     started: AtomicBool,
@@ -342,6 +354,7 @@ impl CoreNode {
             peppy_config,
             organization_namespace,
             shutdown_token,
+            presence_token: Mutex::new(None),
             started: AtomicBool::new(false),
         }
     }
@@ -376,51 +389,6 @@ impl CoreNode {
 
     pub(crate) fn instance_id(&self) -> &str {
         self.instance_id.as_str()
-    }
-
-    /// Boot-time self-probe: sends reachability probes to the `health` service
-    /// under this daemon's own core-node name. Runs before this instance's
-    /// listeners are registered, so any reply proves a foreign daemon already
-    /// claims the name — breaking the name-based routing invariant every
-    /// core-node API call rests on — and boot is refused with
-    /// [`crate::Error::CoreNodeNameTaken`].
-    ///
-    /// Probe infrastructure errors fail open with a warning: only positive
-    /// reachability refuses boot. Limitation: the probe sees only what the
-    /// local router reaches when it runs. The serve runner therefore delays
-    /// `start_with_ready` until the initial router federation has settled
-    /// (bounded by the federation connect timeout), so the probe covers the
-    /// federated mesh too; a daemon whose federation lands only later (slow
-    /// backend past the bound, or a peer that federates in afterwards) is
-    /// caught by the runtime alarm instead (see
-    /// [`clock::watch_for_name_collision`]).
-    async fn ensure_name_unclaimed(&self) -> Result<()> {
-        for attempt in 1..=SELF_PROBE_ATTEMPTS {
-            match ServiceMessenger::is_reachable(
-                &self.messenger,
-                self.node_name(),
-                self.instance_id(),
-                // The wire tag from `names` (`"core"`), not this file's
-                // `CORE_NODE_TAG` git tag.
-                SenderTarget::node(self.node_name(), names::CORE_NODE_TAG)?,
-                ServiceId::Health.name(),
-                ServiceTarget::Any,
-            )
-            .await
-            {
-                Ok(true) => {
-                    return Err(crate::Error::CoreNodeNameTaken {
-                        name: self.node_name().to_string(),
-                    });
-                }
-                Ok(false) => {}
-                Err(e) => tracing::warn!(
-                    "core-node name self-probe {attempt}/{SELF_PROBE_ATTEMPTS} failed: {e}; \
-                     continuing boot (only a positive reply refuses)"
-                ),
-            }
-        }
-        Ok(())
     }
 
     /// The daemon-side registration for one registry **service**, or the
@@ -731,8 +699,8 @@ impl CoreNode {
     /// gate dependent startup).
     ///
     /// Side effects performed up front, before listeners are registered:
-    /// - **Probes its own core-node name** and refuses to boot if a foreign
-    ///   daemon already answers under it; see [`Self::ensure_name_unclaimed`].
+    /// - **Claims its core-node name** with a liveliness token and refuses to
+    ///   boot if a foreign daemon already advertises that name.
     /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
     ///   clear stale state from a previous run; see [`clear_instances_dir`].
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
@@ -746,7 +714,11 @@ impl CoreNode {
 
         // Refuse a collision before any destructive setup: a refused boot must
         // leave the running daemon's on-disk state (instances dir) untouched.
-        self.ensure_name_unclaimed().await?;
+        // Retaining the token on `self` keeps the name advertised for the
+        // entire daemon generation.
+        let token =
+            presence::claim_name(&self.messenger, self.node_name(), self.instance_id()).await?;
+        *self.presence_token.lock().await = Some(token);
 
         clear_instances_dir(&self.peppy_dirs);
 
@@ -809,15 +781,13 @@ impl CoreNode {
         }
         // Background tasks that are not registry methods (nothing a client
         // calls) stay outside the enum-driven loops. Runtime complement to
-        // the boot-time self-probe: alarm if a foreign daemon instance beats
-        // under this daemon's name (e.g. one that federated in after boot,
-        // which the probe cannot see).
+        // the boot-time presence claim: alarm if a foreign daemon advertises
+        // this daemon's name (including one that federates in after boot).
         setup.push(
-            clock::watch_for_name_collision(
+            presence::watch_for_duplicate_name(
                 self.messenger.clone(),
                 core_node_name,
                 self.instance_id(),
-                self.node_name(),
                 self.shutdown_token.clone(),
             )
             .boxed(),

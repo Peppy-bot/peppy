@@ -228,7 +228,7 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
 
     // `stack list` shows the pair with the bidirectional arrow, the peer
     // slot carrying its core node like the bindings table's producers.
-    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, None, false)
+    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
         .expect("stack list should succeed");
     assert!(
@@ -272,7 +272,7 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
         arm_rx.borrow_and_update().pin.is_none(),
         "the surviving arm must be live-notified Unpaired on peer death"
     );
-    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, None, false)
+    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
         .expect("stack list should succeed");
     assert!(

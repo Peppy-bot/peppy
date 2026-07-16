@@ -63,6 +63,9 @@ default = []
 # Gate test-only helpers (including config's fingerprint helpers) behind this
 # feature so a release build doesn't carry them.
 test-support = ["dep:tempfile", "dep:parking_lot", "config/fingerprint_test_helpers"]
+# Docker black-box coverage for two daemons sharing one real zenohd. Opting in
+# also builds pmi's bundled router support used by the test host.
+multi_daemon_e2e = ["pmi/build_zenoh"]
 
 [dev-dependencies]
 tempfile = "3.8"
@@ -79,3 +82,8 @@ peppy = { path = ".", features = ["test-support"] }
 [[test]]
 name = "integration"
 path = "tests/main.rs"
+
+[[test]]
+name = "multi_daemon_e2e"
+path = "tests/multi_daemon_e2e.rs"
+required-features = ["multi_daemon_e2e"]

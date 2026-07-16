@@ -36,10 +36,7 @@ pub enum StackCommands {
         max_timeout_secs: Option<u64>,
     },
     /// List the nodes in the current node stack
-    List {
-        /// If specified, will save a dotgraph representation at the given path
-        dot_graph_path: Option<PathBuf>,
-    },
+    List,
     /// Benchmark the latency of every interface wiring each node to its direct
     /// dependencies, measured against the already-running stack.
     ///
@@ -67,7 +64,7 @@ pub struct StackCommand {
 impl Command for StackCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            StackCommands::List { dot_graph_path } => list::list_nodes(ctx, dot_graph_path),
+            StackCommands::List => list::list_nodes(ctx),
             StackCommands::Launch {
                 launcher_config_path,
                 node_add_idle_timeout_secs,

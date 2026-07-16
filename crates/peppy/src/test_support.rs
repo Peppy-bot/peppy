@@ -134,8 +134,9 @@ enum MessengerInstance {
 
 pub struct ServeCommandEmulation {
     _temp_dir: TempDir,
-    _instance: MessengerInstance,
+    _instance: Option<MessengerInstance>,
     _core_node_task: JoinHandle<core_node::Result<()>>,
+    shutdown_token: tokio_util::sync::CancellationToken,
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
     core_node_name: String,
@@ -143,11 +144,36 @@ pub struct ServeCommandEmulation {
 
 impl ServeCommandEmulation {
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        Self::with_mock_named("test-core-node").await
+    }
+
+    /// Starts a named daemon on a fresh mock router.
+    pub async fn with_mock_named(
+        core_node_name: &str,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         let mut instance = MockAdapter::start_router().await?;
         instance.messenger().start_session().await?;
         let messenger = instance.take_messenger();
         let port = messenger.get_host().port();
-        Self::setup(messenger, port, MessengerInstance::Mock(instance)).await
+        Self::setup(
+            Arc::new(TokioMutex::new(messenger)),
+            port,
+            Some(MessengerInstance::Mock(instance)),
+            core_node_name,
+        )
+        .await
+    }
+
+    /// Starts another named daemon on an existing mock messenger. Sharing the
+    /// messenger is the mock adapter's in-process equivalent of separate
+    /// sessions attached to one router and lets multi-daemon CLI tests exercise
+    /// presence enumeration and cross-daemon service routing.
+    pub async fn with_shared_mock(
+        shared_messenger: Arc<TokioMutex<Messenger>>,
+        core_node_name: &str,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let port = shared_messenger.lock().await.get_host().port();
+        Self::setup(shared_messenger, port, None, core_node_name).await
     }
 
     pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
@@ -170,17 +196,23 @@ impl ServeCommandEmulation {
         instance.messenger().start_session().await?;
         let port = instance.port;
         let messenger = instance.take_messenger();
-        Self::setup(messenger, port, MessengerInstance::Zenoh(instance)).await
+        Self::setup(
+            Arc::new(TokioMutex::new(messenger)),
+            port,
+            Some(MessengerInstance::Zenoh(instance)),
+            "test-core-node",
+        )
+        .await
     }
 
     async fn setup(
-        messenger: Messenger,
+        shared_messenger: Arc<TokioMutex<Messenger>>,
         port: u16,
-        instance: MessengerInstance,
+        instance: Option<MessengerInstance>,
+        core_node_name: &str,
     ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         let temp_dir = TempDir::new().expect("failed to create temp dir for test");
         let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
-        let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
         let peppy_dirs = PeppyDirs::new(temp_dir.path());
 
@@ -192,9 +224,10 @@ impl ServeCommandEmulation {
         let repos_path = conf_dir.join("repositories.json5");
         std::fs::write(&repos_path, "[]").expect("failed to write repositories.json5");
 
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
         let core_node = CoreNode::new(CoreNodeConfig {
             messenger: Arc::clone(&shared_messenger),
-            node_name: Some("test-core-node".to_string()),
+            node_name: Some(core_node_name.to_string()),
             arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
@@ -208,7 +241,7 @@ impl ServeCommandEmulation {
             peppy_dirs,
             peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
             organization_namespace: "local".to_string(),
-            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            shutdown_token: shutdown_token.clone(),
         });
         let core_node_name = core_node.node_name().to_string();
 
@@ -241,6 +274,7 @@ impl ServeCommandEmulation {
             _temp_dir: temp_dir,
             _instance: instance,
             _core_node_task: core_node_task,
+            shutdown_token,
             shared_messenger,
             daemon_state_path,
             core_node_name,
@@ -261,5 +295,12 @@ impl ServeCommandEmulation {
 
     pub fn core_node_name(&self) -> &str {
         &self.core_node_name
+    }
+}
+
+impl Drop for ServeCommandEmulation {
+    fn drop(&mut self) {
+        self.shutdown_token.cancel();
+        self._core_node_task.abort();
     }
 }

@@ -131,7 +131,7 @@ async fn node_stop_command_succeeds() {
 
     // Verify the node was added with 0 instances
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -182,7 +182,7 @@ async fn node_stop_command_succeeds() {
 
     // Verify the node now has 1 instance
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -260,7 +260,7 @@ async fn node_stop_command_succeeds() {
 
     // Verify the node now has 0 instances again
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,

@@ -90,7 +90,7 @@ async fn fetch_instance_ids(
     tag: &str,
 ) -> Result<Vec<String>> {
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,

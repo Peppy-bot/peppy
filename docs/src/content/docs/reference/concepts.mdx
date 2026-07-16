@@ -91,12 +91,9 @@ The **Node Stack** is the central data structure that manages all active nodes i
 3. Tracks pending requirements when dependencies are not yet available
 4. Resolves pending requirements when dependencies are added
 
-### Visualization
+### Stack inspection
 
-The node stack can be visualized in multiple formats:
-
-- **DOT format**: For Graphviz visualization of the dependency graph
-- **Serialized graph**: JSON representation for programmatic access
+The stack-list API exposes the nodes and dependency edges as a serialized JSON graph for programmatic access. The `peppy stack list` command renders that graph as an operator-friendly table in each live core node's section.
 
 ## The Core Node
 

@@ -37,8 +37,8 @@ pub struct CoreNodeRunner {
     /// *initial* poll has settled (federation applied, or the connect timeout
     /// elapsed and the daemon proceeds standalone). The runner waits on it —
     /// after `messaging_ready`, before `start_with_ready` — so the boot-time
-    /// name-collision self-probe (`ensure_name_unclaimed`) sees the federated
-    /// mesh, not the always-standalone just-started router. Bounded by the
+    /// core-node presence check sees the federated mesh, not the
+    /// always-standalone just-started router. Bounded by the
     /// federation task's own `connect_timeout` and fail-open: a dropped sender
     /// (federation task torn down) lets the core node proceed. `None` when no
     /// federation task is armed (mock engine / no backend configured).
@@ -149,10 +149,10 @@ impl ServeAsyncCommand for CoreNodeRunner {
             }
 
             // Wait for the router federation's initial poll to settle before
-            // starting (and thus before `start_with_ready`'s boot name
-            // self-probe runs), so the probe sees the federated mesh: a
+            // starting (and thus before `start_with_ready` checks and declares
+            // this daemon's presence), so the check sees the federated mesh: a
             // same-name daemon reachable only through the per-user cloud
-            // router must refuse boot, not slip past a probe that raced the
+            // router must refuse boot, not slip past a check that raced the
             // federation apply. The gate is fired by the federation task
             // within its `connect_timeout` even when the backend is slow or
             // unreachable, so this cannot stall boot past that bound; a
@@ -163,7 +163,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
             {
                 info!(
                     "Waiting for the initial router federation to settle before \
-                     the core-node name self-probe..."
+                     the core-node presence check..."
                 );
                 if settled_rx.wait_for(|settled| *settled).await.is_err() {
                     warn!(

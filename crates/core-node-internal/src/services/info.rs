@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::services::current_host_name;
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
@@ -97,10 +98,7 @@ fn handle_info_request_inner(
     debug!("Received `info` request from {sender_instance_id}");
 
     let uptime_secs = start_time.elapsed().as_secs();
-    let host_name = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
+    let host_name = current_host_name();
     let node_count = node_stack.len() as u32;
     let git_version = option_env!("PEPPY_GIT_TAG").unwrap_or("unknown");
 
