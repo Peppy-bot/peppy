@@ -5,21 +5,38 @@ sidebar:
   order: 9
 ---
 
-The peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, controls the messaging topology and router ownership of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon.
+By default, the peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, controls the messaging topology and router ownership of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
 
 :::note
-The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
+The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
 :::
 
 ## How the file is managed
 
-You never need to create or migrate this file by hand:
+In the normal on-disk flow, you never need to create or migrate this file by hand:
 
 - **First load.** If the file does not exist, peppy creates it with every setting at its default value, annotated with explanatory comments.
-- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), peppy appends each missing defaulted setting with its default value and comments. Your own values, comments, formatting, and any unrecognized top-level keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Every defaulted setting a peppy release understands is guaranteed to be covered by this mechanism (enforced by tests), so the file is brought up to the running release's full set of defaults the next time peppy loads the configuration, and peppy logs each setting it added. Fields required only by a non-default choice are not invented: for example, selecting `zenoh.zenohd.ownership: "external"` requires you to supply its `endpoint`.
+- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), peppy detects every omission and appends each setting it can safely place, together with its default value and comments. Your own values, comments, formatting, and any unrecognized top-level keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Peppy logs each setting it added. An unusual JSON5 spelling or layout, such as an escaped section key that the text scanner cannot safely pair with its block, produces a warning naming every setting that could not be inserted; the daemon continues with those defaults in memory. Fields required only by a non-default choice are not invented: for example, selecting `zenoh.zenohd.ownership: "external"` requires you to supply its `endpoint`.
 - **Malformed file.** If the file cannot be parsed, or a value is out of range, peppy refuses to continue and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
 
-A defaulted setting you delete from the file therefore comes back with its default the next time peppy loads the configuration. To change one, edit its value instead of removing it. Removing an ownership-specific required field instead makes the file invalid and leaves it untouched.
+In a normally spelled section, a defaulted setting you delete from the file therefore comes back with its default the next time peppy loads the configuration. To change one, edit its value instead of removing it. If peppy warns that an unusual spelling or layout prevented insertion, add the named setting manually if you want it written; the daemon already uses its default in memory. Removing an ownership-specific required field instead makes the file invalid and leaves it untouched.
+
+### Override with `PEPPY_CONFIG`
+
+Set `PEPPY_CONFIG` to inject the complete daemon configuration at launch. A non-empty value has two forms: a path to a JSON5 config file, or an inline JSON5 document. Peppy expands `~` and `~/` in path form, and resolves relative paths from the command's current working directory, which is the daemon's working directory for `peppy service serve`.
+
+Classification always tries the value as a file first. If the file can be read, file form is committed, so a later parse, validation, or completeness error does not fall back to interpreting the path text as inline JSON5. Only a file read or path-expansion failure triggers the inline parse. If both attempts fail, the error reports both reasons. An empty value is treated as unset and uses the normal file flow; whitespace alone is not empty and fails if it is neither a readable path nor valid inline JSON5.
+
+An override is read-only. Peppy ignores `$PEPPY_HOME/conf/peppy_config.json5` and never creates, completes, or rewrites either that file or the override source. The override must parse, pass validation, and explicitly spell out every setting the running release defines. Missing settings are a startup error that names their paths and explains that override sources are never completed with defaults. This differs from the normal on-disk flow, which appends safe defaults and warns when an unusual source spelling prevents an insertion.
+
+The override applies to `peppy service serve` and to every auth command that reads daemon configuration: `peppy auth login`, `logout`, and `whoami`. `PEPPY_HOME` still controls credentials, repositories, and all other peppy state. Edits to a file-form override take effect on the daemon's next restart, just like edits to the default file.
+
+Both examples below use the same complete config file. The second passes its full contents inline, including any leading JSON5 comments:
+
+```sh
+PEPPY_CONFIG=./deploy/peppy_config.json5 peppy service serve
+PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
+```
 
 ## The default file
 

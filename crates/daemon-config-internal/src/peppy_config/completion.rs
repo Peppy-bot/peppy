@@ -1,11 +1,12 @@
 //! Comment-preserving completion of a user's `peppy_config.json5`.
 //!
-//! [`complete_config_content`] splices every missing known entry, at any
-//! nesting depth, into the file content, copying the snippet (explanatory
-//! comments included) from the bundled template, so the file on disk always
-//! lists every available knob. Everything the user wrote survives
+//! [`complete_config_content`] detects every missing known entry and splices
+//! each one whose parent block it can safely locate, at any nesting depth,
+//! into the file content. It copies the snippet (explanatory comments
+//! included) from the bundled template. Everything the user wrote survives
 //! byte-for-byte: their values, their comments, their formatting, and any
-//! unknown keys.
+//! unknown keys. Omissions whose source spelling the scanner cannot pair with
+//! a block are reported separately instead of being silently skipped.
 //!
 //! Rewriting the file through serde would destroy comments, and no
 //! comment-preserving JSON5 editor crate exists, so this works directly on the
@@ -14,8 +15,8 @@
 //! before the relevant closing brace. Before anything is written, the caller
 //! gates the result through [`verify_completion`], so a splicing bug cannot
 //! drop or alter any value the user wrote, cannot change what the file parses
-//! to, and cannot splice again on the next start; a bad splice is discarded
-//! with a warning and the user's file stays untouched.
+//! to, and cannot leave another splice possible on the next start; a bad
+//! splice is discarded with a warning and the user's file stays untouched.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -132,13 +133,16 @@ const SECTIONS: &[EntrySpec] = &[
 /// ("federation" spelled "zenoh.federation", a nested field
 /// "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
 /// (outer blocks first) and in template order within a block. It reflects what
-/// was actually inserted, not merely what was absent: an entry whose parent
-/// block the scanner could not locate is skipped by the splice and therefore
-/// not listed.
+/// was actually inserted, not merely what was absent.
+///
+/// `unspliceable_paths` names settings that were detected as absent but whose
+/// parent block the scanner could not safely locate. Those settings remain
+/// absent from `content` and are never included in `added_paths`.
 #[derive(Debug)]
 pub(super) struct Completion {
     pub(super) content: String,
     pub(super) added_paths: Vec<String>,
+    pub(super) unspliceable_paths: Vec<String>,
 }
 
 /// A known entry absent from the document: the path of the block it splices
@@ -193,10 +197,43 @@ fn collect_missing(
     }
 }
 
-/// Returns `content` with every missing known entry appended from the bundled
-/// template (plus the paths that were appended), or `None` when the file
-/// already spells out all of them (or, defensively, when the content cannot be
-/// analyzed; the caller treats both as "leave the file alone").
+/// Returns every omitted path in the order its entry appears in the bundled
+/// template, regardless of whether the path was spliceable.
+pub(super) fn missing_paths_in_template_order(completion: &Completion) -> Vec<String> {
+    fn collect_known_paths(specs: &[EntrySpec], parent: &str, paths: &mut Vec<String>) {
+        for spec in specs {
+            let path = if parent.is_empty() {
+                spec.key.to_string()
+            } else {
+                format!("{parent}.{}", spec.key)
+            };
+            paths.push(path.clone());
+            collect_known_paths(spec.children, &path, paths);
+        }
+    }
+
+    let mut known_paths = Vec::new();
+    collect_known_paths(SECTIONS, "", &mut known_paths);
+
+    let mut missing_paths: Vec<String> = completion
+        .added_paths
+        .iter()
+        .chain(&completion.unspliceable_paths)
+        .cloned()
+        .collect();
+    missing_paths.sort_by_key(|path| {
+        known_paths
+            .iter()
+            .position(|known| known == path)
+            .unwrap_or(usize::MAX)
+    });
+    missing_paths
+}
+
+/// Returns `content` with every safely placeable missing known entry appended
+/// from the bundled template, plus the paths that were appended and the paths
+/// that could not be placed. Returns `None` when the file already spells out
+/// every known setting or, defensively, when the content cannot be analyzed.
 ///
 /// Expects `content` to already have parsed successfully as a `PeppyConfig`;
 /// malformed input simply returns `None` rather than guessing at splice points.
@@ -210,7 +247,16 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
         return None;
     }
 
-    let layout = scan_layout(content)?;
+    let layout = match scan_layout(content) {
+        Some(layout) => layout,
+        None => {
+            return Some(Completion {
+                content: content.to_string(),
+                added_paths: Vec::new(),
+                unspliceable_paths: missing.into_iter().map(|entry| entry.path).collect(),
+            });
+        }
+    };
 
     // One insertion per target block: group the missing entries by their
     // parent path, preserving first-encounter order, so siblings share a
@@ -235,12 +281,14 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
     // Collected alongside the insertions, not from the classification above,
     // so a skipped splice (unlocatable block) is never reported as added.
     let mut added_paths: Vec<String> = Vec::new();
+    let mut unspliceable_paths: Vec<String> = Vec::new();
 
     for (parent_path, entries) in groups {
         // A block the scanner could not pair with its key chain (say, a key
-        // spelled with string escapes) is skipped: the in-memory defaults
-        // still apply, the file just keeps omitting the entry.
+        // spelled with string escapes) cannot be safely changed. The in-memory
+        // defaults still apply, and every affected path is reported.
         let Some(block) = layout.block_at(&parent_path) else {
+            unspliceable_paths.extend(entries.into_iter().map(|entry| entry.path));
             continue;
         };
         let mut text = String::new();
@@ -254,10 +302,6 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
             insertions.push((at, ",".to_string()));
         }
     }
-    if insertions.is_empty() {
-        return None;
-    }
-
     insertions.sort_by_key(|&(at, _)| std::cmp::Reverse(at));
     let mut completed = content.to_string();
     for (at, text) in insertions {
@@ -266,14 +310,16 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
     Some(Completion {
         content: completed,
         added_paths,
+        unspliceable_paths,
     })
 }
 
 /// Whether `completed` is a faithful completion of `original`, parsed as
-/// `config`: it must parse back to the same `PeppyConfig`, need no further
-/// completion (every known knob now spelled out, so the splice cannot repeat
-/// on the next start), and preserve every value the user wrote. Any `false`
-/// means a splicing bug; the caller then discards `completed` unwritten.
+/// `config`: it must parse back to the same `PeppyConfig`, leave no further
+/// splice possible on the next start, and preserve every value the user wrote.
+/// An omission that remains unspliceable is acceptable because another pass
+/// cannot make progress on it. Any `false` means a splicing bug; the caller
+/// then discards `completed` unwritten.
 pub(super) fn verify_completion(
     original: &str,
     completed: &str,
@@ -285,7 +331,9 @@ pub(super) fn verify_completion(
     if reparsed != *config {
         return false;
     }
-    if complete_config_content(completed).is_some() {
+    if complete_config_content(completed)
+        .is_some_and(|completion| !completion.added_paths.is_empty())
+    {
         return false;
     }
     // The typed checks above ignore unknown keys, so also require every value
@@ -605,7 +653,7 @@ mod tests {
     use super::super::{
         DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
         DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE, PeppyConfig,
-        TEMPLATE_HEADER,
+        SHUTDOWN_GRACE_FIELD_SNIPPET, TEMPLATE_HEADER,
     };
     use super::*;
 
@@ -1023,6 +1071,24 @@ mod tests {
         assert_eq!(completed.matches("standard_buffer_size").count(), 1);
         assert_eq!(completed.matches("high_throughput_buffer_size").count(), 1);
         assert!(complete_config_content(&completed).is_none());
+    }
+
+    #[test]
+    fn escaped_section_key_reports_unspliceable_paths() {
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE
+            .replacen("  lifecycle: {", r#"  "life\u0063ycle": {"#, 1)
+            .replacen(SHUTDOWN_GRACE_FIELD_SNIPPET, "", 1);
+
+        let completion =
+            complete_config_content(&content).expect("lifecycle.shutdown_grace_secs is missing");
+
+        assert_eq!(parse(&content), PeppyConfig::default());
+        assert_eq!(completion.content, content);
+        assert!(completion.added_paths.is_empty());
+        assert_eq!(
+            completion.unspliceable_paths,
+            ["lifecycle.shutdown_grace_secs"]
+        );
     }
 
     #[test]
