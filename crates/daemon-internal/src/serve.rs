@@ -357,12 +357,22 @@ pub struct ServeOptions {
 /// returns `Ok(())` and the process exits 0; the crash-only supervisor never
 /// restarts a clean exit.
 ///
+/// Refuses to start with [`Error::AlreadyRunning`] when another daemon on this
+/// machine holds the singleton lock for the same peppy data root.
+///
 /// This function may terminate the process directly with
 /// `RESTART_EXIT_CODE` (`75`) instead of returning: when restarts flap past
 /// the in-process cap, or when the messaging port stays bound between
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.
 pub fn serve(options: ServeOptions) -> Result<()> {
+    // One daemon per machine (per peppy data root): held for the WHOLE
+    // process lifetime, above the restart loop, so an in-process restart
+    // never opens a window for a second daemon. Every exit path releases it
+    // (kernel flock), including SIGKILL and the process::exit calls below.
+    let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(
+        &daemon_config::consts::PeppyDirs::default(),
+    )?;
     let mut flap = FlapWindow::new();
     loop {
         let (outcome, router_adopted) = run_one_generation(&options)?;

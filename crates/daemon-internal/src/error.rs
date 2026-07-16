@@ -9,6 +9,12 @@ pub enum Error {
     #[error("{0}")]
     ExecutionFailed(String),
 
+    // -- serve: the machine-wide singleton lock is held by another daemon
+    #[error(
+        "a peppy daemon is already running on this machine; stop it with `peppy service stop` before starting another"
+    )]
+    AlreadyRunning,
+
     // -- serve: a core node was requested without a messaging router
     #[error("Missing messaging router")]
     MissingMessagingRouter,

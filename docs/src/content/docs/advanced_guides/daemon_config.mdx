@@ -46,9 +46,9 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
 {
   // Fixed name for this daemon's core node, or null to derive a
   // machine-specific default (core-node-...). Names must be unique across all
-  // daemons reachable over the same router/federation: a daemon whose name is
-  // already in use refuses to boot. At most 63 characters from the node-name
-  // character set (start with a letter; letters, digits, `_`, `-`).
+  // machines on the same router/federation (each machine runs a single daemon):
+  // a daemon whose name is already in use refuses to boot. At most 63 characters
+  // from the node-name character set (start with a letter; letters, digits, `_`, `-`).
   // `peppy service serve --core-node-name` overrides this for one run.
   core_node_name: null,
 
@@ -123,7 +123,7 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
 
 `core_node_name` fixes the name of this daemon's [core node](/reference/concepts/#the-core-node). Leave it `null` (the default) and the daemon derives a stable, machine-specific name of the form `core-node-...`; set a string to pin an explicit one.
 
-Core-node names must be **unique across every daemon reachable over the same router or federation**. On boot the daemon probes its own name and, if another daemon already answers under it, refuses to start rather than break the name-based routing that every core-node call relies on. If two daemons end up sharing a name, give one of them a unique `core_node_name` (or pass `peppy service serve --core-node-name <name>` for a single run) and restart it. This most commonly matters when logging in federates several machines together, or when cloning a disk image reuses another machine's derived name.
+A machine only ever runs one daemon, so a name collision always involves daemons on different machines. Core-node names must be **unique across all machines on the same router or federation**. On boot the daemon probes its own name and, if another daemon already answers under it, refuses to start rather than break the name-based routing that every core-node call relies on. If two daemons end up sharing a name, give one of them a unique `core_node_name` (or pass `peppy service serve --core-node-name <name>` for a single run) and restart it. This most commonly matters when logging in federates several machines together, or when cloning a disk image reuses another machine's derived name.
 
 The value must be non-empty, at most **63 characters**, and use only the node-name character set (start with a letter; letters, digits, `_`, `-`). An invalid value stops the daemon at startup with an error instead of failing later when the core node boots. `peppy service serve --core-node-name <name>` overrides the config for one run (the flag wins over the file); both absent falls back to the derived default.
 
@@ -215,7 +215,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 
 | Setting | Default | Constraint | Effect |
 |---|---|---|---|
-| `core_node_name` | `null` (derived `core-node-...`) | Non-empty, ≤ 63 chars, node-name charset | Fixed name for this daemon's core node; must be unique across all daemons on the same router/federation or the daemon refuses to boot. Overridable per run with `--core-node-name`. |
+| `core_node_name` | `null` (derived `core-node-...`) | Non-empty, ≤ 63 chars, node-name charset | Fixed name for this daemon's core node; must be unique across all machines on the same router/federation (each machine runs one daemon) or the daemon refuses to boot. Overridable per run with `--core-node-name`. |
 | `zenoh.local_nodes_topology` | `"peer"` | `"peer"` or `"router"` | Topology of this machine's nodes: direct peer links with gossip, or relay everything through the central router. Cross-machine traffic always goes through the routers. |
 | `zenoh.peer.standard_buffer_size` | `128` | `> 0` | Subscriber channel capacity (messages) for standard-QoS topics; also sizes service request/reply channels. |
 | `zenoh.peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |

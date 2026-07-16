@@ -1,9 +1,71 @@
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::messaging::SenderTarget;
-use std::sync::Arc;
+use std::io::{BufRead, BufReader};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const TEST_NODE_TAG: &str = "v1";
+
+/// SIGKILLs the daemon on drop so a failing/panicking test never leaks it.
+pub struct DaemonGuard(pub Child);
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Spawn `peppy service serve --messaging-engine mock` in an isolated home,
+/// capturing stdout and stderr so tests can inspect the daemon's output.
+pub fn spawn_daemon(home: &std::path::Path) -> (DaemonGuard, Arc<Mutex<String>>) {
+    let state_file = home.join("daemon_state.json5");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_peppy"))
+        .args(["service", "serve", "--messaging-engine", "mock"])
+        // Pin the child's data root to this per-test home explicitly, so it stays
+        // isolated even when the CI job exports its own per-run PEPPY_HOME.
+        .env(config::consts::PEPPY_HOME_ENV, home)
+        .env("TMPDIR", home)
+        .env("PEPPY_DAEMON_STATE_FILE", &state_file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn peppy service serve");
+
+    // Drain both streams into a shared buffer so tests can wait for output and
+    // the child never blocks on a full pipe. The serve daemon logs to stdout.
+    let logs = Arc::new(Mutex::new(String::new()));
+    for stream in [
+        Box::new(child.stdout.take().expect("piped stdout")) as Box<dyn std::io::Read + Send>,
+        Box::new(child.stderr.take().expect("piped stderr")) as Box<dyn std::io::Read + Send>,
+    ] {
+        let logs_writer = Arc::clone(&logs);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                logs_writer.lock().unwrap().push_str(&line);
+                line.clear();
+            }
+        });
+    }
+
+    (DaemonGuard(child), logs)
+}
+
+/// Wait for the child to exit, returning its status, or panic after `timeout`.
+pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("daemon did not exit within {timeout:?}");
+}
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names; tests use known-good values only.

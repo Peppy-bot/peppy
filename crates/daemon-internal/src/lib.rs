@@ -22,6 +22,7 @@ pub mod state;
 
 mod builder;
 mod core_node;
+mod daemon_lock;
 mod error;
 mod federation_control;
 mod messaging_router;
