@@ -10,9 +10,10 @@ const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";
 /// Persistent state for the peppy daemon.
 ///
 /// This struct is serialized to JSON5 and stored on disk to track daemon state
-/// across restarts. The state file location is determined by the `PEPPY_DAEMON_STATE_FILE`
-/// environment variable, or defaults to `~/.peppy/$DAEMON_STATE_FILENAME` in production
-/// and a temp directory in development.
+/// across restarts. The state file lives at the peppy data root
+/// (`~/.peppy/daemon_state.json5` in production, a temp-dir root in
+/// development); `PEPPY_HOME` relocates the whole root and the state file
+/// with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonState {
     /// The name of the node currently acting as the core node.
@@ -36,15 +37,6 @@ pub struct DaemonState {
     /// by a daemon predating this field still parses.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
-    /// Wall-clock time (epoch milliseconds) captured when this state was built,
-    /// which the daemon does immediately before writing it. Used to pick the
-    /// freshest file when several exist and none has a live pid: it reflects
-    /// logical write order more faithfully than filesystem mtime (which is
-    /// coarse and can be rewritten by a copy or `touch`) and, living in the
-    /// value, makes the selection deterministic and unit-testable. Defaulted on
-    /// read so a state file written before this field still parses.
-    #[serde(default)]
-    pub written_at_ms: u64,
     /// The organization namespace this daemon generation resolved at startup
     /// (`"local"` when logged out, else the org id). A CLI control session reads
     /// it so it opens its session under exactly the daemon's namespace; it is
@@ -71,15 +63,6 @@ fn default_shutdown_grace_secs() -> u64 {
     config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
 }
 
-/// Current wall-clock time as epoch milliseconds, or 0 if the clock is set
-/// before the Unix epoch (which the ranking treats as the oldest possible).
-fn now_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 impl DaemonState {
     pub fn new(
         core_node_name: impl Into<String>,
@@ -96,17 +79,14 @@ impl DaemonState {
             messaging_port,
             git_hash: git_hash.into(),
             shutdown_grace_secs,
-            written_at_ms: now_epoch_ms(),
             organization_namespace: organization_namespace.into(),
         }
     }
 
-    /// Returns the path where the daemon state file will be stored.
-    ///
-    /// If the `PEPPY_DAEMON_STATE_FILE` environment variable is set, returns that path.
-    /// Otherwise, returns `peppy_data_dir()/daemon_state.json5`.
+    /// Returns the path where the daemon state file is stored: the data
+    /// root's `daemon_state.json5`.
     pub(crate) fn state_file_path() -> PathBuf {
-        Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path)
+        Self::state_file_in(PeppyDirs::default().root())
     }
 
     /// Returns the path where the daemon state file would be stored in the given directory.
@@ -129,75 +109,15 @@ impl DaemonState {
         fs::write(path, content)
     }
 
+    /// Reads the daemon state from the data root's `daemon_state.json5`. The
+    /// serve singleton lock guarantees at most one daemon writes it.
     pub fn read() -> Result<Self, io::Error> {
-        if let Some(path) = Self::env_state_file_path() {
-            return Self::read_from(&path);
-        }
-
-        let mut states: Vec<(PathBuf, DaemonState)> = Vec::new();
-        let mut last_err: Option<io::Error> = None;
-        for path in Self::candidate_state_file_paths() {
-            match Self::read_from(&path) {
-                Ok(state) => states.push((path, state)),
-                Err(err) => {
-                    last_err = Some(err);
-                }
-            }
-        }
-
-        match states.len() {
-            0 => Err(last_err.unwrap_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "Daemon state file not found")
-            })),
-            1 => Ok(states.into_iter().next().expect("states length checked").1),
-            _ => Self::select_best_state(states)?
-                .map(|(_, state)| state)
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "Daemon state file not found")
-                }),
-        }
+        Self::read_from(&Self::state_file_path())
     }
 
     pub fn read_from(path: &Path) -> Result<Self, io::Error> {
         let content = fs::read_to_string(path)?;
         serde_json5::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
-    }
-
-    fn env_state_file_path() -> Option<PathBuf> {
-        daemon_config::consts::non_empty_env_path(std::env::var_os(
-            daemon_config::consts::DAEMON_STATE_FILE_ENV,
-        ))
-    }
-
-    fn default_state_file_path() -> PathBuf {
-        PeppyDirs::default().root().join(DAEMON_STATE_FILENAME)
-    }
-
-    fn candidate_state_file_paths() -> Vec<PathBuf> {
-        let root = PeppyDirs::default().root().to_path_buf();
-        let mut paths = vec![Self::default_state_file_path()];
-
-        if let Ok(entries) = fs::read_dir(&root) {
-            let mut dirs: Vec<PathBuf> = entries
-                .filter_map(|entry| entry.ok())
-                .filter_map(|entry| match entry.file_type() {
-                    Ok(ft) if ft.is_dir() => Some(entry.path()),
-                    _ => None,
-                })
-                .collect();
-            dirs.sort();
-
-            for dir in dirs {
-                paths.push(dir.join(DAEMON_STATE_FILENAME));
-            }
-        }
-        paths
-    }
-
-    fn select_best_state(
-        states: Vec<(PathBuf, DaemonState)>,
-    ) -> Result<Option<(PathBuf, DaemonState)>, io::Error> {
-        Self::rank_states(states, Self::pid_looks_alive)
     }
 
     /// Whether the daemon that wrote this state still appears to be running, by
@@ -206,44 +126,6 @@ impl DaemonState {
     /// of liveness; a caller that needs "is a daemon actually up" must check this.
     pub fn is_running(&self) -> bool {
         self.daemon_pid.is_some_and(Self::pid_looks_alive)
-    }
-
-    /// Picks the state file that best represents the live daemon, given a
-    /// liveness predicate (injected so tests can stub it without spawning real
-    /// processes):
-    /// - if exactly one candidate has a live pid, it wins;
-    /// - if several do, the situation is ambiguous and an error;
-    /// - otherwise the most recently written candidate wins, ranked on the
-    ///   serialized `written_at_ms` with the path as a deterministic tie-break.
-    ///
-    /// Pure: it reads no filesystem metadata and no clock, so the same inputs
-    /// always select the same state.
-    fn rank_states(
-        states: Vec<(PathBuf, DaemonState)>,
-        is_alive: impl Fn(u32) -> bool,
-    ) -> Result<Option<(PathBuf, DaemonState)>, io::Error> {
-        let mut running: Vec<(PathBuf, DaemonState)> = states
-            .iter()
-            .filter(|(_, state)| state.daemon_pid.is_some_and(&is_alive))
-            .cloned()
-            .collect();
-
-        match running.len() {
-            0 => {}
-            1 => return Ok(running.pop()),
-            _ => {
-                return Err(io::Error::other(format!(
-                    "Multiple running peppy daemons detected. Set {} to select one.",
-                    daemon_config::consts::DAEMON_STATE_FILE_ENV
-                )));
-            }
-        }
-
-        Ok(states.into_iter().max_by(|(a_path, a), (b_path, b)| {
-            a.written_at_ms
-                .cmp(&b.written_at_ms)
-                .then_with(|| a_path.cmp(b_path))
-        }))
     }
 
     #[cfg(unix)]
@@ -280,121 +162,44 @@ impl DaemonState {
 mod tests {
     use super::*;
 
-    /// Builds a state with a given pid and write time; the other fields are
-    /// irrelevant to selection, so they get fixed placeholders.
-    fn state(pid: Option<u32>, written_at_ms: u64) -> DaemonState {
-        DaemonState {
-            core_node_name: format!("node-{}", pid.unwrap_or(0)),
-            daemon_pid: pid,
-            messaging_host: "127.0.0.1".to_string(),
+    #[test]
+    fn write_then_read_round_trips_state() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon_state.json5");
+        let original = DaemonState {
+            core_node_name: "node-42".to_string(),
+            daemon_pid: Some(42),
+            messaging_host: "router.internal".to_string(),
             messaging_port: 7447,
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
-            written_at_ms,
             organization_namespace: "local".to_string(),
-        }
-    }
-
-    fn path(name: &str) -> PathBuf {
-        PathBuf::from(name)
-    }
-
-    #[test]
-    fn live_pid_wins_over_a_newer_but_dead_state() {
-        let states = vec![
-            (path("a.json5"), state(Some(10), 100)), // alive, older write
-            (path("b.json5"), state(Some(20), 999)), // dead, newer write
-        ];
-        // Only pid 10 is alive.
-        let chosen = DaemonState::rank_states(states, |pid| pid == 10)
-            .expect("ranking succeeds")
-            .expect("a candidate is chosen");
-        assert_eq!(chosen.0, path("a.json5"));
-    }
-
-    #[test]
-    fn single_running_daemon_is_chosen() {
-        let states = vec![
-            (path("a.json5"), state(Some(10), 100)),
-            (path("b.json5"), state(Some(20), 200)),
-        ];
-        let chosen = DaemonState::rank_states(states, |pid| pid == 20)
-            .expect("ranking succeeds")
-            .expect("a candidate is chosen");
-        assert_eq!(chosen.0, path("b.json5"));
-    }
-
-    #[test]
-    fn multiple_running_daemons_is_an_error() {
-        let states = vec![
-            (path("a.json5"), state(Some(10), 100)),
-            (path("b.json5"), state(Some(20), 200)),
-        ];
-        // Both pids report alive.
-        let err = DaemonState::rank_states(states, |_| true).unwrap_err();
-        assert!(
-            err.to_string().contains("Multiple running peppy daemons"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn with_no_live_daemon_the_freshest_write_wins() {
-        let states = vec![
-            (path("a.json5"), state(Some(10), 100)),
-            (path("b.json5"), state(Some(20), 300)),
-            (path("c.json5"), state(None, 200)),
-        ];
-        let chosen = DaemonState::rank_states(states, |_| false)
-            .expect("ranking succeeds")
-            .expect("a candidate is chosen");
-        assert_eq!(chosen.0, path("b.json5"), "highest written_at_ms wins");
-    }
-
-    #[test]
-    fn equal_write_times_break_ties_by_path_deterministically() {
-        let states = vec![
-            (path("z.json5"), state(None, 500)),
-            (path("a.json5"), state(None, 500)),
-        ];
-        let chosen = DaemonState::rank_states(states, |_| false)
-            .expect("ranking succeeds")
-            .expect("a candidate is chosen");
-        // Tie on write time falls back to the greatest path, deterministically.
-        assert_eq!(chosen.0, path("z.json5"));
-    }
-
-    #[test]
-    fn empty_candidate_set_selects_nothing() {
-        let chosen = DaemonState::rank_states(Vec::new(), |_| true).expect("ranking succeeds");
-        assert!(chosen.is_none());
-    }
-
-    #[test]
-    fn write_then_read_preserves_written_at_ms() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("daemon_state.json5");
-        let mut original = state(Some(42), 0);
-        original.messaging_host = "router.internal".to_string();
-        original.written_at_ms = 1_234_567;
+        };
         DaemonState::write_to(&path, &original).expect("write");
 
         let read = DaemonState::read_from(&path).expect("read");
-        assert_eq!(read.written_at_ms, 1_234_567);
+        assert_eq!(read.core_node_name, "node-42");
+        assert_eq!(read.daemon_pid, Some(42));
         assert_eq!(read.messaging_host, "router.internal");
         assert_eq!(read.messaging_port, 7447);
+        assert_eq!(read.git_hash, "test");
+        assert_eq!(read.shutdown_grace_secs, 5);
+        assert_eq!(read.organization_namespace, "local");
     }
 
     #[test]
-    fn state_file_without_written_at_ms_defaults_to_zero() {
+    fn state_file_with_unknown_fields_still_parses() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        // A file written before the field existed.
-        std::fs::write(&path, r#"{ "core_node_name": "old", "daemon_pid": null }"#)
-            .expect("write legacy file");
+        std::fs::write(
+            &path,
+            r#"{ "core_node_name": "old", "daemon_pid": null, "written_at_ms": 1234 }"#,
+        )
+        .expect("write file with unknown field");
 
         let read = DaemonState::read_from(&path).expect("read");
-        assert_eq!(read.written_at_ms, 0);
+        assert_eq!(read.core_node_name, "old");
+        assert_eq!(read.daemon_pid, None);
         assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
         assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);
     }

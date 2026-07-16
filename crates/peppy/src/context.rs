@@ -38,8 +38,9 @@ impl AppContext {
 
     /// Overrides the daemon state file path for this context.
     ///
-    /// This avoids relying on the process-wide `PEPPY_DAEMON_STATE_FILE` env var, which is not
-    /// safe to mutate from parallel tests.
+    /// In-process test emulations root their daemon at a per-test temp dir;
+    /// this points the context at that daemon's state file without mutating
+    /// the process-wide environment, which is not safe from parallel tests.
     pub fn with_daemon_state_file(mut self, daemon_state_path: impl AsRef<Path>) -> Self {
         self.daemon_state_path = Some(daemon_state_path.as_ref().to_path_buf());
         self

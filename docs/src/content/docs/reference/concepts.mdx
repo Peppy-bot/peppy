@@ -113,6 +113,8 @@ In a distributed deployment, multiple runtimes (each with their own core node) c
 The core nodes operate independently, managing their local node stacks without a centralized controller. 
 Nodes communicate across runtimes through the shared messaging layer, enabling a fully decentralized system where each core node is responsible only for its own set of nodes.
 
+Each machine runs at most one daemon per Peppy data root. `peppy service serve` takes an exclusive lock at startup, and a second invocation refuses to boot while the first runs.
+
 Because core nodes are addressed by name over the messaging layer, every core node reachable over the same router or federation must have a **unique name**. Each daemon derives a stable, machine-specific name by default, or you can pin one with [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a daemon whose name is already taken refuses to boot.
 
 ## Summary

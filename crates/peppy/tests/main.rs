@@ -2,6 +2,7 @@ mod auth_flow;
 mod common;
 mod container;
 mod daemon_lifecycle_e2e;
+mod daemon_singleton;
 mod info;
 mod node_add;
 mod node_info;
