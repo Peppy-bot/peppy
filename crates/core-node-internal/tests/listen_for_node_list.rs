@@ -68,6 +68,11 @@ async fn listen_for_node_list_returns_succeeds() {
         .and_then(|host| host.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
     assert_eq!(response.host_name, expected_host_name);
+    assert_eq!(response.core_node, started_core_node.core_node_name);
+    assert!(
+        !response.instance_id.is_empty(),
+        "response should self-report the serving daemon generation"
+    );
 
     let graph_json: serde_json::Value =
         serde_json::from_str(&response.graph_json).expect("graph_json should be valid JSON");

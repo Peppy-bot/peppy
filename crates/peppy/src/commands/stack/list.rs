@@ -18,7 +18,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// in their section so a disappearing daemon does not hide healthy peers.
 #[derive(Debug)]
 pub struct StackSection {
+    /// Attributed from the response's self-reported identity; falls back to
+    /// the queried name when the query failed.
     pub core_node: String,
+    /// Self-reported generation of the daemon that answered (`None` when the
+    /// query failed). During an active name collision this identifies which
+    /// claimant served the section.
+    pub instance_id: Option<String>,
     pub host_name: String,
     /// Live tokens advertising this name at enumeration time; more than one
     /// means an active collision. Zero when the name was not enumerated (an
@@ -86,23 +92,34 @@ pub async fn list_nodes_collecting(
             )
             .await;
 
-            let (host_name, outcome) = match response {
-                Ok(response) => (
-                    response.host_name,
-                    crate::commands::parse_stack_graph(&response.graph_json)
+            match response {
+                Ok(response) => StackSection {
+                    // Attribute the section to the identity the daemon
+                    // self-reports, not the name the request targeted; an
+                    // empty name (daemon predating identity self-reporting)
+                    // falls back to the target.
+                    core_node: if response.core_node.is_empty() {
+                        core_node
+                    } else {
+                        response.core_node
+                    },
+                    instance_id: (!response.instance_id.is_empty()).then_some(response.instance_id),
+                    host_name: response.host_name,
+                    live_claimants,
+                    outcome: crate::commands::parse_stack_graph(&response.graph_json)
                         .map(|mut graph| {
                             sort_graph(&mut graph.nodes, &mut graph.edges);
                             (graph.nodes, graph.edges)
                         })
                         .map_err(|error| error.to_string()),
-                ),
-                Err(error) => ("unknown".to_string(), Err(error.to_string())),
-            };
-            StackSection {
-                core_node,
-                host_name,
-                live_claimants,
-                outcome,
+                },
+                Err(error) => StackSection {
+                    core_node,
+                    instance_id: None,
+                    host_name: "unknown".to_string(),
+                    live_claimants,
+                    outcome: Err(error.to_string()),
+                },
             }
         }
     }))
@@ -170,11 +187,18 @@ pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
             section.host_name
         );
         if section.live_claimants > 1 {
-            let _ = writeln!(
-                out,
-                "  warning: {} live daemons currently claim this name",
-                section.live_claimants
-            );
+            let _ = match &section.instance_id {
+                Some(instance_id) => writeln!(
+                    out,
+                    "  warning: {} live daemons currently claim this name; answered by instance {}",
+                    section.live_claimants, instance_id
+                ),
+                None => writeln!(
+                    out,
+                    "  warning: {} live daemons currently claim this name",
+                    section.live_claimants
+                ),
+            };
         }
 
         match &section.outcome {
@@ -644,6 +668,7 @@ mod tests {
     fn successful_section(core_node: &str, host_name: &str) -> StackSection {
         StackSection {
             core_node: core_node.to_string(),
+            instance_id: Some("gen-1".to_string()),
             host_name: host_name.to_string(),
             live_claimants: 1,
             outcome: Ok((
@@ -681,14 +706,30 @@ mod tests {
     fn duplicate_and_failed_sections_remain_visible() {
         let sections = vec![StackSection {
             core_node: "claimed".to_string(),
+            instance_id: None,
             host_name: "unknown".to_string(),
             live_claimants: 3,
             outcome: Err("daemon disappeared".to_string()),
         }];
         let out = format_stack_list(&sections, false);
         assert!(out.contains("Core node: claimed (host: unknown)"));
-        assert!(out.contains("warning: 3 live daemons currently claim this name"));
+        assert!(out.contains("warning: 3 live daemons currently claim this name\n"));
         assert!(out.contains("error: daemon disappeared"));
+    }
+
+    #[test]
+    fn collision_warning_names_the_answering_instance() {
+        let sections = vec![StackSection {
+            live_claimants: 2,
+            ..successful_section("claimed", "robo-a")
+        }];
+        let out = format_stack_list(&sections, false);
+        assert!(
+            out.contains(
+                "warning: 2 live daemons currently claim this name; answered by instance gen-1"
+            ),
+            "collision warning should attribute the answering claimant:\n{out}"
+        );
     }
 
     #[test]
@@ -696,22 +737,10 @@ mod tests {
         let targets = ordered_targets(
             "z-local",
             vec![
-                pmi::CoreNodePresence {
-                    core_node: "b-remote".to_string(),
-                    instance_id: "b1".to_string(),
-                },
-                pmi::CoreNodePresence {
-                    core_node: "z-local".to_string(),
-                    instance_id: "local".to_string(),
-                },
-                pmi::CoreNodePresence {
-                    core_node: "a-remote".to_string(),
-                    instance_id: "a1".to_string(),
-                },
-                pmi::CoreNodePresence {
-                    core_node: "a-remote".to_string(),
-                    instance_id: "a2".to_string(),
-                },
+                pmi::CoreNodePresence::new("b-remote", "b1"),
+                pmi::CoreNodePresence::new("z-local", "local"),
+                pmi::CoreNodePresence::new("a-remote", "a1"),
+                pmi::CoreNodePresence::new("a-remote", "a2"),
             ],
         );
         assert_eq!(
