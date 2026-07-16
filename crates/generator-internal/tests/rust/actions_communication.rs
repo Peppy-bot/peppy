@@ -71,7 +71,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     const LEFT_ARM_INSTANCE_ID: &str = "left_arm_instance";
     const RIGHT_ARM_INSTANCE_ID: &str = "right_arm_instance";
     const GOAL_ROUNDS: usize = 3;
-    let topology = crate::helpers::Topology::Peer;
+    let topology = crate::helpers::LocalNodesTopology::Peer;
 
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -420,10 +420,10 @@ fn main() -> Result<()> {
 }
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication(#[case] topology: crate::helpers::Topology) {
+async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopology) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -760,10 +760,10 @@ fn main() -> Result<()> {
 }
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Topology) {
+async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::LocalNodesTopology) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -1107,11 +1107,11 @@ fn main() -> Result<()> {
 /// Python parity is `actions_communication_drain_loop_until_end_signal`
 /// in the python/ test module.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_drain_loop_until_end_signal(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -1500,11 +1500,11 @@ fn main() -> Result<()> {
 /// `actions_communication_cancel_accept_closes_feedback_stream` in the
 /// python/ test module.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_accept_closes_feedback_stream(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -1877,11 +1877,11 @@ fn main() -> Result<()> {
 /// `actions_communication_cancel_reject_keeps_feedback_open` in the
 /// python/ test module.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_reject_keeps_feedback_open(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -2272,11 +2272,11 @@ fn main() -> Result<()> {
 /// `concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned`
 /// in `public-peppy-libs/peppy-shared/peppylib-rs/tests/actions.rs`.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await

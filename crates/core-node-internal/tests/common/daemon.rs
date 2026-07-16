@@ -152,7 +152,7 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
 /// with the default timeouts, for the dual-topology e2e tests parameterized
 /// over the topology.
 pub async fn start_core_node_with_real_messenger_topology(
-    topology: daemon_config::peppy_config::Topology,
+    topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     start_core_node_with_real_messenger_in_topology(
         Duration::from_secs(10),
@@ -169,7 +169,7 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     start_core_node_with_real_messenger_in_topology(
         node_startup_timeout,
         node_start_health_timeout,
-        daemon_config::peppy_config::Topology::Peer,
+        daemon_config::peppy_config::LocalNodesTopology::Peer,
     )
     .await
 }
@@ -182,7 +182,7 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
 pub async fn start_core_node_with_real_messenger_in_topology(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
-    topology: daemon_config::peppy_config::Topology,
+    topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(

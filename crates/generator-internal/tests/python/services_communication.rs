@@ -53,10 +53,12 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_no_target_instance_id(#[case] topology: crate::helpers::Topology) {
+async fn services_communication_no_target_instance_id(
+    #[case] topology: crate::helpers::LocalNodesTopology,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -383,11 +385,11 @@ if __name__ == "__main__":
 }
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_exposed_service_without_request_body(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -697,11 +699,11 @@ if __name__ == "__main__":
 /// the request to the bound instance, and the other instance never runs its
 /// handler.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_bound_one(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await

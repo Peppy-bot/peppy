@@ -815,7 +815,7 @@ mod tests {
         let config = parse(&completed);
         assert_eq!(
             config.zenoh.local_nodes_topology,
-            super::super::Topology::Router
+            super::super::LocalNodesTopology::Router
         );
         assert_eq!(
             config.lifecycle.daemon_grace_secs,

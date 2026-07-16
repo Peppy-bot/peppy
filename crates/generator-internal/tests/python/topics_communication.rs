@@ -41,10 +41,10 @@ const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 
 /// Creates 2 Python projects in separate directories and checks if they can send/receive topics.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topics_communication(#[case] topology: crate::helpers::Topology) {
+async fn topics_communication(#[case] topology: crate::helpers::LocalNodesTopology) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");

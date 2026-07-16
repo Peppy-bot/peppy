@@ -62,11 +62,11 @@ const MULTI_CONSUMED_SERVICE: &str = r#"
 const CONSUMED_SERVICE_REQUEST_FORMAT: &str = r#"{ enable: "bool" }"#;
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Topology::Peer)]
-#[case::router(crate::helpers::Topology::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn one_or_more_slot_fans_in_topics_and_directs_services(
-    #[case] topology: crate::helpers::Topology,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await

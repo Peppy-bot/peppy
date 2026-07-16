@@ -301,19 +301,19 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
 /// `DiscoveryConfig.gossip` flag the sessions actually read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Topology {
+pub enum LocalNodesTopology {
     #[default]
     Peer,
     Router,
 }
 
-impl Topology {
+impl LocalNodesTopology {
     /// Whether this is the peer topology (direct peer-to-peer links).
     pub fn is_peer(self) -> bool {
-        matches!(self, Topology::Peer)
+        matches!(self, LocalNodesTopology::Peer)
     }
 
-    /// Topology to gossip mapping: peer enables gossip, router disables it.
+    /// LocalNodesTopology to gossip mapping: peer enables gossip, router disables it.
     pub fn gossip(self) -> bool {
         self.is_peer()
     }
@@ -595,7 +595,7 @@ fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), St
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ZenohConfig {
-    pub local_nodes_topology: Topology,
+    pub local_nodes_topology: LocalNodesTopology,
     pub peer: PeerConfig,
     pub federation: FederationConfig,
     pub zenohd: ZenohdConfig,
@@ -825,10 +825,10 @@ mod tests {
     fn default_topology_is_peer_and_buffers_match_constants() {
         let cfg = PeppyConfig::default();
         assert_eq!(cfg.core_node_name, None);
-        assert_eq!(cfg.zenoh.local_nodes_topology, Topology::Peer);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Peer);
         assert!(cfg.zenoh.local_nodes_topology.is_peer());
         assert!(cfg.zenoh.local_nodes_topology.gossip());
-        assert!(!Topology::Router.gossip());
+        assert!(!LocalNodesTopology::Router.gossip());
         assert_eq!(
             cfg.zenoh.peer.standard_buffer_size,
             DEFAULT_STANDARD_BUFFER_SIZE
@@ -1140,7 +1140,7 @@ mod tests {
             dirs_with_config(r#"{ resource_servers: { api: "http://localhost:9000" } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.resource_servers.api, "http://localhost:9000");
-        assert_eq!(cfg.zenoh.local_nodes_topology, Topology::Peer);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Peer);
 
         // An empty block falls back to the build's default backend URL.
         let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ resource_servers: {} }"#);
@@ -1161,7 +1161,7 @@ mod tests {
             DEFAULT_SHUTDOWN_GRACE_SECS
         );
         // Omitted blocks still fall back to their defaults.
-        assert_eq!(cfg.zenoh.local_nodes_topology, Topology::Peer);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Peer);
         assert_eq!(cfg.zenoh.peer, PeerConfig::default());
     }
 
@@ -1230,7 +1230,7 @@ mod tests {
         );
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.zenoh.local_nodes_topology, Topology::Router);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Router);
         assert_eq!(cfg.lifecycle.daemon_grace_secs, 45);
         assert_eq!(
             cfg.lifecycle.shutdown_grace_secs,
@@ -1303,7 +1303,7 @@ mod tests {
             dirs_with_config(r#"{ zenoh: { local_nodes_topology: "router" } }"#);
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.zenoh.local_nodes_topology, Topology::Router);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Router);
         assert!(!cfg.zenoh.local_nodes_topology.gossip());
         // Missing peer block falls back to the built-in defaults.
         assert_eq!(
@@ -1329,7 +1329,7 @@ mod tests {
         let custom = PeppyConfig {
             core_node_name: Some("lab-bench-1".to_string()),
             zenoh: ZenohConfig {
-                local_nodes_topology: Topology::Router,
+                local_nodes_topology: LocalNodesTopology::Router,
                 peer: PeerConfig {
                     standard_buffer_size: 64,
                     high_throughput_buffer_size: 4096,
@@ -1357,11 +1357,11 @@ mod tests {
     #[test]
     fn topology_serializes_snake_case() {
         assert_eq!(
-            serde_json::to_value(Topology::Router).unwrap(),
+            serde_json::to_value(LocalNodesTopology::Router).unwrap(),
             serde_json::json!("router")
         );
         assert_eq!(
-            serde_json::to_value(Topology::Peer).unwrap(),
+            serde_json::to_value(LocalNodesTopology::Peer).unwrap(),
             serde_json::json!("peer")
         );
     }
@@ -1453,7 +1453,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(cfg.zenoh.local_nodes_topology, Topology::Router);
+        assert_eq!(cfg.zenoh.local_nodes_topology, LocalNodesTopology::Router);
 
         // The symlink survives and the completed content landed in its target.
         assert!(

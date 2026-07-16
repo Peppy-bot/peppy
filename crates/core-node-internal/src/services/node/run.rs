@@ -12,7 +12,7 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::peppy_config::{PeppyConfig, Topology};
+use daemon_config::peppy_config::{LocalNodesTopology, PeppyConfig};
 use futures::FutureExt;
 use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
 use parking_lot::Mutex as StdMutex;
@@ -92,8 +92,9 @@ fn is_host_local_router(host: &str) -> bool {
 /// struct and that function, not every context in between.
 #[derive(Clone)]
 pub struct DaemonDefaults {
-    /// Daemon-global messaging topology, injected into every spawned node.
-    pub topology: Topology,
+    /// Daemon-global local-nodes messaging topology, injected into every
+    /// spawned node.
+    pub local_nodes_topology: LocalNodesTopology,
     /// Daemon-global peer buffer sizes, injected into every spawned node.
     pub peer_buffer: PeerConfig,
     /// Daemon-liveness grace period (seconds), injected into every spawned node
@@ -119,7 +120,7 @@ impl DaemonDefaults {
     /// (which comes from the credentials, not `peppy_config`).
     pub fn from_peppy_config(config: &PeppyConfig, organization_namespace: String) -> Self {
         Self {
-            topology: config.zenoh.local_nodes_topology,
+            local_nodes_topology: config.zenoh.local_nodes_topology,
             peer_buffer: config.zenoh.peer,
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
@@ -173,7 +174,7 @@ fn apply_daemon_defaults(
     defaults: DaemonDefaults,
     container_separate_ns: bool,
 ) {
-    cfg.discovery.gossip = defaults.topology.is_peer() && !container_separate_ns;
+    cfg.discovery.gossip = defaults.local_nodes_topology.is_peer() && !container_separate_ns;
     cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
     cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
@@ -1840,9 +1841,9 @@ mod tests {
 
     /// `DaemonDefaults` with the given topology/buffers and arbitrary
     /// recognizable grace periods.
-    fn daemon_defaults(topology: Topology, peer: PeerConfig) -> DaemonDefaults {
+    fn daemon_defaults(topology: LocalNodesTopology, peer: PeerConfig) -> DaemonDefaults {
         DaemonDefaults {
-            topology,
+            local_nodes_topology: topology,
             peer_buffer: peer,
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
@@ -1857,7 +1858,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(Topology::Peer, PeerConfig::default()),
+            daemon_defaults(LocalNodesTopology::Peer, PeerConfig::default()),
             false,
         );
         assert!(cfg.discovery.gossip);
@@ -1872,7 +1873,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(Topology::Router, PeerConfig::default()),
+            daemon_defaults(LocalNodesTopology::Router, PeerConfig::default()),
             false,
         );
         assert!(!cfg.discovery.gossip);
@@ -1885,7 +1886,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(Topology::Peer, PeerConfig::default()),
+            daemon_defaults(LocalNodesTopology::Peer, PeerConfig::default()),
             true,
         );
         assert!(
@@ -1903,9 +1904,9 @@ mod tests {
             high_throughput_buffer_size: 4096,
         };
         for (topology, container_separate_ns) in [
-            (Topology::Peer, false),
-            (Topology::Router, false),
-            (Topology::Peer, true),
+            (LocalNodesTopology::Peer, false),
+            (LocalNodesTopology::Router, false),
+            (LocalNodesTopology::Peer, true),
         ] {
             let mut cfg = runtime_config_for_test();
             apply_daemon_defaults(
@@ -1926,7 +1927,7 @@ mod tests {
     /// A logged-in daemon stamps the org id (not `local`) onto every node.
     #[test]
     fn apply_daemon_defaults_stamps_the_org_namespace() {
-        let mut defaults = daemon_defaults(Topology::Peer, PeerConfig::default());
+        let mut defaults = daemon_defaults(LocalNodesTopology::Peer, PeerConfig::default());
         defaults.organization_namespace = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(&mut cfg, defaults, false);

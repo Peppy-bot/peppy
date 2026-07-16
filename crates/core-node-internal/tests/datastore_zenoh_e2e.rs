@@ -8,13 +8,13 @@
 mod common;
 
 use common::{assert_datastore_binary_round_trip, start_core_node_with_real_messenger_topology};
-use daemon_config::peppy_config::Topology;
+use daemon_config::peppy_config::LocalNodesTopology;
 
 #[rstest::rstest]
-#[case::peer(Topology::Peer)]
-#[case::router(Topology::Router)]
+#[case::peer(LocalNodesTopology::Peer)]
+#[case::router(LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn datastore_round_trip_over_real_zenoh(#[case] topology: Topology) {
+async fn datastore_round_trip_over_real_zenoh(#[case] topology: LocalNodesTopology) {
     let started = start_core_node_with_real_messenger_topology(topology).await;
     assert_datastore_binary_round_trip(&started).await;
 }
