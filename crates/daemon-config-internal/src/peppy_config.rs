@@ -7,14 +7,21 @@
 //! after a daemon restart.
 //!
 //! A well-formed file that omits settings (typically one written by an older
-//! peppy before a new knob existed) is completed in place: the missing entries
-//! are appended with their default values and explanatory comments, so the file
-//! on disk always lists every available knob. The user's own values, comments,
-//! and unknown root-level keys are otherwise preserved byte-for-byte (see
-//! [`completion`]); when appending defaults, completion may add a structural
-//! separator comma after the prior final entry. Each setting added this way is
-//! logged at info level, so the first start after a peppy upgrade shows exactly
-//! which new settings appeared in the file.
+//! peppy before a new knob existed) is completed in place where the text
+//! scanner can safely locate the insertion point. Missing entries are appended
+//! with their default values and explanatory comments. Any omission the scanner
+//! cannot safely splice is named in a warning and remains defaulted in memory.
+//! The user's own values, comments, and unknown root-level keys are otherwise
+//! preserved byte-for-byte (see [`completion`]); when appending defaults,
+//! completion may add a structural separator comma after the prior final entry.
+//! Each setting added this way is logged at info level, so the first start after
+//! a peppy upgrade shows exactly which new settings appeared in the file.
+//!
+//! A non-empty `PEPPY_CONFIG` environment variable bypasses that on-disk flow.
+//! Its value is tried first as a config file path and then, if the file cannot
+//! be read, as an inline JSON5 document. An override is read-only: peppy never
+//! creates, completes, or rewrites either source, and any invalid or incomplete
+//! source fails loud.
 //!
 //! Unlike `repositories.json5`, a malformed `peppy_config.json5` fails loud at
 //! startup ([`load_or_create`] returns `Err`) instead of falling back to
@@ -28,7 +35,7 @@ mod completion;
 use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
 use crate::error::{Error, ParsingError, Result};
-use config::consts::ALLOWED_CONFIG_CHARS;
+use config::consts::{ALLOWED_CONFIG_CHARS, PEPPY_CONFIG_ENV};
 use config::peppy_config::{
     DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
     DEFAULT_STANDARD_BUFFER_SIZE, PeerConfig,
@@ -36,8 +43,10 @@ use config::peppy_config::{
 use config::runtime::Name;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// File name of the global daemon config under `~/.peppy/conf`.
 pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
@@ -733,14 +742,29 @@ impl PeppyConfig {
 
 /// Reads the global config from `~/.peppy/conf/peppy_config.json5`, creating it
 /// from the bundled default template (verbatim, so comments survive) when it
-/// does not exist, and appending defaults for any setting an existing file
-/// omits so the file on disk always lists every available knob.
+/// does not exist, and appending defaults for settings an existing file omits.
+///
+/// A non-empty [`PEPPY_CONFIG_ENV`] value bypasses the normal file completely.
+/// The override is loaded read-only and is never created, completed, rewritten,
+/// or used as a reason to touch the normal on-disk config. Invalid, incomplete,
+/// or unreadable overrides return `Err`.
 ///
 /// Read ONCE by the daemon at startup. A malformed existing file returns `Err`
 /// (fail loud) rather than defaulting, since mode and buffer sizes are
 /// load-bearing for the whole mesh. This intentionally differs from
 /// `ensure_default_repos`, which only warns on a bad repos file.
 pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
+    load_or_create_with_override(peppy_dirs, std::env::var_os(PEPPY_CONFIG_ENV))
+}
+
+fn load_or_create_with_override(
+    peppy_dirs: &PeppyDirs,
+    env_value: Option<OsString>,
+) -> Result<PeppyConfig> {
+    if let Some(value) = env_override_source(env_value)? {
+        return load_override_config(&value);
+    }
+
     let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir)?;
     let path = conf_dir.join(PEPPY_CONFIG_FILE);
@@ -775,9 +799,105 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
     Ok(config)
 }
 
-/// Appends template defaults for every setting the user's file omits, so the
-/// on-disk file spells out all available knobs, and logs at info level which
-/// settings were added so a release upgrade leaves a visible trace.
+fn env_override_source(value: Option<OsString>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.into_string().map(Some).map_err(|_| {
+        cannot_parse_config(format!(
+            "{PEPPY_CONFIG_ENV} is set but its value is not valid UTF-8; use a UTF-8 file path or inline JSON5 document"
+        ))
+    })
+}
+
+fn load_override_config(value: &str) -> Result<PeppyConfig> {
+    let file_attempt = match expand_tilde(value) {
+        Ok(path) => fs::read_to_string(&path)
+            .map(|content| (path.clone(), content))
+            .map_err(|error| format!("{}: {error}", path.display())),
+        Err(error) => Err(format!("{value}: {error}")),
+    };
+
+    let (content, origin, config) = match file_attempt {
+        Ok((path, content)) => {
+            let origin = format!("file {}", path.display());
+            tracing::info!(
+                "using {PEPPY_CONFIG_ENV} ({origin}); bypassing on-disk {PEPPY_CONFIG_FILE}"
+            );
+            let config = serde_json5::from_str::<PeppyConfig>(&content).map_err(|error| {
+                cannot_parse_config(format!("{PEPPY_CONFIG_ENV} ({origin}): {error}"))
+            })?;
+            (content, origin, config)
+        }
+        Err(file_error) => match serde_json5::from_str::<PeppyConfig>(value) {
+            Ok(config) => {
+                let origin = "inline document".to_string();
+                tracing::info!(
+                    "using {PEPPY_CONFIG_ENV} ({origin}); bypassing on-disk {PEPPY_CONFIG_FILE}"
+                );
+                (value.to_string(), origin, config)
+            }
+            Err(inline_error) => {
+                return Err(cannot_parse_config(format!(
+                    "{PEPPY_CONFIG_ENV} is neither a readable config file ({file_error}) nor an inline JSON5 config ({inline_error})"
+                )));
+            }
+        },
+    };
+
+    config
+        .validate()
+        .map_err(|error| prefix_override_error(error, &origin))?;
+    ensure_override_spells_out_every_setting(&content, &origin)?;
+    Ok(config)
+}
+
+fn cannot_parse_config(message: String) -> Error {
+    Error::Parsing(ParsingError::CannotParseConfig(message))
+}
+
+fn prefix_override_error(error: Error, origin: &str) -> Error {
+    match error {
+        Error::Parsing(ParsingError::CannotParseConfig(message)) => {
+            cannot_parse_config(format!("{PEPPY_CONFIG_ENV} ({origin}): {message}"))
+        }
+        other => other,
+    }
+}
+
+fn ensure_override_spells_out_every_setting(content: &str, origin: &str) -> Result<()> {
+    let Some(completion) = completion::complete_config_content(content) else {
+        return Ok(());
+    };
+    let missing_paths = completion::missing_paths_in_template_order(&completion);
+    Err(cannot_parse_config(format!(
+        "{PEPPY_CONFIG_ENV} ({origin}): missing settings this peppy release defines: {}; {PEPPY_CONFIG_ENV} sources are never completed with defaults, so every setting must be spelled out",
+        missing_paths.join(", ")
+    )))
+}
+
+fn expand_tilde(path: &str) -> std::result::Result<PathBuf, String> {
+    if path == "~" {
+        return dirs::home_dir()
+            .ok_or_else(|| "cannot resolve ~ because the home directory is unavailable".into());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|home| home.join(rest))
+            .ok_or_else(|| "cannot resolve ~/ because the home directory is unavailable".into());
+    }
+    if path.starts_with('~') {
+        return Err("~user paths are not supported; use an absolute path or ~/...".into());
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// Appends template defaults for every omitted setting whose insertion point
+/// can be safely located, warns about any omission it cannot splice, and logs
+/// which settings were added so a release upgrade leaves a visible trace.
 ///
 /// Best effort by design: `config` (parsed from `content`) is already complete
 /// in memory via the serde defaults, so this only improves the FILE. The result
@@ -789,6 +909,16 @@ fn complete_file_with_defaults(path: &Path, content: &str, config: &PeppyConfig)
     let Some(completion) = completion::complete_config_content(content) else {
         return;
     };
+    if !completion.unspliceable_paths.is_empty() {
+        tracing::warn!(
+            "{PEPPY_CONFIG_FILE}: could not add missing settings to the file: {}; \
+             continuing with the in-memory defaults",
+            completion.unspliceable_paths.join(", ")
+        );
+    }
+    if completion.added_paths.is_empty() {
+        return;
+    }
     if !completion::verify_completion(content, &completion.content, config) {
         tracing::warn!(
             "adding missing defaults to {PEPPY_CONFIG_FILE} produced inconsistent \
@@ -850,6 +980,243 @@ mod tests {
         let path = conf_dir.join(PEPPY_CONFIG_FILE);
         std::fs::write(&path, content).unwrap();
         (tmp, peppy_dirs, path)
+    }
+
+    fn error_message(error: Error) -> String {
+        match error {
+            Error::Parsing(ParsingError::CannotParseConfig(message)) => message,
+            other => panic!("expected CannotParseConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_override_source_unset_and_empty_are_none() {
+        assert_eq!(env_override_source(None).unwrap(), None);
+        assert_eq!(env_override_source(Some(OsString::new())).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_override_source_non_utf8_fails_loud() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let error = env_override_source(Some(OsString::from_vec(vec![0xff]))).unwrap_err();
+        let message = error_message(error);
+        assert!(message.contains(PEPPY_CONFIG_ENV));
+        assert!(message.contains("not valid UTF-8"));
+    }
+
+    #[test]
+    fn inline_override_accepts_the_full_template_with_comments() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("never-created");
+        let peppy_dirs = PeppyDirs::new(&root);
+
+        let config =
+            load_or_create_with_override(&peppy_dirs, Some(DEFAULT_PEPPY_CONFIG_TEMPLATE.into()))
+                .unwrap();
+
+        assert_eq!(config, PeppyConfig::default());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn file_override_loads_a_complete_config_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("override.json5");
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE.replacen(
+            "local_nodes_topology: \"peer\"",
+            "local_nodes_topology: \"router\"",
+            1,
+        );
+        std::fs::write(&path, &content).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let config = load_override_config(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            config.zenoh.local_nodes_topology,
+            LocalNodesTopology::Router
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn file_form_errors_do_not_fall_back_to_inline() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("malformed.json5");
+        std::fs::write(&path, "{ not json5").unwrap();
+
+        let message = error_message(load_override_config(path.to_str().unwrap()).unwrap_err());
+
+        assert!(message.contains(PEPPY_CONFIG_ENV));
+        assert!(message.contains(&format!("file {}", path.display())));
+        assert!(!message.contains("neither a readable config file"));
+    }
+
+    #[test]
+    fn neither_file_nor_inline_lists_both_reasons() {
+        let value = "definitely/missing.json5";
+
+        let message = error_message(load_override_config(value).unwrap_err());
+
+        assert!(message.contains(PEPPY_CONFIG_ENV));
+        assert!(message.contains(value));
+        assert!(message.contains("readable config file"));
+        assert!(message.contains("inline JSON5 config"));
+    }
+
+    #[test]
+    fn whitespace_only_value_fails_with_both_reasons() {
+        let message = error_message(load_override_config("   ").unwrap_err());
+
+        assert!(message.contains(PEPPY_CONFIG_ENV));
+        assert!(message.contains("readable config file"));
+        assert!(message.contains("inline JSON5 config"));
+    }
+
+    #[test]
+    fn file_override_expands_tilde() {
+        let relative = format!(
+            "definitely-missing-peppy-config-env-{}-{}",
+            std::process::id(),
+            line!()
+        );
+        let value = format!("~/{relative}/x.json5");
+        let expanded = dirs::home_dir().unwrap().join(relative).join("x.json5");
+
+        let message = error_message(load_override_config(&value).unwrap_err());
+
+        assert!(message.contains(&expanded.display().to_string()));
+        assert!(message.contains("inline JSON5 config"));
+    }
+
+    #[test]
+    fn inline_override_failing_validation_names_the_env_var() {
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE.replacen(
+            &format!("standard_buffer_size: {DEFAULT_STANDARD_BUFFER_SIZE}"),
+            "standard_buffer_size: 0",
+            1,
+        );
+
+        let message = error_message(load_override_config(&content).unwrap_err());
+
+        assert!(message.contains("PEPPY_CONFIG (inline document)"));
+        assert!(message.contains("standard_buffer_size"));
+    }
+
+    #[test]
+    fn override_outdated_lists_missing_paths() {
+        let message = error_message(load_override_config(r#"{ mode: "peer" }"#).unwrap_err());
+
+        assert!(message.contains("PEPPY_CONFIG (inline document)"));
+        assert!(message.contains("core_node_name"));
+        assert!(message.contains("zenoh"));
+        assert!(message.contains("lifecycle"));
+        assert!(message.contains("resource_servers"));
+        assert!(message.contains("never completed with defaults"));
+        assert!(message.contains("every setting must be spelled out"));
+    }
+
+    #[test]
+    fn outdated_check_runs_after_validation() {
+        let content = r#"{ zenoh: { peer: { standard_buffer_size: 0 } } }"#;
+
+        let message = error_message(load_override_config(content).unwrap_err());
+
+        assert!(message.contains("PEPPY_CONFIG (inline document)"));
+        assert!(message.contains("standard_buffer_size"));
+        assert!(!message.contains("missing settings this peppy release defines"));
+    }
+
+    #[test]
+    fn file_override_outdated_stays_untouched() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("outdated.json5");
+        let content = b"{ mode: \"peer\" }\n";
+        std::fs::write(&path, content).unwrap();
+
+        let message = error_message(load_override_config(path.to_str().unwrap()).unwrap_err());
+
+        assert!(message.contains(&format!("file {}", path.display())));
+        assert!(message.contains("core_node_name"));
+        assert_eq!(std::fs::read(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn override_takes_precedence_over_dirs_without_touching_disk() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config("{ not json5");
+        let before = std::fs::read(&path).unwrap();
+
+        let config =
+            load_or_create_with_override(&peppy_dirs, Some(DEFAULT_PEPPY_CONFIG_TEMPLATE.into()))
+                .unwrap();
+
+        assert_eq!(config, PeppyConfig::default());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("never-created");
+        let peppy_dirs = PeppyDirs::new(&root);
+        load_or_create_with_override(&peppy_dirs, Some(DEFAULT_PEPPY_CONFIG_TEMPLATE.into()))
+            .unwrap();
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn no_override_falls_through_to_disk_flow() {
+        let tmp = tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let config = load_or_create_with_override(&peppy_dirs, None).unwrap();
+        let path = peppy_dirs.conf_dir().join(PEPPY_CONFIG_FILE);
+
+        assert_eq!(config, PeppyConfig::default());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            DEFAULT_PEPPY_CONFIG_TEMPLATE
+        );
+
+        let (_tmp, peppy_dirs, path) = dirs_with_config("{}");
+        load_or_create_with_override(&peppy_dirs, None).unwrap();
+        let completed = std::fs::read_to_string(path).unwrap();
+        assert_eq!(
+            serde_json5::from_str::<PeppyConfig>(&completed).unwrap(),
+            PeppyConfig::default()
+        );
+        assert!(completion::complete_config_content(&completed).is_none());
+    }
+
+    #[test]
+    fn partial_splice_survives_unspliceable_remainder() {
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE
+            .replacen("  lifecycle: {", r#"  "life\u0063ycle": {"#, 1)
+            .replacen(SHUTDOWN_GRACE_FIELD_SNIPPET, "", 1)
+            .replacen(API_FIELD_SNIPPET, "", 1);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
+
+        let config = load_or_create(&peppy_dirs).unwrap();
+        let completed = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(config, PeppyConfig::default());
+        assert_ne!(completed, content);
+        assert!(completed.contains(API_FIELD_SNIPPET));
+        assert!(!completed.contains(SHUTDOWN_GRACE_FIELD_SNIPPET));
+        assert!(completed.contains(r#""life\u0063ycle""#));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), config);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+    }
+
+    #[test]
+    fn override_with_escaped_key_outdated_doc_crashes() {
+        let content = DEFAULT_PEPPY_CONFIG_TEMPLATE
+            .replacen("  lifecycle: {", r#"  "life\u0063ycle": {"#, 1)
+            .replacen(SHUTDOWN_GRACE_FIELD_SNIPPET, "", 1);
+
+        let message = error_message(load_override_config(&content).unwrap_err());
+
+        assert!(message.contains("PEPPY_CONFIG (inline document)"));
+        assert!(message.contains("lifecycle.shutdown_grace_secs"));
+        assert!(message.contains("never completed with defaults"));
     }
 
     #[test]
