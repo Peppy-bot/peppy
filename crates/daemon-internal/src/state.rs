@@ -10,9 +10,10 @@ const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";
 /// Persistent state for the peppy daemon.
 ///
 /// This struct is serialized to JSON5 and stored on disk to track daemon state
-/// across restarts. The state file location is determined by the `PEPPY_DAEMON_STATE_FILE`
-/// environment variable, or defaults to `~/.peppy/$DAEMON_STATE_FILENAME` in production
-/// and a temp directory in development.
+/// across restarts. The state file lives at the peppy data root
+/// (`~/.peppy/daemon_state.json5` in production, a temp-dir root in
+/// development); `PEPPY_HOME` relocates the whole root and the state file
+/// with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonState {
     /// The name of the node currently acting as the core node.
@@ -82,12 +83,10 @@ impl DaemonState {
         }
     }
 
-    /// Returns the path where the daemon state file will be stored.
-    ///
-    /// If the `PEPPY_DAEMON_STATE_FILE` environment variable is set, returns that path.
-    /// Otherwise, returns `peppy_data_dir()/daemon_state.json5`.
+    /// Returns the path where the daemon state file is stored: the data
+    /// root's `daemon_state.json5`.
     pub(crate) fn state_file_path() -> PathBuf {
-        Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path)
+        Self::state_file_in(PeppyDirs::default().root())
     }
 
     /// Returns the path where the daemon state file would be stored in the given directory.
@@ -110,9 +109,8 @@ impl DaemonState {
         fs::write(path, content)
     }
 
-    /// Reads the daemon state from the env-pinned path
-    /// (`PEPPY_DAEMON_STATE_FILE`) or the data root's default path. The serve
-    /// singleton lock guarantees at most one daemon writes the default path.
+    /// Reads the daemon state from the data root's `daemon_state.json5`. The
+    /// serve singleton lock guarantees at most one daemon writes it.
     pub fn read() -> Result<Self, io::Error> {
         Self::read_from(&Self::state_file_path())
     }
@@ -120,16 +118,6 @@ impl DaemonState {
     pub fn read_from(path: &Path) -> Result<Self, io::Error> {
         let content = fs::read_to_string(path)?;
         serde_json5::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
-    }
-
-    fn env_state_file_path() -> Option<PathBuf> {
-        daemon_config::consts::non_empty_env_path(std::env::var_os(
-            daemon_config::consts::DAEMON_STATE_FILE_ENV,
-        ))
-    }
-
-    fn default_state_file_path() -> PathBuf {
-        PeppyDirs::default().root().join(DAEMON_STATE_FILENAME)
     }
 
     /// Whether the daemon that wrote this state still appears to be running, by

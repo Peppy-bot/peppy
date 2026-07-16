@@ -358,8 +358,8 @@ pub struct ServeOptions {
 /// returns `Ok(())` and the process exits 0; the crash-only supervisor never
 /// restarts a clean exit.
 ///
-/// Refuses to start with [`Error::AlreadyRunning`] when another daemon on this
-/// machine holds the singleton lock for the same peppy data root.
+/// Refuses to start with [`Error::AlreadyRunning`] when another daemon holds
+/// the singleton lock for the same peppy data root.
 ///
 /// This function may terminate the process directly with
 /// `RESTART_EXIT_CODE` (`75`) instead of returning: when restarts flap past

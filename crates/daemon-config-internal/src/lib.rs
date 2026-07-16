@@ -49,10 +49,9 @@ pub mod atomic_write {
 // -- consts --
 pub mod consts {
     pub use crate::internal::consts::{
-        AppEnv, CREDENTIALS_FILE, DAEMON_STATE_FILE_ENV, DEFAULT_ALPINE_BASE_IMAGE,
-        DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_MESSAGING_PORT_VAR_NAME,
-        PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH, PeppyDirs, non_empty_env_path, peppy_root_dir,
-        set_app_env,
+        AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
+        DEFAULT_RUST_BASE_IMAGE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
+        PEPPYLIB_OUTPUT_PATH, PeppyDirs, non_empty_env_path, peppy_root_dir, set_app_env,
     };
 }
 

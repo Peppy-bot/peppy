@@ -1,8 +1,6 @@
 /// The peppy output directory relative to node_dir (contains generated libraries).
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
-pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
-
 /// Filename of the CLI's cached OAuth credentials, stored under `~/.peppy/conf`
 /// (i.e. `conf_dir().join(CREDENTIALS_FILE)`). Written `0600` by the `peppy
 /// login` flow; never committed and never world-readable.

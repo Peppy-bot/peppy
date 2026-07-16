@@ -9,9 +9,9 @@ pub enum Error {
     #[error("{0}")]
     ExecutionFailed(String),
 
-    // -- serve: the machine-wide singleton lock is held by another daemon
+    // -- serve: the data-root singleton lock is held by another daemon
     #[error(
-        "a peppy daemon is already running on this machine; stop it with `peppy service stop` before starting another"
+        "a peppy daemon is already running for this peppy data root; stop it with `peppy service stop` before starting another"
     )]
     AlreadyRunning,
 
