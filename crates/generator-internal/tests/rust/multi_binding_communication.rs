@@ -62,10 +62,12 @@ const MULTI_CONSUMED_SERVICE: &str = r#"
 const CONSUMED_SERVICE_REQUEST_FORMAT: &str = r#"{ enable: "bool" }"#;
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer(crate::helpers::Topology::Peer)]
+#[case::router(crate::helpers::Topology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn one_or_more_slot_fans_in_topics_and_directs_services(#[case] mode: crate::helpers::Mode) {
+async fn one_or_more_slot_fans_in_topics_and_directs_services(
+    #[case] topology: crate::helpers::Topology,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -131,7 +133,7 @@ async fn one_or_more_slot_fans_in_topics_and_directs_services(#[case] mode: crat
         TEST_CORE_NODE,
         &[FRONT_CAMERA_INSTANCE_ID, REAR_CAMERA_INSTANCE_ID],
     );
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -252,7 +254,7 @@ fn main() -> Result<()> {
             TEST_CORE_NODE,
         )
         .unwrap();
-        let runtime_config = crate::helpers::apply_mode(runtime_config, mode);
+        let runtime_config = crate::helpers::apply_topology(runtime_config, topology);
         let path = temp_dir_camera
             .path()
             .join(format!("peppy_runtime_{instance_id}.json5"));

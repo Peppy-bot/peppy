@@ -85,7 +85,7 @@ impl Command for LogoutCommand {
         // effort: never fails logout (the result is intentionally discarded).
         let _ = super::poke_federation_and_report(
             &dirs,
-            config.federation.connect_timeout_secs,
+            config.zenoh.federation.connect_timeout_secs,
             super::FederationPokeAction::Logout,
         );
         Ok(())

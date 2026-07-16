@@ -11,26 +11,26 @@ mod common;
 
 use common::{
     CALLER_INSTANCE_ID, assert_clock_round_trip, assert_clock_topic_emits_monotonic_ticks,
-    start_core_node_with_real_messenger_mode,
+    start_core_node_with_real_messenger_topology,
 };
-use daemon_config::peppy_config::Mode;
+use daemon_config::peppy_config::Topology;
 use std::time::Duration;
 
 #[rstest::rstest]
-#[case::peer(Mode::Peer)]
-#[case::router(Mode::Router)]
+#[case::peer(Topology::Peer)]
+#[case::router(Topology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clock_service_round_trip_over_real_zenoh(#[case] mode: Mode) {
-    let started = start_core_node_with_real_messenger_mode(mode).await;
+async fn clock_service_round_trip_over_real_zenoh(#[case] topology: Topology) {
+    let started = start_core_node_with_real_messenger_topology(topology).await;
     assert_clock_round_trip(&started).await;
 }
 
 #[rstest::rstest]
-#[case::peer(Mode::Peer)]
-#[case::router(Mode::Router)]
+#[case::peer(Topology::Peer)]
+#[case::router(Topology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clock_topic_publishes_ticks_over_real_zenoh(#[case] mode: Mode) {
-    let started = start_core_node_with_real_messenger_mode(mode).await;
+async fn clock_topic_publishes_ticks_over_real_zenoh(#[case] topology: Topology) {
+    let started = start_core_node_with_real_messenger_topology(topology).await;
     assert_clock_topic_emits_monotonic_ticks(
         &started,
         &started.core_node_name,

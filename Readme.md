@@ -53,7 +53,7 @@ To build Peppy, just type the following:
 cargo build --release --all-targets
 ```
 
-Note: `peppy service serve` uses Zenoh and normally spawns a `zenohd` router process. Peppy finds that binary next to the `peppy` binary or on `PATH`. To use a router you run yourself, set `zenohd` to `{ mode: "external", endpoint: "tcp/127.0.0.1:7448" }` in `peppy_config.json5`; peppy dials that endpoint and does not manage the router's lifecycle or configuration.
+Note: `peppy service serve` uses Zenoh and normally spawns a `zenohd` router process. Peppy finds that binary next to the `peppy` binary or on `PATH`. To use a router you run yourself, set `zenoh.zenohd` to `{ ownership: "external", endpoint: "tcp/127.0.0.1:7448" }` in `peppy_config.json5`; peppy dials that endpoint and does not manage the router's lifecycle or configuration.
 
 
 ## 📚 Examples

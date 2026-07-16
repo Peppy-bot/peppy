@@ -50,7 +50,7 @@ pub struct ServeCommandBuilder {
     /// collisions across the federated mesh refuse boot; see `build`).
     federation_api_url: Option<String>,
     /// Bound on the federation backend round-trip (the startup gate and each
-    /// resolve). Read from `peppy_config.federation` in
+    /// resolve). Read from `peppy_config.zenoh.federation` in
     /// [`with_messaging_router`](Self::with_messaging_router) before the config is
     /// moved into the core node, and shared by [`RouterFederation`] and
     /// [`FederationControl`].
@@ -121,9 +121,9 @@ impl ServeCommandBuilder {
                 // Reconnecting session: if the router watchdog respawns zenohd,
                 // the daemon's own session re-establishes (and re-declares the
                 // core node's services) instead of going silent. The session's
-                // mode (peer vs router-relay) and buffer sizes come from the
+                // topology (peer vs router-relay) and buffer sizes come from the
                 // daemon-global config read at startup.
-                let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.peer);
+                let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.zenoh.peer);
 
                 // A managed local router starts STANDALONE here. Federating it to
                 // the caller's per-user cloud router needs a backend round-trip,
@@ -139,7 +139,7 @@ impl ServeCommandBuilder {
                 // moved into the core node in `build`; both the federation task
                 // and its control socket share it.
                 self.federation_connect_timeout =
-                    Duration::from_secs(self.peppy_config.federation.connect_timeout_secs);
+                    Duration::from_secs(self.peppy_config.zenoh.federation.connect_timeout_secs);
 
                 // Resolve this generation's organization namespace once, from the
                 // cached credentials: `"local"` when logged out, else the org id.
@@ -152,8 +152,8 @@ impl ServeCommandBuilder {
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
-                let gossip = self.peppy_config.mode.gossip();
-                let adapter = match self.peppy_config.zenohd.external_endpoint() {
+                let gossip = self.peppy_config.zenoh.local_nodes_topology.gossip();
+                let adapter = match self.peppy_config.zenoh.zenohd.external_endpoint() {
                     Some(endpoint) => {
                         ZenohAdapter::with_external_router(endpoint, gossip, buffer_sizes)?
                     }
@@ -532,8 +532,11 @@ mod tests {
     fn external_router_endpoint_flows_from_config_through_builder_into_daemon_state() {
         const ENDPOINT: &str = "tcp/zenoh-router.regression.test:17555";
         let peppy_config = PeppyConfig {
-            zenohd: daemon_config::peppy_config::ZenohdConfig::External {
-                endpoint: ENDPOINT.to_string(),
+            zenoh: daemon_config::peppy_config::ZenohConfig {
+                zenohd: daemon_config::peppy_config::ZenohdConfig::External {
+                    endpoint: ENDPOINT.to_string(),
+                },
+                ..Default::default()
             },
             ..PeppyConfig::default()
         };
