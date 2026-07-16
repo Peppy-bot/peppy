@@ -1,4 +1,4 @@
-//! Machine-level daemon singleton: an exclusive advisory lock on
+//! Per-data-root daemon singleton: an exclusive advisory lock on
 //! `<peppy root>/runtime/daemon.lock`, held for the whole daemon process
 //! lifetime. flock-based via [`std::fs::File::try_lock`], so the kernel
 //! releases the lock on any process exit, including SIGKILL, and acquisition

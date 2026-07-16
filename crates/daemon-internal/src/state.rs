@@ -111,8 +111,8 @@ impl DaemonState {
     }
 
     /// Reads the daemon state from the env-pinned path
-    /// (`PEPPY_DAEMON_STATE_FILE`) or the data root's default path. The
-    /// machine-singleton serve lock guarantees at most one daemon writes it.
+    /// (`PEPPY_DAEMON_STATE_FILE`) or the data root's default path. The serve
+    /// singleton lock guarantees at most one daemon writes the default path.
     pub fn read() -> Result<Self, io::Error> {
         Self::read_from(&Self::state_file_path())
     }
@@ -174,24 +174,19 @@ impl DaemonState {
 mod tests {
     use super::*;
 
-    fn state(pid: Option<u32>) -> DaemonState {
-        DaemonState {
-            core_node_name: format!("node-{}", pid.unwrap_or(0)),
-            daemon_pid: pid,
-            messaging_host: "127.0.0.1".to_string(),
-            messaging_port: 7447,
-            git_hash: "test".to_string(),
-            shutdown_grace_secs: 5,
-            organization_namespace: "local".to_string(),
-        }
-    }
-
     #[test]
     fn write_then_read_round_trips_state() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        let mut original = state(Some(42));
-        original.messaging_host = "router.internal".to_string();
+        let original = DaemonState {
+            core_node_name: "node-42".to_string(),
+            daemon_pid: Some(42),
+            messaging_host: "router.internal".to_string(),
+            messaging_port: 7447,
+            git_hash: "test".to_string(),
+            shutdown_grace_secs: 5,
+            organization_namespace: "local".to_string(),
+        };
         DaemonState::write_to(&path, &original).expect("write");
 
         let read = DaemonState::read_from(&path).expect("read");

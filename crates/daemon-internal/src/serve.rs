@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::builder::ServeCommandBuilder;
 use crate::error::{Error, Result};
+use daemon_config::consts::PeppyDirs;
 use tokio_util::sync::CancellationToken;
 
 /// Why a serve generation stopped running, threaded up to the in-process
@@ -366,16 +367,17 @@ pub struct ServeOptions {
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.
 pub fn serve(options: ServeOptions) -> Result<()> {
-    // One daemon per machine (per peppy data root): held for the WHOLE
-    // process lifetime, above the restart loop, so an in-process restart
-    // never opens a window for a second daemon. Every exit path releases it
-    // (kernel flock), including SIGKILL and the process::exit calls below.
-    let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(
-        &daemon_config::consts::PeppyDirs::default(),
-    )?;
+    // The peppy data root (the same ~/.peppy the core node uses), resolved
+    // once so the singleton lock and every generation agree by construction.
+    let peppy_dirs = PeppyDirs::default();
+    // One daemon per peppy data root: held for the WHOLE process lifetime,
+    // above the restart loop, so an in-process restart never opens a window
+    // for a second daemon. Every exit path releases it (kernel flock),
+    // including SIGKILL and the process::exit calls below.
+    let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&peppy_dirs)?;
     let mut flap = FlapWindow::new();
     loop {
-        let (outcome, router_adopted) = run_one_generation(&options)?;
+        let (outcome, router_adopted) = run_one_generation(&options, &peppy_dirs)?;
         match outcome {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
@@ -398,12 +400,13 @@ pub fn serve(options: ServeOptions) -> Result<()> {
 /// is a clean generation: fresh sessions, a fresh `CoreNode` (so its
 /// declaration guard re-runs), and the namespace + federation gate re-resolved
 /// from the credentials at the top of the build.
-fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
-    // Read the daemon-global config, creating it with defaults if missing.
-    // Resolved from `PeppyDirs::default()` (the same ~/.peppy the core node
-    // uses), applied to the daemon's own session and every spawned node.
-    let peppy_dirs = daemon_config::consts::PeppyDirs::default();
-    let peppy_config = daemon_config::peppy_config::load_or_create(&peppy_dirs)
+fn run_one_generation(
+    options: &ServeOptions,
+    peppy_dirs: &PeppyDirs,
+) -> Result<(ServeOutcome, bool)> {
+    // Read the daemon-global config, creating it with defaults if missing,
+    // applied to the daemon's own session and every spawned node.
+    let peppy_config = daemon_config::peppy_config::load_or_create(peppy_dirs)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to load peppy_config.json5: {e}")))?;
 
     let mut builder = ServeCommandBuilder::new(&options.root_dir, options.git_hash.clone())?
