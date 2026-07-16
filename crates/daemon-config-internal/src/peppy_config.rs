@@ -10,11 +10,11 @@
 //! peppy before a new knob existed) is completed in place: the missing entries
 //! are appended with their default values and explanatory comments, so the file
 //! on disk always lists every available knob. The user's own values, comments,
-//! and unknown keys are otherwise preserved byte-for-byte (see [`completion`]);
-//! when appending defaults, completion may add a structural separator comma
-//! after the prior final entry. Each setting added this way is logged at info
-//! level, so the first start after a peppy upgrade shows exactly which new
-//! settings appeared in the file.
+//! and unknown root-level keys are otherwise preserved byte-for-byte (see
+//! [`completion`]); when appending defaults, completion may add a structural
+//! separator comma after the prior final entry. Each setting added this way is
+//! logged at info level, so the first start after a peppy upgrade shows exactly
+//! which new settings appeared in the file.
 //!
 //! Unlike `repositories.json5`, a malformed `peppy_config.json5` fails loud at
 //! startup ([`load_or_create`] returns `Err`) instead of falling back to
@@ -375,7 +375,7 @@ impl Default for ResourceServers {
 /// `#[serde(default)]` fills any field a partial `federation` block omits from
 /// [`FederationConfig::default`], matching the `LifecycleConfig` pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FederationConfig {
     pub connect_timeout_secs: u64,
 }
@@ -593,12 +593,43 @@ fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), St
 /// `#[serde(default)]` fills any field a partial `zenoh` block omits, matching
 /// the `LifecycleConfig` pattern.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ZenohConfig {
     pub local_nodes_topology: LocalNodesTopology,
+    #[serde(deserialize_with = "deserialize_peer_config")]
     pub peer: PeerConfig,
     pub federation: FederationConfig,
     pub zenohd: ZenohdConfig,
+}
+
+/// Deserializes the shared [`PeerConfig`] through a strict local wire type so
+/// typos in this user-edited file cannot silently fall back to defaults.
+fn deserialize_peer_config<'de, D>(deserializer: D) -> std::result::Result<PeerConfig, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(default, deny_unknown_fields)]
+    struct Wire {
+        standard_buffer_size: usize,
+        high_throughput_buffer_size: usize,
+    }
+
+    impl Default for Wire {
+        fn default() -> Self {
+            let defaults = PeerConfig::default();
+            Self {
+                standard_buffer_size: defaults.standard_buffer_size,
+                high_throughput_buffer_size: defaults.high_throughput_buffer_size,
+            }
+        }
+    }
+
+    let wire = Wire::deserialize(deserializer)?;
+    Ok(PeerConfig {
+        standard_buffer_size: wire.standard_buffer_size,
+        high_throughput_buffer_size: wire.high_throughput_buffer_size,
+    })
 }
 
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
@@ -1035,6 +1066,34 @@ mod tests {
                 matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
                     if message.contains("unknown field `zenoh.zenohd.future_router_option`")),
                 "expected an unknown zenohd field error for {content}, got: {err:?}"
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn zenoh_unknown_fields_fail_loud_and_leave_files_untouched() {
+        for (content, unknown_field) in [
+            (
+                r#"{ zenoh: { local_nodes_toplogy: "router" } }"#,
+                "local_nodes_toplogy",
+            ),
+            (
+                r#"{ zenoh: { peer: { standard_buffer_sze: 64 } } }"#,
+                "standard_buffer_sze",
+            ),
+            (
+                r#"{ zenoh: { federation: { connect_timeout_sec: 5 } } }"#,
+                "connect_timeout_sec",
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+            let err = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(unknown_field)),
+                "expected an unknown-field error for {unknown_field}, got: {err:?}"
             );
             assert_eq!(std::fs::read_to_string(path).unwrap(), content);
         }
