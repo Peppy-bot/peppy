@@ -3,7 +3,7 @@ use super::gate::ConcurrencyGate;
 use super::pairing::{PairingCoordinator, plan_requested_pairs};
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
-use config::peppy_config::PeerConfig;
+use config::peppy_config::SubscriberBufferConfig;
 use config::runtime::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
@@ -12,7 +12,7 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::peppy_config::{LocalNodesTopology, PeppyConfig};
+use daemon_config::peppy_config::PeppyConfig;
 use futures::FutureExt;
 use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
 use parking_lot::Mutex as StdMutex;
@@ -84,19 +84,18 @@ fn is_host_local_router(host: &str) -> bool {
 }
 
 /// Defaults the peppy daemon resolves from its `peppy_config` and ships to
-/// every spawned node's launch config: the messaging topology (with its peer
-/// buffer sizes) and the daemon-liveness grace period for the node's watchdog.
+/// every spawned node's launch config: messaging gossip and subscriber buffer
+/// sizes, plus the daemon-liveness grace period for the node's watchdog.
 /// Threaded as one unit (rather than parallel scalars) from the service
 /// constructors through the run/launch context chains down to
 /// [`apply_daemon_defaults`], so the next daemon-global knob touches this
 /// struct and that function, not every context in between.
 #[derive(Clone)]
 pub struct DaemonDefaults {
-    /// Daemon-global local-nodes messaging topology, injected into every
-    /// spawned node.
-    pub local_nodes_topology: LocalNodesTopology,
-    /// Daemon-global peer buffer sizes, injected into every spawned node.
-    pub peer_buffer: PeerConfig,
+    /// Whether local-node gossip is enabled, injected into every spawned node.
+    pub gossip: bool,
+    /// Daemon-global subscriber buffer sizes, injected into every spawned node.
+    pub subscriber_buffers: SubscriberBufferConfig,
     /// Daemon-liveness grace period (seconds), injected into every spawned node
     /// so its watchdog knows how long to tolerate a silent daemon.
     pub daemon_grace_secs: u64,
@@ -120,8 +119,8 @@ impl DaemonDefaults {
     /// (which comes from the credentials, not `peppy_config`).
     pub fn from_peppy_config(config: &PeppyConfig, organization_namespace: String) -> Self {
         Self {
-            local_nodes_topology: config.zenoh.local_nodes_topology,
-            peer_buffer: config.zenoh.peer,
+            gossip: config.zenoh.gossip(),
+            subscriber_buffers: config.zenoh.subscriber_buffers(),
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
             organization_namespace,
@@ -163,20 +162,21 @@ pub(crate) struct NodeRunActionContext {
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
-/// launched: the messaging topology + peer buffer sizes, and the daemon-resolved
-/// liveness grace period (so the spawned node's watchdog self-terminates if
-/// the daemon dies and stays gone). `container_separate_ns` forces the node
-/// onto the router-relay (client) path even in the peer topology, because a container
-/// in a separate network namespace cannot form direct loopback peer links. So
-/// the effective gossip is "peer topology AND not separate-namespace".
+/// launched: messaging gossip + subscriber buffer sizes, and the daemon-resolved
+/// liveness grace period (so the spawned node's watchdog self-terminates if the
+/// daemon dies and stays gone). `container_separate_ns` forces the node onto the
+/// router-relay (client) path even when gossip is configured, because a container
+/// in a separate network namespace cannot form direct loopback peer links. So the
+/// effective gossip is "configured AND not separate-namespace".
 fn apply_daemon_defaults(
     cfg: &mut RuntimeConfig,
     defaults: DaemonDefaults,
     container_separate_ns: bool,
 ) {
-    cfg.discovery.gossip = defaults.local_nodes_topology.is_peer() && !container_separate_ns;
-    cfg.discovery.standard_buffer_size = defaults.peer_buffer.standard_buffer_size;
-    cfg.discovery.high_throughput_buffer_size = defaults.peer_buffer.high_throughput_buffer_size;
+    cfg.discovery.gossip = defaults.gossip && !container_separate_ns;
+    cfg.discovery.standard_buffer_size = defaults.subscriber_buffers.standard_buffer_size;
+    cfg.discovery.high_throughput_buffer_size =
+        defaults.subscriber_buffers.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
     cfg.lifecycle.shutdown_grace_secs = defaults.shutdown_grace_secs;
     // Stamp the daemon's organization namespace so the spawned node opens its
@@ -1839,26 +1839,26 @@ mod tests {
         }
     }
 
-    /// `DaemonDefaults` with the given topology/buffers and arbitrary
+    /// `DaemonDefaults` with the given gossip/subscriber buffers and arbitrary
     /// recognizable grace periods.
-    fn daemon_defaults(topology: LocalNodesTopology, peer: PeerConfig) -> DaemonDefaults {
+    fn daemon_defaults(gossip: bool, subscriber_buffers: SubscriberBufferConfig) -> DaemonDefaults {
         DaemonDefaults {
-            local_nodes_topology: topology,
-            peer_buffer: peer,
+            gossip,
+            subscriber_buffers,
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
             organization_namespace: "local".to_string(),
         }
     }
 
-    /// The peer topology (no container override) keeps gossip on and applies the
-    /// configured buffer sizes.
+    /// Configured gossip (with no container override) stays on and applies the
+    /// configured subscriber buffer sizes.
     #[test]
-    fn apply_daemon_defaults_peer_topology_enables_gossip() {
+    fn apply_daemon_defaults_enabled_gossip_stays_enabled() {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(LocalNodesTopology::Peer, PeerConfig::default()),
+            daemon_defaults(true, SubscriberBufferConfig::default()),
             false,
         );
         assert!(cfg.discovery.gossip);
@@ -1866,27 +1866,26 @@ mod tests {
         assert_eq!(cfg.discovery.high_throughput_buffer_size, 1024);
     }
 
-    /// The router topology forces gossip off so all traffic relays through the
-    /// router.
+    /// Disabled gossip keeps all traffic relaying through the router.
     #[test]
-    fn apply_daemon_defaults_router_topology_disables_gossip() {
+    fn apply_daemon_defaults_disabled_gossip_stays_disabled() {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(LocalNodesTopology::Router, PeerConfig::default()),
+            daemon_defaults(false, SubscriberBufferConfig::default()),
             false,
         );
         assert!(!cfg.discovery.gossip);
     }
 
-    /// A separate-namespace container is forced onto the client path even in
-    /// the peer topology (the container override wins).
+    /// A separate-namespace container is forced onto the client path even when
+    /// gossip is configured (the container override wins).
     #[test]
     fn apply_daemon_defaults_container_separate_ns_forces_client_even_in_peer_topology() {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(LocalNodesTopology::Peer, PeerConfig::default()),
+            daemon_defaults(true, SubscriberBufferConfig::default()),
             true,
         );
         assert!(
@@ -1895,23 +1894,19 @@ mod tests {
         );
     }
 
-    /// Buffer sizes, both grace periods, and the organization namespace are
-    /// applied regardless of topology or container placement.
+    /// Subscriber buffer sizes, both grace periods, and the organization
+    /// namespace are applied regardless of topology or container placement.
     #[test]
-    fn apply_daemon_defaults_always_applies_buffers_and_grace() {
-        let peer = PeerConfig {
+    fn apply_daemon_defaults_always_applies_subscriber_buffers_and_grace() {
+        let subscriber_buffers = SubscriberBufferConfig {
             standard_buffer_size: 64,
             high_throughput_buffer_size: 4096,
         };
-        for (topology, container_separate_ns) in [
-            (LocalNodesTopology::Peer, false),
-            (LocalNodesTopology::Router, false),
-            (LocalNodesTopology::Peer, true),
-        ] {
+        for (gossip, container_separate_ns) in [(true, false), (false, false), (true, true)] {
             let mut cfg = runtime_config_for_test();
             apply_daemon_defaults(
                 &mut cfg,
-                daemon_defaults(topology, peer),
+                daemon_defaults(gossip, subscriber_buffers),
                 container_separate_ns,
             );
             assert_eq!(cfg.discovery.standard_buffer_size, 64);
@@ -1924,10 +1919,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn from_peppy_config_external_uses_router_path_and_builtin_subscriber_buffers() {
+        let config = PeppyConfig {
+            zenoh: daemon_config::peppy_config::ZenohConfig::External(
+                daemon_config::peppy_config::ExternalZenohConfig {
+                    endpoint: "tcp/router.example:7447".to_string(),
+                },
+            ),
+            ..PeppyConfig::default()
+        };
+
+        let defaults = DaemonDefaults::from_peppy_config(&config, "local".to_string());
+
+        assert!(!defaults.gossip);
+        assert_eq!(
+            defaults.subscriber_buffers,
+            SubscriberBufferConfig::default()
+        );
+    }
+
     /// A logged-in daemon stamps the org id (not `local`) onto every node.
     #[test]
     fn apply_daemon_defaults_stamps_the_org_namespace() {
-        let mut defaults = daemon_defaults(LocalNodesTopology::Peer, PeerConfig::default());
+        let mut defaults = daemon_defaults(true, SubscriberBufferConfig::default());
         defaults.organization_namespace = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(&mut cfg, defaults, false);

@@ -38,15 +38,19 @@ impl Command for LoginCommand {
         // per-profile URL fallback.
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
+        let federation = config.zenoh.federation().copied();
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
 
-        // Warn (before authentication begins) that a login changing the
-        // organization namespace restarts the daemon and wipes the running node
-        // stack. Bypassed by `--yes`, and skipped when no daemon is running or
-        // its node stack holds no user nodes (so the restart wipes nothing).
-        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)? {
+        // With a managed router, warn (before authentication begins) that a login
+        // changing the organization namespace restarts the daemon and wipes the
+        // running node stack. Bypassed by `--yes`, and skipped when no daemon is
+        // running or its node stack holds no user nodes (so the restart wipes
+        // nothing). External mode never pokes or restarts the daemon.
+        if federation.is_some()
+            && !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)?
+        {
             println!("Login aborted.");
             return Ok(());
         }
@@ -104,18 +108,26 @@ impl Command for LoginCommand {
             }
         }
 
-        // Federation lives in the running daemon, which would otherwise only see
-        // this login on its next poll. Poke it so it re-resolves the now-saved
-        // credentials and federates immediately. Strict: if federation cannot be
-        // established (no daemon, unreachable/untrusted router, apply timeout, or
-        // no upstream), this returns an actionable error and the command exits
-        // non-zero. The credentials were already saved above, so the user stays
-        // authenticated; only the command fails.
-        super::poke_federation_and_report(
-            &dirs,
-            config.zenoh.federation.connect_timeout_secs,
-            super::FederationPokeAction::Login,
-        )
+        // Managed-router federation lives in the running daemon, which would
+        // otherwise only see this login on its next poll. Poke it so it
+        // re-resolves the now-saved credentials and federates immediately.
+        // Strict: if federation cannot be established (no daemon,
+        // unreachable/untrusted router, apply timeout, or no upstream), this
+        // returns an actionable error and the command exits non-zero. The
+        // credentials were already saved above, so the user stays authenticated;
+        // only the command fails. External mode leaves federation untouched and
+        // tells the operator that sessions change on the next manual restart.
+        match federation {
+            Some(federation) => super::poke_federation_and_report(
+                &dirs,
+                federation.connect_timeout_secs,
+                super::FederationPokeAction::Login,
+            ),
+            None => {
+                println!("{}", super::EXTERNAL_ROUTER_NOTE);
+                Ok(())
+            }
+        }
     }
 }
 

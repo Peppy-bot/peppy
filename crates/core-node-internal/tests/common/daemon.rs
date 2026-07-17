@@ -209,10 +209,12 @@ pub async fn start_core_node_with_real_messenger_in_topology(
     args.node_startup_timeout = node_startup_timeout;
     args.node_start_health_timeout = node_start_health_timeout;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
-        zenoh: daemon_config::peppy_config::ZenohConfig {
-            local_nodes_topology: topology,
-            ..Default::default()
-        },
+        zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
+            daemon_config::peppy_config::ManagedZenohConfig {
+                local_nodes_topology: topology,
+                ..Default::default()
+            },
+        ),
         ..Default::default()
     };
     start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await

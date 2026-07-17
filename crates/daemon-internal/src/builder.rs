@@ -50,7 +50,7 @@ pub struct ServeCommandBuilder {
     /// name collisions across the federated mesh refuse boot; see `build`).
     federation_api_url: Option<String>,
     /// Bound on the federation backend round-trip (the startup gate and each
-    /// resolve). Read from `peppy_config.zenoh.federation` in
+    /// resolve). Read from `peppy_config.zenoh.managed.federation` in
     /// [`with_messaging_router`](Self::with_messaging_router) before the config is
     /// moved into the core node, and shared by [`RouterFederation`] and
     /// [`FederationControl`].
@@ -94,7 +94,7 @@ impl ServeCommandBuilder {
         })
     }
 
-    /// Supplies the daemon-global config (messaging mode + peer buffer sizes)
+    /// Supplies the daemon-global config (messaging mode + subscriber buffer sizes)
     /// read once at startup. Must be called before [`with_messaging_router`]
     /// (Self::with_messaging_router) so the daemon's own session is built in the
     /// configured mode.
@@ -121,25 +121,28 @@ impl ServeCommandBuilder {
                 // Reconnecting session: if the router watchdog respawns zenohd,
                 // the daemon's own session re-establishes (and re-declares the
                 // core node's services) instead of going silent. The session's
-                // topology (peer vs router-relay) and buffer sizes come from the
-                // daemon-global config read at startup.
-                let buffer_sizes = SubscriberBufferSizes::from(self.peppy_config.zenoh.peer);
+                // topology (peer vs router-relay) and subscriber buffer sizes come
+                // from the daemon-global config read at startup.
+                let subscriber_buffers =
+                    SubscriberBufferSizes::from(self.peppy_config.zenoh.subscriber_buffers());
 
                 // A managed local router starts STANDALONE here. Federating it to
                 // the caller's per-user cloud router needs a backend round-trip,
                 // done off this synchronous startup path by `RouterFederation`.
-                // An external router is operator-owned, so that task observes it
-                // as pinned and never rewrites or restarts it. `resolve_api_url` is
-                // a local config/env lookup (no I/O), so it is safe here; a `Some`
-                // URL arms the federation task for either ownership mode.
-                let api_url =
-                    auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers).ok();
-                self.federation_api_url = api_url;
-                // Capture the federation timeout here, before `peppy_config` is
-                // moved into the core node in `build`; both the federation task
-                // and its control socket share it.
-                self.federation_connect_timeout =
-                    Duration::from_secs(self.peppy_config.zenoh.federation.connect_timeout_secs);
+                // External routers are entirely operator-run, so federation is
+                // not armed and no control socket or presence gate is created.
+                // `resolve_api_url` is a local config/env lookup (no I/O), so it
+                // is safe here.
+                if let Some(federation) = self.peppy_config.zenoh.federation() {
+                    self.federation_api_url =
+                        auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers)
+                            .ok();
+                    // Capture the federation timeout here, before `peppy_config`
+                    // is moved into the core node in `build`; both the federation
+                    // task and its control socket share it.
+                    self.federation_connect_timeout =
+                        Duration::from_secs(federation.connect_timeout_secs);
+                }
 
                 // Resolve this generation's organization namespace once, from the
                 // cached credentials: `"local"` when logged out, else the org id.
@@ -152,17 +155,17 @@ impl ServeCommandBuilder {
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
-                let gossip = self.peppy_config.zenoh.local_nodes_topology.gossip();
-                let adapter = match self.peppy_config.zenoh.zenohd.external_endpoint() {
+                let gossip = self.peppy_config.zenoh.gossip();
+                let adapter = match self.peppy_config.zenoh.external_endpoint() {
                     Some(endpoint) => {
-                        ZenohAdapter::with_external_router(endpoint, gossip, buffer_sizes)?
+                        ZenohAdapter::with_external_router(endpoint, gossip, subscriber_buffers)?
                     }
                     None => ZenohAdapter::with_router(
                         ZenohNetProtocol::Tcp,
                         "0.0.0.0",
                         listening_port,
                         gossip,
-                        buffer_sizes,
+                        subscriber_buffers,
                         // Standalone: local nodes reach this router over plaintext
                         // loopback TCP. The federation task adds TLS upstream later.
                         Vec::new(),
@@ -314,8 +317,9 @@ impl ServeCommandBuilder {
         // login/logout: immediately when poked over the control socket, else on
         // the next poll. It waits on `messaging_ready` before touching the router,
         // so it can't race MessagingRouter's initial `start_router`.
-        // In-process restart channel. `None` for the mock engine (no federation
-        // control), so a mock daemon never restarts; armed for the zenoh engine.
+        // In-process restart channel. Armed only for managed zenoh when the
+        // federation API URL resolves; external zenoh and the mock engine have no
+        // federation control channel and never restart through this path.
         let mut restart_rx: Option<watch::Receiver<bool>> = None;
         if self.federation_api_url.is_some() && federation_core_node_name.is_none() {
             // Only reachable when a zenoh router was built without a core node
@@ -532,12 +536,11 @@ mod tests {
     fn external_router_endpoint_flows_from_config_through_builder_into_daemon_state() {
         const ENDPOINT: &str = "tcp/zenoh-router.regression.test:17555";
         let peppy_config = PeppyConfig {
-            zenoh: daemon_config::peppy_config::ZenohConfig {
-                zenohd: daemon_config::peppy_config::ZenohdConfig::External {
+            zenoh: daemon_config::peppy_config::ZenohConfig::External(
+                daemon_config::peppy_config::ExternalZenohConfig {
                     endpoint: ENDPOINT.to_string(),
                 },
-                ..Default::default()
-            },
+            ),
             ..PeppyConfig::default()
         };
 
@@ -546,6 +549,10 @@ mod tests {
             .with_peppy_config(peppy_config)
             .with_messaging_router("zenoh".to_string())
             .expect("build external messaging adapter without starting it");
+        assert!(
+            builder.federation_api_url.is_none(),
+            "external mode must not arm router federation"
+        );
         let messenger = builder
             .messenger_handle()
             .expect("builder retains its messenger");
@@ -576,5 +583,26 @@ mod tests {
         );
         assert_eq!(state.messaging_host, "zenoh-router.regression.test");
         assert_eq!(state.messaging_port, 17555);
+    }
+
+    #[test]
+    fn managed_router_arms_federation() {
+        let peppy_config = PeppyConfig {
+            zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
+                daemon_config::peppy_config::ManagedZenohConfig::default(),
+            ),
+            ..PeppyConfig::default()
+        };
+
+        let builder = ServeCommandBuilder::new("/unused", "regression-git-hash")
+            .expect("create builder")
+            .with_peppy_config(peppy_config)
+            .with_messaging_router("zenoh".to_string())
+            .expect("build managed messaging adapter without starting it");
+
+        assert!(
+            builder.federation_api_url.is_some(),
+            "managed mode must arm router federation"
+        );
     }
 }

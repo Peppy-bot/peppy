@@ -91,7 +91,7 @@ fn real_prober() -> Prober {
 
 /// The future a [`Federator`] returns: `Ok(true)` ⇒ the local router's config was
 /// (re)rendered and zenohd bounced, `Ok(false)` ⇒ nothing was applied because the
-/// router is operator-managed, `Err` ⇒ the apply failed.
+/// managed router uses a pinned `ZENOH_CONFIG`, `Err` ⇒ the apply failed.
 type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 
 /// Applies a desired upstream to the local router (re-render + bounce). A boxed
@@ -101,26 +101,12 @@ type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 /// `Ok(false)` and so cannot exercise the applied/verify path.
 type Federator = Arc<dyn Fn(Option<(String, pmi::TlsConfig)>) -> FederateFuture + Send + Sync>;
 
-/// The future an [`AdoptionProbe`] returns after the messaging router is ready.
-type AdoptionProbeFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
-
-/// Reports whether this generation adopted an operator-run router. The check is
-/// delayed until messaging readiness because adoption happens in `start_router`.
-type AdoptionProbe = Arc<dyn Fn() -> AdoptionProbeFuture + Send + Sync>;
-
 /// The real federator: re-render the owned router's config with the upstream and,
 /// if it changed, bounce zenohd (see [`refederate_and_restart`]).
 fn real_federator(messenger: Arc<Mutex<Messenger>>) -> Federator {
     Arc::new(move |target| -> FederateFuture {
         let messenger = messenger.clone();
         Box::pin(async move { refederate_and_restart(&messenger, &target).await })
-    })
-}
-
-fn real_adoption_probe(messenger: Arc<Mutex<Messenger>>) -> AdoptionProbe {
-    Arc::new(move || -> AdoptionProbeFuture {
-        let messenger = messenger.clone();
-        Box::pin(async move { messenger.lock().await.router_is_adopted() })
     })
 }
 
@@ -133,8 +119,7 @@ pub(crate) enum FederationOutcome {
     /// poll where the upstream was unchanged). On a login poke this means the TLS
     /// link to the upstream was also verified to validate.
     Applied(Option<String>),
-    /// The router is operator-managed, either by a pinned `ZENOH_CONFIG` or an
-    /// adopted external endpoint; nothing changed.
+    /// The managed router uses a pinned `ZENOH_CONFIG`, so nothing changed.
     Pinned,
     /// The resolve or apply failed; the periodic loop will keep retrying.
     Failed(String),
@@ -188,7 +173,6 @@ pub(crate) type TriggerReceiver = mpsc::Receiver<RefederateRequest>;
 /// the per-user cloud router and keeps it federated. See the module docs.
 pub(crate) struct RouterFederation {
     federator: Federator,
-    adoption_probe: AdoptionProbe,
     resolver: Resolver,
     prober: Prober,
     /// Goes `true` once the router process is up (MessagingRouter ran
@@ -244,8 +228,7 @@ impl RouterFederation {
             auth::router::resolve_federation_target(&api_url, connect_timeout, &core_node_name)
         });
         Self {
-            federator: real_federator(messenger.clone()),
-            adoption_probe: real_adoption_probe(messenger),
+            federator: real_federator(messenger),
             resolver,
             prober: real_prober(),
             messaging_ready,
@@ -264,7 +247,6 @@ impl ServeAsyncCommand for RouterFederation {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
         let RouterFederation {
             federator,
-            adoption_probe,
             resolver,
             prober,
             messaging_ready,
@@ -288,9 +270,9 @@ impl ServeAsyncCommand for RouterFederation {
             // promptly (the loop is otherwise infinite).
             tokio::select! {
                 _ = manage_federation(
-                    federator, adoption_probe, resolver, prober, messaging_ready, trigger_rx,
-                    ready_tx, connect_timeout, startup_namespace, namespace_resolver,
-                    restart_tx, presence_gate_tx,
+                    federator, resolver, prober, messaging_ready, trigger_rx, ready_tx,
+                    connect_timeout, startup_namespace, namespace_resolver, restart_tx,
+                    presence_gate_tx,
                 ) => {}
                 _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
@@ -319,8 +301,8 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watc
 /// What the last completed poll left in effect, cached across polls so an
 /// identical repeat (the same desired upstream) is answered from the fast path
 /// without re-applying. Richer than the bare endpoint string: it also remembers
-/// whether the router is *operator-managed* (through a `ZENOH_CONFIG` pin or an
-/// adopted external endpoint, so we did not actually apply the upstream).
+/// whether the managed router uses an operator-pinned `ZENOH_CONFIG`, so we did
+/// not actually apply the upstream.
 /// Without the `pinned` bit a repeat of such a target would match on endpoint
 /// alone and be misreported as [`FederationOutcome::Applied`] instead of
 /// [`FederationOutcome::Pinned`].
@@ -329,8 +311,8 @@ struct AppliedState {
     /// The upstream now in effect: `Some(ep)` federated to `ep`, `None`
     /// de-federated / nothing federated.
     endpoint: Option<String>,
-    /// Whether the router is operator-managed (so the desired change was not
-    /// applied here), replayed so identical repeats stay `Pinned`.
+    /// Whether the managed router uses a pinned `ZENOH_CONFIG` (so the desired
+    /// change was not applied here), replayed so identical repeats stay `Pinned`.
     pinned: bool,
 }
 
@@ -343,7 +325,6 @@ struct AppliedState {
 #[allow(clippy::too_many_arguments)]
 async fn manage_federation(
     federator: Federator,
-    adoption_probe: AdoptionProbe,
     resolver: Resolver,
     prober: Prober,
     mut messaging_ready: watch::Receiver<bool>,
@@ -391,13 +372,12 @@ async fn manage_federation(
     // bounce, even if the user is logged in but the backend is unreachable. The
     // initial poll does not verify (`verify = false`): startup must not block on a
     // TLS handshake, and the verifying check belongs to the login poke.
-    // A managed router starts standalone, so `None` is already applied. An
-    // adopted router is opaque: even when the desired upstream is also `None`,
-    // peppy must report it as operator-managed instead of claiming that it
-    // cleared federation. Adoption is known only after messaging readiness.
+    // A managed router starts standalone, so `None` is already applied. A
+    // pinned `ZENOH_CONFIG` is detected only if applying a later change returns
+    // `Ok(false)`.
     let mut applied = AppliedState {
         endpoint: None,
-        pinned: adoption_probe().await,
+        pinned: false,
     };
     let initial_outcome = poll_and_apply(
         &federator,
@@ -568,14 +548,14 @@ async fn poll_and_apply(
                 FederationOutcome::Applied(desired.clone())
             }
             Ok(false) => {
-                // An operator-managed router cannot be changed here. Advance
-                // `applied` (endpoint *and* the pinned bit) so this is noted once
-                // per change (login/logout) rather than every poll, and so an
-                // identical repeat replays `Pinned`; warn so the operator knows
-                // federation is not being auto-managed.
+                // A managed router with a pinned `ZENOH_CONFIG` cannot be changed
+                // here. Advance `applied` (endpoint *and* the pinned bit) so this
+                // is noted once per change (login/logout) rather than every poll,
+                // and so an identical repeat replays `Pinned`; warn so the
+                // operator knows federation is not being auto-managed.
                 warn!(
-                    "router federation: the router is operator-managed (ZENOH_CONFIG pin or \
-                     adopted external endpoint); the desired federation change was not applied"
+                    "router federation: the managed router uses an operator-pinned \
+                     ZENOH_CONFIG; the desired federation change was not applied"
                 );
                 *applied = AppliedState {
                     endpoint: desired,
@@ -644,9 +624,9 @@ async fn poll_and_apply(
 /// watchdog's own restart.
 ///
 /// Returns whether zenohd was restarted: `false` when [`Messenger::refederate`]
-/// was a no-op for an operator-managed router, so a pointless or forbidden
-/// bounce is skipped; `true` when the config was rewritten and the router
-/// bounced.
+/// was a no-op because the managed router uses a pinned `ZENOH_CONFIG`, so a
+/// pointless bounce is skipped; `true` when the config was rewritten and the
+/// router bounced.
 async fn refederate_and_restart(
     messenger: &Arc<Mutex<Messenger>>,
     target: &Option<(String, pmi::TlsConfig)>,
@@ -660,9 +640,8 @@ async fn refederate_and_restart(
         .refederate(connect_endpoints, tls)
         .map_err(Error::PeppyMessagingInterface)?;
     if !rewrote {
-        // The config was not rewritten because the router is operator-managed,
-        // so bouncing zenohd would either change nothing or violate ownership.
-        // Skip the restart and report it.
+        // The managed router uses a pinned `ZENOH_CONFIG`, so bouncing zenohd
+        // would not apply the requested change. Skip the restart and report it.
         return Ok(false);
     }
     // Apply the new config by bouncing zenohd. The daemon's reconnecting session
@@ -698,10 +677,6 @@ mod tests {
     /// rewrite (`Ok(false)`), so the poll classifies the outcome as `Pinned`.
     fn pinned_federator() -> Federator {
         Arc::new(|_target| -> FederateFuture { Box::pin(async { Ok(false) }) })
-    }
-
-    fn fixed_adoption_probe(adopted: bool) -> AdoptionProbe {
-        Arc::new(move || -> AdoptionProbeFuture { Box::pin(async move { adopted }) })
     }
 
     /// A resolver returning a fixed value and counting its calls.
@@ -797,7 +772,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -872,7 +846,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -924,7 +897,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -982,7 +954,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             pinned_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -1047,7 +1018,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -1091,7 +1061,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -1138,7 +1107,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -1166,70 +1134,6 @@ mod tests {
         task.abort();
     }
 
-    /// A fresh generation that adopted an external router cannot assume that a
-    /// missing desired upstream means federation was cleared. The router is
-    /// opaque to peppy, so both startup and a later logout poke stay `Pinned`
-    /// without invoking the federator or prober.
-    #[tokio::test]
-    async fn logged_out_adopted_router_stays_pinned_without_applying() {
-        let (resolver, _resolver_calls) = counting_resolver(None);
-        let (prober, probe_calls) = counting_prober(Ok(()));
-        let federator_calls = Arc::new(AtomicUsize::new(0));
-        let calls = federator_calls.clone();
-        let federator: Federator = Arc::new(move |_target| -> FederateFuture {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(true) })
-        });
-        let (messaging_tx, messaging_rx) = watch::channel(true);
-        let (trigger_tx, trigger_rx) = mpsc::channel(8);
-        let (ready_tx, ready_rx) = oneshot::channel();
-
-        let task = tokio::spawn(manage_federation(
-            federator,
-            fixed_adoption_probe(true),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            "local".to_string(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            None,
-        ));
-
-        tokio::time::timeout(Duration::from_secs(1), ready_rx)
-            .await
-            .expect("startup gate fires")
-            .expect("gate sender not dropped");
-
-        let (ack_tx, ack_rx) = oneshot::channel();
-        trigger_tx
-            .send(RefederateRequest { ack: ack_tx })
-            .await
-            .expect("logout poke accepted");
-        let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
-            .await
-            .expect("logout poke serviced")
-            .expect("ack sender not dropped");
-
-        assert_eq!(outcome, FederationOutcome::Pinned);
-        assert_eq!(
-            federator_calls.load(Ordering::SeqCst),
-            0,
-            "peppy must not apply federation to an adopted router"
-        );
-        assert_eq!(
-            probe_calls.load(Ordering::SeqCst),
-            0,
-            "an operator-managed router is never probed for cloud federation"
-        );
-
-        drop(messaging_tx);
-        task.abort();
-    }
-
     /// A poke after the credentials change the daemon's namespace acks `Restart`
     /// (the control handler then triggers a generation restart). The loop must NOT
     /// federate or probe on a namespace change; a restart is fail-closed. The
@@ -1250,7 +1154,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,
@@ -1317,7 +1220,6 @@ mod tests {
 
         let task = tokio::spawn(manage_federation(
             applying_federator(),
-            fixed_adoption_probe(false),
             resolver,
             prober,
             messaging_rx,

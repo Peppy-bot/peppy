@@ -95,6 +95,18 @@ fn creds_path(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("conf").join("credentials.json5")
 }
 
+/// Writes the minimal explicit external-router variant. Config completion fills
+/// unrelated defaulted sections while leaving `zenoh.external` untouched.
+fn write_external_zenoh_config(dir: &tempfile::TempDir) {
+    let config_dir = dir.path().join("conf");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("peppy_config.json5"),
+        r#"{ zenoh: { external: { endpoint: "tcp/127.0.0.1:7447" } } }"#,
+    )
+    .expect("write external peppy config");
+}
+
 #[test]
 fn login_persists_credentials_and_resolves_identity() {
     let server = MockServer::start();
@@ -133,6 +145,47 @@ fn login_persists_credentials_and_resolves_identity() {
 
     // `/me` was consulted (the tolerant parse succeeded).
     assert!(me.calls() >= 1, "GET /me should have been called");
+}
+
+#[test]
+fn external_login_succeeds_without_a_daemon_control_socket() {
+    let server = MockServer::start();
+    mock_login_endpoints(&server, "external-access-token");
+    let _me = mock_me(&server);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_external_zenoh_config(&dir);
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    let control_socket = peppy_dirs
+        .runtime_config_dir()
+        .join("federation_control.sock");
+    assert!(
+        !control_socket.exists(),
+        "the test must start without a daemon control socket"
+    );
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        yes: true,
+        peppy_dirs: Some(peppy_dirs),
+    }
+    .execute(&ctx())
+    .expect("external login must not require a running daemon");
+
+    assert!(
+        !control_socket.exists(),
+        "external login must not create or require federation control"
+    );
+    let creds = storage::load(&creds_path(&dir)).expect("load external login credentials");
+    assert_eq!(
+        creds
+            .session
+            .expect("external login session")
+            .access_token
+            .expose_secret(),
+        "external-access-token"
+    );
 }
 
 #[test]
@@ -270,6 +323,80 @@ fn logout_calls_backend_and_clears_local_credentials() {
     assert!(
         after.session.is_none(),
         "local credentials must be removed after logout"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn external_logout_does_not_poke_federation_control() {
+    use std::io::{ErrorKind, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let server = MockServer::start();
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_external_zenoh_config(&dir);
+    let path = creds_path(&dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(&server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    let runtime = peppy_dirs.runtime_config_dir();
+    std::fs::create_dir_all(&runtime).expect("runtime dir");
+    let listener = UnixListener::bind(runtime.join("federation_control.sock"))
+        .expect("bind federation-control trap");
+    listener
+        .set_nonblocking(true)
+        .expect("make federation-control trap nonblocking");
+    let command_finished = Arc::new(AtomicBool::new(false));
+    let monitor_finished = Arc::clone(&command_finished);
+    let monitor = std::thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .write_all(b"{\"status\":\"ok\",\"applied\":null}\n")
+                        .expect("reply to unexpected poke");
+                    return true;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    if monitor_finished.load(Ordering::SeqCst) {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("federation-control trap failed: {error}"),
+            }
+        }
+    });
+
+    let result = LogoutCommand {
+        api_url: Some(server.base_url()),
+        yes: true,
+        peppy_dirs: Some(peppy_dirs),
+    }
+    .execute(&ctx());
+    command_finished.store(true, Ordering::SeqCst);
+    let poked = monitor.join().expect("join federation-control trap");
+
+    result.expect("external logout succeeds");
+    assert!(!poked, "external logout must not poke federation control");
+    assert!(logout.calls() >= 1, "POST /logout should have been called");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "external logout clears local credentials"
     );
 }
 

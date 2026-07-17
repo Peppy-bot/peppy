@@ -23,10 +23,16 @@ use crate::{context::AppContext, error::Result};
 use daemon::control::{self as daemon_control, PokeOutcome};
 use daemon::state::DaemonState;
 
-/// Shown when the daemon's router is operator-managed, so the CLI does not
-/// auto-manage federation. Used by both login and logout reporting.
-const PINNED_NOTE: &str = "Note: this daemon's router is operator-managed (ZENOH_CONFIG pin or \
-     an adopted external endpoint); federation is not auto-managed.";
+/// Shown when the managed router uses an operator-pinned config, so the daemon
+/// cannot rewrite it. Used by both login and logout reporting.
+const PINNED_NOTE: &str = "Note: this daemon's router uses an operator-pinned ZENOH_CONFIG; \
+     federation is not auto-managed.";
+
+/// Shown after login/logout in external mode. No federation control task exists
+/// in that mode, so the CLI deliberately leaves the operator's router alone.
+const EXTERNAL_ROUTER_NOTE: &str = "Note: this daemon dials an operator-run router \
+     (`zenoh.external`); federation belongs to the operator and was left untouched. Restart the \
+     daemon to apply the new sign-in state to its sessions.";
 
 /// Re-poke cadence and overall deadline while waiting for the daemon to restart
 /// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)
@@ -60,12 +66,14 @@ pub(crate) enum FederationPokeAction {
     Logout,
 }
 
-/// Confirms (before authentication begins) a login/logout that may restart the
-/// daemon and wipe the running node stack, unless `--yes` was passed. Returns
-/// `Ok(true)` to proceed. Only prompts when a daemon is actually running (else
-/// there is nothing to restart), stdin is a TTY (so a script is never blocked on
-/// a prompt), and the daemon is running at least one user node (else the restart
-/// wipes nothing worth warning about).
+/// Confirms (before authentication begins) a managed-router login/logout that
+/// may restart the daemon and wipe the running node stack, unless `--yes` was
+/// passed. Callers skip this entirely for `zenoh.external`, where authentication
+/// never pokes or restarts the daemon. Returns `Ok(true)` to proceed. Only
+/// prompts when a daemon is actually running (else there is nothing to restart),
+/// stdin is a TTY (so a script is never blocked on a prompt), and the daemon is
+/// running at least one user node (else the restart wipes nothing worth warning
+/// about).
 pub(crate) fn confirm_restart(
     ctx: &Arc<AppContext>,
     yes: bool,
@@ -289,10 +297,10 @@ fn await_restart(
     result
 }
 
-/// Strict reporting for a login poke: success and the operator-managed case print
-/// and return `Ok`; every "federation not in effect" outcome returns an
-/// actionable [`Error::Auth`] (credentials are already saved by the caller, so
-/// the identity is kept; only the command fails).
+/// Strict reporting for a login poke: success and a managed router pinned via
+/// `ZENOH_CONFIG` print and return `Ok`; every "federation not in effect" outcome
+/// returns an actionable [`Error::Auth`] (credentials are already saved by the
+/// caller, so the identity is kept; only the command fails).
 fn report_login(outcome: PokeOutcome) -> Result<()> {
     match outcome {
         PokeOutcome::Applied(Some(_)) => {
@@ -300,8 +308,8 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
             Ok(())
         }
         PokeOutcome::Pinned => {
-            // The operator owns this router, so the CLI is not responsible for
-            // federating it. Treat as non-fatal.
+            // The managed router's `ZENOH_CONFIG` pin prevents the daemon from
+            // rewriting it. Treat that operator choice as non-fatal.
             println!("{PINNED_NOTE}");
             Ok(())
         }
@@ -508,7 +516,7 @@ mod tests {
         );
         assert!(
             report_login(PokeOutcome::Pinned).is_ok(),
-            "an operator-managed router is non-fatal for login"
+            "a managed router pinned via ZENOH_CONFIG is non-fatal for login"
         );
     }
 

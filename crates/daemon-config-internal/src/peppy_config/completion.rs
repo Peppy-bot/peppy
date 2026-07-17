@@ -25,9 +25,9 @@ use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
     FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
-    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, PEER_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
-    SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET, ZENOH_SECTION_SNIPPET,
-    ZENOHD_OWNERSHIP_FIELD_SNIPPET, ZENOHD_SECTION_SNIPPET,
+    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
+    SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
+    SUBSCRIBER_BUFFERS_SECTION_SNIPPET, ZENOH_SECTION_SNIPPET,
 };
 
 /// One known config entry: the template snippet to splice into its parent
@@ -35,10 +35,13 @@ use super::{
 /// individually when it is present but incomplete. A leaf has no children; an
 /// entry with children must have a snippet that embeds every child snippet
 /// (`nested_snippets_compose_their_parents` pins that), so splicing a whole
-/// missing branch and completing it field-by-field agree.
+/// missing branch and completing it field-by-field agree. An alternative key
+/// counts the canonical entry as present without becoming a spliceable entry
+/// of its own.
 struct EntrySpec {
     key: &'static str,
     snippet: &'static str,
+    alternatives: &'static [&'static str],
     children: &'static [EntrySpec],
 }
 
@@ -53,65 +56,72 @@ const SECTIONS: &[EntrySpec] = &[
     EntrySpec {
         key: "core_node_name",
         snippet: CORE_NODE_NAME_SECTION_SNIPPET,
+        alternatives: &[],
         children: &[],
     },
     EntrySpec {
         key: "zenoh",
         snippet: ZENOH_SECTION_SNIPPET,
-        children: &[
-            EntrySpec {
-                key: "local_nodes_topology",
-                snippet: LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET,
-                children: &[],
-            },
-            EntrySpec {
-                key: "peer",
-                snippet: PEER_SECTION_SNIPPET,
-                children: &[
-                    EntrySpec {
-                        key: "standard_buffer_size",
-                        snippet: STANDARD_BUFFER_FIELD_SNIPPET,
-                        children: &[],
-                    },
-                    EntrySpec {
-                        key: "high_throughput_buffer_size",
-                        snippet: HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
-                        children: &[],
-                    },
-                ],
-            },
-            EntrySpec {
-                key: "federation",
-                snippet: FEDERATION_SECTION_SNIPPET,
-                children: &[EntrySpec {
-                    key: "connect_timeout_secs",
-                    snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+        alternatives: &[],
+        children: &[EntrySpec {
+            key: "managed",
+            snippet: MANAGED_SECTION_SNIPPET,
+            alternatives: &["external"],
+            children: &[
+                EntrySpec {
+                    key: "local_nodes_topology",
+                    snippet: LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET,
+                    alternatives: &[],
                     children: &[],
-                }],
-            },
-            EntrySpec {
-                key: "zenohd",
-                snippet: ZENOHD_SECTION_SNIPPET,
-                children: &[EntrySpec {
-                    key: "ownership",
-                    snippet: ZENOHD_OWNERSHIP_FIELD_SNIPPET,
-                    children: &[],
-                }],
-            },
-        ],
+                },
+                EntrySpec {
+                    key: "subscriber_buffers",
+                    snippet: SUBSCRIBER_BUFFERS_SECTION_SNIPPET,
+                    alternatives: &[],
+                    children: &[
+                        EntrySpec {
+                            key: "standard_buffer_size",
+                            snippet: STANDARD_BUFFER_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                        EntrySpec {
+                            key: "high_throughput_buffer_size",
+                            snippet: HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                    ],
+                },
+                EntrySpec {
+                    key: "federation",
+                    snippet: FEDERATION_SECTION_SNIPPET,
+                    alternatives: &[],
+                    children: &[EntrySpec {
+                        key: "connect_timeout_secs",
+                        snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+                        alternatives: &[],
+                        children: &[],
+                    }],
+                },
+            ],
+        }],
     },
     EntrySpec {
         key: "lifecycle",
         snippet: LIFECYCLE_SECTION_SNIPPET,
+        alternatives: &[],
         children: &[
             EntrySpec {
                 key: "daemon_grace_secs",
                 snippet: DAEMON_GRACE_FIELD_SNIPPET,
+                alternatives: &[],
                 children: &[],
             },
             EntrySpec {
                 key: "shutdown_grace_secs",
                 snippet: SHUTDOWN_GRACE_FIELD_SNIPPET,
+                alternatives: &[],
                 children: &[],
             },
         ],
@@ -119,9 +129,11 @@ const SECTIONS: &[EntrySpec] = &[
     EntrySpec {
         key: "resource_servers",
         snippet: RESOURCE_SERVERS_SECTION_SNIPPET,
+        alternatives: &[],
         children: &[EntrySpec {
             key: "api",
             snippet: API_FIELD_SNIPPET,
+            alternatives: &[],
             children: &[],
         }],
     },
@@ -130,7 +142,7 @@ const SECTIONS: &[EntrySpec] = &[
 /// A completion result: the rewritten file content plus what was spliced in.
 ///
 /// `added_paths` names each spliced entry as a dot-separated path
-/// ("federation" spelled "zenoh.federation", a nested field
+/// ("federation" spelled "zenoh.managed.federation", a nested field
 /// "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
 /// (outer blocks first) and in template order within a block. It reflects what
 /// was actually inserted, not merely what was absent.
@@ -165,7 +177,12 @@ fn collect_missing(
     missing: &mut Vec<MissingEntry>,
 ) {
     for spec in specs {
-        if !block.contains_key(spec.key) {
+        if !block.contains_key(spec.key)
+            && !spec
+                .alternatives
+                .iter()
+                .any(|alternative| block.contains_key(*alternative))
+        {
             let path = if parent_path.is_empty() {
                 spec.key.to_string()
             } else {
@@ -781,21 +798,24 @@ mod tests {
         assert_eq!(template_paths, schema_paths);
     }
 
-    /// `zenoh.zenohd.endpoint` is required only by the non-default external
+    /// `zenoh.external.endpoint` is required only by the non-default external
     /// variant, so it must not appear in the managed template or be invented by
     /// config completion. Pin that exceptional schema surface explicitly
     /// instead of weakening the default-schema coverage tests above.
     #[test]
-    fn external_zenohd_variant_schema_is_pinned() {
-        let external = serde_json::to_value(super::super::ZenohdConfig::External {
-            endpoint: "tcp/router.internal:7448".to_string(),
-        })
-        .expect("external zenohd config must serialize");
+    fn external_zenoh_variant_schema_is_pinned() {
+        let external = serde_json::to_value(super::super::ZenohConfig::External(
+            super::super::ExternalZenohConfig {
+                endpoint: "tcp/router.internal:7448".to_string(),
+            },
+        ))
+        .expect("external zenoh config must serialize");
         assert_eq!(
             external,
             serde_json::json!({
-                "ownership": "external",
-                "endpoint": "tcp/router.internal:7448",
+                "external": {
+                    "endpoint": "tcp/router.internal:7448",
+                },
             })
         );
     }
@@ -806,7 +826,7 @@ mod tests {
     #[test]
     fn completion_reports_the_paths_it_added() {
         let completion = complete_config_content(
-            r#"{ zenoh: { local_nodes_topology: "peer" }, lifecycle: { daemon_grace_secs: 60 } }"#,
+            r#"{ zenoh: { managed: { local_nodes_topology: "peer" } }, lifecycle: { daemon_grace_secs: 60 } }"#,
         )
         .expect("sections, zenoh entries, and a lifecycle field missing");
         assert_eq!(
@@ -814,9 +834,8 @@ mod tests {
             [
                 "core_node_name",
                 "resource_servers",
-                "zenoh.peer",
-                "zenoh.federation",
-                "zenoh.zenohd",
+                "zenoh.managed.subscriber_buffers",
+                "zenoh.managed.federation",
                 "lifecycle.shutdown_grace_secs",
             ]
         );
@@ -844,6 +863,44 @@ mod tests {
     }
 
     #[test]
+    fn empty_zenoh_block_gains_the_managed_block() {
+        let completed = complete_config_content("{ zenoh: {} }")
+            .expect("managed block is missing")
+            .content;
+        assert_eq!(parse(&completed), PeppyConfig::default());
+        assert_eq!(completed.matches("managed:").count(), 1);
+        assert!(complete_config_content(&completed).is_none());
+    }
+
+    #[test]
+    fn external_zenoh_block_gains_no_managed_knobs() {
+        let content = r#"{ zenoh: { external: { endpoint: "tcp/router.internal:7448" } } }"#;
+        let completed = complete_config_content(content)
+            .expect("top-level sections are missing")
+            .content;
+        assert!(matches!(
+            parse(&completed).zenoh,
+            super::super::ZenohConfig::External(_)
+        ));
+        let document: Value = serde_json5::from_str(&completed).unwrap();
+        assert_eq!(
+            document["zenoh"],
+            serde_json::json!({
+                "external": { "endpoint": "tcp/router.internal:7448" }
+            })
+        );
+
+        let fully_spelled = serde_json5::to_string(&PeppyConfig {
+            zenoh: super::super::ZenohConfig::External(super::super::ExternalZenohConfig {
+                endpoint: "tcp/router.internal:7448".to_string(),
+            }),
+            ..PeppyConfig::default()
+        })
+        .unwrap();
+        assert!(complete_config_content(&fully_spelled).is_none());
+    }
+
+    #[test]
     fn explicit_null_core_node_name_counts_as_present() {
         // The knob's default is spelled as `null`, not omitted; a file that
         // already carries the null line must not gain a second one.
@@ -857,14 +914,13 @@ mod tests {
 
     #[test]
     fn missing_trailing_comma_gets_one_before_appending() {
-        let completed = complete_config_content(r#"{ zenoh: { local_nodes_topology: "router" } }"#)
-            .expect("everything else missing")
-            .content;
+        let completed = complete_config_content(
+            r#"{ zenoh: { managed: { local_nodes_topology: "router" } } }"#,
+        )
+        .expect("everything else missing")
+        .content;
         let config = parse(&completed);
-        assert_eq!(
-            config.zenoh.local_nodes_topology,
-            super::super::LocalNodesTopology::Router
-        );
+        assert!(!config.zenoh.gossip());
         assert_eq!(
             config.lifecycle.daemon_grace_secs,
             DEFAULT_DAEMON_GRACE_SECS
@@ -876,33 +932,38 @@ mod tests {
     }
 
     #[test]
-    fn partial_peer_block_gains_missing_field() {
-        let completed =
-            complete_config_content(r#"{ zenoh: { peer: { standard_buffer_size: 64 } } }"#)
-                .expect("high_throughput_buffer_size missing")
-                .content;
+    fn partial_subscriber_buffers_block_gains_missing_field() {
+        let completed = complete_config_content(
+            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 64 } } } }"#,
+        )
+        .expect("high_throughput_buffer_size missing")
+        .content;
         let config = parse(&completed);
-        assert_eq!(config.zenoh.peer.standard_buffer_size, 64);
+        assert_eq!(config.zenoh.subscriber_buffers().standard_buffer_size, 64);
         assert_eq!(
-            config.zenoh.peer.high_throughput_buffer_size,
+            config
+                .zenoh
+                .subscriber_buffers()
+                .high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
         assert!(complete_config_content(&completed).is_none());
     }
 
-    /// The deepest schema path (`zenoh.zenohd.ownership`, three levels) is
-    /// spliced into its doubly-nested block, not a shallower one.
+    /// The deepest schema path
+    /// (`zenoh.managed.federation.connect_timeout_secs`, four levels) is
+    /// spliced into its triply nested block, not a shallower one.
     #[test]
-    fn empty_zenohd_block_gains_ownership_at_depth_three() {
-        let completed = complete_config_content(r#"{ zenoh: { zenohd: {} } }"#)
-            .expect("ownership and everything else missing")
+    fn empty_federation_block_gains_timeout_at_depth_four() {
+        let completed = complete_config_content(r#"{ zenoh: { managed: { federation: {} } } }"#)
+            .expect("connect_timeout_secs and everything else missing")
             .content;
         let config = parse(&completed);
         assert_eq!(config, PeppyConfig::default());
-        // The field landed inside the existing zenohd block (which the user
-        // spelled compactly), not as a second zenohd block.
-        assert_eq!(completed.matches("zenohd:").count(), 1);
-        assert!(completed.contains(r#"ownership: "managed","#));
+        // The field landed inside the existing federation block (which the
+        // user spelled compactly), not as a second federation block.
+        assert_eq!(completed.matches("federation: {").count(), 1);
+        assert!(completed.contains("connect_timeout_secs:"));
         assert!(complete_config_content(&completed).is_none());
     }
 
@@ -923,19 +984,20 @@ mod tests {
 
     #[test]
     fn empty_nested_blocks_gain_their_fields() {
-        let completed =
-            complete_config_content("{ zenoh: { peer: {}, zenohd: {} }, lifecycle: {} }")
-                .expect("fields missing")
-                .content;
+        let completed = complete_config_content(
+            "{ zenoh: { managed: { subscriber_buffers: {}, federation: {} } }, lifecycle: {} }",
+        )
+        .expect("fields missing")
+        .content;
         assert_eq!(parse(&completed), PeppyConfig::default());
         assert!(complete_config_content(&completed).is_none());
     }
 
     #[test]
     fn user_content_survives_byte_for_byte() {
-        let content = r#"// my own note about the old mode knob
+        let content = r#"// my own note about a future setting
 {
-  mode: "router", // an unknown key now, preserved verbatim
+  future_setting: "keep", // an unknown key, preserved verbatim
   future_knob: { nested: "}{" },
   /* braces in comments: } { */
 }
@@ -985,19 +1047,23 @@ mod tests {
     /// used to rotate brace pairings and splice into the wrong user object.
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {
-        let content = "{\nzenoh: { peer: { standard_buffer_size: 1 // X\r } },\njunk: // Y\r {\nb: 2 },\ncore_node_name: null\n}\n";
+        let content = "{\nzenoh: { managed: { subscriber_buffers: { standard_buffer_size: 1 // X\r } } },\njunk: // Y\r {\nb: 2 },\ncore_node_name: null\n}\n";
         let completed = complete_config_content(content)
             .expect("fields missing")
             .content;
         let config = parse(&completed);
-        assert_eq!(config.zenoh.peer.standard_buffer_size, 1);
+        assert_eq!(config.zenoh.subscriber_buffers().standard_buffer_size, 1);
         assert_eq!(
-            config.zenoh.peer.high_throughput_buffer_size,
+            config
+                .zenoh
+                .subscriber_buffers()
+                .high_throughput_buffer_size,
             DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
         );
 
-        // The buffer field belongs inside `zenoh.peer`, not inside the unknown
-        // `junk` object whose braces sit behind the CR-terminated comments.
+        // The buffer field belongs inside `zenoh.managed.subscriber_buffers`,
+        // not inside the unknown `junk` object whose braces sit behind the
+        // CR-terminated comments.
         let junk_block =
             &completed[completed.find("junk").unwrap()..completed.find("core_node_name").unwrap()];
         assert!(
@@ -1061,13 +1127,15 @@ mod tests {
 
         // Quoted keys pair up along the whole nested chain too: the missing
         // buffer field joins the user's quoted block instead of a freshly
-        // spliced duplicate `peer` block (which would repeat both fields).
-        let completed =
-            complete_config_content(r#"{ "zenoh": { "peer": { "standard_buffer_size": 64 } } }"#)
-                .expect("high_throughput_buffer_size missing")
-                .content;
+        // spliced duplicate `subscriber_buffers` block (which would repeat
+        // both fields).
+        let completed = complete_config_content(
+            r#"{ "zenoh": { "managed": { "subscriber_buffers": { "standard_buffer_size": 64 } } } }"#,
+        )
+        .expect("high_throughput_buffer_size missing")
+        .content;
         let config = parse(&completed);
-        assert_eq!(config.zenoh.peer.standard_buffer_size, 64);
+        assert_eq!(config.zenoh.subscriber_buffers().standard_buffer_size, 64);
         assert_eq!(completed.matches("standard_buffer_size").count(), 1);
         assert_eq!(completed.matches("high_throughput_buffer_size").count(), 1);
         assert!(complete_config_content(&completed).is_none());
@@ -1096,7 +1164,7 @@ mod tests {
         // Worst-case offsets: the doubly-nested block close, its parents'
         // closes, the comma insertions, and the root's section insertion all
         // touch neighboring bytes.
-        let completed = complete_config_content("{zenoh:{peer:{}}}")
+        let completed = complete_config_content("{zenoh:{managed:{subscriber_buffers:{}}}}")
             .expect("everything else missing")
             .content;
         assert_eq!(parse(&completed), PeppyConfig::default());

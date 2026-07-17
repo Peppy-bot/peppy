@@ -1,11 +1,11 @@
 ---
 title: Daemon configuration
-description: Tune the daemon's messaging topology, router ownership, subscriber buffer sizes, and node lifecycle grace periods through peppy_config.json5.
+description: Configure a peppy-managed or operator-run Zenoh router, messaging behavior, and node lifecycle grace periods through peppy_config.json5.
 sidebar:
   order: 9
 ---
 
-By default, the peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, controls the messaging topology and router ownership of the whole stack, the subscriber channel buffer sizes, the grace periods that govern node lifecycle, and the timeout for federating to your organization's cloud router. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
+By default, the peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, and defines the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
 
 :::note
 The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
@@ -16,10 +16,10 @@ The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the 
 In the normal on-disk flow, you never need to create or migrate this file by hand:
 
 - **First load.** If the file does not exist, peppy creates it with every setting at its default value, annotated with explanatory comments.
-- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), peppy detects every omission and appends each setting it can safely place, together with its default value and comments. Your own values, comments, formatting, and any unrecognized top-level keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Peppy logs each setting it added. An unusual JSON5 spelling or layout, such as an escaped section key that the text scanner cannot safely pair with its block, produces a warning naming every setting that could not be inserted; the daemon continues with those defaults in memory. Fields required only by a non-default choice are not invented: for example, selecting `zenoh.zenohd.ownership: "external"` requires you to supply its `endpoint`.
+- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), peppy detects every omission and appends each setting it can safely place, together with its default value and comments. Your own values, comments, formatting, and any unrecognized top-level keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Peppy logs each setting it added. An unusual JSON5 spelling or layout, such as an escaped section key that the text scanner cannot safely pair with its block, produces a warning naming every setting that could not be inserted; the daemon continues with those defaults in memory. Fields required inside a non-default variant are not invented: if you select `zenoh.external`, you must supply `zenoh.external.endpoint`.
 - **Malformed file.** If the file cannot be parsed, or a value is out of range, peppy refuses to continue and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
 
-In a normally spelled section, a defaulted setting you delete from the file therefore comes back with its default the next time peppy loads the configuration. To change one, edit its value instead of removing it. If peppy warns that an unusual spelling or layout prevented insertion, add the named setting manually if you want it written; the daemon already uses its default in memory. Removing an ownership-specific required field instead makes the file invalid and leaves it untouched.
+In a normally spelled section, a defaulted setting you delete from the file therefore comes back with its default the next time peppy loads the configuration. To change one, edit its value instead of removing it. If peppy warns that an unusual spelling or layout prevented insertion, add the named setting manually if you want it written; the daemon already uses its default in memory. Removing `zenoh.external.endpoint` from an external block instead makes the file invalid and leaves it untouched.
 
 ### Override with `PEPPY_CONFIG`
 
@@ -47,53 +47,56 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
   // Fixed name for this daemon's core node, or null to derive a
   // machine-specific default (cn-...). Names must be unique across all
   // daemons reachable over the same router/federation: a daemon whose name is
-  // already in use refuses to boot. At most 63 characters from the node-name
-  // character set (start with a letter; letters, digits, `_`, `-`).
+  // already in use refuses to boot. At most 63 characters from
+  // "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-".
   // `peppy service serve --core-node-name` overrides this for one run.
   core_node_name: null,
 
-  // The zenoh messaging transport: the local nodes' topology, peer-topology
-  // buffering, per-user router federation, and who owns the local zenohd
-  // router.
+  // The zenoh messaging transport. Configure exactly one of two blocks:
+  //   managed:  peppy starts, monitors, restarts, and stops its bundled
+  //             zenohd router, and every knob inside `managed` applies.
+  //   external: you run the router and peppy only dials it; peppy never
+  //             starts, reconfigures, restarts, stops, or federates it,
+  //             local nodes always relay through it, and the managed knobs
+  //             do not exist. Spelled, in place of `managed`, as:
+  //               external: { endpoint: "tcp/<host>:<port>" },
   zenoh: {
-    // How the nodes on this machine exchange data with each other. Traffic to
-    // and from other machines always relays through the local zenohd router and
-    // its federation, regardless of this setting (node sessions only accept
-    // direct links over loopback).
-    //   "peer"   - Zenoh peer sessions with gossip: local nodes form direct
-    //              peer-to-peer links and data stops relaying through the router.
-    //   "router" - gossip off: all traffic relays through the central zenohd
-    //              router.
-    // Container nodes in a separate network namespace (Lima on macOS) always use
-    // the router path regardless of this setting.
-    local_nodes_topology: "peer",
+    // Settings peppy can only honor because it owns the router process. Replace
+    // this whole block with `external` to use your own router.
+    managed: {
+      // How the nodes on this machine exchange data with each other. Traffic to
+      // and from other machines always relays through the local zenohd router and
+      // its federation, regardless of this setting (node sessions only accept
+      // direct links over loopback).
+      //   "peer"   - Zenoh peer sessions with gossip: local nodes form direct
+      //              peer-to-peer links and data stops relaying through the router.
+      //   "router" - gossip off: all traffic relays through the central zenohd
+      //              router.
+      // Container nodes in a separate network namespace (Lima on macOS) always use
+      // the router path regardless of this setting.
+      local_nodes_topology: "peer",
 
-    // Subscriber channel buffer sizes (number of in-flight messages) per QoS
-    // tier, used in the peer topology where there is no router relay to buffer
-    // between a publisher and a subscriber. Defaults match peppy's built-in
-    // behavior; only edit to tune backpressure.
-    peer: {
-      standard_buffer_size: 128,
-      high_throughput_buffer_size: 1024,
-    },
+      // Subscriber channel buffer sizes (number of in-flight messages) per QoS
+      // tier, used by local node sessions in both managed topologies. They matter
+      // most in peer mode, where no router relay buffers between a publisher and
+      // a subscriber. Defaults match peppy's built-in behavior; only edit to tune
+      // backpressure.
+      subscriber_buffers: {
+        standard_buffer_size: 128,
+        high_throughput_buffer_size: 1024,
+      },
 
-    // Per-user zenoh-router federation: how the daemon links its local router to
-    // your private cloud router. Only tuned to bound a slow/unreachable backend
-    // during the federation step.
-    federation: {
-      // Seconds the daemon spends resolving your per-user cloud router before
-      // giving up for this attempt (it retries in the background). Bounds the
-      // federation done at startup and on each `peppy auth login`/`logout`;
-      // minimum 1. If the backend is unreachable within this window the daemon
-      // stays standalone rather than blocking.
-      connect_timeout_secs: 30,
-    },
-
-    zenohd: {
-      // "managed": peppy starts, monitors, and stops its bundled zenohd.
-      // "external": peppy connects to a router you run at `endpoint` and never
-      //             starts, reconfigures, restarts, or stops it.
-      ownership: "managed",
+      // Per-user zenoh-router federation: how the daemon links its local router to
+      // your private cloud router. Only tuned to bound a slow/unreachable backend
+      // during the federation step.
+      federation: {
+        // Seconds the daemon spends resolving your per-user cloud router before
+        // giving up for this attempt (it retries in the background). Bounds the
+        // federation done at startup and on each `peppy auth login`/`logout`;
+        // minimum 1. If the backend is unreachable within this window the daemon
+        // stays standalone rather than blocking.
+        connect_timeout_secs: 30,
+      },
     },
   },
 
@@ -127,56 +130,76 @@ Core-node names must be **unique across every daemon reachable over the same rou
 
 The value must be non-empty, at most **63 characters**, and use only the node-name character set (start with a letter; letters, digits, `_`, `-`). An invalid value stops the daemon at startup with an error instead of failing later when the core node boots. `peppy service serve --core-node-name <name>` overrides the config for one run (the flag wins over the file); both absent falls back to the derived default.
 
-## `zenoh.local_nodes_topology`: local messaging topology
+## `zenoh`: managed or external router
 
-`zenoh.local_nodes_topology` selects how the nodes **on this machine** exchange data with each other:
+The `zenoh` section holds exactly one of `managed` or `external`. Block presence selects the mode. `managed` is the default: omitting `zenoh` or writing `zenoh: {}` loads all managed defaults, and normal file completion materializes the explicit `managed` block.
 
-- **`"peer"`** (default): nodes run Zenoh peer sessions with gossip discovery enabled. After discovery, nodes form direct peer-to-peer links and data stops relaying through the central router, which removes a network hop from every message.
-- **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
-
-The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohfederation-cloud-router-timeout), whichever topology you pick.
-
-[Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
-
-## `zenoh.peer`: subscriber buffer sizes
-
-Each subscriber buffers in-flight messages in a bounded local channel. The `zenoh.peer` block sets that channel's capacity (number of messages, not bytes) per QoS tier:
-
-- **`standard_buffer_size`** (default `128`): the buffer for topics on the standard QoS tier, which most topics use. The same capacity also sizes the channels behind service requests and replies.
-- **`high_throughput_buffer_size`** (default `1024`): the buffer for topics on the high-throughput QoS tier, such as sensor-data streams, where short bursts well above the average rate are normal.
-
-The capacities apply under both topologies, but they matter most in the peer topology, which is why they live under the `peer` block: with nodes peering directly there is no router relay between a publisher and a subscriber, so this buffer is all that absorbs a burst.
-
-When a subscriber falls behind and its buffer fills up, what happens next depends on the topic's QoS: topics published with a reliable profile block delivery so backpressure propagates to the publisher, while best-effort topics (including sensor-data streams on the high-throughput tier) drop messages instead. Raise a buffer size to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match peppy's built-in behavior, so you only need to touch this block to tune backpressure.
-
-Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
-
-## `zenoh.federation`: cloud-router timeout
-
-When you are logged in, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Authentication](/advanced_guides/authentication/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
-
-- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
-
-## `zenoh.zenohd`: use an operator-run router
-
-Leave `zenoh.zenohd.ownership` as `"managed"` (the default) for peppy to start and manage its bundled `zenohd`:
+Use `managed` when peppy should start, monitor, restart, and stop its bundled `zenohd`:
 
 ```json5
 zenoh: {
-  zenohd: {
-    ownership: "managed",
+  managed: {
+    local_nodes_topology: "peer",
+    subscriber_buffers: {
+      standard_buffer_size: 128,
+      high_throughput_buffer_size: 1024,
+    },
+    federation: {
+      connect_timeout_secs: 30,
+    },
   },
 },
 ```
 
-Under managed ownership, the configured messaging port must be free when the daemon starts, and peppy stops or restarts the router as needed.
-
-To use a router you start yourself, select external ownership and give peppy the Zenoh endpoint it should dial:
+Use `external` when peppy should dial a router that you run:
 
 ```json5
 zenoh: {
-  zenohd: {
-    ownership: "external",
+  external: {
+    endpoint: "tcp/127.0.0.1:7448",
+  },
+},
+```
+
+The managed knobs exist only because peppy controls that router process. Under `external`, `local_nodes_topology`, `subscriber_buffers`, and `federation` are not part of the document, and writing them is an error. Local nodes always relay through the external router, local subscriber queues use peppy's built-in capacity defaults, and router federation belongs entirely to the operator.
+
+## `zenoh.managed.local_nodes_topology`: local messaging topology
+
+`zenoh.managed.local_nodes_topology` selects how the nodes **on this machine** exchange data with each other:
+
+- **`"peer"`** (default): nodes run Zenoh peer sessions with gossip discovery enabled. After discovery, nodes form direct peer-to-peer links and data stops relaying through the central router, which removes a network hop from every message.
+- **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
+
+The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-cloud-router-timeout), whichever topology you pick.
+
+[Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
+
+## `zenoh.managed.subscriber_buffers`: subscriber buffer sizes
+
+Each Peppy subscriber buffers in-flight messages in a bounded process-local queue. The `zenoh.managed.subscriber_buffers` block sets that queue's capacity (number of messages, not bytes) per QoS tier:
+
+- **`standard_buffer_size`** (default `128`): the local queue for topics on the standard QoS tier, which most topics use. The same capacity also sizes the queues behind service requests and replies.
+- **`high_throughput_buffer_size`** (default `1024`): the local queue for topics on the high-throughput QoS tier, such as sensor-data streams, where short bursts well above the average rate are normal.
+
+These are local Peppy queue capacities, not Zenoh router buffers, and they apply under both managed local topologies. They matter most in the peer topology: with nodes peering directly there is no router relay between a publisher and a subscriber, so the local queue is all that absorbs a burst.
+
+When a subscriber falls behind and its local queue fills up, what happens next depends on the topic's QoS: topics published with a reliable profile block delivery so backpressure propagates to the publisher, while best-effort topics (including sensor-data streams on the high-throughput tier) drop messages instead. Raise a capacity to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match peppy's built-in behavior, so you only need to touch this block to tune backpressure.
+
+Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
+
+## `zenoh.managed.federation`: cloud-router timeout
+
+When you are logged in under `zenoh.managed`, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Authentication](/advanced_guides/authentication/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
+
+- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
+
+## `zenoh.external`: use an operator-run router
+
+To use a router you start yourself, configure `zenoh.external` with the Zenoh endpoint peppy should dial:
+
+```json5
+zenoh: {
+  external: {
     endpoint: "tcp/127.0.0.1:7448",
   },
 },
@@ -192,9 +215,9 @@ Start the external router before peppy. Its listener may bind a wildcard even th
 zenohd -l tcp/0.0.0.0:7448
 ```
 
-At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. A responsive router is adopted for observation only. Peppy never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator owns the router's lifecycle and federation configuration. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
+At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
 
-Adoption depends on the responsive router, not on how it was started. Login and logout leave an adopted router unchanged and report that federation is operator-managed. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router; external ownership uses the port written in `zenoh.zenohd.endpoint` instead.
+`peppy auth login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
 
 ## `lifecycle`: grace periods
 
@@ -216,14 +239,13 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | Setting | Default | Constraint | Effect |
 |---|---|---|---|
 | `core_node_name` | `null` (derived `cn-...`) | Non-empty, ≤ 63 chars, node-name charset | Fixed name for this daemon's core node; must be unique across all daemons on the same router/federation or the daemon refuses to boot. Overridable per run with `--core-node-name`. |
-| `zenoh.local_nodes_topology` | `"peer"` | `"peer"` or `"router"` | Topology of this machine's nodes: direct peer links with gossip, or relay everything through the central router. Cross-machine traffic always goes through the routers. |
-| `zenoh.peer.standard_buffer_size` | `128` | `> 0` | Subscriber channel capacity (messages) for standard-QoS topics; also sizes service request/reply channels. |
-| `zenoh.peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
+| `zenoh.managed.local_nodes_topology` | `"peer"` | `"peer"` or `"router"` | Topology of this machine's nodes: direct peer links with gossip, or relay everything through the central router. Cross-machine traffic always goes through the routers. |
+| `zenoh.managed.subscriber_buffers.standard_buffer_size` | `128` | `> 0` | Local Peppy subscriber queue capacity (messages) for standard-QoS topics; also sizes service request/reply queues. |
+| `zenoh.managed.subscriber_buffers.high_throughput_buffer_size` | `1024` | `> 0` | Local Peppy subscriber queue capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
-| `zenoh.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
-| `zenoh.zenohd.ownership` | `"managed"` | `"managed"` or `"external"` | Selects whether peppy owns the router lifecycle or adopts an operator-owned router. |
-| `zenoh.zenohd.endpoint` | — | Required with external ownership; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy adopts it without changing its federation or managing its lifecycle. |
+| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
+| `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 
-A value outside its constraint, an unsupported `zenoh.zenohd.endpoint`, an unknown value for `zenoh.local_nodes_topology` or `zenoh.zenohd.ownership`, an unknown key inside `zenoh`, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem (an out-of-range value names the offending field; a parse error reports the bad value or its position), so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.
+Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.

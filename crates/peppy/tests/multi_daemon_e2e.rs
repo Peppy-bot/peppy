@@ -6,11 +6,15 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
-use daemon_config::peppy_config::{LocalNodesTopology, PeppyConfig, ZenohdConfig};
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter, ZenohNetProtocol};
+use daemon_config::peppy_config::{
+    ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
+};
+use pmi::{ZenohAdapter, ZenohNetProtocol, render_router_config};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const IMAGE_OVERRIDE_ENV: &str = "PEPPY_MULTI_DAEMON_E2E_IMAGE";
+const MANAGED_ROUTER_PORT: u16 = 7447;
+const CONTAINER_ROUTER_CONFIG: &str = "/etc/peppy/router.json5";
 
 struct Containers {
     names: Vec<String>,
@@ -57,63 +61,40 @@ fn require_success(output: Output, operation: &str) -> String {
     )
 }
 
-fn daemon_config(core_node: &str, router_port: u16, topology: LocalNodesTopology) -> String {
+fn external_daemon_config(core_node: &str, router_port: u16) -> String {
     let mut config = PeppyConfig {
         core_node_name: Some(core_node.to_string()),
         ..PeppyConfig::default()
     };
-    config.zenoh.local_nodes_topology = topology;
-    config.zenoh.zenohd = ZenohdConfig::External {
+    config.zenoh = ZenohConfig::External(ExternalZenohConfig {
         endpoint: format!("tcp/host.docker.internal:{router_port}"),
+    });
+    serde_json::to_string(&config).expect("full daemon config should serialize")
+}
+
+fn managed_daemon_config(core_node: &str) -> String {
+    let mut managed = ManagedZenohConfig::default();
+    // The pinned router links below do not need a backend. Keep the armed
+    // federation task's failed backend resolution from delaying startup.
+    managed.federation.connect_timeout_secs = 1;
+    let config = PeppyConfig {
+        core_node_name: Some(core_node.to_string()),
+        zenoh: ZenohConfig::Managed(managed),
+        ..PeppyConfig::default()
     };
     serde_json::to_string(&config).expect("full daemon config should serialize")
 }
 
-/// Spawns a host-side zenohd that *federates* to `upstream_port` (dials
-/// `tcp/127.0.0.1:<upstream_port>` the way one machine's router dials a peer
-/// machine's), retrying on ephemeral-port races like
-/// `start_router_ephemeral_in_mode`. Returns the owning [`Messenger`] (dropping
-/// it stops zenohd) and the bound port. The hosted session is never opened, so
-/// its gossip mode is irrelevant.
-async fn start_federated_router(upstream_port: u16) -> (Messenger, u16) {
-    for _ in 0..32 {
-        let reservation =
-            std::net::TcpListener::bind(("0.0.0.0", 0)).expect("reserve a federated router port");
-        let port = reservation
-            .local_addr()
-            .expect("reserved port should have an address")
-            .port();
-        drop(reservation);
-
-        let adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tcp,
-            "0.0.0.0",
-            port,
-            false,
-            pmi::SubscriberBufferSizes::default(),
-            vec![format!("tcp/127.0.0.1:{upstream_port}")],
-            None,
-        )
-        .expect("federated router config should render");
-        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        if messenger.start_router().await.is_err() {
-            continue;
-        }
-
-        // TCP-accept is enough readiness here: the daemons adopting this router
-        // run their own reachability probe, and every assertion below sits
-        // behind a retrying wait.
-        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let accepting = Instant::now();
-        while accepting.elapsed() < TIMEOUT {
-            if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
-                return (messenger, port);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        panic!("federated zenohd on port {port} never accepted TCP");
-    }
-    panic!("failed to start a federated zenoh router after 32 attempts");
+fn write_router_pin(path: &Path, connect_endpoints: Vec<String>) {
+    let config = render_router_config(
+        ZenohNetProtocol::Tcp,
+        "0.0.0.0",
+        MANAGED_ROUTER_PORT,
+        true,
+        connect_endpoints,
+        None,
+    );
+    std::fs::write(path, config).expect("write pinned zenohd config");
 }
 
 fn executable_on_path(name: &str) -> PathBuf {
@@ -123,6 +104,47 @@ fn executable_on_path(name: &str) -> PathBuf {
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| panic!("{name} must be installed on the Docker test host"))
+}
+
+/// Locates the bundled zenohd built by pmi's `build_zenoh` feature. Cargo puts
+/// it under this profile's `build/pmi-*/out` directory; a neighboring binary,
+/// an explicit environment override, and PATH remain useful for packaged runs.
+fn bundled_zenohd_binary() -> PathBuf {
+    let current_exe = std::env::current_exe().expect("resolve current test executable");
+    if let Some(directory) = current_exe.parent() {
+        let candidate = directory.join("zenohd");
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    if let Some(candidate) = std::env::var_os("ZENOHD_BINARY_PATH").map(PathBuf::from)
+        && candidate.is_file()
+    {
+        return candidate;
+    }
+
+    let mut built_candidates = current_exe
+        .parent()
+        .and_then(Path::parent)
+        .map(|profile| profile.join("build"))
+        .and_then(|build| std::fs::read_dir(build).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("pmi-"))
+        .map(|entry| entry.path().join("out/zenohd"))
+        .filter(|candidate| candidate.is_file())
+        .collect::<Vec<_>>();
+    built_candidates.sort_by_key(|candidate| {
+        candidate
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH)
+    });
+    built_candidates
+        .pop()
+        .unwrap_or_else(|| executable_on_path("zenohd"))
 }
 
 /// Uses the runner's Ubuntu release so a host-built binary never targets a
@@ -159,12 +181,19 @@ struct DaemonLaunch<'a> {
     newuidmap: &'a Path,
 }
 
+#[derive(Clone, Copy)]
+struct ManagedRouterMount<'a> {
+    zenohd_binary: &'a Path,
+    config: &'a Path,
+}
+
 fn start_daemon(
     containers: &mut Containers,
     launch: &DaemonLaunch<'_>,
     name: &str,
     hostname: &str,
     config: &str,
+    managed_router: Option<ManagedRouterMount<'_>>,
 ) {
     // Track before `docker run`: Docker can create the named container and
     // still return a start failure, and the no-`--rm` collision case must not
@@ -173,35 +202,65 @@ fn start_daemon(
     let mount = format!("{}:/usr/local/bin/peppy:ro", launch.peppy_binary.display());
     let apptainer_mount = format!("{}:/opt/peppy-apptainer:ro", launch.apptainer_dir.display());
     let newuidmap_mount = format!("{}:/usr/local/bin/newuidmap:ro", launch.newuidmap.display());
-    let output = Command::new("docker")
-        .args([
-            "run",
-            "-d",
-            "--name",
-            name,
-            "--hostname",
-            hostname,
-            "--add-host=host.docker.internal:host-gateway",
-            "-v",
-            &mount,
-            "-v",
-            &apptainer_mount,
-            "-v",
-            &newuidmap_mount,
-            "-e",
-            &format!("{PEPPY_HOME_ENV}=/data"),
-            "-e",
-            "PEPPY_APPTAINER_DIR=/opt/peppy-apptainer",
-            "-e",
-            &format!("{PEPPY_CONFIG_ENV}={config}"),
-            launch.image,
-            "/usr/local/bin/peppy",
-            "service",
-            "serve",
-        ])
+    let mut command = Command::new("docker");
+    command.args([
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--hostname",
+        hostname,
+        "--add-host=host.docker.internal:host-gateway",
+        "-v",
+        &mount,
+        "-v",
+        &apptainer_mount,
+        "-v",
+        &newuidmap_mount,
+        "-e",
+        &format!("{PEPPY_HOME_ENV}=/data"),
+        "-e",
+        "PEPPY_APPTAINER_DIR=/opt/peppy-apptainer",
+        "-e",
+        &format!("{PEPPY_CONFIG_ENV}={config}"),
+    ]);
+    if let Some(router) = managed_router {
+        command
+            .arg("-v")
+            .arg(format!(
+                "{}:/usr/local/bin/zenohd:ro",
+                router.zenohd_binary.display()
+            ))
+            .arg("-v")
+            .arg(format!(
+                "{}:{CONTAINER_ROUTER_CONFIG}:ro",
+                router.config.display()
+            ))
+            .args(["-e", &format!("ZENOH_CONFIG={CONTAINER_ROUTER_CONFIG}")]);
+    }
+    let output = command
+        .args([launch.image, "/usr/local/bin/peppy", "service", "serve"])
         .output()
         .unwrap_or_else(|error| panic!("failed to start daemon container {name}: {error}"));
     require_success(output, &format!("starting container {name}"));
+}
+
+fn container_bridge_ip(container: &str) -> String {
+    let output = require_success(
+        run_docker(&[
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            container,
+        ]),
+        &format!("inspecting bridge IP for {container}"),
+    );
+    let ip = output.trim();
+    assert!(
+        ip.parse::<std::net::Ipv4Addr>().is_ok(),
+        "container {container} has invalid bridge IP {ip:?}"
+    );
+    ip.to_string()
 }
 
 fn stack_list(container: &str, target: Option<&str>) -> Output {
@@ -262,6 +321,8 @@ fn wait_for_exit(container: &str) -> i32 {
     panic!("timed out waiting for {container} to exit; last state: {last}");
 }
 
+/// External mode is the shared-router architecture: both container daemons dial
+/// one operator-run host router, and peppy owns none of its router lifecycle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     require_success(run_docker(&["version"]), "checking Docker availability");
@@ -306,14 +367,16 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
         &launch,
         &daemon_a,
         "robo-a",
-        &daemon_config("daemon-a", router_port, LocalNodesTopology::Router),
+        &external_daemon_config("daemon-a", router_port),
+        None,
     );
     start_daemon(
         &mut containers,
         &launch,
         &daemon_b,
         "robo-b",
-        &daemon_config("daemon-b", router_port, LocalNodesTopology::Router),
+        &external_daemon_config("daemon-b", router_port),
+        None,
     );
 
     let both = wait_for_stack(&daemon_a, |text| {
@@ -352,7 +415,8 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
         &launch,
         &collision,
         "robo-c",
-        &daemon_config("daemon-a", router_port, LocalNodesTopology::Router),
+        &external_daemon_config("daemon-a", router_port),
+        None,
     );
     let collision_status = wait_for_exit(&collision);
     assert_ne!(collision_status, 0, "colliding daemon must fail startup");
@@ -378,35 +442,23 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     );
 }
 
-/// The multi-machine architecture: each "machine" (container) runs its daemon
-/// in the default `peer` topology against its OWN router, and the two routers
-/// are linked router-to-router. Local node traffic stays on direct peer links;
-/// only cross-host traffic rides the router federation.
+/// The multi-machine architecture: every "machine" (container) runs a genuinely
+/// managed router and keeps the default peer topology. Operator-pinned
+/// `ZENOH_CONFIG` files link those routers directly: B dials A, while the
+/// collision daemon dials both A and B so its name claim does not depend on
+/// multi-hop relay.
 ///
-/// This shape is deliberately distinct from the shared-router test above,
-/// which must force the `router` topology: two `peer` sessions of ONE router
-/// that cannot dial each other (loopback-only listeners in different network
-/// namespaces) get no liveliness or query brokering from that router, so
-/// `peer`-topology daemons *sharing* a router are mutually invisible. With one
-/// router per host every hop is peer→own-router or router→router, and
-/// presence, `stack list`, and name claims all relay.
+/// The federation task still boots armed, but this test has no backend and its
+/// one-second resolution attempt fails before the daemon proceeds standalone.
+/// The static cross-machine links belong to zenohd itself, not that task, and a
+/// pinned config survives peppy's router watchdog restarts unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_are_refused() {
     require_success(run_docker(&["version"]), "checking Docker availability");
     let image = host_compatible_image();
 
-    let router_a = ZenohAdapter::start_router_ephemeral_in_mode(
-        "0.0.0.0",
-        None,
-        false,
-        pmi::SubscriberBufferSizes::default(),
-        None,
-    )
-    .await
-    .expect("host zenohd A should start");
-    let (_router_b, router_b_port) = start_federated_router(router_a.port).await;
-
     let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
+    let zenohd_binary = bundled_zenohd_binary();
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
     let newuidmap = executable_on_path("newuidmap");
@@ -429,20 +481,40 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     let collision = format!("peppy-fed-c-{suffix}");
     let mut containers = Containers::new();
 
+    let router_pins = tempfile::tempdir().expect("create pinned router config directory");
+    let router_a_pin = router_pins.path().join("router-a.json5");
+    write_router_pin(&router_a_pin, Vec::new());
+
     start_daemon(
         &mut containers,
         &launch,
         &daemon_a,
         "robo-fed-a",
-        &daemon_config("daemon-a", router_a.port, LocalNodesTopology::Peer),
+        &managed_daemon_config("daemon-a"),
+        Some(ManagedRouterMount {
+            zenohd_binary: &zenohd_binary,
+            config: &router_a_pin,
+        }),
+    );
+    let daemon_a_ip = container_bridge_ip(&daemon_a);
+
+    let router_b_pin = router_pins.path().join("router-b.json5");
+    write_router_pin(
+        &router_b_pin,
+        vec![format!("tcp/{daemon_a_ip}:{MANAGED_ROUTER_PORT}")],
     );
     start_daemon(
         &mut containers,
         &launch,
         &daemon_b,
         "robo-fed-b",
-        &daemon_config("daemon-b", router_b_port, LocalNodesTopology::Peer),
+        &managed_daemon_config("daemon-b"),
+        Some(ManagedRouterMount {
+            zenohd_binary: &zenohd_binary,
+            config: &router_b_pin,
+        }),
     );
+    let daemon_b_ip = container_bridge_ip(&daemon_b);
 
     // Cross-visibility must hold from BOTH sides: a resolves b through
     // router A ← router B, and b resolves a through the same link dialed the
@@ -473,14 +545,26 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
         "explicit targeting must render one section:\n{targeted}"
     );
 
-    // Name claims must be enforced across the federation: a daemon on router B
-    // claiming a name already live on router A must refuse to boot.
+    // Name claims must be enforced across the federation. C dials both live
+    // routers explicitly, avoiding any dependence on multi-hop router relay.
+    let collision_pin = router_pins.path().join("router-c.json5");
+    write_router_pin(
+        &collision_pin,
+        vec![
+            format!("tcp/{daemon_a_ip}:{MANAGED_ROUTER_PORT}"),
+            format!("tcp/{daemon_b_ip}:{MANAGED_ROUTER_PORT}"),
+        ],
+    );
     start_daemon(
         &mut containers,
         &launch,
         &collision,
         "robo-fed-c",
-        &daemon_config("daemon-a", router_b_port, LocalNodesTopology::Peer),
+        &managed_daemon_config("daemon-a"),
+        Some(ManagedRouterMount {
+            zenohd_binary: &zenohd_binary,
+            config: &collision_pin,
+        }),
     );
     let collision_status = wait_for_exit(&collision);
     assert_ne!(

@@ -129,7 +129,7 @@ pub struct CoreNodeConfig {
     pub root_dir: PathBuf,
     /// Resolved peppy directory layout.
     pub peppy_dirs: PeppyDirs,
-    /// Daemon-global messaging mode + peer buffer sizes, injected into every
+    /// Daemon-global messaging mode + subscriber buffer sizes, injected into every
     /// spawned node's runtime config (see `node::run`).
     pub peppy_config: daemon_config::peppy_config::PeppyConfig,
     /// The daemon's organization namespace for this generation (`"local"` when
@@ -158,7 +158,7 @@ pub struct CoreNode {
     clock_publish_interval: Duration,
     heartbeat_interval: Duration,
     daemon_use_sim_time: bool,
-    /// Daemon-global messaging mode + peer buffer sizes, read once at startup.
+    /// Daemon-global messaging mode + subscriber buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
     peppy_config: daemon_config::peppy_config::PeppyConfig,
     /// The daemon's organization namespace for this generation, stamped onto
