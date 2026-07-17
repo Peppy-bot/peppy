@@ -181,7 +181,8 @@ fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
 }
 
 /// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
-/// keeps its graph, host annotation, duplicate-name warning, or query error.
+/// keeps its graph, host annotation, duplicate-name warning, or query error in
+/// a separate outer panel.
 pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
     use std::fmt::Write as _;
 
@@ -190,38 +191,72 @@ pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
         if index > 0 {
             let _ = writeln!(out);
         }
-        let _ = writeln!(
-            out,
+        let header = format!(
             "Core node: {} (host: {})",
             paint(colorize, NODE_COLOR, &section.core_node),
             section.host_name
         );
+        let mut body = String::new();
         if section.live_claimants > 1 {
             let _ = match &section.instance_id {
                 Some(instance_id) => writeln!(
-                    out,
-                    "  warning: {} live daemons currently claim this name; answered by instance {}",
+                    body,
+                    "warning: {} live daemons currently claim this name; answered by instance {}",
                     section.live_claimants, instance_id
                 ),
                 None => writeln!(
-                    out,
-                    "  warning: {} live daemons currently claim this name",
+                    body,
+                    "warning: {} live daemons currently claim this name",
                     section.live_claimants
                 ),
             };
+            let _ = writeln!(body);
         }
 
         match &section.outcome {
             Ok((nodes, edges)) => {
-                let _ = writeln!(out);
-                out.push_str(&format_stack_body(nodes, edges, colorize));
+                body.push_str(&format_stack_body(nodes, edges, colorize));
             }
             Err(error) => {
-                let _ = writeln!(out, "  error: {error}");
+                let _ = writeln!(body, "error: {error}");
             }
         }
+
+        render_section_panel(&mut out, &header, &body);
     }
     out
+}
+
+/// Encloses one core node's complete report in a panel. Nested table borders
+/// remain intact, while the continuous outer edge makes ownership clear when
+/// several independently queried stacks are printed together.
+fn render_section_panel(out: &mut String, header: &str, body: &str) {
+    use std::fmt::Write as _;
+
+    let width = std::iter::once(header)
+        .chain(body.lines())
+        .map(col_width)
+        .max()
+        .unwrap_or(0);
+
+    let _ = writeln!(out, "┌{}┐", "─".repeat(width + 2));
+    write_panel_line(out, header, width);
+    let _ = writeln!(out, "├{}┤", "─".repeat(width + 2));
+    for line in body.lines() {
+        write_panel_line(out, line, width);
+    }
+    let _ = writeln!(out, "└{}┘", "─".repeat(width + 2));
+}
+
+fn write_panel_line(out: &mut String, line: &str, width: usize) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        out,
+        "│ {}{} │",
+        line,
+        " ".repeat(width.saturating_sub(col_width(line)))
+    );
 }
 
 /// Formats the existing tables inside one core-node section. `colorize` tints
@@ -307,7 +342,7 @@ use super::colors::{
     NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR, STATUS_RUNNING_COLOR,
     STATUS_STARTING_COLOR, paint,
 };
-use super::table::render_table;
+use super::table::{col_width, render_table};
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
@@ -689,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_daemon_sections_keep_input_order_and_headers() {
+    fn multi_daemon_sections_keep_input_order_and_are_individually_boxed() {
         let sections = vec![
             successful_section("z-local", "robot-local"),
             successful_section("a-remote", "robot-remote"),
@@ -706,10 +741,59 @@ mod tests {
             local < remote,
             "formatter must preserve caller ordering:\n{out}"
         );
-        assert!(
-            out.contains("Dependencies\n  (none)\n\nCore node: a-remote"),
-            "sections should be separated by exactly one blank line:\n{out}"
-        );
+
+        let panels: Vec<&str> = out.trim_end().split("\n\n").collect();
+        assert_eq!(panels.len(), 2, "one outer panel per core node:\n{out}");
+        for (panel, core_node) in panels.iter().zip(["z-local", "a-remote"]) {
+            let lines: Vec<&str> = panel.lines().collect();
+            assert!(
+                lines
+                    .first()
+                    .is_some_and(|line| line.starts_with('┌') && line.ends_with('┐')),
+                "panel for {core_node} is missing its top border:\n{panel}"
+            );
+            assert!(
+                lines.get(1).is_some_and(|line| line
+                    .starts_with(&format!("│ Core node: {core_node} "))
+                    && line.ends_with(" │")),
+                "panel for {core_node} is missing its header row:\n{panel}"
+            );
+            assert!(
+                lines
+                    .get(2)
+                    .is_some_and(|line| line.starts_with('├') && line.ends_with('┤')),
+                "panel for {core_node} is missing its header divider:\n{panel}"
+            );
+            assert!(
+                lines
+                    .last()
+                    .is_some_and(|line| line.starts_with('└') && line.ends_with('┘')),
+                "panel for {core_node} is missing its bottom border:\n{panel}"
+            );
+            assert!(
+                lines.iter().any(|line| line.starts_with("│ Node stack")),
+                "node stack escaped the panel for {core_node}:\n{panel}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("│ Instance bindings")),
+                "instance bindings escaped the panel for {core_node}:\n{panel}"
+            );
+            assert!(
+                lines.iter().any(|line| line.starts_with("│ Dependencies")),
+                "dependencies escaped the panel for {core_node}:\n{panel}"
+            );
+
+            let widths: Vec<usize> = lines
+                .iter()
+                .map(|line| UnicodeWidthStr::width(*line))
+                .collect();
+            assert!(
+                widths.iter().all(|width| *width == widths[0]),
+                "panel for {core_node} has mismatched display widths {widths:?}:\n{panel}"
+            );
+        }
     }
 
     #[test]
@@ -723,7 +807,7 @@ mod tests {
         }];
         let out = format_stack_list(&sections, false);
         assert!(out.contains("Core node: claimed (host: unknown)"));
-        assert!(out.contains("warning: 3 live daemons currently claim this name\n"));
+        assert!(out.contains("warning: 3 live daemons currently claim this name"));
         assert!(out.contains("error: daemon disappeared"));
     }
 
@@ -1449,6 +1533,17 @@ mod tests {
             strip_ansi(&colored),
             plain,
             "stripping colors must reproduce the plain layout exactly"
+        );
+
+        // The enclosing core-node panel performs its own width calculation,
+        // including the colored node name in the header.
+        let sections = [successful_section("core-a", "robot-a")];
+        let plain_panel = format_stack_list(&sections, false);
+        let colored_panel = format_stack_list(&sections, true);
+        assert_eq!(
+            strip_ansi(&colored_panel),
+            plain_panel,
+            "colors must not shift the outer panel border"
         );
 
         // The two relationships use distinct arrows so they never read alike:

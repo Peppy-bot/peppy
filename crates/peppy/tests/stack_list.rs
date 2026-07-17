@@ -147,23 +147,24 @@ struct InventoryRow {
 /// Parse a node's row from the rendered stack inventory table.
 ///
 /// Inventory rows are drawn with box borders ('│'), which sets them apart from
-/// the plain-text dependency edges and lets us read each padded cell by column
-/// order: NODE, STAGE, INSTANCES, PATH. Reading the cells directly keeps the
-/// assertions independent of comfy-table's column widths and padding, which
-/// shift with the detected terminal width.
+/// dependency edges and lets us read each padded cell by column order: NODE,
+/// STAGE, INSTANCES, PATH. Empty segments belong to the enclosing core-node
+/// panel and nested table borders, so they are discarded.
 fn node_inventory_row(output: &str, label: &str) -> InventoryRow {
     let row = output
         .lines()
         .find(|line| line.contains('│') && line.contains(label))
         .unwrap_or_else(|| panic!("inventory row for {label} should be present:\n{output}"));
 
-    // split('│') yields an empty leading cell before the first border, then the
-    // padded NODE, STAGE, INSTANCES, PATH cells, then an empty trailing cell.
-    let cells: Vec<&str> = row.split('│').map(str::trim).collect();
+    let cells: Vec<&str> = row
+        .split('│')
+        .map(str::trim)
+        .filter(|cell| !cell.is_empty())
+        .collect();
 
     InventoryRow {
-        stage: cells.get(2).unwrap_or(&"").to_string(),
-        instances: cells.get(3).unwrap_or(&"").to_string(),
+        stage: cells.get(1).unwrap_or(&"").to_string(),
+        instances: cells.get(2).unwrap_or(&"").to_string(),
     }
 }
 
