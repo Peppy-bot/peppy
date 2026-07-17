@@ -49,6 +49,10 @@ indicatif = "0.18"
 # them through explicit expose helpers (the one place we intentionally expose).
 secrecy = "0.10"
 tempfile = { version = "3.8", optional = true }
+# Docker Engine API driver for the multi-daemon e2e test (container lifecycle,
+# exec, logs) instead of shelling out to the docker CLI. Optional rather than a
+# dev-dependency so its tree is only built when `multi_daemon_e2e` is enabled.
+testcontainers = { version = "0.27", optional = true }
 
 [build-dependencies]
 build-helpers = { workspace = true }
@@ -64,7 +68,7 @@ default = []
 test-support = ["dep:tempfile", "config/fingerprint_test_helpers", "core-node/test-support"]
 # Docker black-box coverage for two daemons sharing one real zenohd. Opting in
 # also builds pmi's bundled router support used by the test host.
-multi_daemon_e2e = ["pmi/build_zenoh"]
+multi_daemon_e2e = ["pmi/build_zenoh", "dep:testcontainers"]
 
 [dev-dependencies]
 tempfile = "3.8"
