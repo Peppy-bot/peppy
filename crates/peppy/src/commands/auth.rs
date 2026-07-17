@@ -46,12 +46,14 @@ const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
 /// login/logout prompt only briefly before we fall back to showing the warning.
 const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The namespace the current on-disk credentials resolve to (`local` when logged
-/// out, else the org id). The same resolution the daemon does at startup, so the
-/// CLI can confirm the daemon came back under exactly what it just wrote.
-fn current_creds_namespace() -> String {
+/// The namespace the on-disk credentials under `dirs` resolve to (`local` when
+/// logged out, else the org id). The same resolution the daemon does at startup,
+/// so the CLI can confirm the daemon came back under exactly what it just wrote.
+/// Reads the credentials from the same `dirs` the command resolved, so a test
+/// seam isolates it.
+fn current_creds_namespace(dirs: &PeppyDirs) -> String {
     config::org::resolve_session_namespace(
-        auth::router::cached_organization_id_default().as_deref(),
+        auth::router::cached_organization_id(&auth::storage::credentials_path(dirs)).as_deref(),
     )
     .as_str()
     .to_string()
@@ -236,7 +238,7 @@ pub(crate) fn poke_federation_and_report(
     // ack is `Restarting`; poll the (path-stable) control socket until the daemon
     // is back under the namespace we just wrote, then report the settled outcome.
     if matches!(outcome, PokeOutcome::Restarting) {
-        return await_restart(&socket, read_timeout, &action);
+        return await_restart(dirs, &socket, read_timeout, &action);
     }
     match action {
         FederationPokeAction::Login => report_login(outcome),
@@ -252,12 +254,13 @@ pub(crate) fn poke_federation_and_report(
 /// credentials change (a second login/logout mid-restart) and a never-recovers
 /// timeout. Bounded by [`RESTART_POLL_DEADLINE`].
 fn await_restart(
+    dirs: &PeppyDirs,
     socket: &std::path::Path,
     read_timeout: Duration,
     action: &FederationPokeAction,
 ) -> Result<()> {
     // The namespace the daemon must come back under (what we just wrote).
-    let expected = current_creds_namespace();
+    let expected = current_creds_namespace(dirs);
     // This helper is shared by both flows, so the recovery guidance must name the
     // caller's own subcommand rather than always saying `login`.
     let subcommand = match action {
@@ -278,7 +281,7 @@ fn await_restart(
 
         // A concurrent login/logout rewrote the credentials mid-restart, so the
         // daemon will not come back under what we wrote.
-        if current_creds_namespace() != expected {
+        if current_creds_namespace(dirs) != expected {
             break Err(Error::Auth(format!(
                 "credentials changed during restart; re-run `peppy auth {subcommand}`"
             )));
@@ -287,8 +290,11 @@ fn await_restart(
         // The (path-stable) daemon state records the live generation's namespace,
         // written before the control socket binds. While the daemon is down or the
         // old generation is still up, this is unreadable or carries the old value.
-        let back_under_expected =
-            matches!(DaemonState::read(), Ok(state) if state.organization_namespace == expected);
+        // Read from the same `dirs` the command resolved, like the socket path.
+        let back_under_expected = matches!(
+            DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
+            Ok(state) if state.organization_namespace == expected
+        );
         if !back_under_expected {
             continue;
         }

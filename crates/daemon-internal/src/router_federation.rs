@@ -46,8 +46,10 @@
 
 use crate::error::{Error, Result};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
+use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -145,13 +147,15 @@ pub(crate) enum FederationOutcome {
 /// inject a deterministic value in place of the real credentials read.
 type NamespaceResolver = Arc<dyn Fn() -> String + Send + Sync>;
 
-/// The real namespace resolver: read the cached organization id and resolve it to
-/// a namespace (absent -> `local`), matching exactly how the daemon generation
-/// resolved its own namespace at startup.
-fn real_namespace_resolver() -> NamespaceResolver {
-    Arc::new(|| {
+/// The real namespace resolver: read the cached organization id from the
+/// generation's credentials file and resolve it to a namespace (absent ->
+/// `local`), matching exactly how the daemon generation resolved its own
+/// namespace at startup (the same [`auth::storage::credentials_path`] derived
+/// from the same `PeppyDirs`).
+fn real_namespace_resolver(creds_path: PathBuf) -> NamespaceResolver {
+    Arc::new(move || {
         config::org::resolve_session_namespace(
-            auth::router::cached_organization_id_default().as_deref(),
+            auth::router::cached_organization_id(&creds_path).as_deref(),
         )
         .as_str()
         .to_string()
@@ -216,6 +220,7 @@ impl RouterFederation {
         messenger: Arc<Mutex<Messenger>>,
         api_url: String,
         core_node_name: String,
+        peppy_dirs: PeppyDirs,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
         connect_timeout: Duration,
@@ -224,8 +229,17 @@ impl RouterFederation {
         presence_gate_tx: Option<watch::Sender<bool>>,
         teardown_token: CancellationToken,
     ) -> Self {
+        // Both ambient inputs the loop re-reads on every poll derive from the
+        // generation's data root: the credentials file (namespace re-resolve)
+        // and the federation resolve (credentials + materialized dev TLS).
+        let creds_path = auth::storage::credentials_path(&peppy_dirs);
         let resolver: Resolver = Arc::new(move || {
-            auth::router::resolve_federation_target(&api_url, connect_timeout, &core_node_name)
+            auth::router::resolve_federation_target(
+                &peppy_dirs,
+                &api_url,
+                connect_timeout,
+                &core_node_name,
+            )
         });
         Self {
             federator: real_federator(messenger),
@@ -235,7 +249,7 @@ impl RouterFederation {
             trigger_rx,
             connect_timeout,
             startup_namespace,
-            namespace_resolver: real_namespace_resolver(),
+            namespace_resolver: real_namespace_resolver(creds_path),
             restart_tx,
             presence_gate_tx,
             teardown_token,

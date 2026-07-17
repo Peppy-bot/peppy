@@ -162,13 +162,17 @@ impl ServeCommandBuilder {
                 }
 
                 // Resolve this generation's organization namespace once, from the
-                // cached credentials: `"local"` when logged out, else the org id.
-                // It is the single source threaded into the daemon's own session
-                // (here), `DaemonState`, every spawned node, and the federation
-                // task. The router itself is never namespaced (it only forwards),
-                // so the namespace rides only on application sessions.
+                // credentials cached under this run's data root: `"local"` when
+                // logged out, else the org id. It is the single source threaded
+                // into the daemon's own session (here), `DaemonState`, every
+                // spawned node, and the federation task. The router itself is
+                // never namespaced (it only forwards), so the namespace rides
+                // only on application sessions.
                 let namespace = config::org::resolve_session_namespace(
-                    auth::router::cached_organization_id_default().as_deref(),
+                    auth::router::cached_organization_id(&auth::storage::credentials_path(
+                        &self.peppy_dirs,
+                    ))
+                    .as_deref(),
                 );
                 self.organization_namespace = namespace.as_str().to_string();
 
@@ -390,6 +394,9 @@ impl ServeCommandBuilder {
                         // federation POST so the backend registry knows which
                         // daemon pulled the config.
                         core_node_name,
+                        // The data root the loop's per-poll credential reads
+                        // and materialized dev TLS derive from.
+                        self.peppy_dirs.clone(),
                         messaging_ready,
                         trigger_rx,
                         connect_timeout,
