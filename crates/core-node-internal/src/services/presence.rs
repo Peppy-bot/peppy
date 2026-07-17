@@ -11,6 +11,11 @@ use tracing::{debug, error};
 /// flooding the daemon log.
 const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// Prefix reserved for short-lived election tokens. A dot cannot occur in a
+/// real instance id (`config::runtime::Name`), so committed claims and startup
+/// contenders remain unambiguous in the broker snapshot.
+const NAME_CLAIM_CANDIDATE_PREFIX: &str = ".claim.";
+
 /// Refuses a claimed core-node name, otherwise declares and returns this
 /// daemon generation's retained presence token.
 pub(crate) async fn claim_name(
@@ -18,21 +23,58 @@ pub(crate) async fn claim_name(
     core_node_name: &str,
     instance_id: &str,
 ) -> Result<LivelinessToken> {
-    let claimed = CoreNodePresenceMessenger::list_live(
-        messenger,
-        Some(core_node_name),
-        CoreNodePresenceMessenger::LIST_TIMEOUT,
-    )
-    .await?;
-    if !claimed.is_empty() {
-        return Err(crate::Error::CoreNodeNameTaken {
-            name: core_node_name.to_string(),
-        });
+    let candidate_id = format!("{NAME_CLAIM_CANDIDATE_PREFIX}{instance_id}");
+    let candidate = CoreNodePresenceMessenger::declare(messenger, core_node_name, &candidate_id)
+        .await
+        .map_err(crate::Error::from)?;
+
+    // Declare candidacy before inspecting the broker so there is no
+    // check-then-declare gap. A committed (non-candidate) token always wins;
+    // otherwise simultaneous candidates deterministically keep only the
+    // smallest generation id. The winner waits until losers have dropped
+    // their candidate tokens before committing its real presence token.
+    loop {
+        let claims = CoreNodePresenceMessenger::list_live(
+            messenger,
+            Some(core_node_name),
+            CoreNodePresenceMessenger::LIST_TIMEOUT,
+        )
+        .await?;
+        if claims.iter().any(|presence| {
+            !presence
+                .instance_id
+                .starts_with(NAME_CLAIM_CANDIDATE_PREFIX)
+        }) {
+            return Err(crate::Error::CoreNodeNameTaken {
+                name: core_node_name.to_string(),
+            });
+        }
+
+        let winner = claims
+            .iter()
+            .filter_map(|presence| {
+                presence
+                    .instance_id
+                    .strip_prefix(NAME_CLAIM_CANDIDATE_PREFIX)
+            })
+            .min();
+        if winner != Some(instance_id) {
+            return Err(crate::Error::CoreNodeNameTaken {
+                name: core_node_name.to_string(),
+            });
+        }
+        if claims.len() == 1 {
+            break;
+        }
+
+        tokio::task::yield_now().await;
     }
 
-    CoreNodePresenceMessenger::declare(messenger, core_node_name, instance_id)
+    let token = CoreNodePresenceMessenger::declare(messenger, core_node_name, instance_id)
         .await
-        .map_err(Into::into)
+        .map_err(crate::Error::from)?;
+    drop(candidate);
+    Ok(token)
 }
 
 fn alarm_cooldown_elapsed(last_alarm: Option<Instant>, now: Instant) -> bool {

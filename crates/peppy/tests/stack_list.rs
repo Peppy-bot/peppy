@@ -544,6 +544,22 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
         output.contains("warning: 2 live daemons currently claim this name"),
         "duplicate warning missing:\n{output}"
     );
+
+    let targeted_ctx = Arc::new(
+        AppContext::with_messenger(daemon.temp_dir(), daemon.messenger())
+            .with_daemon_state_file(daemon.daemon_state_path())
+            .with_core_node_override(Some("claimed-core".to_string())),
+    );
+    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+        .await
+        .expect("targeted duplicate-name query should succeed")
+        .output;
+    assert_eq!(targeted.matches("Core node: claimed-core").count(), 1);
+    assert!(
+        targeted
+            .contains("warning: 2 live daemons currently claim this name; answered by instance "),
+        "targeted collision should identify the answering daemon:\n{targeted}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

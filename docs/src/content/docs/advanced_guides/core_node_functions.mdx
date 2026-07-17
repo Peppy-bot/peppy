@@ -156,7 +156,7 @@ The example below uses `stack.list` to count the running instances of each node 
                     node.name,
                     node.core_node,
                     node.stage,
-                    node.instances.len(),
+                    node.running_instance_ids().len(),
                 );
                 for instance in &node.instances {
                     // `state` displays as "starting", "running", "finished", or "failed".

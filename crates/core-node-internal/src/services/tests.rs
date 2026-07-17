@@ -348,6 +348,85 @@ async fn start_boots_clean_when_name_unclaimed() {
     booted.shut_down().await;
 }
 
+/// Two daemons started together arbitrate on their generation ids: one reaches
+/// ready and retains the only live claim, while the other fails with
+/// `CoreNodeNameTaken`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneous_daemons_allow_exactly_one_name_claim() {
+    const CORE_NODE_NAME: &str = "simultaneous_claim_node";
+
+    let messenger = create_mock_messenger().await;
+    let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
+    let first_root = tempfile::tempdir().expect("first tempdir");
+    let second_root = tempfile::tempdir().expect("second tempdir");
+    let first = Arc::new(CoreNode::new(test_core_node_config(
+        Arc::clone(&messenger),
+        Some(CORE_NODE_NAME),
+        PeppyDirs::new(first_root.path()),
+    )));
+    let second = Arc::new(CoreNode::new(test_core_node_config(
+        messenger,
+        Some(CORE_NODE_NAME),
+        PeppyDirs::new(second_root.path()),
+    )));
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let (first_ready_tx, first_ready_rx) = tokio::sync::oneshot::channel();
+    let (second_ready_tx, second_ready_rx) = tokio::sync::oneshot::channel();
+    let first_task = {
+        let core_node = Arc::clone(&first);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            core_node.start_with_ready(Some(first_ready_tx)).await
+        })
+    };
+    let second_task = {
+        let core_node = Arc::clone(&second);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            core_node.start_with_ready(Some(second_ready_tx)).await
+        })
+    };
+
+    barrier.wait().await;
+    let (first_ready, second_ready) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(first_ready_rx, second_ready_rx)
+    })
+    .await
+    .expect("both startup outcomes should settle promptly");
+    assert_eq!(
+        usize::from(first_ready.is_ok()) + usize::from(second_ready.is_ok()),
+        1,
+        "exactly one competing daemon must reach ready"
+    );
+
+    let live = live_claims(&presence_handle, CORE_NODE_NAME).await;
+    assert_eq!(live.len(), 1, "exactly one claim must remain live");
+    let expected_winner = if first_ready.is_ok() {
+        first.instance_id()
+    } else {
+        second.instance_id()
+    };
+    assert_eq!(live[0].instance_id, expected_winner);
+
+    let (winner_task, loser_task) = if first_ready.is_ok() {
+        (first_task, second_task)
+    } else {
+        (second_task, first_task)
+    };
+    let loser_error = loser_task
+        .await
+        .expect("losing startup task should not panic")
+        .expect_err("losing startup must fail");
+    assert!(matches!(
+        loser_error,
+        crate::Error::CoreNodeNameTaken { ref name } if name == CORE_NODE_NAME
+    ));
+    winner_task.abort();
+}
+
 /// Dropping a stopped core node drops its retained token, removing the daemon
 /// generation from presence enumeration without an explicit heartbeat grace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

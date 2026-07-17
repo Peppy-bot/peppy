@@ -151,7 +151,7 @@ Dependencies
   (none)
 ```
 
-With no arguments, `stack list` discovers every live core node in the same messaging namespace and prints a separate section for each daemon: the local daemon first, then the others by core-node name. The section header identifies the core node and annotates it with that daemon's hostname. Use `peppy stack list --core-node <name>` when you want exactly one remote daemon's section. If a daemon disappears between discovery and the stack query, the other sections still render, the failed section contains an error line, and the command exits non-zero.
+With no arguments, `stack list` discovers every live core node in the same messaging namespace and prints one section per distinct core-node name: the local name first, then the others by name. If multiple live daemons collide on one name, discovery deduplicates them into a single warning-bearing section; its header identifies the name and annotates it with the answering daemon's hostname. Use `peppy stack list --core-node <name>` to filter the output to that one name. If a core node disappears between discovery and the stack query, the other sections still render, the failed section contains an error line, and the command exits non-zero.
 
 The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 

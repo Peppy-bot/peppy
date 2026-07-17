@@ -26,9 +26,8 @@ pub struct StackSection {
     /// claimant served the section.
     pub instance_id: Option<String>,
     pub host_name: String,
-    /// Live tokens advertising this name at enumeration time; more than one
-    /// means an active collision. Zero when the name was not enumerated (an
-    /// explicit `--core-node` target, or a local daemon with no live token).
+    /// Live instance ids advertising this name at enumeration time; more than
+    /// one means an active collision. Zero when no live token was found.
     pub live_claimants: usize,
     pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
@@ -66,15 +65,19 @@ pub async fn list_nodes_collecting(
 ) -> Result<StackListReport> {
     let conn = ctx.connect_to_daemon().await?;
 
+    let live = CoreNodePresenceMessenger::list_live(
+        conn.messenger,
+        conn.target_is_override
+            .then_some(conn.target_core_node.as_str()),
+        CoreNodePresenceMessenger::LIST_TIMEOUT,
+    )
+    .await?;
     let targets = if conn.target_is_override {
-        vec![(conn.target_core_node.clone(), 0)]
+        vec![(
+            conn.target_core_node.clone(),
+            live_instance_count(&conn.target_core_node, live),
+        )]
     } else {
-        let live = CoreNodePresenceMessenger::list_live(
-            conn.messenger,
-            None,
-            CoreNodePresenceMessenger::LIST_TIMEOUT,
-        )
-        .await?;
         ordered_targets(&conn.core_node_name, live)
     };
 
@@ -156,6 +159,14 @@ fn ordered_targets(
     targets
 }
 
+fn live_instance_count(core_node: &str, live: Vec<pmi::CoreNodePresence>) -> usize {
+    live.into_iter()
+        .filter(|presence| presence.core_node == core_node)
+        .map(|presence| presence.instance_id)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
     nodes.sort_by(|a, b| {
         let a_is_daemon = a.stage == Some(NodeStage::Root);
@@ -169,9 +180,8 @@ fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
     edges.sort_by_key(|edge| (edge.from.label(), edge.to.label()));
 }
 
-/// Pure multi-daemon formatter for `peppy stack list`. Sections are never
-/// merged: each daemon keeps its own graph, host annotation, duplicate-name
-/// warning, or query error.
+/// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
+/// keeps its graph, host annotation, duplicate-name warning, or query error.
 pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
     use std::fmt::Write as _;
 
@@ -751,6 +761,20 @@ mod tests {
                 ("b-remote".to_string(), 1),
             ]
         );
+    }
+
+    #[test]
+    fn explicit_target_counts_distinct_live_instances_for_requested_name() {
+        let count = live_instance_count(
+            "requested",
+            vec![
+                pmi::CoreNodePresence::new("requested", "instance-a"),
+                pmi::CoreNodePresence::new("requested", "instance-a"),
+                pmi::CoreNodePresence::new("requested", "instance-b"),
+                pmi::CoreNodePresence::new("other", "instance-c"),
+            ],
+        );
+        assert_eq!(count, 2);
     }
 
     #[test]
