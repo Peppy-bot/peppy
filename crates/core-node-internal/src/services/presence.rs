@@ -40,30 +40,36 @@ pub(crate) async fn claim_name(
             CoreNodePresenceMessenger::LIST_TIMEOUT,
         )
         .await?;
-        if claims.iter().any(|presence| {
-            !presence
-                .instance_id
-                .starts_with(NAME_CLAIM_CANDIDATE_PREFIX)
-        }) {
+        // A routed Zenoh liveliness query can return the same logical token
+        // through more than one matching path. Arbitrate identities as a set:
+        // counting the raw replies makes one candidate reported twice look like
+        // two contenders and leaves the winner spinning here forever.
+        let mut claim_ids: Vec<&str> = claims
+            .iter()
+            .map(|presence| presence.instance_id.as_str())
+            .collect();
+        claim_ids.sort_unstable();
+        claim_ids.dedup();
+
+        if claim_ids
+            .iter()
+            .any(|instance_id| !instance_id.starts_with(NAME_CLAIM_CANDIDATE_PREFIX))
+        {
             return Err(crate::Error::CoreNodeNameTaken {
                 name: core_node_name.to_string(),
             });
         }
 
-        let winner = claims
+        let winner = claim_ids
             .iter()
-            .filter_map(|presence| {
-                presence
-                    .instance_id
-                    .strip_prefix(NAME_CLAIM_CANDIDATE_PREFIX)
-            })
+            .filter_map(|instance_id| instance_id.strip_prefix(NAME_CLAIM_CANDIDATE_PREFIX))
             .min();
         if winner != Some(instance_id) {
             return Err(crate::Error::CoreNodeNameTaken {
                 name: core_node_name.to_string(),
             });
         }
-        if claims.len() == 1 {
+        if claim_ids.len() == 1 {
             break;
         }
 
@@ -79,6 +85,11 @@ pub(crate) async fn claim_name(
 
 fn alarm_cooldown_elapsed(last_alarm: Option<Instant>, now: Instant) -> bool {
     last_alarm.is_none_or(|at| now.duration_since(at) >= NAME_COLLISION_ALARM_COOLDOWN)
+}
+
+fn is_committed_foreign_claim(own_instance_id: &str, observed_instance_id: &str) -> bool {
+    observed_instance_id != own_instance_id
+        && !observed_instance_id.starts_with(NAME_CLAIM_CANDIDATE_PREFIX)
 }
 
 /// Watches this daemon's presence name with history replay and raises a
@@ -113,7 +124,11 @@ pub(crate) async fn watch_for_duplicate_name(
             let LivelinessEvent::Alive(presence) = event else {
                 continue;
             };
-            if presence.instance_id == own_instance_id {
+            // Election candidates are deliberately short-lived and do not own
+            // the name. A history replay can deliver our just-dropped candidate
+            // after the committed token, so treating it as a collision raises a
+            // false alarm on an otherwise clean startup.
+            if !is_committed_foreign_claim(&own_instance_id, &presence.instance_id) {
                 continue;
             }
             debug!(
@@ -142,6 +157,73 @@ pub(crate) async fn watch_for_duplicate_name(
 mod tests {
     use super::*;
     use crate::services::tests::started_mock_messenger;
+    use pmi::{
+        Messenger, MessengerAdapter, MessengerBackend, SubscriberBufferSizes, ZenohAdapter,
+        ZenohNetProtocol,
+    };
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    /// A single daemon using the router-relay topology must finish the
+    /// candidate-token election. The in-memory mock cannot reproduce Zenoh's
+    /// client/router liveliness routing, so keep this as a real-router
+    /// regression test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn router_topology_name_claim_settles() {
+        let router = ZenohAdapter::start_router_ephemeral_in_mode(
+            "127.0.0.1",
+            None,
+            false,
+            SubscriberBufferSizes::default(),
+            None,
+        )
+        .await
+        .expect("start a router-topology Zenoh router");
+        let adapter = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &router.host,
+            router.port,
+            Vec::new(),
+            false,
+            SubscriberBufferSizes::default(),
+            None,
+        )
+        .expect("build a router-topology daemon session")
+        .with_session_reconnect()
+        .with_namespace(Some(config::org::OrgNamespace::local()));
+        let mut client = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        client
+            .start_session()
+            .await
+            .expect("connect a router-topology daemon session");
+        let messenger = MessengerHandle::from_shared(Arc::new(Mutex::new(client)));
+
+        let token = tokio::time::timeout(
+            Duration::from_secs(1),
+            claim_name(&messenger, "router_claim_node", "router_claim_instance"),
+        )
+        .await
+        .expect("a lone router-topology daemon must not hang in name election")
+        .expect("a lone daemon should claim an unclaimed name");
+
+        let claims = CoreNodePresenceMessenger::list_live(
+            &messenger,
+            Some("router_claim_node"),
+            CoreNodePresenceMessenger::LIST_TIMEOUT,
+        )
+        .await
+        .expect("list the committed claim");
+        assert!(
+            claims
+                .iter()
+                .any(|claim| claim.instance_id == "router_claim_instance"),
+            "the committed claim must be visible after election: {claims:?}"
+        );
+
+        drop(token);
+        drop(messenger);
+        drop(router);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn duplicate_watch_stops_promptly_on_cancel() {
@@ -179,5 +261,12 @@ mod tests {
             Some(fired_at),
             fired_at + NAME_COLLISION_ALARM_COOLDOWN,
         ));
+    }
+
+    #[test]
+    fn collision_watch_ignores_own_claim_and_election_candidates() {
+        assert!(!is_committed_foreign_claim("own", "own"));
+        assert!(!is_committed_foreign_claim("own", ".claim.foreign"));
+        assert!(is_committed_foreign_claim("own", "foreign"));
     }
 }
