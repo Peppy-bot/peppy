@@ -28,7 +28,10 @@ impl Command for LogoutCommand {
         let dirs = self.peppy_dirs.unwrap_or_default();
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        let federation = config.zenoh.federation().copied();
+        // Managed vs external follows the RUNNING daemon's mode (from its state
+        // file), not the disk config, which may have been edited since it
+        // started; only with no daemon running does the disk config decide.
+        let federation = super::federation_poke_timeout_secs(&dirs, &config);
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
@@ -90,10 +93,10 @@ impl Command for LogoutCommand {
         // discarded). External mode leaves federation untouched and tells the
         // operator that sessions change on the next manual restart.
         match federation {
-            Some(federation) => {
+            Some(connect_timeout_secs) => {
                 let _ = super::poke_federation_and_report(
                     &dirs,
-                    federation.connect_timeout_secs,
+                    connect_timeout_secs,
                     super::FederationPokeAction::Logout,
                 );
             }

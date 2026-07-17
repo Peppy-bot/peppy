@@ -132,11 +132,17 @@ impl ServeCommandBuilder {
                 // External routers are entirely operator-run, so federation is
                 // not armed and no control socket or presence gate is created.
                 // `resolve_api_url` is a local config/env lookup (no I/O), so it
-                // is safe here.
+                // is safe here; an invalid URL fails startup loudly rather than
+                // silently degrading the daemon to standalone mode.
                 if let Some(federation) = self.peppy_config.zenoh.federation() {
-                    self.federation_api_url =
+                    let api_url =
                         auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers)
-                            .ok();
+                            .map_err(|e| {
+                            Error::ExecutionFailed(format!(
+                                "invalid managed-federation backend URL: {e}"
+                            ))
+                        })?;
+                    self.federation_api_url = Some(api_url);
                     // Capture the federation timeout here, before `peppy_config`
                     // is moved into the core node in `build`; both the federation
                     // task and its control socket share it.
@@ -261,6 +267,20 @@ impl ServeCommandBuilder {
                     .core_node_done_tx
                     .take()
                     .expect("core_node_done channel created in with_messaging_router");
+                // Federated daemons (a managed router with configured
+                // `connect` links — an operator-pinned mesh) hold the boot
+                // presence claim open for the settle window, so the claim
+                // observes an incumbent whose token is still propagating
+                // across the freshly-established links. Standalone routers
+                // (and the mock/external engines) are authoritative
+                // immediately and skip the wait. The probe only reads the
+                // active router config; nothing has started yet.
+                let name_claim_settle = if messenger.blocking_lock().router_links_probe().is_some()
+                {
+                    core_node::NAME_CLAIM_LINKED_SETTLE
+                } else {
+                    Duration::ZERO
+                };
                 let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
                     resolved_core_node_name,
@@ -272,6 +292,7 @@ impl ServeCommandBuilder {
                     self.clock_source,
                     self.peppy_config,
                     self.organization_namespace.clone(),
+                    name_claim_settle,
                     self.teardown_token.clone(),
                     core_node_done_tx,
                 );
@@ -289,6 +310,12 @@ impl ServeCommandBuilder {
                         &self.git_hash,
                         shutdown_grace_secs,
                         &self.organization_namespace,
+                        // `Some` exactly when this generation arms managed-router
+                        // federation below (a control socket will exist), so the
+                        // auth commands can follow the running daemon's mode.
+                        self.federation_api_url
+                            .as_ref()
+                            .map(|_| self.federation_connect_timeout.as_secs()),
                     )
                 };
                 let state_path = daemon_state.write().map_err(|e| {
@@ -406,6 +433,7 @@ fn daemon_state_for_messenger(
     git_hash: &str,
     shutdown_grace_secs: u64,
     organization_namespace: &str,
+    federation_connect_timeout_secs: Option<u64>,
 ) -> DaemonState {
     let (messaging_host, messaging_port) = messenger
         .messaging_locator()
@@ -423,6 +451,7 @@ fn daemon_state_for_messenger(
         git_hash,
         shutdown_grace_secs,
         organization_namespace,
+        federation_connect_timeout_secs,
     )
 }
 
@@ -580,9 +609,17 @@ mod tests {
             "regression-git-hash",
             42,
             config::org::LOCAL_NAMESPACE,
+            builder
+                .federation_api_url
+                .as_ref()
+                .map(|_| builder.federation_connect_timeout.as_secs()),
         );
         assert_eq!(state.messaging_host, "zenoh-router.regression.test");
         assert_eq!(state.messaging_port, 17555);
+        assert_eq!(
+            state.federation_connect_timeout_secs, None,
+            "external mode must record no federation control channel in the daemon state"
+        );
     }
 
     #[test]

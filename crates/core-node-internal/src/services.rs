@@ -12,6 +12,7 @@ mod stack;
 use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
+pub use presence::NAME_CLAIM_LINKED_SETTLE;
 
 use crate::Result;
 use config::{
@@ -22,7 +23,7 @@ use config::{
 };
 use core_node_api::{ActionId, ServiceId, TopicId};
 use daemon_config::consts::PeppyDirs;
-use futures::future::{BoxFuture, FutureExt, try_join_all};
+use futures::future::{BoxFuture, FutureExt, select_all, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
@@ -85,6 +86,12 @@ pub struct CoreNodeArguments {
     /// launcher overrides win over this; when an instance omits the override,
     /// the spawned node's `framework.use_sim_time` is set to this value.
     pub daemon_use_sim_time: bool,
+    /// Settle window the boot presence claim holds its candidacy open before
+    /// committing, so a claim racing token propagation across
+    /// freshly-established router links still observes the incumbent and
+    /// refuses pre-commit. [`NAME_CLAIM_LINKED_SETTLE`] when the daemon's
+    /// router has configured federation links, [`Duration::ZERO`] standalone.
+    pub name_claim_settle: Duration,
 }
 
 impl CoreNodeArguments {
@@ -158,6 +165,9 @@ pub struct CoreNode {
     clock_publish_interval: Duration,
     heartbeat_interval: Duration,
     daemon_use_sim_time: bool,
+    /// Settle window the boot presence claim holds its candidacy open before
+    /// committing; see [`CoreNodeArguments::name_claim_settle`].
+    name_claim_settle: Duration,
     /// Daemon-global messaging mode + subscriber buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
     peppy_config: daemon_config::peppy_config::PeppyConfig,
@@ -309,6 +319,7 @@ impl CoreNode {
         let clock_publish_interval = arguments.clock_publish_interval;
         let heartbeat_interval = arguments.heartbeat_interval;
         let daemon_use_sim_time = arguments.daemon_use_sim_time;
+        let name_claim_settle = arguments.name_claim_settle;
 
         let node_config = NodeConfig {
             peppy_schema: PeppySchema::NodeV1,
@@ -352,6 +363,7 @@ impl CoreNode {
             clock_publish_interval,
             heartbeat_interval,
             daemon_use_sim_time,
+            name_claim_settle,
             peppy_config,
             organization_namespace,
             shutdown_token,
@@ -717,8 +729,13 @@ impl CoreNode {
         // leave the running daemon's on-disk state (instances dir) untouched.
         // Retaining the token on `self` keeps the name advertised for the
         // entire daemon generation.
-        let token =
-            presence::claim_name(&self.messenger, self.node_name(), self.instance_id()).await?;
+        let token = presence::claim_name(
+            &self.messenger,
+            self.node_name(),
+            self.instance_id(),
+            self.name_claim_settle,
+        )
+        .await?;
         *self
             .presence_token
             .lock()
@@ -804,11 +821,19 @@ impl CoreNode {
             let _ = ready.send(());
         }
 
-        // Wait for all service handlers
-        try_join_all(handles)
-            .await?
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?;
+        // Wait for all service handlers, surfacing the FIRST task that returns
+        // an error while the others still run. (`try_join_all` over
+        // `JoinHandle`s short-circuits only on a panic; an inner `Err` would
+        // wait for every other listener — which run until shutdown — and never
+        // surface.) A listener dying with an error leaves the daemon broken;
+        // aborting the core node lets the daemon exit for its supervisor
+        // instead of running on half-alive.
+        let mut waiting = handles;
+        while !waiting.is_empty() {
+            let (result, _index, rest) = select_all(waiting).await;
+            result??;
+            waiting = rest;
+        }
 
         info!("Shutting down core node...");
         Ok(())

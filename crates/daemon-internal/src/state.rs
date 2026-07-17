@@ -45,6 +45,14 @@ pub struct DaemonState {
     /// this field still parses.
     #[serde(default = "default_organization_namespace")]
     pub organization_namespace: String,
+    /// `Some(secs)` when this daemon generation armed managed-router federation
+    /// (a control socket exists and login/logout pokes apply within this bound,
+    /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
+    /// `None` when it runs an operator-run external router (or no router), so
+    /// there is no federation control socket to poke and no restart to warn
+    /// about. `peppy auth login`/`logout` read this so they follow the RUNNING
+    /// daemon's mode, not a config edited on disk after it started.
+    pub federation_connect_timeout_secs: Option<u64>,
 }
 
 fn default_organization_namespace() -> String {
@@ -71,6 +79,7 @@ impl DaemonState {
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
         organization_namespace: impl Into<String>,
+        federation_connect_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
             core_node_name: core_node_name.into(),
@@ -80,6 +89,7 @@ impl DaemonState {
             git_hash: git_hash.into(),
             shutdown_grace_secs,
             organization_namespace: organization_namespace.into(),
+            federation_connect_timeout_secs,
         }
     }
 
@@ -174,6 +184,7 @@ mod tests {
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
             organization_namespace: "local".to_string(),
+            federation_connect_timeout_secs: Some(30),
         };
         DaemonState::write_to(&path, &original).expect("write");
 
@@ -185,6 +196,7 @@ mod tests {
         assert_eq!(read.git_hash, "test");
         assert_eq!(read.shutdown_grace_secs, 5);
         assert_eq!(read.organization_namespace, "local");
+        assert_eq!(read.federation_connect_timeout_secs, Some(30));
     }
 
     #[test]

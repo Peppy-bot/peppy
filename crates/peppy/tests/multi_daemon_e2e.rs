@@ -318,7 +318,15 @@ fn wait_for_exit(container: &str) -> i32 {
         }
         thread::sleep(Duration::from_millis(100));
     }
-    panic!("timed out waiting for {container} to exit; last state: {last}");
+    let logs_output = run_docker(&["logs", container]);
+    let logs = format!(
+        "{}{}",
+        String::from_utf8_lossy(&logs_output.stdout),
+        String::from_utf8_lossy(&logs_output.stderr)
+    );
+    panic!(
+        "timed out waiting for {container} to exit; last state: {last}\ncontainer logs:\n{logs}"
+    );
 }
 
 /// External mode is the shared-router architecture: both container daemons dial

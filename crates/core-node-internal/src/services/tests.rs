@@ -106,6 +106,10 @@ fn test_node_arguments() -> CoreNodeArguments {
         clock_publish_interval: Duration::from_millis(100),
         heartbeat_interval: Duration::from_secs(5),
         daemon_use_sim_time: false,
+        // Zero: the in-memory mock broker is authoritative immediately, so
+        // there is no propagation lag for a settle window to cover; the
+        // settling behavior has its own dedicated presence tests.
+        name_claim_settle: Duration::ZERO,
     }
 }
 

@@ -63,6 +63,9 @@ fn default_node_arguments() -> CoreNodeArguments {
         // quickly without flaking.
         heartbeat_interval: Duration::from_millis(200),
         daemon_use_sim_time: false,
+        // These daemons run standalone routers (no federation links), where
+        // production also settles for zero.
+        name_claim_settle: Duration::ZERO,
     }
 }
 

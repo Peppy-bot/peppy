@@ -529,8 +529,24 @@ async fn poll_and_apply(
             FederationOutcome::Applied(applied.endpoint.clone())
         }
     } else {
-        match federator(resolved.clone()).await {
-            Ok(true) => {
+        // Bound the apply (config re-render + zenohd bounce) like the resolve
+        // above: it awaits the messenger lock and stops/starts the router, so a
+        // wedged holder (e.g. a stuck watchdog restart) would otherwise keep the
+        // startup readiness gate closed and the poke loop stuck indefinitely.
+        // On timeout `applied` is left unchanged so the next poll retries. If
+        // the timeout lands between the router stop and start, the watchdog
+        // notices the dead router and respawns it with the already-rewritten
+        // config, so the router cannot stay down.
+        match tokio::time::timeout(connect_timeout, federator(resolved.clone())).await {
+            Err(_elapsed) => {
+                warn!(
+                    "router federation: applying the upstream change timed out, so federation \
+                     with the per-user cloud router on platform-backend is NOT in effect; will \
+                     retry"
+                );
+                return FederationOutcome::Failed("apply timed out".to_string());
+            }
+            Ok(Ok(true)) => {
                 match &desired {
                     Some(ep) => {
                         info!(upstream = %ep, "router federation: (re)federated local router to cloud router")
@@ -547,7 +563,7 @@ async fn poll_and_apply(
                 };
                 FederationOutcome::Applied(desired.clone())
             }
-            Ok(false) => {
+            Ok(Ok(false)) => {
                 // A managed router with a pinned `ZENOH_CONFIG` cannot be changed
                 // here. Advance `applied` (endpoint *and* the pinned bit) so this
                 // is noted once per change (login/logout) rather than every poll,
@@ -563,7 +579,7 @@ async fn poll_and_apply(
                 };
                 FederationOutcome::Pinned
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 // Leave `applied` unchanged so the next poll retries the apply.
                 warn!(
                     error = %e,
@@ -679,6 +695,12 @@ mod tests {
         Arc::new(|_target| -> FederateFuture { Box::pin(async { Ok(false) }) })
     }
 
+    /// A federator that never completes, simulating a wedged apply (e.g. the
+    /// messenger lock held forever by a stuck watchdog restart).
+    fn wedged_federator() -> Federator {
+        Arc::new(|_target| -> FederateFuture { Box::pin(std::future::pending()) })
+    }
+
     /// A resolver returning a fixed value and counting its calls.
     fn counting_resolver(value: Option<(String, pmi::TlsConfig)>) -> (Resolver, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -755,6 +777,45 @@ mod tests {
                 rest.clone()
             }
         })
+    }
+
+    /// A wedged apply (the federator never completes) must surface as `Failed`
+    /// within the connect-timeout bound instead of hanging the poll, which at
+    /// startup would keep the readiness gate closed indefinitely. `applied`
+    /// stays unchanged so the next poll retries, and the link is never probed
+    /// (there is no applied upstream to verify).
+    #[tokio::test]
+    async fn a_wedged_apply_times_out_and_reports_failed() {
+        let (resolver, _) = counting_resolver(upstream());
+        let (prober, probe_calls) = counting_prober(Ok(()));
+        let mut applied = AppliedState::default();
+
+        let outcome = poll_and_apply(
+            &wedged_federator(),
+            &resolver,
+            &prober,
+            Duration::from_millis(50),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, FederationOutcome::Failed(_)),
+            "a wedged apply must time out into Failed, got {outcome:?}"
+        );
+        assert_eq!(
+            applied,
+            AppliedState::default(),
+            "a timed-out apply must leave `applied` unchanged so the next poll retries"
+        );
+        assert_eq!(
+            probe_calls.load(Ordering::SeqCst),
+            0,
+            "no probe after a failed apply"
+        );
     }
 
     /// A login/logout poke runs a federation poll *immediately*, verifies the

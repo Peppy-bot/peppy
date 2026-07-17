@@ -66,6 +66,30 @@ pub(crate) enum FederationPokeAction {
     Logout,
 }
 
+/// The managed-federation connect timeout (seconds) a login/logout should honor:
+/// `Some` means "managed mode: warn about the restart and poke the control
+/// socket with this timeout", `None` means "external mode: leave federation to
+/// the operator, never warn or poke".
+///
+/// A RUNNING daemon is authoritative: its state file records whether that
+/// generation armed managed-router federation (and with which timeout), so a
+/// config edited on disk after it started can neither make login/logout poke a
+/// control socket that does not exist (external daemon, managed config on disk)
+/// nor skip the poke a managed daemon needs to (de)federate immediately
+/// (managed daemon, external config on disk). Only when no daemon is running,
+/// so there is nothing to poke or restart either way, does the on-disk `config`
+/// decide, matching what the next daemon start will do. The state file is read
+/// from the same `dirs` the command resolved, so a test seam isolates it.
+pub(crate) fn federation_poke_timeout_secs(
+    dirs: &PeppyDirs,
+    config: &daemon_config::peppy_config::PeppyConfig,
+) -> Option<u64> {
+    match DaemonState::read_from(&DaemonState::state_file_in(dirs.root())) {
+        Ok(state) if state.is_running() => state.federation_connect_timeout_secs,
+        _ => config.zenoh.federation().map(|f| f.connect_timeout_secs),
+    }
+}
+
 /// Confirms (before authentication begins) a managed-router login/logout that
 /// may restart the daemon and wipe the running node stack, unless `--yes` was
 /// passed. Callers skip this entirely for `zenoh.external`, where authentication
@@ -440,12 +464,101 @@ impl Command for AuthCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{report_login, report_logout, stack_has_user_nodes};
+    use super::{federation_poke_timeout_secs, report_login, report_logout, stack_has_user_nodes};
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
     use daemon::control::PokeOutcome;
+    use daemon::state::DaemonState;
+    use daemon_config::consts::PeppyDirs;
+    use daemon_config::peppy_config::{
+        ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
+    };
     use std::collections::BTreeMap;
+
+    fn managed_config() -> PeppyConfig {
+        PeppyConfig {
+            zenoh: ZenohConfig::Managed(ManagedZenohConfig::default()),
+            ..PeppyConfig::default()
+        }
+    }
+
+    fn external_config() -> PeppyConfig {
+        PeppyConfig {
+            zenoh: ZenohConfig::External(ExternalZenohConfig {
+                endpoint: "tcp/router.example:7447".to_string(),
+            }),
+            ..PeppyConfig::default()
+        }
+    }
+
+    /// Writes a daemon state file under `dirs` whose recorded pid is this test
+    /// process (so `is_running` holds) and whose federation field is `timeout`.
+    fn write_running_state(dirs: &PeppyDirs, timeout: Option<u64>) {
+        let state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", timeout);
+        DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
+            .expect("write daemon state");
+    }
+
+    #[test]
+    fn with_no_daemon_running_the_disk_config_decides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+        let managed = managed_config();
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &managed),
+            managed.zenoh.federation().map(|f| f.connect_timeout_secs),
+            "no state file: a managed disk config supplies the poke timeout"
+        );
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &external_config()),
+            None,
+            "no state file: an external disk config means no poke"
+        );
+    }
+
+    #[test]
+    fn a_running_daemon_beats_the_disk_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+
+        // Managed daemon, external config on disk: the poke must still happen,
+        // with the daemon's own timeout.
+        write_running_state(&dirs, Some(7));
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &external_config()),
+            Some(7),
+            "a running managed daemon must be poked even if the disk config went external"
+        );
+
+        // External daemon, managed config on disk: there is no control socket,
+        // so login/logout must not warn about a restart or poke anything.
+        write_running_state(&dirs, None);
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &managed_config()),
+            None,
+            "a running external daemon has no control socket to poke"
+        );
+    }
+
+    #[test]
+    fn a_stale_state_file_from_a_dead_daemon_falls_back_to_the_disk_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+        let mut state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", None);
+        // A pid outside the valid range names no live process, so the state is
+        // stale and the disk config decides again.
+        state.daemon_pid = Some(u32::MAX);
+        DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
+            .expect("write daemon state");
+
+        let managed = managed_config();
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &managed),
+            managed.zenoh.federation().map(|f| f.connect_timeout_secs),
+            "a dead daemon's state must not override the disk config"
+        );
+    }
 
     /// Builds an instance-less node fixed at `stage`. The bindings/instances are
     /// irrelevant to the user-node predicate, which keys only on `stage`.

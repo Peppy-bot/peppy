@@ -44,3 +44,21 @@ impl<'a> MakeWriter<'a> for LogCapture {
         self.clone()
     }
 }
+
+/// Scoped default subscriber for tests that *emit* tracing events (possibly
+/// from spawned tasks on other threads) without asserting on them.
+///
+/// Registering a live `Dispatch` for the test's duration keeps
+/// `tracing-core`'s callsite-interest cache computed over ALL registered
+/// subscribers. With exactly one registered dispatcher, its `has_just_one`
+/// fast path resolves a newly-hit callsite's interest against the *hitting
+/// thread's* default instead — so a subscriber-less worker thread that fires
+/// a shared callsite first would cache it never-enabled and silence a
+/// concurrently-running test's `LogCapture` of that same callsite.
+pub fn quiet_subscriber_guard() -> tracing::subscriber::DefaultGuard {
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .finish();
+    tracing::subscriber::set_default(subscriber)
+}
