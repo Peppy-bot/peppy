@@ -152,7 +152,7 @@ async fn core_node_execution_has_no_run_cmd_and_no_container() {
 }
 
 /// Verifies that, with no explicit name, the core node derives a deterministic
-/// machine-uid based name with the `core-node-` prefix. Two instances built on
+/// machine-uid based name with the `cn-` prefix. Two instances built on
 /// the same machine must produce the same name.
 #[tokio::test]
 async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
@@ -176,11 +176,11 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
         "default core node name must be deterministic across instances on the same machine"
     );
     assert!(
-        name_a.starts_with("core-node-"),
-        "default core node name must use the `core-node-` prefix, got `{name_a}`"
+        name_a.starts_with("cn-"),
+        "default core node name must use the `cn-` prefix, got `{name_a}`"
     );
     assert!(
-        name_a.len() > "core-node-".len(),
+        name_a.len() > "cn-".len(),
         "default core node name must include a machine-uid suffix, got `{name_a}`"
     );
 }
@@ -202,8 +202,7 @@ async fn core_node_explicit_name_overrides_machine_uid() {
 }
 
 /// The derived name is a pure function of the host identifier: same id, same
-/// name — including the digit suffix, which comes from the same digest that
-/// seeds the generator.
+/// name, with the digest deterministically seeding the readable generator.
 #[test]
 fn derived_name_is_deterministic_per_host_id() {
     assert_eq!(
@@ -216,51 +215,33 @@ fn derived_name_is_deterministic_per_host_id() {
     );
 }
 
-/// Shape: `core-node-{adj}-{surname}-{NNNN}-{DDDDDDDDDD}` — the generator's
-/// 4-digit base followed by the 10-digit zero-padded suffix — and the result
-/// passes `Name::new` validation.
+/// Shape: `cn-{adjective}-{surname}` — omitting the generator's numeric block —
+/// and the result passes `Name::new` validation.
 #[test]
-fn derived_name_has_generator_base_and_ten_digit_suffix() {
+fn derived_name_has_compact_two_word_shape() {
     let name = derive_name_from_host_id("some-machine-uid");
     let name = name.as_str();
 
     assert!(
-        name.starts_with("core-node-"),
-        "derived name must use the `core-node-` prefix, got `{name}`"
+        name.starts_with("cn-"),
+        "derived name must use the `cn-` prefix, got `{name}`"
     );
-    let mut segments = name.rsplit('-');
-    let suffix = segments.next().unwrap();
+    let segments: Vec<_> = name.split('-').collect();
     assert_eq!(
-        suffix.len(),
-        10,
-        "suffix must be 10 zero-padded decimal digits, got `{suffix}`"
+        segments.len(),
+        3,
+        "derived name must contain only the prefix, adjective, and surname: `{name}`"
     );
-    assert!(suffix.chars().all(|c| c.is_ascii_digit()));
-    let generator_digits = segments.next().unwrap();
-    assert_eq!(
-        generator_digits.len(),
-        4,
-        "the generator's 4-digit block must precede the suffix, got `{generator_digits}`"
+    assert_eq!(segments[0], "cn");
+    assert!(!segments[1].is_empty());
+    assert!(!segments[2].is_empty());
+    assert!(
+        !segments
+            .iter()
+            .any(|segment| { segment.len() == 4 && segment.chars().all(|c| c.is_ascii_digit()) })
     );
-    assert!(generator_digits.chars().all(|c| c.is_ascii_digit()));
 
     assert!(Name::new(name.to_string()).is_ok());
-}
-
-/// Distinct host identifiers must yield distinct digit suffixes (the suffix is
-/// the collision-entropy extension; if it collapsed to a constant it would add
-/// nothing over the generator's ~304M combinations).
-#[test]
-fn distinct_host_ids_yield_distinct_suffixes() {
-    let suffix = |host_id: &str| {
-        derive_name_from_host_id(host_id)
-            .as_str()
-            .rsplit('-')
-            .next()
-            .unwrap()
-            .to_string()
-    };
-    assert_ne!(suffix("host-a"), suffix("host-b"));
 }
 
 /// A second `start_with_ready` on the same instance is rejected rather than
@@ -348,27 +329,29 @@ async fn start_boots_clean_when_name_unclaimed() {
     booted.shut_down().await;
 }
 
-/// Two daemons started together arbitrate on their generation ids: one reaches
-/// ready and retains the only live claim, while the other fails with
-/// `CoreNodeNameTaken`.
+/// Two daemons with the same derived default name arbitrate on their generation
+/// ids: one reaches ready and retains the only live claim, while the other
+/// fails with `CoreNodeNameTaken`. This is the uniqueness guarantee behind the
+/// compact generated format, including cloned machine ids and the finite
+/// readable-name space.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn simultaneous_daemons_allow_exactly_one_name_claim() {
-    const CORE_NODE_NAME: &str = "simultaneous_claim_node";
-
+async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
     let messenger = create_mock_messenger().await;
     let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
     let first_root = tempfile::tempdir().expect("first tempdir");
     let second_root = tempfile::tempdir().expect("second tempdir");
     let first = Arc::new(CoreNode::new(test_core_node_config(
         Arc::clone(&messenger),
-        Some(CORE_NODE_NAME),
+        None,
         PeppyDirs::new(first_root.path()),
     )));
     let second = Arc::new(CoreNode::new(test_core_node_config(
         messenger,
-        Some(CORE_NODE_NAME),
+        None,
         PeppyDirs::new(second_root.path()),
     )));
+    let core_node_name = first.node_name().to_string();
+    assert_eq!(second.node_name(), core_node_name);
 
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let (first_ready_tx, first_ready_rx) = tokio::sync::oneshot::channel();
@@ -402,7 +385,7 @@ async fn simultaneous_daemons_allow_exactly_one_name_claim() {
         "exactly one competing daemon must reach ready"
     );
 
-    let live = live_claims(&presence_handle, CORE_NODE_NAME).await;
+    let live = live_claims(&presence_handle, &core_node_name).await;
     assert_eq!(live.len(), 1, "exactly one claim must remain live");
     let expected_winner = if first_ready.is_ok() {
         first.instance_id()
@@ -422,7 +405,7 @@ async fn simultaneous_daemons_allow_exactly_one_name_claim() {
         .expect_err("losing startup must fail");
     assert!(matches!(
         loser_error,
-        crate::Error::CoreNodeNameTaken { ref name } if name == CORE_NODE_NAME
+        crate::Error::CoreNodeNameTaken { ref name } if name == &core_node_name
     ));
     winner_task.abort();
 }

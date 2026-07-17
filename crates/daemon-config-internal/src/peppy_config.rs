@@ -123,7 +123,7 @@ const TEMPLATE_HEADER: &str = r#"// Daemon settings are read once at startup, so
 /// this snippet into an older file is idempotent.
 const CORE_NODE_NAME_SECTION_SNIPPET: &str = const_format::concatcp!(
     r#"  // Fixed name for this daemon's core node, or null to derive a
-  // machine-specific default (core-node-...). Names must be unique across all
+  // machine-specific default (cn-...). Names must be unique across all
   // daemons reachable over the same router/federation: a daemon whose name is
   // already in use refuses to boot. At most "#,
     MAX_CORE_NODE_NAME_LEN,

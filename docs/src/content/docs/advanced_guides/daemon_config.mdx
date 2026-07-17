@@ -45,7 +45,7 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
 // after restart. resource_servers is refreshed by each CLI authentication command.
 {
   // Fixed name for this daemon's core node, or null to derive a
-  // machine-specific default (core-node-...). Names must be unique across all
+  // machine-specific default (cn-...). Names must be unique across all
   // daemons reachable over the same router/federation: a daemon whose name is
   // already in use refuses to boot. At most 63 characters from the node-name
   // character set (start with a letter; letters, digits, `_`, `-`).
@@ -121,7 +121,7 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
 
 ## `core_node_name`: the daemon's core-node name
 
-`core_node_name` fixes the name of this daemon's [core node](/reference/concepts/#the-core-node). Leave it `null` (the default) and the daemon derives a stable, machine-specific name of the form `core-node-...`; set a string to pin an explicit one.
+`core_node_name` fixes the name of this daemon's [core node](/reference/concepts/#the-core-node). Leave it `null` (the default) and the daemon derives a stable, machine-specific name of the form `cn-{adjective}-{surname}`; set a string to pin an explicit one.
 
 Core-node names must be **unique across every daemon reachable over the same router or federation**. Each daemon advertises an ephemeral presence token; on boot it refuses to start if that name is already live, and while running it logs a rate-limited collision alarm if another daemon later claims the same name. If two daemons end up sharing a name, give one of them a unique `core_node_name` (or pass `peppy service serve --core-node-name <name>` for a single run) and restart it. This most commonly matters when logging in federates several machines together, or when cloning a disk image reuses another machine's derived name.
 
@@ -215,7 +215,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 
 | Setting | Default | Constraint | Effect |
 |---|---|---|---|
-| `core_node_name` | `null` (derived `core-node-...`) | Non-empty, ≤ 63 chars, node-name charset | Fixed name for this daemon's core node; must be unique across all daemons on the same router/federation or the daemon refuses to boot. Overridable per run with `--core-node-name`. |
+| `core_node_name` | `null` (derived `cn-...`) | Non-empty, ≤ 63 chars, node-name charset | Fixed name for this daemon's core node; must be unique across all daemons on the same router/federation or the daemon refuses to boot. Overridable per run with `--core-node-name`. |
 | `zenoh.local_nodes_topology` | `"peer"` | `"peer"` or `"router"` | Topology of this machine's nodes: direct peer links with gossip, or relay everything through the central router. Cross-machine traffic always goes through the routers. |
 | `zenoh.peer.standard_buffer_size` | `128` | `> 0` | Subscriber channel capacity (messages) for standard-QoS topics; also sizes service request/reply channels. |
 | `zenoh.peer.high_throughput_buffer_size` | `1024` | `> 0` | Subscriber channel capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |

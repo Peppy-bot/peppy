@@ -27,7 +27,6 @@ use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use pmi::{LivelinessToken, Messenger};
-use rand::Rng;
 use rand::SeedableRng;
 use rand::rng;
 use rand::rngs::StdRng;
@@ -218,33 +217,34 @@ fn derive_core_node_name() -> Name {
             tracing::warn!(
                 "machine UID and hostname unavailable; falling back to non-deterministic core node name"
             );
-            let mut random = rng();
-            let generated = get_random(&mut random);
-            let suffix = random.next_u32();
-            format_core_node_name(&generated, suffix)
+            format_core_node_name(&get_random(rng()))
         }
     }
 }
 
 /// Deterministic branch of [`derive_core_node_name`], split out so tests can
-/// drive it with explicit host identifiers. The SHA256 digest both seeds the
-/// generator and yields the digit suffix, so the whole name is a pure
-/// function of the host identifier.
+/// drive it with explicit host identifiers. The SHA256 digest seeds the
+/// generator, so the name is a pure function of the host identifier without
+/// exposing that identifier.
 fn derive_name_from_host_id(host_id: &str) -> Name {
     // Hash so the published name does not reveal the UID/hostname.
     let digest = Sha256::digest(host_id.as_bytes());
     let seed: [u8; 32] = digest.into();
-    let suffix = u32::from_be_bytes(seed[..4].try_into().expect("sha256 digest >= 4 bytes"));
     let mut seeded = StdRng::from_seed(seed);
-    format_core_node_name(&get_random(&mut seeded), suffix)
+    format_core_node_name(&get_random(&mut seeded))
 }
 
-/// Assembles `core-node-{adj}-{surname}-{NNNN}-{DDDDDDDDDD}`: the generator's
-/// human-readable base plus 10 zero-padded decimal digits. The 32 extra bits
-/// keep fleet-wide birthday-collision odds negligible at 10k nodes (the
-/// generator alone has only ~304M combinations).
-fn format_core_node_name(generated: &str, suffix: u32) -> Name {
-    Name::new(format!("core-node-{generated}-{suffix:010}")).unwrap()
+/// Assembles the compact `cn-{adjective}-{surname}` default. A generated
+/// name is only an operator-friendly candidate: [`presence::claim_name`]
+/// atomically arbitrates it before startup, so two daemons in one connected
+/// messaging namespace cannot finish boot with the same candidate.
+fn format_core_node_name(generated: &str) -> Name {
+    let (words, digits) = generated
+        .rsplit_once('-')
+        .expect("names_generator2 output always ends in a numeric segment");
+    debug_assert_eq!(digits.len(), 4);
+    debug_assert!(digits.chars().all(|c| c.is_ascii_digit()));
+    Name::new(format!("cn-{words}")).unwrap()
 }
 
 /// A pending listener registration, as collected by
