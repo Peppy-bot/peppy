@@ -350,6 +350,13 @@ pub struct ServeOptions {
     /// The binary's compile-time git hash, recorded in the daemon state file.
     /// Taken as data so this library reads no build-time env of its own.
     pub git_hash: String,
+    /// The peppy data root: the singleton lock, `peppy_config.json5`, the
+    /// daemon state file, and the core node's storage all live under it.
+    /// Resolved once by the embedding binary so every consumer of the run
+    /// agrees by construction. The CLI passes [`PeppyDirs::default`]; tests
+    /// pass a per-test temp root so a daemon under test never reads (or
+    /// mutates) the machine's real peppy home.
+    pub peppy_dirs: PeppyDirs,
     /// External shutdown injection (tests / embedders): when `Some` and
     /// cancelled, the run stops cleanly. `None` in production (the CLI path).
     pub shutdown_token: Option<CancellationToken>,
@@ -375,17 +382,14 @@ pub struct ServeOptions {
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.
 pub fn serve(options: ServeOptions) -> Result<()> {
-    // The peppy data root (the same ~/.peppy the core node uses), resolved
-    // once so the singleton lock and every generation agree by construction.
-    let peppy_dirs = PeppyDirs::default();
     // One daemon per peppy data root: held for the WHOLE process lifetime,
     // above the restart loop, so an in-process restart never opens a window
     // for a second daemon. Every exit path releases it (kernel flock),
     // including SIGKILL and the process::exit calls below.
-    let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&peppy_dirs)?;
+    let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&options.peppy_dirs)?;
     let mut flap = FlapWindow::new();
     loop {
-        let (outcome, router_adopted) = run_one_generation(&options, &peppy_dirs)?;
+        let (outcome, router_adopted) = run_one_generation(&options)?;
         match outcome {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
@@ -408,19 +412,20 @@ pub fn serve(options: ServeOptions) -> Result<()> {
 /// is a clean generation: fresh sessions, a fresh `CoreNode` (so its
 /// declaration guard re-runs), and the namespace + federation gate re-resolved
 /// from the credentials at the top of the build.
-fn run_one_generation(
-    options: &ServeOptions,
-    peppy_dirs: &PeppyDirs,
-) -> Result<(ServeOutcome, bool)> {
+fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
     // Read the daemon-global config, creating it with defaults if missing,
     // applied to the daemon's own session and every spawned node.
-    let peppy_config = daemon_config::peppy_config::load_or_create(peppy_dirs)
+    let peppy_config = daemon_config::peppy_config::load_or_create(&options.peppy_dirs)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to load peppy_config.json5: {e}")))?;
 
-    let mut builder = ServeCommandBuilder::new(&options.root_dir, options.git_hash.clone())?
-        .with_peppy_config(peppy_config)
-        .with_messaging_router(options.messaging_engine.clone())?
-        .with_core_node(options.core_node_name.clone(), options.clock_source)?;
+    let mut builder = ServeCommandBuilder::new(
+        &options.root_dir,
+        options.git_hash.clone(),
+        options.peppy_dirs.clone(),
+    )?
+    .with_peppy_config(peppy_config)
+    .with_messaging_router(options.messaging_engine.clone())?
+    .with_core_node(options.core_node_name.clone(), options.clock_source)?;
 
     if let Some(token) = &options.shutdown_token {
         builder = builder.with_shutdown_token(token.clone());

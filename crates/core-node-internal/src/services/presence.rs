@@ -31,10 +31,77 @@ pub const NAME_CLAIM_LINKED_SETTLE: Duration = Duration::from_secs(3);
 /// when the incumbent's token lands, slow enough not to hammer the router.
 const NAME_CLAIM_SETTLE_POLL: Duration = Duration::from_millis(150);
 
+/// How long [`claim_name`] tolerates consecutive liveliness reads that fail to
+/// show the daemon's *own* candidate token before giving up on the claim.
+///
+/// The daemon holds its candidate token live for the whole election, so every
+/// trustworthy read must contain it. A read without it is a degraded read
+/// (the query timed out under load or replies were dropped, both of which
+/// surface as an empty or partial reply set), not evidence about the name,
+/// and is retried. Sized to ride out several fully timed-out queries in a row
+/// (each bounded by [`CoreNodePresenceMessenger::LIST_TIMEOUT`]) as seen on
+/// oversubscribed CI runners, while still failing a genuinely broken broker
+/// fast enough for an operator to notice at boot.
+const NAME_CLAIM_SELF_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Prefix reserved for short-lived election tokens. A dot cannot occur in a
 /// real instance id (`config::runtime::Name`), so committed claims and startup
 /// contenders remain unambiguous in the broker snapshot.
 const NAME_CLAIM_CANDIDATE_PREFIX: &str = ".claim.";
+
+/// One liveliness read's verdict on this daemon's name claim, produced by
+/// [`arbitrate_claim`]. Only reads that contain the daemon's own candidate
+/// token may produce a negative election verdict; see
+/// [`NAME_CLAIM_SELF_VISIBILITY_TIMEOUT`] for why.
+#[derive(Debug, PartialEq, Eq)]
+enum ClaimArbitration<'a> {
+    /// A committed (non-candidate) token owns the name. Positive evidence,
+    /// trusted even in a partial read: refuse the claim.
+    OwnedByForeignDaemon,
+    /// The read does not contain our own live candidate token, so it proves
+    /// nothing about the name: retry instead of arbitrating on it.
+    OwnCandidacyInvisible,
+    /// We see ourselves and a rival candidate with a smaller generation id:
+    /// the rival wins, refuse the claim.
+    LostElection { winner: &'a str },
+    /// We see ourselves winning, but losing rivals have not dropped their
+    /// candidate tokens yet: keep waiting before committing.
+    AwaitingRivalWithdrawal,
+    /// Our candidate token is the only token under the name.
+    SoleCandidate,
+}
+
+/// Arbitrates one deduplicated liveliness read of `claim_ids` (token instance
+/// ids observed under the claimed name) against our own candidacy.
+fn arbitrate_claim<'a>(claim_ids: &[&'a str], own_instance_id: &str) -> ClaimArbitration<'a> {
+    if claim_ids
+        .iter()
+        .any(|instance_id| !instance_id.starts_with(NAME_CLAIM_CANDIDATE_PREFIX))
+    {
+        return ClaimArbitration::OwnedByForeignDaemon;
+    }
+
+    let candidates: Vec<&str> = claim_ids
+        .iter()
+        .filter_map(|instance_id| instance_id.strip_prefix(NAME_CLAIM_CANDIDATE_PREFIX))
+        .collect();
+    if !candidates.contains(&own_instance_id) {
+        return ClaimArbitration::OwnCandidacyInvisible;
+    }
+
+    let winner = candidates
+        .iter()
+        .copied()
+        .min()
+        .expect("candidates contain own_instance_id, so the set is non-empty");
+    if winner != own_instance_id {
+        return ClaimArbitration::LostElection { winner };
+    }
+    if candidates.len() > 1 {
+        return ClaimArbitration::AwaitingRivalWithdrawal;
+    }
+    ClaimArbitration::SoleCandidate
+}
 
 /// Refuses a claimed core-node name, otherwise declares and returns this
 /// daemon generation's retained presence token.
@@ -63,6 +130,14 @@ pub(crate) async fn claim_name(
     // smallest generation id. The winner waits until losers have dropped
     // their candidate tokens — and until the settle window has passed with a
     // clean view — before committing its real presence token.
+    //
+    // Every read is first vetted for self-visibility: we hold our candidate
+    // token live, so a read that does not report it is degraded (a query
+    // timeout under load surfaces as an empty or partial reply set) and must
+    // not be arbitrated on. Without that vetting, a single starved query at
+    // boot misdiagnoses "cannot see anything" as "someone else owns the name"
+    // and refuses a perfectly free name.
+    let mut blind_since: Option<Instant> = None;
     loop {
         let claims = CoreNodePresenceMessenger::list_live(
             messenger,
@@ -81,27 +156,45 @@ pub(crate) async fn claim_name(
         claim_ids.sort_unstable();
         claim_ids.dedup();
 
-        if claim_ids
-            .iter()
-            .any(|instance_id| !instance_id.starts_with(NAME_CLAIM_CANDIDATE_PREFIX))
-        {
-            return Err(crate::Error::CoreNodeNameTaken {
-                name: core_node_name.to_string(),
-            });
+        match arbitrate_claim(&claim_ids, instance_id) {
+            ClaimArbitration::OwnedByForeignDaemon => {
+                return Err(crate::Error::CoreNodeNameTaken {
+                    name: core_node_name.to_string(),
+                });
+            }
+            ClaimArbitration::LostElection { winner } => {
+                debug!(
+                    winner,
+                    core_node_name, "lost the name-claim election to a concurrent daemon boot"
+                );
+                return Err(crate::Error::CoreNodeNameTaken {
+                    name: core_node_name.to_string(),
+                });
+            }
+            ClaimArbitration::OwnCandidacyInvisible => {
+                let blind_start = *blind_since.get_or_insert_with(Instant::now);
+                if blind_start.elapsed() >= NAME_CLAIM_SELF_VISIBILITY_TIMEOUT {
+                    return Err(crate::Error::NameClaimUnverifiable {
+                        name: core_node_name.to_string(),
+                        blind_for: blind_start.elapsed(),
+                    });
+                }
+                debug!(
+                    core_node_name,
+                    "liveliness read is missing this daemon's own claim candidacy; \
+                     treating it as a degraded read and re-querying"
+                );
+                tokio::time::sleep(NAME_CLAIM_SETTLE_POLL).await;
+                continue;
+            }
+            ClaimArbitration::AwaitingRivalWithdrawal => {}
+            ClaimArbitration::SoleCandidate => {
+                if claimed_at.elapsed() >= settle {
+                    break;
+                }
+            }
         }
-
-        let winner = claim_ids
-            .iter()
-            .filter_map(|instance_id| instance_id.strip_prefix(NAME_CLAIM_CANDIDATE_PREFIX))
-            .min();
-        if winner != Some(instance_id) {
-            return Err(crate::Error::CoreNodeNameTaken {
-                name: core_node_name.to_string(),
-            });
-        }
-        if claim_ids.len() == 1 && claimed_at.elapsed() >= settle {
-            break;
-        }
+        blind_since = None;
 
         // Waiting on the settle clock is paced; waiting only for a losing
         // candidate to drop its token is not (that is sub-millisecond on the
@@ -336,6 +429,65 @@ mod tests {
         assert!(
             instant.elapsed() < settle,
             "a zero settle must not wait out any window"
+        );
+    }
+
+    /// The election must arbitrate only on liveliness reads that contain our
+    /// own live candidate token. A read without it is degraded (a query that
+    /// timed out under load returns an empty or partial reply set) and proves
+    /// nothing about the name. Refusing on such a read was the CI-only boot
+    /// flake: a starved single-daemon boot saw an empty read and misdiagnosed
+    /// its own free name as taken.
+    #[test]
+    fn claim_arbitration_treats_a_read_without_our_candidate_as_inconclusive() {
+        assert_eq!(
+            arbitrate_claim(&[], "me"),
+            ClaimArbitration::OwnCandidacyInvisible,
+            "an empty read must be retried, not refused"
+        );
+        // A partial read can surface a rival candidate while still missing our
+        // own token. Ruling "lost election" on it could refuse both sides of a
+        // simultaneous boot (each side seeing only the other), so it is just
+        // as inconclusive as an empty read, whichever side would outrank.
+        assert_eq!(
+            arbitrate_claim(&[".claim.aaa"], "zzz"),
+            ClaimArbitration::OwnCandidacyInvisible
+        );
+        assert_eq!(
+            arbitrate_claim(&[".claim.zzz"], "aaa"),
+            ClaimArbitration::OwnCandidacyInvisible
+        );
+    }
+
+    /// A committed token is positive evidence and must refuse the claim even
+    /// when the same read is too degraded to show our own candidacy.
+    #[test]
+    fn claim_arbitration_refuses_a_committed_token_even_in_a_partial_read() {
+        assert_eq!(
+            arbitrate_claim(&["incumbent"], "me"),
+            ClaimArbitration::OwnedByForeignDaemon
+        );
+        assert_eq!(
+            arbitrate_claim(&["incumbent", ".claim.me"], "me"),
+            ClaimArbitration::OwnedByForeignDaemon
+        );
+    }
+
+    /// With our own candidacy visible, the election is decided by the smallest
+    /// generation id, and a winning candidate waits for losers to withdraw.
+    #[test]
+    fn claim_arbitration_settles_elections_between_visible_candidates() {
+        assert_eq!(
+            arbitrate_claim(&[".claim.me"], "me"),
+            ClaimArbitration::SoleCandidate
+        );
+        assert_eq!(
+            arbitrate_claim(&[".claim.aaa", ".claim.me"], "me"),
+            ClaimArbitration::LostElection { winner: "aaa" }
+        );
+        assert_eq!(
+            arbitrate_claim(&[".claim.me", ".claim.zzz"], "me"),
+            ClaimArbitration::AwaitingRivalWithdrawal
         );
     }
 

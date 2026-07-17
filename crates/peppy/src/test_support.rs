@@ -213,7 +213,13 @@ impl ServeCommandEmulation {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let core_node_task =
             tokio::spawn(async move { core_node.start_with_ready(Some(ready_tx)).await });
-        ready_rx.await.expect("core node ready signal failed");
+        if ready_rx.await.is_err() {
+            // The ready sender only drops without firing when `start_with_ready`
+            // bailed out (or panicked), so the join result holds the real error.
+            // Surface it instead of an opaque `RecvError`.
+            let failure = core_node_task.await;
+            panic!("core node failed before signaling ready: {failure:?}");
+        }
 
         // `ensure_default_repos` runs during `start_with_ready` and appends the
         // bundled defaults (real GitHub URLs) to the empty file we wrote above.

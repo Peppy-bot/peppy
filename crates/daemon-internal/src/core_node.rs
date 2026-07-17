@@ -82,6 +82,7 @@ impl CoreNodeRunner {
         node_startup_timeout: Duration,
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
+        peppy_dirs: PeppyDirs,
         messaging_ready: Option<watch::Receiver<bool>>,
         federation_settled: Option<watch::Receiver<bool>>,
         clock_source: crate::ClockSource,
@@ -103,7 +104,6 @@ impl CoreNodeRunner {
             daemon_use_sim_time: clock_source.use_sim_time(),
             name_claim_settle,
         };
-        let peppy_dirs = PeppyDirs::default();
         // Fail fast with a clean operator-facing message (no backtrace) when a
         // runtime prerequisite is missing. The library reports this as an error
         // rather than calling `std::process::exit`, so the binary owns the exit.

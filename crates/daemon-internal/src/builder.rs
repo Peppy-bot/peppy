@@ -5,6 +5,7 @@ use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
 use crate::state::DaemonState;
+use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
@@ -37,6 +38,11 @@ pub struct ServeCommandBuilder {
     /// The binary's compile-time git hash, recorded in the daemon state file.
     /// Passed in by the embedding binary (this crate reads no build-time env).
     git_hash: String,
+    /// The peppy data root for this generation, threaded from
+    /// [`ServeOptions`](crate::ServeOptions): the daemon state file, the
+    /// federation control socket, and the core node's storage all derive
+    /// their paths from it.
+    peppy_dirs: PeppyDirs,
     peppy_config: PeppyConfig,
     /// Backend URL for per-user-router federation, set by
     /// [`with_messaging_router`](Self::with_messaging_router) for the `zenoh`
@@ -70,7 +76,11 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(root_dir: impl Into<PathBuf>, git_hash: impl Into<String>) -> Result<Self> {
+    pub fn new(
+        root_dir: impl Into<PathBuf>,
+        git_hash: impl Into<String>,
+        peppy_dirs: PeppyDirs,
+    ) -> Result<Self> {
         Ok(Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
@@ -82,6 +92,7 @@ impl ServeCommandBuilder {
             core_node_done_tx: None,
             root_dir: root_dir.into(),
             git_hash: git_hash.into(),
+            peppy_dirs,
             peppy_config: PeppyConfig::default(),
             federation_api_url: None,
             federation_connect_timeout: Duration::from_secs(
@@ -287,6 +298,7 @@ impl ServeCommandBuilder {
                     DEFAULT_NODE_STARTUP_TIMEOUT,
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
+                    self.peppy_dirs.clone(),
                     self.messaging_ready.clone(),
                     federation_settled_rx,
                     self.clock_source,
@@ -318,7 +330,8 @@ impl ServeCommandBuilder {
                             .map(|_| self.federation_connect_timeout.as_secs()),
                     )
                 };
-                let state_path = daemon_state.write().map_err(|e| {
+                let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
+                DaemonState::write_to(&state_path, &daemon_state).map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
                 })?;
                 info!(
@@ -394,11 +407,10 @@ impl ServeCommandBuilder {
                         self.teardown_token.clone(),
                     )));
 
-            // Control socket the CLI pokes. Derived from the same `PeppyDirs` the
-            // CLI resolves, so the two agree without a discovery handshake.
-            let socket_path = crate::control::federation_control_socket_path(
-                &daemon_config::consts::PeppyDirs::default(),
-            );
+            // Control socket the CLI pokes. Derived from this run's `PeppyDirs`
+            // (the same root the CLI resolves by default), so the two agree
+            // without a discovery handshake.
+            let socket_path = crate::control::federation_control_socket_path(&self.peppy_dirs);
             self.composite_command =
                 self.composite_command
                     .add_async_command(Box::new(FederationControl::new(
@@ -573,11 +585,12 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let builder = ServeCommandBuilder::new("/unused", "regression-git-hash")
-            .expect("create builder")
-            .with_peppy_config(peppy_config)
-            .with_messaging_router("zenoh".to_string())
-            .expect("build external messaging adapter without starting it");
+        let builder =
+            ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new("/unused"))
+                .expect("create builder")
+                .with_peppy_config(peppy_config)
+                .with_messaging_router("zenoh".to_string())
+                .expect("build external messaging adapter without starting it");
         assert!(
             builder.federation_api_url.is_none(),
             "external mode must not arm router federation"
@@ -631,11 +644,12 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let builder = ServeCommandBuilder::new("/unused", "regression-git-hash")
-            .expect("create builder")
-            .with_peppy_config(peppy_config)
-            .with_messaging_router("zenoh".to_string())
-            .expect("build managed messaging adapter without starting it");
+        let builder =
+            ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new("/unused"))
+                .expect("create builder")
+                .with_peppy_config(peppy_config)
+                .with_messaging_router("zenoh".to_string())
+                .expect("build managed messaging adapter without starting it");
 
         assert!(
             builder.federation_api_url.is_some(),
