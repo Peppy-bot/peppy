@@ -5,6 +5,8 @@ sidebar:
   order: 16
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Server federation links the peppy-managed Zenoh routers on two or more machines. Once linked, the routers can carry Peppy traffic between their local node stacks without relying on the platform backend.
 
 Every user-managed federation link uses mutual TLS (mTLS). Both routers present a certificate, both certificates must chain to the same trusted fleet certificate authority (CA), and the certificate presented by the listening router must cover the hostname or IP address used to reach it. Plain TCP federation is not supported.
@@ -14,28 +16,62 @@ Router federation and core-node visibility are related, but they are not the sam
 - **Router federation is network-level connectivity.** It links the Zenoh routers and is independent of organization namespaces.
 - **Core-node visibility is namespace-scoped.** Federated machines see each other's core nodes only when both are logged out in the `local` namespace, or both are logged in to the same organization.
 
-This guide uses two machines, `robot-a.example.com` and `robot-b.example.com`. Machine B accepts the inbound link, and machine A connects to it. Both machines need an identity issued by the same fleet CA.
+This guide uses two machines, `robot-a.example.com` and `robot-b.example.com`. Machine B accepts the inbound link, and machine A connects to it. That single router link carries traffic in both directions, so B does not also need to connect back to A. Both machines need an identity issued by the same fleet CA.
+
+Federation joins daemons and their managed routers, not individual application nodes. Every node attached to either daemon can use the federated transport, subject to its normal contracts, links, and namespace.
+
+## Before you begin
+
+On both machines:
+
+- Install the same Peppy release, including the matching `zenohd` binary.
+- Use `zenoh.managed`. User-managed federation is unavailable under `zenoh.external`.
+- Do not set `ZENOH_CONFIG`. That override makes the managed router operator-pinned, so Peppy cannot add its listener or peer links.
+- Give the daemons unique [`core_node_name` values](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name), especially when the machines were cloned from the same image.
+
+Authentication does not gate user-managed federation. The mTLS router link can be established whether the machines are logged in or logged out. What matters for core-node visibility is that both daemon sessions use the same namespace:
+
+- Two logged-out machines share the `local` namespace.
+- Two machines logged in to the same organization share that organization's namespace.
+- A logged-in machine and a logged-out machine, or machines in different organizations, remain isolated even when their routers are linked.
+
+Check both machines before configuring federation:
+
+```sh
+peppy auth whoami
+```
+
+Do not log out solely to create a user-managed federation. If the deployment specifically requires no active or attempted platform-backend link, log out both machines because a logged-in managed daemon also adds its organization's platform-backend link alongside user-managed peers:
+
+```sh
+peppy auth logout
+```
+
+Under `zenoh.managed`, changing the login state restarts messaging in the new namespace and wipes the running node stack. When a namespace change is required, do it before adding or launching important nodes.
 
 ## Create a fleet CA and machine identities
 
-Choose one trusted machine to hold the fleet CA. Run this command there once:
+Choose one trusted machine to hold the fleet CA. Keep the CA in a dedicated Peppy data root so `ca.key` never becomes part of a router's conventional identity directory. Run this command there once:
 
 ```sh
-peppy federation ca init
+PEPPY_HOME="$HOME/peppy-fleet-ca" \
+  peppy federation ca init
 ```
 
-It creates the CA certificate and private key under `~/.peppy/conf/federation/`. The CA private key is the authority for the entire fleet. Keep `ca.key` on this machine, restrict access to it, and back it up securely. Do not copy it to the routers.
+It creates the CA certificate and private key under `~/peppy-fleet-ca/conf/federation/`. The CA private key is the authority for the entire fleet. Keep `ca.key` on this machine, restrict access to it, and back it up securely. Do not copy it to the routers.
 
 Issue a separate identity bundle for each machine:
 
 ```sh
-peppy federation ca issue \
+PEPPY_HOME="$HOME/peppy-fleet-ca" \
+  peppy federation ca issue \
   --host robot-a.example.com \
-  --out ./robot-a-federation
+  --out "$HOME/robot-a-federation"
 
-peppy federation ca issue \
+PEPPY_HOME="$HOME/peppy-fleet-ca" \
+  peppy federation ca issue \
   --host robot-b.example.com \
-  --out ./robot-b-federation
+  --out "$HOME/robot-b-federation"
 ```
 
 Each output directory contains:
@@ -44,14 +80,31 @@ Each output directory contains:
 - `cert.pem`: that machine's certificate, valid for both client and server authentication
 - `key.pem`: that machine's private key
 
-Copy only those three files to the matching machine. For example, after ensuring the destination directory exists on machine B:
+Create the conventional identity directory on both machines, readable only by its owner:
 
 ```sh
-scp ./robot-b-federation/{ca.pem,cert.pem,key.pem} \
+ssh robot-a.example.com 'install -d -m 700 ~/.peppy/conf/federation'
+ssh robot-b.example.com 'install -d -m 700 ~/.peppy/conf/federation'
+```
+
+Copy only the three router identity-bundle entries to their matching machines:
+
+```sh
+scp "$HOME/robot-a-federation"/{ca.pem,cert.pem,key.pem} \
+  robot-a.example.com:~/.peppy/conf/federation/
+
+scp "$HOME/robot-b-federation"/{ca.pem,cert.pem,key.pem} \
   robot-b.example.com:~/.peppy/conf/federation/
 ```
 
-Repeat the copy for machine A, then keep each `key.pem` readable only by its owner. If the CA machine is also a router, issue and install a leaf identity for it too. Do not use `ca.pem` and `ca.key` as a router identity.
+Restrict each machine private key after the copy:
+
+```sh
+ssh robot-a.example.com 'chmod 600 ~/.peppy/conf/federation/key.pem'
+ssh robot-b.example.com 'chmod 600 ~/.peppy/conf/federation/key.pem'
+```
+
+If the CA machine is also a router, issue and install a leaf identity for it in the same way. Keep its router identity under the normal `~/.peppy` root and the fleet CA under the separate `~/peppy-fleet-ca` root. The router uses `ca.pem` only as its trust anchor; it must present its issued `cert.pem` and `key.pem`, never the CA private key.
 
 :::caution[The SAN must match the address that peers dial]
 Pass every hostname or IP address that other routers will use to `--host`. If machine A will federate with `tls/robot-b.example.com:7449`, B's certificate must include `robot-b.example.com`. If A will dial `tls/192.0.2.20:7449`, issue B's certificate with `--host 192.0.2.20` so it contains an IP SAN. A DNS SAN that merely looks like an IP address does not satisfy IP-address verification. Do not issue the certificate for the wildcard listener address `0.0.0.0` unless peers actually dial that address, which they normally cannot.
@@ -60,10 +113,11 @@ Pass every hostname or IP address that other routers will use to `--host`. If ma
 You can repeat `--host` when a machine is reachable through several names or addresses:
 
 ```sh
-peppy federation ca issue \
+PEPPY_HOME="$HOME/peppy-fleet-ca" \
+  peppy federation ca issue \
   --host robot-b.example.com \
   --host 192.0.2.20 \
-  --out ./robot-b-federation
+  --out "$HOME/robot-b-federation"
 ```
 
 ## Enable an inbound listener
@@ -90,9 +144,25 @@ The `null` path values select the conventional identity files under `~/.peppy/co
 
 Restart the daemon after changing the listener configuration. Listener settings are read only at daemon startup:
 
-```sh
-sudo systemctl restart peppy
-```
+<Tabs>
+  <TabItem label="Linux">
+    For the default user-level installation:
+
+    ```sh
+    systemctl --user restart peppy
+    systemctl --user status peppy
+    ```
+
+    If Peppy was installed system-wide with `sudo peppy service install`, use `sudo systemctl restart peppy` instead.
+  </TabItem>
+  <TabItem label="macOS">
+    ```sh
+    launchctl unload ~/Library/LaunchAgents/bot.peppy.plist
+    launchctl load ~/Library/LaunchAgents/bot.peppy.plist
+    launchctl list bot.peppy
+    ```
+  </TabItem>
+</Tabs>
 
 The example uses TCP port `7449`, separate from the managed router's normal messaging port `7448`. Allow inbound TCP traffic to `7449` in the host firewall and any intervening network firewall. When the listener sits behind NAT, forward a public port to `7449` and federate with the public hostname and port. The certificate SAN must still cover the hostname or IP address in that public endpoint.
 
@@ -101,7 +171,7 @@ A machine that only initiates outbound federation links does not need `listen_en
 ## Federate the routers
 
 :::note[Restart after upgrading]
-Restart the daemon after upgrading Peppy before using `peppy federation`. The CLI and daemon must both support the federation status protocol; an older running daemon answers the new request with an error.
+Restart both daemons after upgrading Peppy before using `peppy federation`. The CLI and daemon must both support the federation status protocol; an older running daemon answers the new request with an error.
 :::
 
 On machine A, connect to B's listener:
@@ -110,19 +180,40 @@ On machine A, connect to B's listener:
 peppy federation federate tls/robot-b.example.com:7449
 ```
 
+This one connection is bidirectional. Do not add a reciprocal B-to-A federation for this two-machine topology.
+
 The endpoint is the durable identity of the federation entry. Peppy saves it in `~/.peppy/conf/federations.json5`, asks the running daemon to apply the complete desired set of links, and verifies this specific peer. If the daemon is not running, the command saves the entry and the daemon applies it on its next start.
 
-After a successful link, Peppy compares the visible core nodes from before and after federation. If exactly one new core node appears, it caches that node's name as display metadata and prints it. If no node or several nodes appear, such as when B already connects to a larger mesh, the endpoint remains valid and the display name stays undiscovered. Routing always uses the endpoint, never the cached name.
+After a successful link, Peppy compares the visible core nodes from before and after federation and may print the newly visible names. It deliberately does not cache those names against the endpoint because a presence change can represent a larger mesh and cannot be attributed safely to one router. Routing, status, and removal use the exact endpoint.
 
-Inspect the result with:
+## Verify the federation
+
+On both machines, inspect the router state and the cross-daemon node stack:
 
 ```sh
 peppy federation list
+peppy stack list
 ```
 
-The output has two sections:
+Allow a few seconds for presence discovery after the link first establishes, then retry these commands if the remote core node has not appeared yet.
 
-- **Federated routers** lists the platform backend and user-managed peer endpoints, their cached core-node names, and their current status. It also reports the inbound listener.
+On machine A, expect:
+
+- For a deliberately backend-free deployment, `platform-backend` with status `logged out`; this is a status row, not an active backend connection. A logged-in deployment can show a separate platform-backend connection without replacing the user-managed peer link.
+- `tls/robot-b.example.com:7449` with status `federated`.
+- Both machines under **Visible core nodes**.
+- Both core-node sections in `peppy stack list`.
+
+On machine B, expect:
+
+- The same login-dependent platform-backend status described for A.
+- `inbound listener: tls/0.0.0.0:7449`.
+- Both machines under **Visible core nodes** and in `peppy stack list`.
+- No outbound row for A. B accepted an inbound link and has no saved outbound registry entry for A.
+
+`peppy federation list` always has two sections:
+
+- **Federated routers** lists the platform backend, user-managed outbound peer endpoints, and their current status. It also reports the inbound listener.
 - **Visible core nodes** lists the live core nodes in this daemon's current organization namespace.
 
 Use `--json` for machine-readable output:
@@ -133,13 +224,7 @@ peppy federation list --json
 
 ## Remove a federation
 
-Remove a peer by its discovered core-node name:
-
-```sh
-peppy federation remove daemon-b
-```
-
-You can always remove it by its exact endpoint, including when its core-node name is undiscovered or ambiguous:
+On machine A, remove the durable outbound entry by its exact endpoint:
 
 ```sh
 peppy federation remove tls/robot-b.example.com:7449
@@ -147,7 +232,7 @@ peppy federation remove tls/robot-b.example.com:7449
 
 Removing a peer updates the saved registry and asks a running daemon to reapply the remaining links. It does not delete certificates or change the peer machine.
 
-The platform backend is also shown as a federated router when you are logged in. Removing it is exactly equivalent to `peppy auth logout`:
+The platform backend always has a status row. When you are logged in, removing it is exactly equivalent to `peppy auth logout`:
 
 ```sh
 peppy federation remove platform-backend
@@ -171,10 +256,11 @@ If `peppy federation list` reports a peer as `federated` but the peer is absent 
 Fleet CA certificates are valid for 10 years, and machine certificates are valid for 2 years. Re-issue each machine certificate before it expires:
 
 ```sh
-peppy federation ca issue \
+PEPPY_HOME="$HOME/peppy-fleet-ca" \
+  peppy federation ca issue \
   --host robot-b.example.com \
   --host 192.0.2.20 \
-  --out ./robot-b-federation
+  --out "$HOME/robot-b-federation"
 ```
 
 Use the same complete host list that peers dial. Replace `cert.pem`, `key.pem`, and `ca.pem` on that machine, keep the private key owner-only, and restart its daemon. The endpoint registry does not need to change when the hostnames and ports stay the same.
@@ -195,14 +281,27 @@ The listening router's certificate does not cover the hostname or IP address in 
 
 `federate` and peer `remove` can update the saved registry while the daemon is stopped. The command reports that the change is saved, and the daemon applies it on its next start. If the daemon should already be running, check its service status and logs before retrying:
 
-```sh
-systemctl status peppy
-journalctl -u peppy
-```
+<Tabs>
+  <TabItem label="Linux">
+    For the default user-level installation:
 
-### Peer is federated but has no discovered name
+    ```sh
+    systemctl --user status peppy
+    journalctl --user -u peppy
+    ```
 
-The cached name is only display metadata. Peppy leaves it blank when it cannot identify exactly one newly visible core node, which is normal for a peer that exposes a larger mesh. Use the exact endpoint to remove the peer. If you expected one node, verify that both daemons use the same organization namespace.
+    For a system-wide installation, use `sudo systemctl status peppy` and `sudo journalctl -u peppy`.
+  </TabItem>
+  <TabItem label="macOS">
+    ```sh
+    launchctl list bot.peppy
+    ```
+  </TabItem>
+</Tabs>
+
+### Peer is federated but the core-node column is `-`
+
+This is expected. Peppy does not persist a core-node name against a router endpoint because one router can expose an entire mesh. Use the exact endpoint to remove the peer. If the peer is absent from **Visible core nodes**, verify that both daemons use the same organization namespace.
 
 ### Core-node name collision
 
