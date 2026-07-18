@@ -10,6 +10,7 @@ use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
+use pmi::RouterLinks;
 use pmi::SubscriberBufferSizes;
 use pmi::{ZenohAdapter, ZenohNetProtocol};
 use std::path::PathBuf;
@@ -270,11 +271,13 @@ impl ServeCommandBuilder {
                         listening_port,
                         gossip,
                         subscriber_buffers,
-                        // Standalone: local nodes reach this router over plaintext
+                        // Plaintext links: local nodes reach this router over
                         // loopback TCP. The federation task adds TLS upstream later.
-                        initial_connect_endpoints,
-                        extra_listen_endpoints,
-                        None,
+                        RouterLinks {
+                            connect_endpoints: initial_connect_endpoints,
+                            extra_listen_endpoints,
+                            tls: None,
+                        },
                     )?,
                 }
                 .with_session_reconnect()
@@ -743,11 +746,10 @@ mod tests {
         );
         assert!(
             !messenger
-                .refederate(
-                    vec!["tcp/unused.example:7448".to_string()],
-                    Vec::new(),
-                    None,
-                )
+                .refederate(RouterLinks {
+                    connect_endpoints: vec!["tcp/unused.example:7448".to_string()],
+                    ..RouterLinks::default()
+                })
                 .expect("external refederation is a no-op"),
             "an external adapter must not own a router config to rewrite"
         );

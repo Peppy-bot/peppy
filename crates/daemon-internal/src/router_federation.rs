@@ -53,7 +53,7 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::{EndpointPurpose, ParsedEndpointBuf};
 use federation::PeerLink;
 use federation::links::IdentityPaths;
-use pmi::{Messenger, MessengerBackend};
+use pmi::{Messenger, MessengerBackend, RouterLinks};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -1027,7 +1027,11 @@ async fn refederate_and_restart(
 ) -> Result<bool> {
     let mut messenger = messenger.lock().await;
     let rewrote = messenger
-        .refederate(connect_endpoints, extra_listen_endpoints, None)
+        .refederate(RouterLinks {
+            connect_endpoints,
+            extra_listen_endpoints,
+            tls: None,
+        })
         .map_err(Error::PeppyMessagingInterface)?;
     if !rewrote {
         // The managed router uses a pinned `ZENOH_CONFIG`, so bouncing zenohd

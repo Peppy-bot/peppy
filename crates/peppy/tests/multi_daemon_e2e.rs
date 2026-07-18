@@ -10,7 +10,7 @@ use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
 use daemon_config::peppy_config::{
     ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
 };
-use pmi::{ZenohAdapter, ZenohNetProtocol, render_router_config};
+use pmi::{RouterLinks, ZenohAdapter, ZenohNetProtocol, render_router_config};
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::core::{AccessMode, CmdWaitFor, ExecCommand, Host, Mount};
 use testcontainers::runners::AsyncRunner;
@@ -105,9 +105,10 @@ fn write_router_pin(path: &Path, connect_endpoints: Vec<String>) {
         "0.0.0.0",
         MANAGED_ROUTER_PORT,
         true,
-        connect_endpoints,
-        Vec::new(),
-        None,
+        RouterLinks {
+            connect_endpoints,
+            ..RouterLinks::default()
+        },
     );
     std::fs::write(path, config).expect("write pinned zenohd config");
 }
