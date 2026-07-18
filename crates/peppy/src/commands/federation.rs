@@ -7,12 +7,42 @@ mod remove;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Subcommand;
+use daemon::control as daemon_control;
+use daemon_config::consts::PeppyDirs;
 
 use super::Command;
 use crate::context::AppContext;
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+/// Client-side budget for a cached daemon status query. Kept strictly larger
+/// than the daemon's `STATUS_ACK_TIMEOUT` so the daemon can always reply a
+/// definite status first.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The managed-mode gate shared by `federate` and `remove`: the poke read
+/// timeout when this daemon manages its router, or an error because an
+/// operator-run router owns federation.
+fn managed_poke_read_timeout(
+    dirs: &PeppyDirs,
+    config: &daemon_config::peppy_config::PeppyConfig,
+) -> Result<Duration> {
+    let Some(connect_timeout_secs) =
+        crate::commands::auth::federation_poke_timeout_secs(dirs, config)
+    else {
+        return Err(Error::ExecutionFailed(
+            "this daemon uses an operator-run router; federation belongs to the operator"
+                .to_string(),
+        ));
+    };
+    Ok(Duration::from_secs(connect_timeout_secs) + daemon_control::POKE_READ_SLACK)
+}
+
+fn parse_peer_endpoint(value: &str) -> std::result::Result<federation::FederationPeer, String> {
+    federation::FederationPeer::new(value, None).map_err(|error| error.to_string())
+}
 
 #[derive(Subcommand)]
 pub enum FederationCommands {
@@ -25,8 +55,8 @@ pub enum FederationCommands {
     /// Federate with another Peppy daemon's mTLS router listener
     Federate {
         /// Peer router locator, for example tls/robot.example:7449
-        #[arg(value_parser = federate::parse_endpoint)]
-        endpoint: String,
+        #[arg(value_parser = parse_peer_endpoint)]
+        endpoint: federation::FederationPeer,
     },
     /// Remove a federation by core-node name or exact endpoint
     Remove {
@@ -81,8 +111,8 @@ impl Command for FederationCommand {
             }
             .execute(ctx),
             FederationCommands::Ca { command } => match command {
-                CaCommands::Init => ca::init(None),
-                CaCommands::Issue { hosts, out } => ca::issue(hosts, out, None),
+                CaCommands::Init => ca::init(),
+                CaCommands::Issue { hosts, out } => ca::issue(hosts, out),
             },
         }
     }

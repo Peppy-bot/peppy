@@ -47,16 +47,12 @@ const STATUS_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
         match outcome {
-            FederationOutcome::Applied(applied) => ControlResponse::Ok {
-                applied: applied.backend,
-                peers: applied.peers.into_iter().map(Into::into).collect(),
-            },
+            FederationOutcome::Applied(applied) => ControlResponse::Ok(applied),
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
             FederationOutcome::Unreachable { reason, applied } => ControlResponse::Unreachable {
                 message: reason,
-                applied: applied.backend,
-                peers: applied.peers.into_iter().map(Into::into).collect(),
+                applied,
             },
             FederationOutcome::Restart => ControlResponse::Restarting,
         }
@@ -254,12 +250,7 @@ async fn handle_conn(
             .await;
         }
         let response = match tokio::time::timeout(STATUS_ACK_TIMEOUT, ack_rx).await {
-            Ok(Ok(status)) => ControlResponse::FederationStatus {
-                backend: status.backend,
-                peers: status.peers,
-                listen_endpoint: status.listen_endpoint,
-                pinned: status.pinned,
-            },
+            Ok(Ok(status)) => ControlResponse::FederationStatus(status),
             Ok(Err(_)) => ControlResponse::error("federation task dropped the status request"),
             Err(_) => ControlResponse::error("timed out reading federation status"),
         };
@@ -319,8 +310,8 @@ async fn write_response(
 mod tests {
     use super::*;
     use crate::control::{
-        FEDERATION_CONTROL_SOCK, FederationStatus, PeerReportWire, PokeOutcome, QueryStatusOutcome,
-        poke_refederate, query_status,
+        AppliedFederation, FEDERATION_CONTROL_SOCK, FederationStatus, PeerLinkState, PeerReport,
+        PokeOutcome, QueryStatusOutcome, poke_refederate, query_status,
     };
     use tokio::sync::mpsc;
 
@@ -348,20 +339,16 @@ mod tests {
     fn unreachable_outcome_maps_to_the_unreachable_response() {
         let resp = ControlResponse::from(FederationOutcome::Unreachable {
             reason: "received fatal alert: UnknownCA".to_string(),
-            applied: crate::router_federation::AppliedFederation {
+            applied: AppliedFederation {
                 backend: Some("tls/cap:7443".to_string()),
                 peers: Vec::new(),
             },
         });
         match resp {
-            ControlResponse::Unreachable {
-                message,
-                applied,
-                peers,
-            } => {
+            ControlResponse::Unreachable { message, applied } => {
                 assert_eq!(message, "received fatal alert: UnknownCA");
-                assert_eq!(applied.as_deref(), Some("tls/cap:7443"));
-                assert!(peers.is_empty());
+                assert_eq!(applied.backend.as_deref(), Some("tls/cap:7443"));
+                assert!(applied.peers.is_empty());
             }
             other => panic!("expected Unreachable, got {other:?}"),
         }
@@ -380,12 +367,10 @@ mod tests {
         // Stand in for the federation loop: ack a canned applied outcome.
         let consumer = tokio::spawn(async move {
             if let Some(FederationRequest::Refederate { ack }) = trigger_rx.recv().await {
-                let _ = ack.send(FederationOutcome::Applied(
-                    crate::router_federation::AppliedFederation {
-                        backend: Some("tls/cap:7443".to_string()),
-                        peers: Vec::new(),
-                    },
-                ));
+                let _ = ack.send(FederationOutcome::Applied(AppliedFederation {
+                    backend: Some("tls/cap:7443".to_string()),
+                    peers: Vec::new(),
+                }));
             }
         });
 
@@ -414,7 +399,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            PokeOutcome::Applied(crate::control::AppliedFederation {
+            PokeOutcome::Applied(AppliedFederation {
                 backend: Some("tls/cap:7443".to_string()),
                 peers: Vec::new(),
             })
@@ -431,9 +416,9 @@ mod tests {
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
         let expected = FederationStatus {
             backend: None,
-            peers: vec![PeerReportWire {
+            peers: vec![PeerReport {
                 endpoint: "tls/peer:7449".to_string(),
-                error: Some("UnknownIssuer".to_string()),
+                state: PeerLinkState::Error("UnknownIssuer".to_string()),
             }],
             listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
             pinned: false,

@@ -40,10 +40,6 @@ pub const REFEDERATE_VERB: &str = "refederate";
 /// router config, or restarting zenohd.
 pub const STATUS_VERB: &str = "status";
 
-/// Cached status marker for a peer rendered at daemon startup but not yet
-/// checked by an explicit verifying federation request.
-pub const UNVERIFIED_PEER_REASON: &str = "not yet verified by this daemon generation";
-
 /// Extra time the client waits for the daemon's ack on top of the configured
 /// federation connect timeout. Kept strictly larger than the daemon-side ack
 /// budget (`APPLY_ACK_SLACK`, which itself covers the verifying poke's TLS probe)
@@ -60,20 +56,36 @@ pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
         .join(FEDERATION_CONTROL_SOCK)
 }
 
-/// The daemon's one-line JSON reply to a [`REFEDERATE_VERB`] request. Shared by
-/// the daemon (which writes it) and this client (which parses it).
+/// Health of one user-peer federation link as the daemon last saw it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerReportWire {
-    pub endpoint: String,
-    #[serde(default)]
-    pub error: Option<String>,
+#[serde(rename_all = "snake_case")]
+pub enum PeerLinkState {
+    /// A verifying poke confirmed the link's TLS handshake validates.
+    Verified,
+    /// Rendered into the router config but not yet checked by an explicit
+    /// verifying federation request from this daemon generation.
+    Unverified,
+    /// The last verifying poke failed with this human-readable reason.
+    Error(String),
 }
 
-/// Applied state returned by a refederation poke.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One user-peer link in a daemon reply. Shared by the daemon (which writes
+/// it) and this client (which parses it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerReport {
+    pub endpoint: String,
+    pub state: PeerLinkState,
+}
+
+/// Applied state returned by a refederation poke. Serialized inline into
+/// [`ControlResponse`] replies; `backend` keeps its pre-peer-federation wire
+/// name `applied` so mixed-version daemon/CLI pokes still parse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppliedFederation {
+    #[serde(rename = "applied")]
     pub backend: Option<String>,
-    pub peers: Vec<PeerReportWire>,
+    #[serde(default)]
+    pub peers: Vec<PeerReport>,
 }
 
 /// Cached federation state returned by [`query_status`].
@@ -81,29 +93,20 @@ pub struct AppliedFederation {
 pub struct FederationStatus {
     pub backend: Option<String>,
     #[serde(default)]
-    pub peers: Vec<PeerReportWire>,
+    pub peers: Vec<PeerReport>,
     pub listen_endpoint: Option<String>,
     pub pinned: bool,
 }
 
+/// The daemon's one-line JSON reply to a control-socket request.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ControlResponse {
     /// Federation is in effect: `Some(ep)` federated to `ep`, `None`
     /// de-federated.
-    Ok {
-        applied: Option<String>,
-        #[serde(default)]
-        peers: Vec<PeerReportWire>,
-    },
+    Ok(AppliedFederation),
     /// Cached state for a [`STATUS_VERB`] request.
-    FederationStatus {
-        backend: Option<String>,
-        #[serde(default)]
-        peers: Vec<PeerReportWire>,
-        listen_endpoint: Option<String>,
-        pinned: bool,
-    },
+    FederationStatus(FederationStatus),
     /// An operator-pinned `ZENOH_CONFIG` owns the router config; not auto-managed.
     Pinned,
     /// The config was applied (the local router was federated), but the TLS link
@@ -111,8 +114,8 @@ pub enum ControlResponse {
     /// federation with platform-backend is not actually in effect.
     Unreachable {
         message: String,
-        applied: Option<String>,
-        peers: Vec<PeerReportWire>,
+        #[serde(flatten)]
+        applied: AppliedFederation,
     },
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
     /// within the federation timeout).
@@ -177,25 +180,15 @@ pub enum QueryStatusOutcome {
 /// other I/O error to a benign outcome rather than an `Err`.
 pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
     match request(socket_path, read_timeout, REFEDERATE_VERB) {
-        Ok(ControlResponse::Ok { applied, peers }) => PokeOutcome::Applied(AppliedFederation {
-            backend: applied,
-            peers,
-        }),
+        Ok(ControlResponse::Ok(applied)) => PokeOutcome::Applied(applied),
         Ok(ControlResponse::Pinned) => PokeOutcome::Pinned,
-        Ok(ControlResponse::Unreachable {
-            message,
-            applied,
-            peers,
-        }) => PokeOutcome::Unreachable {
+        Ok(ControlResponse::Unreachable { message, applied }) => PokeOutcome::Unreachable {
             reason: message,
-            applied: AppliedFederation {
-                backend: applied,
-                peers,
-            },
+            applied,
         },
         Ok(ControlResponse::Error { message }) => PokeOutcome::DaemonError(message),
         Ok(ControlResponse::Restarting) => PokeOutcome::Restarting,
-        Ok(ControlResponse::FederationStatus { .. }) => {
+        Ok(ControlResponse::FederationStatus(_)) => {
             PokeOutcome::DaemonError("daemon returned status state to a refederate request".into())
         }
         Err(e) => match e.kind() {
@@ -211,17 +204,7 @@ pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcom
 /// Queries cached federation state without triggering a router rewrite.
 pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOutcome {
     match request(socket_path, read_timeout, STATUS_VERB) {
-        Ok(ControlResponse::FederationStatus {
-            backend,
-            peers,
-            listen_endpoint,
-            pinned,
-        }) => QueryStatusOutcome::Status(FederationStatus {
-            backend,
-            peers,
-            listen_endpoint,
-            pinned,
-        }),
+        Ok(ControlResponse::FederationStatus(status)) => QueryStatusOutcome::Status(status),
         Ok(ControlResponse::Error { message }) => QueryStatusOutcome::DaemonError(message),
         Ok(_) => QueryStatusOutcome::DaemonError(
             "daemon returned a refederation reply to a status request".into(),
@@ -365,18 +348,43 @@ mod tests {
         assert_eq!(outcome, PokeOutcome::TimedOut);
     }
 
+    /// An `ok` reply from a daemon that predates peer federation (no `peers`
+    /// key) must still parse, with the peer list defaulting to empty.
     #[test]
     fn ok_without_peers_uses_the_empty_default() {
         let response: ControlResponse =
             serde_json::from_str(r#"{"status":"ok","applied":"tls/cap.example:7443"}"#)
                 .expect("ok response parses");
         match response {
-            ControlResponse::Ok { applied, peers } => {
-                assert_eq!(applied.as_deref(), Some("tls/cap.example:7443"));
-                assert!(peers.is_empty());
+            ControlResponse::Ok(applied) => {
+                assert_eq!(applied.backend.as_deref(), Some("tls/cap.example:7443"));
+                assert!(applied.peers.is_empty());
             }
             other => panic!("expected ok response, got {other:?}"),
         }
+    }
+
+    /// The refederate ack keeps its pre-peer-federation wire shape: the
+    /// backend serializes under the `applied` key and peer states are typed.
+    #[test]
+    fn applied_federation_wire_shape_is_stable() {
+        let response = ControlResponse::Ok(AppliedFederation {
+            backend: Some("tls/cap.example:7443".to_string()),
+            peers: vec![
+                PeerReport {
+                    endpoint: "tls/peer:7449".to_string(),
+                    state: PeerLinkState::Verified,
+                },
+                PeerReport {
+                    endpoint: "tls/other:7449".to_string(),
+                    state: PeerLinkState::Error("UnknownIssuer".to_string()),
+                },
+            ],
+        });
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"status":"ok","applied":"tls/cap.example:7443","peers":[{"endpoint":"tls/peer:7449","state":"verified"},{"endpoint":"tls/other:7449","state":{"error":"UnknownIssuer"}}]}"#
+        );
     }
 
     #[test]
@@ -386,7 +394,7 @@ mod tests {
         let handle = stub_daemon(path.clone(), |_req, stream| {
             stream
                 .write_all(
-                    b"{\"status\":\"federation_status\",\"backend\":null,\"peers\":[{\"endpoint\":\"tls/peer:7449\",\"error\":null}],\"listen_endpoint\":\"tls/0.0.0.0:7449\",\"pinned\":false}\n",
+                    b"{\"status\":\"federation_status\",\"backend\":null,\"peers\":[{\"endpoint\":\"tls/peer:7449\",\"state\":\"verified\"}],\"listen_endpoint\":\"tls/0.0.0.0:7449\",\"pinned\":false}\n",
                 )
                 .unwrap();
         });
@@ -399,9 +407,9 @@ mod tests {
             outcome,
             QueryStatusOutcome::Status(FederationStatus {
                 backend: None,
-                peers: vec![PeerReportWire {
+                peers: vec![PeerReport {
                     endpoint: "tls/peer:7449".to_string(),
-                    error: None,
+                    state: PeerLinkState::Verified,
                 }],
                 listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
                 pinned: false,

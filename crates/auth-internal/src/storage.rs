@@ -232,38 +232,7 @@ pub fn load(path: &Path) -> Result<Credentials> {
 pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
     let content = json5_pretty::to_string_pretty(creds)
         .map_err(|e| Error::Auth(format!("failed to serialize credentials: {e}")))?;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        restrict_dir(parent)?;
-    }
-
-    daemon_config::atomic_write::publish_atomic(path, |tmp| {
-        std::fs::write(tmp, &content)?;
-        restrict_file(tmp)
-    })?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(unix)]
-fn restrict_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_dir(_path: &Path) -> std::io::Result<()> {
+    daemon_config::atomic_write::publish_atomic_private(path, content.as_bytes())?;
     Ok(())
 }
 

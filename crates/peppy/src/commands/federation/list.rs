@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
-use std::time::Duration;
 
-use daemon::control::{self as daemon_control, FederationStatus, QueryStatusOutcome};
+use daemon::control::{
+    self as daemon_control, FederationStatus, PeerLinkState, QueryStatusOutcome,
+};
 use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
 use serde::Serialize;
@@ -12,8 +13,6 @@ use super::super::Command;
 use crate::commands::stack::table::{render_section_panel, render_table};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-
-const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RouterRow {
@@ -44,11 +43,17 @@ struct ListDocument {
     visible_core_nodes: Vec<VisibleCoreNode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusAvailability {
-    Live,
-    DaemonDown,
+/// Everything the daemon could tell us about live federation state, resolved
+/// from the status query plus whether a daemon was reachable at all. Replaces
+/// a `(Option<FederationStatus>, availability)` pair whose invalid
+/// combinations each renderer had to re-exclude.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonFederationView {
+    Live(FederationStatus),
+    /// A daemon is running but its cached status could not be read.
     Unavailable,
+    DaemonDown,
+    /// An operator-run router owns federation; the daemon has no status socket.
     OperatorManaged,
 }
 
@@ -62,43 +67,48 @@ impl Command for ListCommand {
         let dirs = self.peppy_dirs.unwrap_or_default();
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        let registry = federation::load(&federation::registry_path(&dirs))
-            .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+        let registry = federation::load(&federation::registry_path(&dirs))?;
         let credentials = auth::storage::load(&auth::storage::credentials_path(&dirs))?;
         let saved_backend = SavedBackendState {
             logged_in: credentials.session.is_some(),
             endpoint: credentials.router.map(|router| router.endpoint),
         };
 
+        // The status query (control socket) and the presence listing (messaging
+        // session) use unrelated channels, so run them concurrently; a degraded
+        // daemon then costs max(status, presence) instead of their sum.
         let socket = daemon_control::federation_control_socket_path(&dirs);
-        let status_query = daemon_control::query_status(&socket, STATUS_TIMEOUT);
-        if let QueryStatusOutcome::DaemonError(message) = &status_query {
-            return Err(Error::ExecutionFailed(format!(
-                "the daemon could not report federation status: {message}. Restart the daemon \
-                 after upgrading, then re-run `peppy federation list`"
-            )));
-        }
-        let (daemon_running, visible_core_nodes) =
-            crate::commands::block_on(visible_core_nodes(ctx)).unwrap_or((false, Vec::new()));
+        let (status_query, presence) = crate::commands::block_on(async {
+            let status = tokio::task::spawn_blocking(move || {
+                daemon_control::query_status(&socket, super::STATUS_TIMEOUT)
+            });
+            Ok(tokio::join!(status, visible_core_nodes(ctx)))
+        })?;
+        let status_query = status_query.map_err(|error| {
+            Error::ExecutionFailed(format!("federation status query task failed: {error}"))
+        })?;
+        let (daemon_running, visible_core_nodes) = presence.unwrap_or((false, Vec::new()));
         let external = config.zenoh.external_endpoint().is_some();
-        let (status, availability) = match status_query {
-            QueryStatusOutcome::Status(status) => (Some(status), StatusAvailability::Live),
-            QueryStatusOutcome::TimedOut => (None, StatusAvailability::Unavailable),
+        let view = match status_query {
+            QueryStatusOutcome::Status(status) => DaemonFederationView::Live(status),
+            QueryStatusOutcome::TimedOut => DaemonFederationView::Unavailable,
             QueryStatusOutcome::DaemonNotRunning if external && daemon_running => {
-                (None, StatusAvailability::OperatorManaged)
+                DaemonFederationView::OperatorManaged
             }
             QueryStatusOutcome::DaemonNotRunning if daemon_running => {
-                (None, StatusAvailability::Unavailable)
+                DaemonFederationView::Unavailable
             }
-            QueryStatusOutcome::DaemonNotRunning => (None, StatusAvailability::DaemonDown),
+            QueryStatusOutcome::DaemonNotRunning => DaemonFederationView::DaemonDown,
             QueryStatusOutcome::DaemonError(message) => {
-                return Err(Error::ExecutionFailed(message));
+                return Err(Error::ExecutionFailed(format!(
+                    "the daemon could not report federation status: {message}. Restart the daemon \
+                     after upgrading, then re-run `peppy federation list`"
+                )));
             }
         };
         let document = build_document(
             &registry,
-            status.as_ref(),
-            availability,
+            &view,
             saved_backend,
             config
                 .zenoh
@@ -124,27 +134,30 @@ impl Command for ListCommand {
 
 fn build_document(
     registry: &federation::Federations,
-    live_status: Option<&FederationStatus>,
-    availability: StatusAvailability,
+    view: &DaemonFederationView,
     saved_backend: SavedBackendState,
     configured_listener: Option<String>,
     daemon_running: bool,
     visible_core_nodes: Vec<VisibleCoreNode>,
 ) -> ListDocument {
     let mut federated_routers = Vec::with_capacity(registry.peers().len() + 1);
-    let backend = match live_status {
-        Some(status) => status.backend.clone(),
-        None => saved_backend.endpoint.clone(),
+    let backend = match view {
+        DaemonFederationView::Live(status) => status.backend.clone(),
+        _ => saved_backend.endpoint.clone(),
     };
-    let backend_status = match live_status {
-        Some(status) if status.pinned && status.backend.is_some() => "pinned (operator-managed)",
-        Some(status) if status.backend.is_some() => "federated",
-        Some(_) if saved_backend.logged_in => "pending",
-        Some(_) => "logged out",
-        None if availability == StatusAvailability::OperatorManaged => "operator-managed",
-        None if availability == StatusAvailability::Unavailable => "status unavailable",
-        None if saved_backend.logged_in => "pending (daemon not running)",
-        None => "logged out",
+    let backend_status = match view {
+        DaemonFederationView::Live(status) if status.pinned && status.backend.is_some() => {
+            "pinned (operator-managed)"
+        }
+        DaemonFederationView::Live(status) if status.backend.is_some() => "federated",
+        DaemonFederationView::Live(_) if saved_backend.logged_in => "pending",
+        DaemonFederationView::Live(_) => "logged out",
+        DaemonFederationView::OperatorManaged => "operator-managed",
+        DaemonFederationView::Unavailable => "status unavailable",
+        DaemonFederationView::DaemonDown if saved_backend.logged_in => {
+            "pending (daemon not running)"
+        }
+        DaemonFederationView::DaemonDown => "logged out",
     };
     federated_routers.push(RouterRow {
         core_node: federation::RESERVED_BACKEND_NAME.to_string(),
@@ -153,34 +166,27 @@ fn build_document(
     });
 
     for peer in registry.peers() {
-        let report = live_status.and_then(|status| {
-            status
-                .peers
-                .iter()
-                .find(|report| report.endpoint == peer.endpoint())
-        });
-        let status = match report {
-            Some(_) if live_status.is_some_and(|status| status.pinned) => {
+        let status = match view {
+            DaemonFederationView::Live(status) if status.pinned => {
                 "pinned (operator-managed)".to_string()
             }
-            Some(report) => match &report.error {
-                Some(reason) if reason == daemon_control::UNVERIFIED_PEER_REASON => {
-                    "pending verification".to_string()
+            DaemonFederationView::Live(status) => {
+                let report = status
+                    .peers
+                    .iter()
+                    .find(|report| report.endpoint == peer.endpoint().as_str());
+                match report {
+                    Some(report) => match &report.state {
+                        PeerLinkState::Unverified => "pending verification".to_string(),
+                        PeerLinkState::Error(reason) => format!("error: {reason}"),
+                        PeerLinkState::Verified => "federated".to_string(),
+                    },
+                    None => "pending".to_string(),
                 }
-                Some(reason) => format!("error: {reason}"),
-                None => "federated".to_string(),
-            },
-            None if live_status.is_some_and(|status| status.pinned) => {
-                "pinned (operator-managed)".to_string()
             }
-            None if live_status.is_some() => "pending".to_string(),
-            None if availability == StatusAvailability::OperatorManaged => {
-                "operator-managed".to_string()
-            }
-            None if availability == StatusAvailability::Unavailable => {
-                "status unavailable".to_string()
-            }
-            None => "pending (daemon not running)".to_string(),
+            DaemonFederationView::OperatorManaged => "operator-managed".to_string(),
+            DaemonFederationView::Unavailable => "status unavailable".to_string(),
+            DaemonFederationView::DaemonDown => "pending (daemon not running)".to_string(),
         };
         federated_routers.push(RouterRow {
             core_node: peer.core_node().unwrap_or("-").to_string(),
@@ -192,11 +198,11 @@ fn build_document(
     // A durable removal is published before the live apply. If that apply is
     // still retrying, retain the currently applied endpoint in the report so a
     // network link can never disappear from observability while it is live.
-    if let Some(status) = live_status {
+    if let DaemonFederationView::Live(status) = view {
         let saved: BTreeSet<&str> = registry
             .peers()
             .iter()
-            .map(federation::FederationPeer::endpoint)
+            .map(|peer| peer.endpoint().as_str())
             .collect();
         for report in status
             .peers
@@ -211,6 +217,10 @@ fn build_document(
         }
     }
 
+    let live_status = match view {
+        DaemonFederationView::Live(status) => Some(status),
+        _ => None,
+    };
     ListDocument {
         federated_routers,
         inbound_listener: match live_status {
@@ -309,7 +319,7 @@ fn format_human(document: &ListDocument) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon::control::PeerReportWire;
+    use daemon::control::PeerReport;
 
     fn registry() -> federation::Federations {
         let mut registry = federation::Federations::default();
@@ -336,16 +346,15 @@ mod tests {
     fn formatter_has_both_sections_and_peer_status() {
         let document = build_document(
             &registry(),
-            Some(&FederationStatus {
+            &DaemonFederationView::Live(FederationStatus {
                 backend: None,
-                peers: vec![PeerReportWire {
+                peers: vec![PeerReport {
                     endpoint: "tls/peer:7449".to_string(),
-                    error: None,
+                    state: PeerLinkState::Verified,
                 }],
                 listen_endpoint: None,
                 pinned: false,
             }),
-            StatusAvailability::Live,
             saved_backend(false),
             None,
             true,
@@ -368,8 +377,7 @@ mod tests {
     fn daemon_down_marks_saved_links_pending() {
         let document = build_document(
             &registry(),
-            None,
-            StatusAvailability::DaemonDown,
+            &DaemonFederationView::DaemonDown,
             saved_backend(false),
             Some("tls/0.0.0.0:7449".to_string()),
             false,
@@ -386,8 +394,7 @@ mod tests {
     fn saved_login_without_a_cached_router_is_pending_not_logged_out() {
         let down = build_document(
             &federation::Federations::default(),
-            None,
-            StatusAvailability::DaemonDown,
+            &DaemonFederationView::DaemonDown,
             saved_backend(true),
             None,
             false,
@@ -400,8 +407,7 @@ mod tests {
 
         let live = build_document(
             &federation::Federations::default(),
-            Some(&FederationStatus::default()),
-            StatusAvailability::Live,
+            &DaemonFederationView::Live(FederationStatus::default()),
             saved_backend(true),
             None,
             true,
@@ -414,16 +420,15 @@ mod tests {
     fn startup_seeded_peer_is_pending_until_an_explicit_verification() {
         let document = build_document(
             &registry(),
-            Some(&FederationStatus {
+            &DaemonFederationView::Live(FederationStatus {
                 backend: None,
-                peers: vec![PeerReportWire {
+                peers: vec![PeerReport {
                     endpoint: "tls/peer:7449".to_string(),
-                    error: Some(daemon_control::UNVERIFIED_PEER_REASON.to_string()),
+                    state: PeerLinkState::Unverified,
                 }],
                 listen_endpoint: None,
                 pinned: false,
             }),
-            StatusAvailability::Live,
             saved_backend(false),
             Some("tls/0.0.0.0:7449".to_string()),
             true,
@@ -437,16 +442,15 @@ mod tests {
     fn live_removed_endpoint_stays_visible_as_removal_pending() {
         let document = build_document(
             &federation::Federations::default(),
-            Some(&FederationStatus {
+            &DaemonFederationView::Live(FederationStatus {
                 backend: None,
-                peers: vec![PeerReportWire {
+                peers: vec![PeerReport {
                     endpoint: "tls/old-peer:7449".to_string(),
-                    error: None,
+                    state: PeerLinkState::Verified,
                 }],
                 listen_endpoint: None,
                 pinned: false,
             }),
-            StatusAvailability::Live,
             saved_backend(false),
             Some("tls/0.0.0.0:7555".to_string()),
             true,
@@ -460,16 +464,15 @@ mod tests {
     fn pinned_status_never_claims_desired_links_are_federated() {
         let document = build_document(
             &registry(),
-            Some(&FederationStatus {
+            &DaemonFederationView::Live(FederationStatus {
                 backend: Some("tls/backend:7443".to_string()),
-                peers: vec![PeerReportWire {
+                peers: vec![PeerReport {
                     endpoint: "tls/peer:7449".to_string(),
-                    error: None,
+                    state: PeerLinkState::Verified,
                 }],
                 listen_endpoint: None,
                 pinned: true,
             }),
-            StatusAvailability::Live,
             saved_backend(true),
             Some("tls/0.0.0.0:7449".to_string()),
             true,

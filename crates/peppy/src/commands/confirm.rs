@@ -9,7 +9,13 @@ pub(crate) fn confirm_prompt(message: &str, reader: Option<&mut dyn BufRead>) ->
     io::stdout()
         .flush()
         .map_err(|e| Error::ExecutionFailed(format!("Failed to write confirmation prompt: {e}")))?;
+    read_yes_no(reader)
+}
 
+/// Reads one answer line and interprets a trimmed, case-insensitive y/yes as
+/// consent; anything else (including EOF) declines. The single answer-parsing
+/// rule for every confirmation prompt, wherever the prompt itself is printed.
+pub(crate) fn read_yes_no(reader: Option<&mut dyn BufRead>) -> Result<bool> {
     let mut input = String::new();
     if let Some(reader) = reader {
         reader.read_line(&mut input)

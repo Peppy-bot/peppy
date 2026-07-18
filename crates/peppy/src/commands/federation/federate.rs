@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
-use daemon::control::{self as daemon_control, PokeOutcome};
+use daemon::control::{self as daemon_control, PeerLinkState, PokeOutcome};
 use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
 
@@ -10,14 +9,8 @@ use super::super::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-pub(super) fn parse_endpoint(value: &str) -> std::result::Result<String, String> {
-    federation::FederationPeer::new(value.to_string(), None)
-        .map(|peer| peer.endpoint().to_string())
-        .map_err(|error| error.to_string())
-}
-
 pub(super) struct FederateCommand {
-    pub endpoint: String,
+    pub endpoint: federation::FederationPeer,
     pub peppy_dirs: Option<PeppyDirs>,
 }
 
@@ -26,84 +19,62 @@ impl Command for FederateCommand {
         let dirs = self.peppy_dirs.unwrap_or_default();
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        let Some(connect_timeout_secs) =
-            crate::commands::auth::federation_poke_timeout_secs(&dirs, &config)
-        else {
-            return Err(Error::ExecutionFailed(
-                "this daemon uses an operator-run router; federation belongs to the operator"
-                    .to_string(),
-            ));
-        };
+        let read_timeout = super::managed_poke_read_timeout(&dirs, &config)?;
         // A running daemon's recorded mode is authoritative. If the on-disk
         // config was changed to external after this managed generation started,
         // keep using the conventional identity paths that the CLI can still
         // resolve rather than misclassifying the live daemon as external.
         let federation_config = config.zenoh.federation().cloned().unwrap_or_default();
-        let identity = federation::resolve_identity_paths(&dirs, &federation_config)
-            .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+        let identity = federation::resolve_identity_paths(&dirs, &federation_config)?;
         ensure_identity_exists(&identity)?;
 
         let before = crate::commands::block_on(snapshot_visible(ctx)).ok();
 
+        let requested = self.endpoint;
+        let endpoint = requested.endpoint().as_str().to_string();
         let registry_path = federation::registry_path(&dirs);
         let socket = daemon_control::federation_control_socket_path(&dirs);
-        {
-            let _lock = federation::lock(&registry_path)
-                .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-            let mut registry = federation::load(&registry_path)
-                .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+        federation::with_registry(&registry_path, |registry| {
             let existing = registry
                 .peers()
                 .iter()
-                .any(|peer| peer.endpoint() == self.endpoint);
-            if existing {
-                // A failed probe deliberately keeps the durable entry. Permit
-                // the exact command to retry only while cached daemon status
-                // says that entry failed or has not reached applied state.
-                let retryable = match daemon_control::query_status(&socket, Duration::from_secs(2))
-                {
-                    daemon_control::QueryStatusOutcome::Status(status) => status
-                        .peers
-                        .iter()
-                        .find(|peer| peer.endpoint == self.endpoint)
-                        .is_none_or(|peer| peer.error.is_some()),
-                    daemon_control::QueryStatusOutcome::DaemonError(message) => {
-                        return Err(Error::ExecutionFailed(format!(
-                            "the daemon could not report federation status: {message}. Restart \
-                             the daemon after upgrading, then re-run `peppy federation federate \
-                             {}`",
-                            self.endpoint
-                        )));
-                    }
-                    daemon_control::QueryStatusOutcome::TimedOut => {
-                        return Err(Error::ExecutionFailed(format!(
-                            "could not determine whether endpoint {:?} is live because the daemon \
-                             status request timed out; retry when the daemon responds",
-                            self.endpoint
-                        )));
-                    }
-                    daemon_control::QueryStatusOutcome::DaemonNotRunning => false,
-                };
-                if !retryable {
+                .any(|peer| peer.endpoint() == requested.endpoint());
+            if !existing {
+                registry.insert(requested.clone())?;
+                return Ok(());
+            }
+            // A failed probe deliberately keeps the durable entry. Permit
+            // the exact command to retry only while cached daemon status
+            // says that entry failed or has not reached applied state.
+            let retryable = match daemon_control::query_status(&socket, super::STATUS_TIMEOUT) {
+                daemon_control::QueryStatusOutcome::Status(status) => status
+                    .peers
+                    .iter()
+                    .find(|peer| peer.endpoint == endpoint)
+                    .is_none_or(|peer| peer.state != PeerLinkState::Verified),
+                daemon_control::QueryStatusOutcome::DaemonError(message) => {
                     return Err(Error::ExecutionFailed(format!(
-                        "endpoint {:?} is already federated",
-                        self.endpoint
+                        "the daemon could not report federation status: {message}. Restart \
+                         the daemon after upgrading, then re-run `peppy federation federate \
+                         {endpoint}`"
                     )));
                 }
-            } else {
-                registry
-                    .insert(
-                        federation::FederationPeer::new(self.endpoint.clone(), None)
-                            .map_err(|error| Error::ExecutionFailed(error.to_string()))?,
-                    )
-                    .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                federation::save(&registry_path, &registry)
-                    .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+                daemon_control::QueryStatusOutcome::TimedOut => {
+                    return Err(Error::ExecutionFailed(format!(
+                        "could not determine whether endpoint {endpoint:?} is live because the \
+                         daemon status request timed out; retry when the daemon responds"
+                    )));
+                }
+                daemon_control::QueryStatusOutcome::DaemonNotRunning => false,
+            };
+            if !retryable {
+                return Err(Error::ExecutionFailed(format!(
+                    "endpoint {endpoint:?} is already federated"
+                )));
             }
-        }
+            Ok(())
+        })?;
 
-        let read_timeout =
-            Duration::from_secs(connect_timeout_secs) + daemon_control::POKE_READ_SLACK;
         let spinner = crate::terminal::spinner("Waiting for federation link to establish");
         let outcome = daemon_control::poke_refederate(&socket, read_timeout);
         if let Some(spinner) = spinner {
@@ -112,13 +83,13 @@ impl Command for FederateCommand {
 
         let backend_warning = match outcome {
             PokeOutcome::Applied(applied) => {
-                validate_requested_peer(&self.endpoint, &applied)?;
-                report_other_peer_errors(&self.endpoint, &applied);
+                validate_requested_peer(&endpoint, &applied)?;
+                report_other_peer_errors(&endpoint, &applied);
                 None
             }
             PokeOutcome::Unreachable { reason, applied } => {
-                validate_requested_peer(&self.endpoint, &applied)?;
-                report_other_peer_errors(&self.endpoint, &applied);
+                validate_requested_peer(&endpoint, &applied)?;
+                report_other_peer_errors(&endpoint, &applied);
                 Some(reason)
             }
             PokeOutcome::Pinned => {
@@ -127,23 +98,22 @@ impl Command for FederateCommand {
             }
             PokeOutcome::DaemonNotRunning => {
                 println!(
-                    "Federation with {} saved; the daemon will apply it on next start.",
-                    self.endpoint
+                    "Federation with {endpoint} saved; the daemon will apply it on next start."
                 );
                 return Ok(());
             }
             PokeOutcome::DaemonError(reason) => {
-                return Err(saved_error(&self.endpoint, &reason));
+                return Err(saved_error(&endpoint, &reason));
             }
             PokeOutcome::TimedOut => {
                 return Err(saved_error(
-                    &self.endpoint,
+                    &endpoint,
                     "the daemon did not apply federation within the timeout",
                 ));
             }
             PokeOutcome::Restarting => {
                 return Err(saved_error(
-                    &self.endpoint,
+                    &endpoint,
                     "the daemon is restarting to apply an organization namespace change",
                 ));
             }
@@ -168,50 +138,35 @@ impl Command for FederateCommand {
             let core_node = discovered[0].clone();
             if core_node == federation::RESERVED_BACKEND_NAME {
                 println!(
-                    "Federated with {}; the peer reported the reserved core-node name \
+                    "Federated with {endpoint}; the peer reported the reserved core-node name \
                      `{}`, so it was not cached. Remove this federation by its exact endpoint.",
-                    self.endpoint,
                     federation::RESERVED_BACKEND_NAME
                 );
                 return Ok(());
             }
-            let cached = {
-                let _lock = federation::lock(&registry_path)
-                    .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                let mut registry = federation::load(&registry_path)
-                    .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                if registry
+            let cached = federation::with_registry(&registry_path, |registry| {
+                if !registry
                     .peers()
                     .iter()
-                    .any(|peer| peer.endpoint() == self.endpoint)
+                    .any(|peer| peer.endpoint().as_str() == endpoint)
                 {
-                    registry
-                        .set_core_node(&self.endpoint, Some(core_node.clone()))
-                        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                    federation::save(&registry_path, &registry)
-                        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                    true
-                } else {
-                    false
+                    return Ok::<_, Error>(false);
                 }
-            };
+                registry.set_core_node(&endpoint, Some(core_node.clone()))?;
+                Ok(true)
+            })?;
             if !cached {
                 println!(
-                    "Federated with {core_node} ({}), but its registry entry was removed concurrently.",
-                    self.endpoint
+                    "Federated with {core_node} ({endpoint}), but its registry entry was removed concurrently."
                 );
                 return Ok(());
             }
-            println!("Federated with {core_node} ({}).", self.endpoint);
+            println!("Federated with {core_node} ({endpoint}).");
         } else if discovered.is_empty() {
-            println!(
-                "Federated with {}; the peer core-node name was not discovered.",
-                self.endpoint
-            );
+            println!("Federated with {endpoint}; the peer core-node name was not discovered.");
         } else {
             println!(
-                "Federated with {}; newly visible core nodes: {}.",
-                self.endpoint,
+                "Federated with {endpoint}; newly visible core nodes: {}.",
                 discovered.join(", ")
             );
         }
@@ -233,10 +188,14 @@ fn validate_requested_peer(
                 "the daemon did not report the requested peer after applying",
             )
         })?;
-    if let Some(reason) = &own.error {
-        return Err(saved_error(endpoint, reason));
+    match &own.state {
+        PeerLinkState::Verified => Ok(()),
+        PeerLinkState::Unverified => Err(saved_error(
+            endpoint,
+            "the daemon did not verify the peer link",
+        )),
+        PeerLinkState::Error(reason) => Err(saved_error(endpoint, reason)),
     }
-    Ok(())
 }
 
 fn report_other_peer_errors(endpoint: &str, applied: &daemon_control::AppliedFederation) {
@@ -245,7 +204,7 @@ fn report_other_peer_errors(endpoint: &str, applied: &daemon_control::AppliedFed
         .iter()
         .filter(|report| report.endpoint != endpoint)
     {
-        if let Some(reason) = &report.error {
+        if let PeerLinkState::Error(reason) = &report.state {
             println!(
                 "Note: existing federation {} did not validate ({reason}).",
                 report.endpoint
@@ -255,11 +214,7 @@ fn report_other_peer_errors(endpoint: &str, applied: &daemon_control::AppliedFed
 }
 
 fn ensure_identity_exists(identity: &federation::IdentityPaths) -> Result<()> {
-    let missing: Vec<String> = [&identity.ca, &identity.cert, &identity.key]
-        .into_iter()
-        .filter(|path| !path.is_file())
-        .map(|path| path.display().to_string())
-        .collect();
+    let missing = identity.missing_files();
     if missing.is_empty() {
         return Ok(());
     }
@@ -267,7 +222,11 @@ fn ensure_identity_exists(identity: &federation::IdentityPaths) -> Result<()> {
         "federation identity is incomplete; missing {}. Run `peppy federation ca init` and \
          `peppy federation ca issue`, or copy a fleet-issued ca.pem, cert.pem, and key.pem into \
          {}",
-        missing.join(", "),
+        missing
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
         identity
             .cert
             .parent()
@@ -314,6 +273,10 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
 
+    fn peer(endpoint: &str) -> federation::FederationPeer {
+        federation::FederationPeer::new(endpoint, None).unwrap()
+    }
+
     #[test]
     fn presence_diff_deduplicates_instances_by_core_node_name() {
         let before = BTreeSet::from([("local".to_string(), "a".to_string())]);
@@ -345,14 +308,14 @@ mod tests {
             assert_eq!(request.trim(), daemon_control::REFEDERATE_VERB);
             stream
                 .write_all(
-                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[{\"endpoint\":\"tls/peer.example:7449\",\"error\":\"UnknownIssuer\"}]}\n",
+                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[{\"endpoint\":\"tls/peer.example:7449\",\"state\":{\"error\":\"UnknownIssuer\"}}]}\n",
                 )
                 .unwrap();
         });
 
         let ctx = Arc::new(AppContext::new(temp.path()));
         let error = FederateCommand {
-            endpoint: "tls/peer.example:7449".to_string(),
+            endpoint: peer("tls/peer.example:7449"),
             peppy_dirs: Some(dirs.clone()),
         }
         .execute(&ctx)
@@ -374,15 +337,15 @@ mod tests {
                     .unwrap();
                 assert_eq!(request.trim(), expected);
                 let reply = if expected == daemon_control::STATUS_VERB {
-                    b"{\"status\":\"federation_status\",\"backend\":null,\"peers\":[{\"endpoint\":\"tls/peer.example:7449\",\"error\":\"UnknownIssuer\"}],\"listen_endpoint\":null,\"pinned\":false}\n".as_slice()
+                    b"{\"status\":\"federation_status\",\"backend\":null,\"peers\":[{\"endpoint\":\"tls/peer.example:7449\",\"state\":{\"error\":\"UnknownIssuer\"}}],\"listen_endpoint\":null,\"pinned\":false}\n".as_slice()
                 } else {
-                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[{\"endpoint\":\"tls/peer.example:7449\",\"error\":null}]}\n".as_slice()
+                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[{\"endpoint\":\"tls/peer.example:7449\",\"state\":\"verified\"}]}\n".as_slice()
                 };
                 stream.write_all(reply).unwrap();
             }
         });
         FederateCommand {
-            endpoint: "tls/peer.example:7449".to_string(),
+            endpoint: peer("tls/peer.example:7449"),
             peppy_dirs: Some(dirs.clone()),
         }
         .execute(&ctx)
@@ -392,7 +355,7 @@ mod tests {
         assert_eq!(registry.peers().len(), 1, "retry does not duplicate state");
 
         let duplicate = FederateCommand {
-            endpoint: "tls/peer.example:7449".to_string(),
+            endpoint: peer("tls/peer.example:7449"),
             peppy_dirs: Some(dirs),
         }
         .execute(&ctx)
@@ -431,7 +394,7 @@ mod tests {
         });
 
         let error = FederateCommand {
-            endpoint: endpoint.to_string(),
+            endpoint: peer(endpoint),
             peppy_dirs: Some(dirs),
         }
         .execute(&Arc::new(AppContext::new(temp.path())))

@@ -134,12 +134,7 @@ pub(crate) fn confirm_restart(
     );
     eprint!("Continue? [y/N] ");
     std::io::stderr().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line).map_err(Error::Io)?;
-    Ok(matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    super::confirm::read_yes_no(None)
 }
 
 /// Whether the running daemon's node stack holds any user node, by querying its

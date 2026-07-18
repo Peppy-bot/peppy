@@ -43,7 +43,9 @@ pub use error::{
 
 // -- atomic_write --
 pub mod atomic_write {
-    pub use crate::internal::atomic_write::publish_atomic;
+    pub use crate::internal::atomic_write::{
+        publish_atomic, publish_atomic_private, restrict_dir, restrict_file,
+    };
 }
 
 // -- consts --
@@ -61,7 +63,8 @@ pub mod peppy_config {
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
         EndpointPurpose, ExternalZenohConfig, FederationConfig, LifecycleConfig,
         LocalNodesTopology, MAX_CORE_NODE_NAME_LEN, ManagedZenohConfig, ParsedEndpoint,
-        PeppyConfig, ResourceServers, ZenohConfig, load_or_create, parse_endpoint,
+        ParsedEndpointBuf, PeppyConfig, ResourceServers, ZenohConfig, load_or_create,
+        parse_endpoint, validate_locator_path,
     };
 }
 

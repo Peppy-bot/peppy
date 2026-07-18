@@ -3,6 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
@@ -47,24 +48,16 @@ impl ExecOutput {
     }
 }
 
-fn require_success(output: ExecOutput, operation: &str) -> String {
+/// Panics unless the command exited 0. Returns the output so callers can pick
+/// `.text` or `.stdout`.
+fn require_success(output: ExecOutput, operation: &str) -> ExecOutput {
     if !output.success() {
         panic!(
             "{operation} failed (exit code {:?}):\n{}",
             output.exit_code, output.text
         );
     }
-    output.text
-}
-
-fn require_success_stdout(output: ExecOutput, operation: &str) -> String {
-    if !output.success() {
-        panic!(
-            "{operation} failed (exit code {:?}):\n{}",
-            output.exit_code, output.text
-        );
-    }
-    output.stdout
+    output
 }
 
 fn assert_federated_json_row(json: &str, endpoint: &str, core_node: &str) {
@@ -206,12 +199,39 @@ fn split_image_reference(reference: &str) -> (String, String) {
     }
 }
 
-struct DaemonLaunch<'a> {
-    image_name: &'a str,
-    image_tag: &'a str,
-    peppy_binary: &'a Path,
-    apptainer_dir: &'a Path,
-    newuidmap: &'a Path,
+struct DaemonLaunch {
+    image_name: String,
+    image_tag: String,
+    peppy_binary: PathBuf,
+    apptainer_dir: PathBuf,
+    newuidmap: PathBuf,
+}
+
+impl DaemonLaunch {
+    /// Resolves everything a daemon container needs from the test host, plus a
+    /// per-run container-name suffix. Panics before any container starts when
+    /// Docker or a host prerequisite is missing.
+    async fn detect() -> (Self, String) {
+        require_docker().await;
+        let (image_name, image_tag) = host_compatible_image();
+        let launch = Self {
+            image_name,
+            image_tag,
+            peppy_binary: PathBuf::from(env!("CARGO_BIN_EXE_peppy")),
+            apptainer_dir: containers::Apptainer::resolve_apptainer_dir()
+                .expect("the test-built daemon should have a host Apptainer installation"),
+            newuidmap: executable_on_path("newuidmap"),
+        };
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_millis()
+        );
+        (launch, suffix)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -442,28 +462,34 @@ fn free_host_port() -> u16 {
         .port()
 }
 
+/// Memoized: the gateway is constant for the host, and shelling out to
+/// `docker network inspect` on every lookup is needless. A failed lookup
+/// panics before anything is cached, so retries recompute.
 fn docker_host_gateway_ipv4() -> Ipv4Addr {
-    let docker = executable_on_path("docker");
-    let output = Command::new(docker)
-        .args([
-            "network",
-            "inspect",
-            "bridge",
-            "--format",
-            "{{(index .IPAM.Config 0).Gateway}}",
-        ])
-        .output()
-        .expect("inspect Docker's default bridge gateway");
-    assert!(
-        output.status.success(),
-        "inspecting Docker's host gateway failed: {}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .expect("Docker's default bridge gateway must be IPv4")
+    static GATEWAY: OnceLock<Ipv4Addr> = OnceLock::new();
+    *GATEWAY.get_or_init(|| {
+        let docker = executable_on_path("docker");
+        let output = Command::new(docker)
+            .args([
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{(index .IPAM.Config 0).Gateway}}",
+            ])
+            .output()
+            .expect("inspect Docker's default bridge gateway");
+        assert!(
+            output.status.success(),
+            "inspecting Docker's host gateway failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .expect("Docker's default bridge gateway must be IPv4")
+    })
 }
 
 struct FederationPki {
@@ -471,6 +497,25 @@ struct FederationPki {
     bundle_a: PathBuf,
     bundle_b: PathBuf,
     bundle_c: PathBuf,
+}
+
+fn issue_bundle(ca_home: &Path, host: &str, out: &Path) {
+    let out_arg = out.to_str().expect("federation bundle path must be UTF-8");
+    require_success(
+        run_peppy_on_host(
+            ca_home,
+            &[
+                "federation",
+                "ca",
+                "issue",
+                "--host",
+                host,
+                "--out",
+                out_arg,
+            ],
+        ),
+        &format!("issuing federation identity for {host}"),
+    );
 }
 
 fn create_federation_pki() -> FederationPki {
@@ -481,41 +526,10 @@ fn create_federation_pki() -> FederationPki {
         run_peppy_on_host(&fleet_home, &["federation", "ca", "init"]),
         "initializing fleet CA",
     );
-
     let bundle_a = root.path().join("bundle-a");
     let bundle_b = root.path().join("bundle-b");
-    let bundle_a_arg = bundle_a.to_str().expect("bundle A path must be UTF-8");
-    let bundle_b_arg = bundle_b.to_str().expect("bundle B path must be UTF-8");
-    require_success(
-        run_peppy_on_host(
-            &fleet_home,
-            &[
-                "federation",
-                "ca",
-                "issue",
-                "--host",
-                "robo-fed-a.peppy.test",
-                "--out",
-                bundle_a_arg,
-            ],
-        ),
-        "issuing daemon A identity",
-    );
-    require_success(
-        run_peppy_on_host(
-            &fleet_home,
-            &[
-                "federation",
-                "ca",
-                "issue",
-                "--host",
-                "robo-fed-b.peppy.test",
-                "--out",
-                bundle_b_arg,
-            ],
-        ),
-        "issuing daemon B identity",
-    );
+    issue_bundle(&fleet_home, "robo-fed-a.peppy.test", &bundle_a);
+    issue_bundle(&fleet_home, "robo-fed-b.peppy.test", &bundle_b);
 
     let rogue_home = root.path().join("rogue-ca-home");
     std::fs::create_dir_all(&rogue_home).expect("create rogue CA home");
@@ -524,22 +538,7 @@ fn create_federation_pki() -> FederationPki {
         "initializing rogue CA",
     );
     let bundle_c = root.path().join("bundle-c");
-    let bundle_c_arg = bundle_c.to_str().expect("bundle C path must be UTF-8");
-    require_success(
-        run_peppy_on_host(
-            &rogue_home,
-            &[
-                "federation",
-                "ca",
-                "issue",
-                "--host",
-                "robo-fed-c.peppy.test",
-                "--out",
-                bundle_c_arg,
-            ],
-        ),
-        "issuing daemon C identity from rogue CA",
-    );
+    issue_bundle(&rogue_home, "robo-fed-c.peppy.test", &bundle_c);
 
     FederationPki {
         _root: root,
@@ -550,19 +549,25 @@ fn create_federation_pki() -> FederationPki {
 }
 
 async fn start_daemon(
-    launch: &DaemonLaunch<'_>,
+    launch: &DaemonLaunch,
     name: &str,
     hostname: &str,
     config: &str,
     options: DaemonOptions<'_>,
 ) -> Daemon {
-    let mut request = GenericImage::new(launch.image_name, launch.image_tag)
+    let mut request = GenericImage::new(launch.image_name.as_str(), launch.image_tag.as_str())
         .with_container_name(name)
         .with_hostname(hostname)
         .with_host("host.docker.internal", Host::HostGateway)
-        .with_mount(read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY))
-        .with_mount(read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"))
-        .with_mount(read_only_bind(launch.newuidmap, "/usr/local/bin/newuidmap"))
+        .with_mount(read_only_bind(&launch.peppy_binary, CONTAINER_PEPPY_BINARY))
+        .with_mount(read_only_bind(
+            &launch.apptainer_dir,
+            "/opt/peppy-apptainer",
+        ))
+        .with_mount(read_only_bind(
+            &launch.newuidmap,
+            "/usr/local/bin/newuidmap",
+        ))
         .with_env_var(PEPPY_HOME_ENV, "/data")
         .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
         .with_env_var(PEPPY_CONFIG_ENV, config)
@@ -622,8 +627,7 @@ async fn start_daemon(
 #[cfg_attr(not(target_os = "linux"), ignore = "requires a Linux Docker host")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
-    require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
+    let (launch, suffix) = DaemonLaunch::detect().await;
 
     let _router = ZenohAdapter::start_router_ephemeral_in_mode(
         "0.0.0.0",
@@ -636,42 +640,27 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     .expect("host zenohd should start");
     let router_port = _router.port;
 
-    let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
-    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
-        .expect("the test-built daemon should have a host Apptainer installation");
-    let newuidmap = executable_on_path("newuidmap");
-    let launch = DaemonLaunch {
-        image_name: &image_name,
-        image_tag: &image_tag,
-        peppy_binary,
-        apptainer_dir: &apptainer_dir,
-        newuidmap: &newuidmap,
-    };
-    let suffix = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis()
+    // Both daemons dial the host router independently, so boot them together.
+    let name_a = format!("peppy-md-a-{suffix}");
+    let name_b = format!("peppy-md-b-{suffix}");
+    let config_a = external_daemon_config("daemon-a", router_port);
+    let config_b = external_daemon_config("daemon-b", router_port);
+    let (daemon_a, daemon_b) = tokio::join!(
+        start_daemon(
+            &launch,
+            &name_a,
+            "robo-a",
+            &config_a,
+            DaemonOptions::default()
+        ),
+        start_daemon(
+            &launch,
+            &name_b,
+            "robo-b",
+            &config_b,
+            DaemonOptions::default()
+        ),
     );
-
-    let daemon_a = start_daemon(
-        &launch,
-        &format!("peppy-md-a-{suffix}"),
-        "robo-a",
-        &external_daemon_config("daemon-a", router_port),
-        DaemonOptions::default(),
-    )
-    .await;
-    let daemon_b = start_daemon(
-        &launch,
-        &format!("peppy-md-b-{suffix}"),
-        "robo-b",
-        &external_daemon_config("daemon-b", router_port),
-        DaemonOptions::default(),
-    )
-    .await;
 
     let both = daemon_a
         .wait_for_stack(|text| {
@@ -699,7 +688,8 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     let targeted = require_success(
         daemon_a.stack_list(Some("daemon-b")).await,
         "targeting daemon-b from daemon-a",
-    );
+    )
+    .text;
     assert!(targeted.contains("Core node: daemon-b (host: robo-b)"));
     assert!(
         !targeted.contains("Core node: daemon-a"),
@@ -748,29 +738,8 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
 #[cfg_attr(not(target_os = "linux"), ignore = "requires a Linux Docker host")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_are_refused() {
-    require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
-
-    let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
+    let (launch, suffix) = DaemonLaunch::detect().await;
     let zenohd_binary = bundled_zenohd_binary();
-    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
-        .expect("the test-built daemon should have a host Apptainer installation");
-    let newuidmap = executable_on_path("newuidmap");
-    let launch = DaemonLaunch {
-        image_name: &image_name,
-        image_tag: &image_tag,
-        peppy_binary,
-        apptainer_dir: &apptainer_dir,
-        newuidmap: &newuidmap,
-    };
-    let suffix = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis()
-    );
 
     let router_pins = tempfile::tempdir().expect("create pinned router config directory");
     let router_a_pin = router_pins.path().join("router-a.json5");
@@ -839,7 +808,8 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     let targeted = require_success(
         daemon_a.stack_list(Some("daemon-b")).await,
         "targeting daemon-b across the router federation",
-    );
+    )
+    .text;
     assert!(targeted.contains("Core node: daemon-b (host: robo-fed-b)"));
     assert!(
         !targeted.contains("Core node: daemon-a"),
@@ -888,29 +858,8 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
 #[cfg_attr(not(target_os = "linux"), ignore = "requires a Linux Docker host")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
-    require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
-
-    let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
+    let (launch, suffix) = DaemonLaunch::detect().await;
     let zenohd_binary = bundled_zenohd_binary();
-    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
-        .expect("the test-built daemon should have a host Apptainer installation");
-    let newuidmap = executable_on_path("newuidmap");
-    let launch = DaemonLaunch {
-        image_name: &image_name,
-        image_tag: &image_tag,
-        peppy_binary,
-        apptainer_dir: &apptainer_dir,
-        newuidmap: &newuidmap,
-    };
-    let suffix = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis()
-    );
     let pki = create_federation_pki();
     let listener = format!("tls/0.0.0.0:{FEDERATION_LISTENER_PORT}");
 
@@ -929,9 +878,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
         },
     )
     .await;
-    daemon_b
-        .wait_for_stack(|text| text.contains("Core node: daemon-b (host: robo-fed-b)"))
-        .await;
+    // A only needs B's address, available right after start; both daemons can
+    // then finish booting side by side.
     let daemon_b_address = daemon_b.bridge_ip().await.to_string();
 
     let daemon_a = start_daemon(
@@ -950,9 +898,10 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
         },
     )
     .await;
-    daemon_a
-        .wait_for_stack(|text| text.contains("Core node: daemon-a (host: robo-fed-a)"))
-        .await;
+    tokio::join!(
+        daemon_a.wait_for_stack(|text| text.contains("Core node: daemon-a (host: robo-fed-a)")),
+        daemon_b.wait_for_stack(|text| text.contains("Core node: daemon-b (host: robo-fed-b)")),
+    );
 
     let plain_endpoint = format!("tcp/robo-fed-b.peppy.test:{FEDERATION_LISTENER_PORT}");
     let plain = daemon_a
@@ -969,7 +918,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
             .exec_peppy(&["federation", "federate", &endpoint])
             .await,
         "federating daemon A with daemon B",
-    );
+    )
+    .text;
     assert!(
         federated.contains("daemon-b"),
         "federate must report the discovered core-node name:\n{federated}"
@@ -978,7 +928,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
     let list = require_success(
         daemon_a.exec_peppy(&["federation", "list"]).await,
         "listing daemon A federation",
-    );
+    )
+    .text;
     assert!(
         list.contains("Federated routers"),
         "router section missing:\n{list}"
@@ -1000,10 +951,11 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
         list.contains("daemon-a") && list.contains("daemon-b"),
         "both core nodes must be visible:\n{list}"
     );
-    let list_json = require_success_stdout(
+    let list_json = require_success(
         daemon_a.exec_peppy(&["federation", "list", "--json"]).await,
         "listing daemon A federation as JSON",
-    );
+    )
+    .stdout;
     assert_federated_json_row(&list_json, &endpoint, "daemon-b");
 
     daemon_a
@@ -1021,7 +973,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
     let targeted = require_success(
         daemon_a.stack_list(Some("daemon-b")).await,
         "targeting daemon B across the mTLS federation",
-    );
+    )
+    .text;
     assert!(targeted.contains("Core node: daemon-b (host: robo-fed-b)"));
 
     let daemon_c = start_daemon(
@@ -1067,7 +1020,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
     let after_remove = require_success(
         daemon_a.exec_peppy(&["federation", "list"]).await,
         "listing daemon A federation after removal",
-    );
+    )
+    .text;
     assert!(
         !after_remove.contains(&endpoint),
         "removed endpoint must disappear from federation list:\n{after_remove}"
@@ -1085,29 +1039,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
 #[cfg_attr(not(target_os = "linux"), ignore = "requires a Linux Docker host")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federation_across_isolated_networks_federates_via_published_endpoint() {
-    require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
-
-    let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
+    let (launch, suffix) = DaemonLaunch::detect().await;
     let zenohd_binary = bundled_zenohd_binary();
-    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
-        .expect("the test-built daemon should have a host Apptainer installation");
-    let newuidmap = executable_on_path("newuidmap");
-    let launch = DaemonLaunch {
-        image_name: &image_name,
-        image_tag: &image_tag,
-        peppy_binary,
-        apptainer_dir: &apptainer_dir,
-        newuidmap: &newuidmap,
-    };
-    let suffix = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis()
-    );
     let network_a = format!("peppy-fed-net-a-{suffix}");
     let network_b = format!("peppy-fed-net-b-{suffix}");
     let _networks = Networks::create([network_a.clone(), network_b.clone()]);
@@ -1115,48 +1048,51 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
     let published_port = free_host_port();
     let listener = format!("tls/0.0.0.0:{FEDERATION_LISTENER_PORT}");
 
-    let daemon_b = start_daemon(
-        &launch,
-        &format!("peppy-wan-b-{suffix}"),
-        "robo-fed-b",
-        &managed_daemon_config("daemon-b", Some(&listener)),
-        DaemonOptions {
-            managed_router: Some(ManagedRouterMount {
-                zenohd_binary: &zenohd_binary,
-                config: None,
-            }),
-            network: Some(&network_b),
-            publish: Some((published_port, FEDERATION_LISTENER_PORT)),
-            federation_identity: Some(&pki.bundle_b),
-            ..DaemonOptions::default()
-        },
-    )
-    .await;
-    daemon_b
-        .wait_for_stack(|text| text.contains("Core node: daemon-b (host: robo-fed-b)"))
-        .await;
+    // The two daemons live on isolated bridges and share no launch inputs, so
+    // boot them together.
+    let name_a = format!("peppy-wan-a-{suffix}");
+    let name_b = format!("peppy-wan-b-{suffix}");
+    let config_a = managed_daemon_config("daemon-a", None);
+    let config_b = managed_daemon_config("daemon-b", Some(&listener));
+    let (daemon_a, daemon_b) = tokio::join!(
+        start_daemon(
+            &launch,
+            &name_a,
+            "robo-fed-a",
+            &config_a,
+            DaemonOptions {
+                managed_router: Some(ManagedRouterMount {
+                    zenohd_binary: &zenohd_binary,
+                    config: None,
+                }),
+                extra_hosts: &[("robo-fed-b.peppy.test", "host-gateway")],
+                network: Some(&network_a),
+                federation_identity: Some(&pki.bundle_a),
+                ..DaemonOptions::default()
+            },
+        ),
+        start_daemon(
+            &launch,
+            &name_b,
+            "robo-fed-b",
+            &config_b,
+            DaemonOptions {
+                managed_router: Some(ManagedRouterMount {
+                    zenohd_binary: &zenohd_binary,
+                    config: None,
+                }),
+                network: Some(&network_b),
+                publish: Some((published_port, FEDERATION_LISTENER_PORT)),
+                federation_identity: Some(&pki.bundle_b),
+                ..DaemonOptions::default()
+            },
+        ),
+    );
+    tokio::join!(
+        daemon_a.wait_for_stack(|text| text.contains("Core node: daemon-a (host: robo-fed-a)")),
+        daemon_b.wait_for_stack(|text| text.contains("Core node: daemon-b (host: robo-fed-b)")),
+    );
     let daemon_b_internal_ip = daemon_b.bridge_ip().await;
-
-    let daemon_a = start_daemon(
-        &launch,
-        &format!("peppy-wan-a-{suffix}"),
-        "robo-fed-a",
-        &managed_daemon_config("daemon-a", None),
-        DaemonOptions {
-            managed_router: Some(ManagedRouterMount {
-                zenohd_binary: &zenohd_binary,
-                config: None,
-            }),
-            extra_hosts: &[("robo-fed-b.peppy.test", "host-gateway")],
-            network: Some(&network_a),
-            federation_identity: Some(&pki.bundle_a),
-            ..DaemonOptions::default()
-        },
-    )
-    .await;
-    daemon_a
-        .wait_for_stack(|text| text.contains("Core node: daemon-a (host: robo-fed-a)"))
-        .await;
 
     let isolated_endpoint = format!("tls/{daemon_b_internal_ip}:{FEDERATION_LISTENER_PORT}");
     let isolated_started = Instant::now();
@@ -1187,15 +1123,17 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
             .exec_peppy(&["federation", "federate", &published_endpoint])
             .await,
         "federating across the published endpoint",
-    );
+    )
+    .text;
     assert!(
         federated.contains("daemon-b"),
         "published federation must discover daemon B:\n{federated}"
     );
-    let list_json = require_success_stdout(
+    let list_json = require_success(
         daemon_a.exec_peppy(&["federation", "list", "--json"]).await,
         "listing the published federation as JSON",
-    );
+    )
+    .stdout;
     assert_federated_json_row(&list_json, &published_endpoint, "daemon-b");
 
     daemon_a
@@ -1213,7 +1151,8 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
     let targeted = require_success(
         daemon_a.stack_list(Some("daemon-b")).await,
         "targeting daemon B over the published federation",
-    );
+    )
+    .text;
     assert!(targeted.contains("Core node: daemon-b (host: robo-fed-b)"));
 
     require_success(

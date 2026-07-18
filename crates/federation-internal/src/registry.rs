@@ -4,7 +4,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use config::runtime::Name;
-use daemon_config::peppy_config::{EndpointPurpose, parse_endpoint};
+use daemon_config::atomic_write::{restrict_dir, restrict_file};
+use daemon_config::peppy_config::{EndpointPurpose, ParsedEndpointBuf};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Error, Result};
@@ -42,7 +43,7 @@ fn registry_lock_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("federations.json5");
+        .unwrap_or(crate::FEDERATIONS_FILE);
     path.with_file_name(format!(".{name}.lock"))
 }
 
@@ -50,19 +51,21 @@ fn registry_lock_path(path: &Path) -> PathBuf {
 /// is cached display metadata discovered by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FederationPeer {
-    endpoint: String,
+    endpoint: ParsedEndpointBuf,
     #[serde(default)]
     core_node: Option<String>,
 }
 
 impl FederationPeer {
     /// Parses a peer, enforcing a fragment-free TLS dial locator and, when
-    /// present, the shared runtime-name grammar.
+    /// present, the shared runtime-name grammar. The parsed endpoint is kept,
+    /// so consumers never re-parse it.
     pub fn new(endpoint: impl Into<String>, core_node: Option<String>) -> Result<Self> {
         let endpoint = endpoint.into();
-        parse_endpoint(&endpoint, "tls", EndpointPurpose::Dial).map_err(|error| {
-            Error::Registry(format!("invalid peer endpoint {endpoint:?}: {error}"))
-        })?;
+        let endpoint = ParsedEndpointBuf::parse(endpoint.as_str(), "tls", EndpointPurpose::Dial)
+            .map_err(|error| {
+                Error::Registry(format!("invalid peer endpoint {endpoint:?}: {error}"))
+            })?;
         validate_core_node(core_node.as_deref())?;
         Ok(Self {
             endpoint,
@@ -70,7 +73,7 @@ impl FederationPeer {
         })
     }
 
-    pub fn endpoint(&self) -> &str {
+    pub fn endpoint(&self) -> &ParsedEndpointBuf {
         &self.endpoint
     }
 
@@ -137,16 +140,8 @@ impl Default for Federations {
 }
 
 impl Federations {
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
     pub fn peers(&self) -> &[FederationPeer] {
         &self.federations
-    }
-
-    pub fn into_peers(self) -> Vec<FederationPeer> {
-        self.federations
     }
 
     /// Adds a peer. Endpoint identity is exact and duplicates are rejected.
@@ -158,7 +153,7 @@ impl Federations {
         {
             return Err(Error::Registry(format!(
                 "endpoint {:?} is already federated",
-                peer.endpoint
+                peer.endpoint.as_str()
             )));
         }
         self.federations.push(peer);
@@ -170,7 +165,7 @@ impl Federations {
         let index = self
             .federations
             .iter()
-            .position(|peer| peer.endpoint == endpoint)
+            .position(|peer| peer.endpoint.as_str() == endpoint)
             .ok_or_else(|| {
                 Error::Registry(format!("endpoint {endpoint:?} is not in the registry"))
             })?;
@@ -182,7 +177,7 @@ impl Federations {
         let peer = self
             .federations
             .iter_mut()
-            .find(|peer| peer.endpoint == endpoint)
+            .find(|peer| peer.endpoint.as_str() == endpoint)
             .ok_or_else(|| {
                 Error::Registry(format!("endpoint {endpoint:?} is not in the registry"))
             })?;
@@ -250,38 +245,28 @@ pub fn load(path: &Path) -> Result<Federations> {
 pub fn save(path: &Path, registry: &Federations) -> Result<()> {
     let content = json5_pretty::to_string_pretty(registry)
         .map_err(|error| Error::Registry(format!("failed to serialize registry: {error}")))?;
+    daemon_config::atomic_write::publish_atomic_private(path, content.as_bytes())?;
+    Ok(())
+}
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        restrict_dir(parent)?;
+/// Runs one locked read-modify-write registry transaction: lock, load, apply
+/// `mutate`, and save the registry back only when `mutate` changed it. Encodes
+/// the lock-before-load ordering once so call sites cannot get it wrong.
+pub fn with_registry<T, E>(
+    path: &Path,
+    mutate: impl FnOnce(&mut Federations) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E>
+where
+    E: From<Error>,
+{
+    let _lock = lock(path)?;
+    let mut registry = load(path)?;
+    let unmodified = registry.clone();
+    let outcome = mutate(&mut registry)?;
+    if registry != unmodified {
+        save(path, &registry)?;
     }
-    daemon_config::atomic_write::publish_atomic(path, |temporary| {
-        std::fs::write(temporary, &content)?;
-        restrict_file(temporary)
-    })?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn restrict_dir(_path: &Path) -> std::io::Result<()> {
-    Ok(())
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -306,7 +291,6 @@ mod tests {
 
         save(&path, &registry).unwrap();
         assert_eq!(load(&path).unwrap(), registry);
-        assert_eq!(registry.version(), FEDERATIONS_VERSION);
         assert_eq!(registry.peers()[0].core_node(), Some("daemon-a"));
 
         #[cfg(unix)]
@@ -324,6 +308,30 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let registry = load(&temporary.path().join("missing.json5")).unwrap();
         assert_eq!(registry, Federations::default());
+    }
+
+    #[test]
+    fn with_registry_saves_mutations_and_skips_untouched_registries() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("conf/federations.json5");
+
+        let peer_count = with_registry::<_, Error>(&path, |registry| Ok(registry.peers().len()))
+            .expect("read-only transaction succeeds");
+        assert_eq!(peer_count, 0);
+        assert!(!path.exists(), "an untouched registry is never published");
+
+        with_registry::<_, Error>(&path, |registry| {
+            registry.insert(peer("tls/router.example:7449", None))
+        })
+        .expect("mutating transaction succeeds");
+        assert_eq!(load(&path).unwrap().peers().len(), 1);
+
+        let error = with_registry::<_, Error>(&path, |registry| {
+            registry.insert(peer("tls/router.example:7449", None))
+        })
+        .expect_err("closure errors propagate");
+        assert!(error.to_string().contains("already federated"));
+        assert_eq!(load(&path).unwrap().peers().len(), 1);
     }
 
     #[test]

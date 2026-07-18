@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use daemon_config::consts::PeppyDirs;
-use daemon_config::peppy_config::{EndpointPurpose, FederationConfig, parse_endpoint};
+use daemon_config::peppy_config::{FederationConfig, ParsedEndpointBuf, validate_locator_path};
 
+use crate::registry::Federations;
 use crate::{CA_CERT_FILE, CERT_FILE, Error, KEY_FILE, Result, federation_dir};
 
 /// Certificate, key, and trust-anchor paths for one machine identity.
@@ -13,6 +14,17 @@ pub struct IdentityPaths {
     pub cert: PathBuf,
     pub key: PathBuf,
     pub ca: PathBuf,
+}
+
+impl IdentityPaths {
+    /// The identity files that do not exist yet, in reporting order. Non-empty
+    /// means the identity is incomplete; callers supply their own remediation.
+    pub fn missing_files(&self) -> Vec<&Path> {
+        [self.ca.as_path(), self.cert.as_path(), self.key.as_path()]
+            .into_iter()
+            .filter(|path| !path.is_file())
+            .collect()
+    }
 }
 
 /// Resolves optional config overrides against the conventional identity
@@ -41,10 +53,38 @@ pub fn resolve_identity_paths(
     Ok(identity)
 }
 
+/// One registry peer paired with its rendered mTLS connect locator. The
+/// durable endpoint remains separate from the rendered locator so status and
+/// registry joins never key off TLS fragment text.
+#[derive(Debug, Clone)]
+pub struct PeerLink {
+    pub endpoint: ParsedEndpointBuf,
+    pub locator: String,
+}
+
+/// Renders every registry peer into its connect locator. The single mapping
+/// from registry entries to zenohd connect endpoints, shared by daemon startup
+/// (the spawn config) and the federation resolver (every poll), so the two can
+/// never render the same registry differently.
+pub fn peer_links(registry: &Federations, identity: &IdentityPaths) -> Result<Vec<PeerLink>> {
+    registry
+        .peers()
+        .iter()
+        .map(|peer| {
+            let locator = peer_connect_locator(peer.endpoint(), identity)?;
+            Ok(PeerLink {
+                endpoint: peer.endpoint().clone(),
+                locator,
+            })
+        })
+        .collect()
+}
+
 /// Adds the connecting side of the fleet mTLS identity to a peer locator.
-pub fn peer_connect_locator(endpoint: &str, identity: &IdentityPaths) -> Result<String> {
-    parse_endpoint(endpoint, "tls", EndpointPurpose::Dial)
-        .map_err(|error| Error::Tls(format!("invalid peer endpoint {endpoint:?}: {error}")))?;
+pub fn peer_connect_locator(
+    endpoint: &ParsedEndpointBuf,
+    identity: &IdentityPaths,
+) -> Result<String> {
     validate_identity_paths(identity)?;
     append_fragment(
         endpoint,
@@ -59,9 +99,7 @@ pub fn peer_connect_locator(endpoint: &str, identity: &IdentityPaths) -> Result<
 }
 
 /// Adds the listening side of the fleet mTLS identity to a listener locator.
-pub fn listener_locator(endpoint: &str, identity: &IdentityPaths) -> Result<String> {
-    parse_endpoint(endpoint, "tls", EndpointPurpose::Listen)
-        .map_err(|error| Error::Tls(format!("invalid listener endpoint {endpoint:?}: {error}")))?;
+pub fn listener_locator(endpoint: &ParsedEndpointBuf, identity: &IdentityPaths) -> Result<String> {
     validate_identity_paths(identity)?;
     append_fragment(
         endpoint,
@@ -77,10 +115,10 @@ pub fn listener_locator(endpoint: &str, identity: &IdentityPaths) -> Result<Stri
 /// Moves the backend's former global TLS settings onto its own connect
 /// endpoint. Defaults are omitted so a release build using the system trust
 /// store stays an unfragmented locator and inherits Zenoh defaults.
-pub fn backend_connect_locator(endpoint: &str, tls: &pmi::TlsConfig) -> Result<String> {
-    parse_endpoint(endpoint, "tls", EndpointPurpose::Dial)
-        .map_err(|error| Error::Tls(format!("invalid backend endpoint {endpoint:?}: {error}")))?;
-
+pub fn backend_connect_locator(
+    endpoint: &ParsedEndpointBuf,
+    tls: &pmi::TlsConfig,
+) -> Result<String> {
     let mut entries = Vec::new();
     push_optional_path(
         &mut entries,
@@ -141,22 +179,8 @@ fn validate_identity_paths(identity: &IdentityPaths) -> Result<()> {
 }
 
 fn validate_fragment_path(role: &str, path: &Path) -> Result<()> {
-    let path_text = path.to_str().ok_or_else(|| {
-        Error::Tls(format!(
-            "{role} path {} is not valid UTF-8 and cannot be placed in a Zenoh locator",
-            path.display()
-        ))
-    })?;
-    if let Some(delimiter) = path_text
-        .chars()
-        .find(|character| ['#', ';', '='].contains(character))
-    {
-        return Err(Error::Tls(format!(
-            "{role} path {} contains reserved locator delimiter {delimiter:?}; move the identity to a path without `#`, `;`, or `=`",
-            path.display()
-        )));
-    }
-    Ok(())
+    validate_locator_path(path)
+        .map_err(|error| Error::Tls(format!("{role} path {}: {error}", path.display())))
 }
 
 fn path_entry(key: &str, path: &Path) -> Result<String> {
@@ -174,18 +198,15 @@ fn push_optional_path(entries: &mut Vec<String>, key: &str, path: Option<&Path>)
     Ok(())
 }
 
-fn append_fragment<I>(endpoint: &str, entries: I) -> Result<String>
+fn append_fragment<I>(endpoint: &ParsedEndpointBuf, entries: I) -> Result<String>
 where
     I: IntoIterator<Item = String>,
 {
-    if endpoint.contains('#') {
-        return Err(Error::Tls(format!(
-            "endpoint {endpoint:?} already contains a configuration fragment"
-        )));
-    }
+    // The endpoint grammar rejects `#`, so the parsed endpoint can never
+    // already carry a fragment.
     let fragment = entries.into_iter().collect::<Vec<_>>().join(";");
     if fragment.is_empty() {
-        Ok(endpoint.to_string())
+        Ok(endpoint.as_str().to_string())
     } else {
         Ok(format!("{endpoint}#{fragment}"))
     }
@@ -194,6 +215,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daemon_config::peppy_config::EndpointPurpose;
 
     fn identity() -> IdentityPaths {
         IdentityPaths {
@@ -203,22 +225,64 @@ mod tests {
         }
     }
 
+    fn dial(endpoint: &str) -> ParsedEndpointBuf {
+        ParsedEndpointBuf::parse(endpoint, "tls", EndpointPurpose::Dial).unwrap()
+    }
+
+    fn listen(endpoint: &str) -> ParsedEndpointBuf {
+        ParsedEndpointBuf::parse(endpoint, "tls", EndpointPurpose::Listen).unwrap()
+    }
+
     #[test]
     fn peer_and_listener_fragments_are_stable() {
         assert_eq!(
-            peer_connect_locator("tls/router.example:7449", &identity()).unwrap(),
+            peer_connect_locator(&dial("tls/router.example:7449"), &identity()).unwrap(),
             "tls/router.example:7449#root_ca_certificate_file=/identity/ca.pem;connect_certificate_file=/identity/cert.pem;connect_private_key_file=/identity/key.pem;enable_mtls=true;verify_name_on_connect=true"
         );
         assert_eq!(
-            listener_locator("tls/0.0.0.0:7449", &identity()).unwrap(),
+            listener_locator(&listen("tls/0.0.0.0:7449"), &identity()).unwrap(),
             "tls/0.0.0.0:7449#listen_certificate_file=/identity/cert.pem;listen_private_key_file=/identity/key.pem;root_ca_certificate_file=/identity/ca.pem;enable_mtls=true"
         );
     }
 
     #[test]
+    fn peer_links_pair_every_registry_entry_with_its_locator() {
+        let mut registry = Federations::default();
+        registry
+            .insert(crate::FederationPeer::new("tls/router.example:7449", None).unwrap())
+            .unwrap();
+
+        let links = peer_links(&registry, &identity()).unwrap();
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].endpoint.as_str(), "tls/router.example:7449");
+        assert_eq!(
+            links[0].locator,
+            peer_connect_locator(&dial("tls/router.example:7449"), &identity()).unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_files_reports_only_absent_identity_material() {
+        let temporary = tempfile::tempdir().unwrap();
+        let present = temporary.path().join("cert.pem");
+        std::fs::write(&present, b"cert").unwrap();
+        let identity = IdentityPaths {
+            cert: present,
+            key: temporary.path().join("key.pem"),
+            ca: temporary.path().join("ca.pem"),
+        };
+
+        let missing = identity.missing_files();
+
+        assert_eq!(missing, vec![identity.ca.as_path(), identity.key.as_path()]);
+    }
+
+    #[test]
     fn backend_defaults_remain_unfragmented() {
         assert_eq!(
-            backend_connect_locator("tls/api.example:7448", &pmi::TlsConfig::default()).unwrap(),
+            backend_connect_locator(&dial("tls/api.example:7448"), &pmi::TlsConfig::default())
+                .unwrap(),
             "tls/api.example:7448"
         );
     }
@@ -235,7 +299,7 @@ mod tests {
         };
 
         assert_eq!(
-            backend_connect_locator("tls/api.example:7448", &tls).unwrap(),
+            backend_connect_locator(&dial("tls/api.example:7448"), &tls).unwrap(),
             "tls/api.example:7448#root_ca_certificate_file=/backend/ca.pem;connect_certificate_file=/backend/cert.pem;connect_private_key_file=/backend/key.pem;enable_mtls=true;verify_name_on_connect=false"
         );
     }
@@ -271,7 +335,7 @@ mod tests {
                 cert: path.into(),
                 ..identity()
             };
-            let error = peer_connect_locator("tls/router.example:7449", &identity)
+            let error = peer_connect_locator(&dial("tls/router.example:7449"), &identity)
                 .unwrap_err()
                 .to_string();
             assert!(

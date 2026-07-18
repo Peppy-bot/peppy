@@ -16,11 +16,11 @@ pub mod pki;
 pub mod registry;
 
 pub use links::{
-    IdentityPaths, backend_connect_locator, listener_locator, peer_connect_locator, peer_probe_tls,
-    resolve_identity_paths,
+    IdentityPaths, PeerLink, backend_connect_locator, listener_locator, peer_connect_locator,
+    peer_links, peer_probe_tls, resolve_identity_paths,
 };
 pub use pki::{ca_init, issue};
-pub use registry::{FederationPeer, Federations, RegistryLock, load, lock, save};
+pub use registry::{FederationPeer, Federations, RegistryLock, load, lock, save, with_registry};
 
 /// Display name reserved for the federation managed by `peppy auth`.
 pub const RESERVED_BACKEND_NAME: &str = "platform-backend";

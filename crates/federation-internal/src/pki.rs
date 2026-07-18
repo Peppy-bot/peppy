@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use daemon_config::atomic_write::restrict_dir;
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,
@@ -161,32 +162,7 @@ fn same_directory(left: &Path, right: &Path) -> Result<bool> {
 }
 
 fn publish_private(path: &Path, content: &[u8]) -> Result<()> {
-    daemon_config::atomic_write::publish_atomic(path, |temporary| {
-        std::fs::write(temporary, content)?;
-        restrict_file(temporary)
-    })?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_file(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn restrict_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn restrict_dir(_path: &Path) -> std::io::Result<()> {
+    daemon_config::atomic_write::publish_atomic_private(path, content)?;
     Ok(())
 }
 

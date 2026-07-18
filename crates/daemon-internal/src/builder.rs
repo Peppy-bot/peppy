@@ -174,7 +174,10 @@ impl ServeCommandBuilder {
                                 ))
                             })?;
                     if let Some(listen_endpoint) = federation_config.listen_endpoint.as_deref() {
-                        let parsed = daemon_config::peppy_config::parse_endpoint(
+                        // Parsed once: the config validated the grammar at load
+                        // time; this parse only extracts the port and carries
+                        // the typed endpoint into the locator rendering.
+                        let listener = daemon_config::peppy_config::ParsedEndpointBuf::parse(
                             listen_endpoint,
                             "tls",
                             daemon_config::peppy_config::EndpointPurpose::Listen,
@@ -184,27 +187,27 @@ impl ServeCommandBuilder {
                                 "invalid managed federation listener: {error}"
                             ))
                         })?;
-                        if parsed.port == listening_port {
+                        if listener.port() == listening_port {
                             return Err(Error::ExecutionFailed(format!(
                                 "managed federation listener port {listening_port} conflicts with \
                                  the local messaging port; use a different port such as 7449"
                             )));
                         }
-                        let missing: Vec<String> = [&identity.ca, &identity.cert, &identity.key]
-                            .into_iter()
-                            .filter(|path| !path.is_file())
-                            .map(|path| path.display().to_string())
-                            .collect();
+                        let missing = identity.missing_files();
                         if !missing.is_empty() {
                             return Err(Error::ExecutionFailed(format!(
                                 "managed federation listener identity is incomplete; missing {}. \
                                  Create a fleet identity with `peppy federation ca init` and \
                                  `peppy federation ca issue`, then restart the daemon",
-                                missing.join(", ")
+                                missing
+                                    .iter()
+                                    .map(|path| path.display().to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             )));
                         }
                         extra_listen_endpoints.push(
-                            federation::listener_locator(listen_endpoint, &identity).map_err(
+                            federation::listener_locator(&listener, &identity).map_err(
                                 |error| {
                                     Error::ExecutionFailed(format!(
                                         "could not render managed federation listener: {error}"
@@ -220,29 +223,23 @@ impl ServeCommandBuilder {
                             "could not read federation registry: {error}"
                         ))
                     })?;
-                    let initial_peers: Vec<String> = registry
-                        .peers()
+                    let peer_links =
+                        federation::peer_links(&registry, &identity).map_err(|error| {
+                            Error::ExecutionFailed(format!(
+                                "could not render federation peers: {error}"
+                            ))
+                        })?;
+                    let initial_peers: Vec<String> = peer_links
                         .iter()
-                        .map(|peer| peer.endpoint().to_string())
+                        .map(|link| link.endpoint.as_str().to_string())
                         .collect();
-                    initial_connect_endpoints = registry
-                        .peers()
-                        .iter()
-                        .map(|peer| {
-                            federation::peer_connect_locator(peer.endpoint(), &identity).map_err(
-                                |error| {
-                                    Error::ExecutionFailed(format!(
-                                        "could not render federation peer `{}`: {error}",
-                                        peer.endpoint()
-                                    ))
-                                },
-                            )
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                    initial_connect_endpoints =
+                        peer_links.into_iter().map(|link| link.locator).collect();
                     self.federation_links_spec = Some(FederationLinksSpec {
                         extra_listen_endpoints: extra_listen_endpoints.clone(),
                         identity,
                         initial_peers,
+                        listen_endpoint: federation_config.listen_endpoint.clone(),
                         initial_pinned: false,
                     });
                 }
@@ -848,9 +845,15 @@ mod tests {
             .expect("managed startup must retain its federation link specification");
         assert_eq!(links.identity, identity);
         assert_eq!(links.initial_peers, [PEER_ENDPOINT]);
+        let listener = daemon_config::peppy_config::ParsedEndpointBuf::parse(
+            listen_endpoint.as_str(),
+            "tls",
+            daemon_config::peppy_config::EndpointPurpose::Listen,
+        )
+        .unwrap();
         assert_eq!(
             links.extra_listen_endpoints,
-            [federation::listener_locator(&listen_endpoint, &identity).unwrap()]
+            [federation::listener_locator(&listener, &identity).unwrap()]
         );
 
         let messenger = builder

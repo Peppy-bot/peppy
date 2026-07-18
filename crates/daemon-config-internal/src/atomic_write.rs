@@ -1,8 +1,8 @@
-//! Atomic file publication helper used across the workspace.
+//! Atomic file publication helpers used across the workspace.
 //!
-//! All four current call sites (`repo` cache writes, build-artifact
-//! publication, embedded-binary extraction) follow the same pattern:
-//! create the parent dir, stage to a unique sibling tmp file, then
+//! Callers (`repo` cache writes, build-artifact publication, embedded-binary
+//! extraction, credential and federation secret files) all follow the same
+//! pattern: create the parent dir, stage to a unique sibling tmp file, then
 //! rename. Centralizing avoids drift across hand-rolled copies.
 
 use std::path::{Path, PathBuf};
@@ -38,10 +38,65 @@ where
     Ok(final_path.to_path_buf())
 }
 
+/// Atomically publishes secret bytes with owner-only permissions: the parent
+/// directory is restricted to `0700` and the file is staged, chmodded to
+/// `0600`, then renamed into place, so no reader ever observes the secret
+/// with looser permissions.
+pub fn publish_atomic_private(final_path: &Path, content: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)?;
+        restrict_dir(parent)?;
+    }
+    publish_atomic(final_path, |temporary| {
+        std::fs::write(temporary, content)?;
+        restrict_file(temporary)
+    })?;
+    Ok(())
+}
+
+/// Restricts a file to owner-only read/write (`0600`). No-op off Unix.
+#[cfg(unix)]
+pub fn restrict_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+pub fn restrict_file(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Restricts a directory to owner-only access (`0700`). No-op off Unix.
+#[cfg(unix)]
+pub fn restrict_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+pub fn restrict_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::ErrorKind;
+
+    #[cfg(unix)]
+    #[test]
+    fn publish_atomic_private_restricts_the_file_and_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("secrets").join("key.pem");
+
+        publish_atomic_private(&target, b"secret").expect("publish");
+
+        assert_eq!(std::fs::read(&target).expect("read back"), b"secret");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&target), 0o600);
+        assert_eq!(mode(target.parent().unwrap()), 0o700);
+    }
 
     #[test]
     fn writes_contents_and_returns_final_path() {

@@ -132,7 +132,7 @@ pub(crate) fn render_section_panel(out: &mut String, header: &str, body: &str) {
     let _ = writeln!(out, "└{}┘", "─".repeat(width + 2));
 }
 
-pub(crate) fn write_panel_line(out: &mut String, line: &str, width: usize) {
+fn write_panel_line(out: &mut String, line: &str, width: usize) {
     let _ = writeln!(
         out,
         "│ {}{} │",

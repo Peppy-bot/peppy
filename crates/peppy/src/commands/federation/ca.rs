@@ -2,13 +2,11 @@ use std::path::PathBuf;
 
 use daemon_config::consts::PeppyDirs;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
-pub(super) fn init(peppy_dirs: Option<PeppyDirs>) -> Result<()> {
-    let dirs = peppy_dirs.unwrap_or_default();
-    let federation_dir = federation::federation_dir(&dirs);
-    federation::ca_init(&federation_dir)
-        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+pub(super) fn init() -> Result<()> {
+    let federation_dir = federation::federation_dir(&PeppyDirs::default());
+    federation::ca_init(&federation_dir)?;
     println!(
         "Initialized Peppy fleet CA in {}.",
         federation_dir.display()
@@ -16,16 +14,10 @@ pub(super) fn init(peppy_dirs: Option<PeppyDirs>) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn issue(
-    hosts: Vec<String>,
-    out: Option<PathBuf>,
-    peppy_dirs: Option<PeppyDirs>,
-) -> Result<()> {
-    let dirs = peppy_dirs.unwrap_or_default();
-    let federation_dir = federation::federation_dir(&dirs);
+pub(super) fn issue(hosts: Vec<String>, out: Option<PathBuf>) -> Result<()> {
+    let federation_dir = federation::federation_dir(&PeppyDirs::default());
     let out = out.unwrap_or_else(|| federation_dir.clone());
-    federation::issue(&federation_dir, &hosts, &out)
-        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+    federation::issue(&federation_dir, &hosts, &out)?;
     println!("Issued federation identity in {}.", out.display());
     Ok(())
 }

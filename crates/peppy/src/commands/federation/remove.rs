@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use daemon::control::{self as daemon_control, PokeOutcome};
+use daemon::control::{self as daemon_control, PeerLinkState, PokeOutcome};
 use daemon_config::consts::PeppyDirs;
 
 use super::super::Command;
@@ -32,40 +31,21 @@ impl Command for RemoveCommand {
 
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        let Some(connect_timeout_secs) =
-            crate::commands::auth::federation_poke_timeout_secs(&dirs, &config)
-        else {
-            return Err(Error::ExecutionFailed(
-                "this daemon uses an operator-run router; federation belongs to the operator"
-                    .to_string(),
-            ));
-        };
+        let read_timeout = super::managed_poke_read_timeout(&dirs, &config)?;
 
         let socket = daemon_control::federation_control_socket_path(&dirs);
         let registry_path = federation::registry_path(&dirs);
-        let removal = {
-            let _lock = federation::lock(&registry_path)
-                .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-            let mut registry = federation::load(&registry_path)
-                .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-            match resolve_target(&registry, &self.target) {
-                Ok(endpoint) => {
-                    registry
-                        .remove(&endpoint)
-                        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                    federation::save(&registry_path, &registry)
-                        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
-                    Ok(endpoint)
-                }
-                Err(error) => Err(error),
-            }
-        };
+        let removal = federation::with_registry(&registry_path, |registry| {
+            let endpoint = resolve_target(registry, &self.target)?;
+            registry.remove(&endpoint)?;
+            Ok(endpoint)
+        });
         let endpoint = match removal {
             Ok(endpoint) => endpoint,
             Err(_error)
                 if federation::FederationPeer::new(self.target.clone(), None).is_ok()
                     && matches!(
-                        daemon_control::query_status(&socket, Duration::from_secs(2)),
+                        daemon_control::query_status(&socket, super::STATUS_TIMEOUT),
                         daemon_control::QueryStatusOutcome::Status(status)
                             if status.peers.iter().any(|peer| peer.endpoint == self.target)
                     ) =>
@@ -77,8 +57,6 @@ impl Command for RemoveCommand {
             Err(error) => return Err(error),
         };
 
-        let read_timeout =
-            Duration::from_secs(connect_timeout_secs) + daemon_control::POKE_READ_SLACK;
         match daemon_control::poke_refederate(&socket, read_timeout) {
             PokeOutcome::Applied(applied) => {
                 let still_applied = applied
@@ -89,7 +67,7 @@ impl Command for RemoveCommand {
                     print_removal_pending(&endpoint, "the daemon still reports it");
                 }
                 for report in applied.peers {
-                    if let Some(reason) = report.error {
+                    if let PeerLinkState::Error(reason) = report.state {
                         println!(
                             "Note: remaining federation {} did not validate ({reason}).",
                             report.endpoint
@@ -162,12 +140,7 @@ fn confirm_platform_backend_removal(yes: bool) -> Result<bool> {
     }
     eprint!("Continue? [y/N] ");
     std::io::stderr().flush().ok();
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line).map_err(Error::Io)?;
-    Ok(matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    crate::commands::confirm::read_yes_no(None)
 }
 
 fn require_confirmation_channel(yes: bool, stdin_is_terminal: bool) -> Result<()> {
@@ -185,7 +158,7 @@ fn resolve_target(registry: &federation::Federations, target: &str) -> Result<St
     if registry
         .peers()
         .iter()
-        .any(|peer| peer.endpoint() == target)
+        .any(|peer| peer.endpoint().as_str() == target)
     {
         return Ok(target.to_string());
     }
@@ -208,7 +181,7 @@ fn resolve_target(registry: &federation::Federations, target: &str) -> Result<St
             "core-node name `{target}` matches multiple federation endpoints: {}. Remove one by \
              its exact endpoint",
             many.iter()
-                .map(|peer| peer.endpoint())
+                .map(|peer| peer.endpoint().as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         ))),
@@ -319,7 +292,7 @@ mod tests {
             assert_eq!(request.trim(), daemon_control::REFEDERATE_VERB);
             stream
                 .write_all(
-                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[{\"endpoint\":\"tls/peer-a.example:7449\",\"error\":null}]}\n",
+                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[{\"endpoint\":\"tls/peer-a.example:7449\",\"state\":\"verified\"}]}\n",
                 )
                 .unwrap();
         });
