@@ -7,7 +7,7 @@ use tracing::error;
 
 use daemon_config::consts::AppEnv;
 use peppy::{
-    commands::{Command, auth, container, info, node, repo, service, stack},
+    commands::{Command, auth, container, federation, info, node, repo, service, stack},
     context::AppContext,
 };
 
@@ -79,6 +79,11 @@ enum Commands {
         #[command(subcommand)]
         command: auth::AuthCommands,
     },
+    /// Manage mTLS federation with other Peppy routers
+    Federation {
+        #[command(subcommand)]
+        command: federation::FederationCommands,
+    },
     /// Display peppy version information
     Info {},
 }
@@ -123,6 +128,9 @@ fn main() {
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
         Commands::Auth { command } => auth::AuthCommand { command }.execute(&app_ctx),
+        Commands::Federation { command } => {
+            federation::FederationCommand { command }.execute(&app_ctx)
+        }
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 

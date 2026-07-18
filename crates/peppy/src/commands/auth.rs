@@ -25,12 +25,12 @@ use daemon::state::DaemonState;
 
 /// Shown when the managed router uses an operator-pinned config, so the daemon
 /// cannot rewrite it. Used by both login and logout reporting.
-const PINNED_NOTE: &str = "Note: this daemon's router uses an operator-pinned ZENOH_CONFIG; \
+pub(crate) const PINNED_NOTE: &str = "Note: this daemon's router uses an operator-pinned ZENOH_CONFIG; \
      federation is not auto-managed.";
 
 /// Shown after login/logout in external mode. No federation control task exists
 /// in that mode, so the CLI deliberately leaves the operator's router alone.
-const EXTERNAL_ROUTER_NOTE: &str = "Note: this daemon dials an operator-run router \
+pub(crate) const EXTERNAL_ROUTER_NOTE: &str = "Note: this daemon dials an operator-run router \
      (`zenoh.external`); federation belongs to the operator and was left untouched. Restart the \
      daemon to apply the new sign-in state to its sessions.";
 
@@ -333,7 +333,7 @@ fn await_restart(
 /// caller, so the identity is kept; only the command fails).
 fn report_login(outcome: PokeOutcome) -> Result<()> {
     match outcome {
-        PokeOutcome::Applied(Some(_)) => {
+        PokeOutcome::Applied(applied) if applied.backend.is_some() => {
             println!("Router federation established.");
             Ok(())
         }
@@ -343,7 +343,7 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
             println!("{PINNED_NOTE}");
             Ok(())
         }
-        PokeOutcome::Unreachable(reason) => Err(Error::Auth(format!(
+        PokeOutcome::Unreachable { reason, .. } => Err(Error::Auth(format!(
             "logged in, but federation with the platform could not be established: {reason}. \
              The per-user cloud router is unreachable or its certificate is not trusted; in \
              dev, ensure the router cert is signed by the committed dev CA (re-run \
@@ -363,7 +363,7 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
              with `peppy service serve`, then run `peppy auth login` again."
                 .to_string(),
         )),
-        PokeOutcome::Applied(None) => Err(Error::Auth(
+        PokeOutcome::Applied(_) => Err(Error::Auth(
             "logged in, but no cloud router resolved to federate to. Confirm the backend is \
              reachable and your account is provisioned, then run `peppy auth login` again."
                 .to_string(),
@@ -382,10 +382,12 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
 /// fail. De-federation that didn't reach the daemon is harmless.
 fn report_logout(outcome: PokeOutcome) {
     match outcome {
-        PokeOutcome::Applied(None) => println!("Router federation cleared."),
-        PokeOutcome::Applied(Some(_)) => println!("Router federation refreshed."),
+        PokeOutcome::Applied(applied) if applied.backend.is_none() => {
+            println!("Router federation cleared.")
+        }
+        PokeOutcome::Applied(_) => println!("Router federation refreshed."),
         PokeOutcome::Pinned => println!("{PINNED_NOTE}"),
-        PokeOutcome::Unreachable(msg) | PokeOutcome::DaemonError(msg) => {
+        PokeOutcome::Unreachable { reason: msg, .. } | PokeOutcome::DaemonError(msg) => {
             println!("Note: the daemon could not apply federation now ({msg}); it will retry.")
         }
         PokeOutcome::DaemonNotRunning => {
@@ -587,6 +589,13 @@ mod tests {
         }
     }
 
+    fn applied(backend: Option<&str>) -> PokeOutcome {
+        PokeOutcome::Applied(daemon::control::AppliedFederation {
+            backend: backend.map(str::to_string),
+            peers: Vec::new(),
+        })
+    }
+
     #[test]
     fn a_stack_with_only_the_core_root_has_no_user_nodes() {
         let graph = graph_of(vec![node_with_stage("core", NodeStage::Root)]);
@@ -630,7 +639,7 @@ mod tests {
     #[test]
     fn login_is_ok_for_applied_some_and_pinned() {
         assert!(
-            report_login(PokeOutcome::Applied(Some("tls/cap:7443".to_string()))).is_ok(),
+            report_login(applied(Some("tls/cap:7443"))).is_ok(),
             "a verified upstream ⇒ login succeeds"
         );
         assert!(
@@ -642,8 +651,8 @@ mod tests {
     #[test]
     fn login_fails_strictly_for_every_not_in_effect_outcome() {
         let failing = [
-            PokeOutcome::Applied(None),
-            PokeOutcome::Unreachable("UnknownCA".to_string()),
+            applied(None),
+            unreachable("UnknownCA"),
             PokeOutcome::DaemonError("boom".to_string()),
             PokeOutcome::TimedOut,
             PokeOutcome::DaemonNotRunning,
@@ -658,10 +667,8 @@ mod tests {
 
     #[test]
     fn unreachable_login_error_is_actionable_and_carries_the_reason() {
-        let err = report_login(PokeOutcome::Unreachable(
-            "received fatal alert: UnknownCA".to_string(),
-        ))
-        .expect_err("an unreachable upstream fails login");
+        let err = report_login(unreachable("received fatal alert: UnknownCA"))
+            .expect_err("an unreachable upstream fails login");
         let msg = err.to_string();
         assert!(
             msg.contains("UnknownCA"),
@@ -678,15 +685,25 @@ mod tests {
         // `report_logout` returns `()` for every variant; a logout can never be
         // failed by the federation poke.
         for outcome in [
-            PokeOutcome::Applied(None),
-            PokeOutcome::Applied(Some("tls/cap:7443".to_string())),
+            applied(None),
+            applied(Some("tls/cap:7443")),
             PokeOutcome::Pinned,
-            PokeOutcome::Unreachable("x".to_string()),
+            unreachable("x"),
             PokeOutcome::DaemonError("y".to_string()),
             PokeOutcome::DaemonNotRunning,
             PokeOutcome::TimedOut,
         ] {
             report_logout(outcome);
+        }
+    }
+
+    fn unreachable(reason: &str) -> PokeOutcome {
+        PokeOutcome::Unreachable {
+            reason: reason.to_string(),
+            applied: daemon::control::AppliedFederation {
+                backend: Some("tls/cap:7443".to_string()),
+                peers: Vec::new(),
+            },
         }
     }
 }

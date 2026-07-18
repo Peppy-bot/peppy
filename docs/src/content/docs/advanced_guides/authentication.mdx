@@ -84,7 +84,7 @@ unreachable or untrusted, or it times out). You stay authenticated in that case
 (only the command fails), so re-run it once the daemon is reachable. `logout` is
 best-effort and never fails on the de-federation step. How long the daemon waits
 to resolve the cloud router is bounded by
-[`zenoh.managed.federation.connect_timeout_secs`](/advanced_guides/daemon_config/#zenohmanagedfederation-cloud-router-timeout).
+[`zenoh.managed.federation.connect_timeout_secs`](/advanced_guides/daemon_config/#zenohmanagedfederation-router-federation).
 
 With `zenoh.external`, login and logout skip federation and print a note instead;
 the daemon applies the new namespace to its sessions on its next manual restart.
@@ -134,6 +134,10 @@ with the same confirmation prompt and `--yes` bypass (see
 [Organization federation](#organization-federation)). Under `zenoh.external`,
 the operator's federation is left untouched and the namespace changes on the
 next manual daemon restart.
+
+`peppy federation remove platform-backend` performs the same logout operation,
+including its warning and confirmation. See [Server federation](/advanced_guides/federation/#remove-a-federation)
+for user-managed router links.
 
 ## Environment variables
 

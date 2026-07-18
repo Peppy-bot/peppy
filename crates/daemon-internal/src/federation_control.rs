@@ -23,8 +23,8 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::control::{ControlResponse, REFEDERATE_VERB};
-use crate::router_federation::{FederationOutcome, RefederateRequest, TriggerSender};
+use crate::control::{ControlResponse, REFEDERATE_VERB, STATUS_VERB};
+use crate::router_federation::{FederationOutcome, FederationRequest, TriggerSender};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// Bound on reading a request line, so a client that connects but never writes
@@ -38,15 +38,26 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// than the client's read slack ([`crate::control::POKE_READ_SLACK`]) so
 /// the daemon always replies a definite outcome before the client gives up (the
 /// `ack_budget_*` test guards both relationships).
-const APPLY_ACK_SLACK: Duration = Duration::from_secs(8);
+const APPLY_ACK_SLACK: Duration = Duration::from_secs(10);
+
+/// Cached status requests never resolve or bounce the router, so a short bound
+/// is enough even if a refederation request is immediately ahead in the queue.
+const STATUS_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
         match outcome {
-            FederationOutcome::Applied(applied) => ControlResponse::Ok { applied },
+            FederationOutcome::Applied(applied) => ControlResponse::Ok {
+                applied: applied.backend,
+                peers: applied.peers.into_iter().map(Into::into).collect(),
+            },
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
-            FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
+            FederationOutcome::Unreachable { reason, applied } => ControlResponse::Unreachable {
+                message: reason,
+                applied: applied.backend,
+                peers: applied.peers.into_iter().map(Into::into).collect(),
+            },
             FederationOutcome::Restart => ControlResponse::Restarting,
         }
     }
@@ -59,9 +70,10 @@ pub(crate) struct FederationControl {
     /// Bound on how long to wait for a poked poll to apply before replying with a
     /// timeout (so a wedged apply can't hold a connection open forever).
     connect_timeout: Duration,
-    /// In-process restart signal. The control handler raises it *after* it has
-    /// flushed a `Restarting` ack (a real happens-before edge), so the CLI always
-    /// reads the ack before teardown can affect the connection.
+    /// In-process restart signal. The control handler attempts to flush a
+    /// `Restarting` ack before raising it (a real happens-before edge when the
+    /// client remains connected). A disconnected client cannot suppress the
+    /// restart required to apply the new namespace.
     restart_tx: watch::Sender<bool>,
     /// Shared coordinator token: the task tears down when it is cancelled (an
     /// in-process restart) or on a real OS shutdown signal.
@@ -228,6 +240,32 @@ async fn handle_conn(
         Err(_elapsed) => return Ok(()), // client connected but never sent a line
     }
 
+    if line.trim() == STATUS_VERB {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if trigger_tx
+            .send(FederationRequest::Status { ack: ack_tx })
+            .await
+            .is_err()
+        {
+            return write_response(
+                &mut write_half,
+                ControlResponse::error("federation task not running"),
+            )
+            .await;
+        }
+        let response = match tokio::time::timeout(STATUS_ACK_TIMEOUT, ack_rx).await {
+            Ok(Ok(status)) => ControlResponse::FederationStatus {
+                backend: status.backend,
+                peers: status.peers,
+                listen_endpoint: status.listen_endpoint,
+                pinned: status.pinned,
+            },
+            Ok(Err(_)) => ControlResponse::error("federation task dropped the status request"),
+            Err(_) => ControlResponse::error("timed out reading federation status"),
+        };
+        return write_response(&mut write_half, response).await;
+    }
+
     if line.trim() != REFEDERATE_VERB {
         return write_response(&mut write_half, ControlResponse::error("unknown command")).await;
     }
@@ -236,7 +274,7 @@ async fn handle_conn(
     // apply replies with a timeout rather than holding the connection open.
     let (ack_tx, ack_rx) = oneshot::channel();
     if trigger_tx
-        .send(RefederateRequest { ack: ack_tx })
+        .send(FederationRequest::Refederate { ack: ack_tx })
         .await
         .is_err()
     {
@@ -252,17 +290,17 @@ async fn handle_conn(
         Err(_elapsed) => ControlResponse::error("timed out applying federation"),
     };
 
-    // The namespace changed: write+flush the `Restarting` ack FIRST, and only
-    // after the flush returns `Ok` (the bytes are in the kernel socket buffer)
-    // raise the in-process restart signal. This is a real happens-before edge:
-    // the CLI always reads the ack before teardown can affect the connection, and
-    // there is no self-SIGTERM and no fire-and-forget oneshot race.
+    // The namespace changed: attempt to write+flush the `Restarting` ack FIRST,
+    // then raise the in-process restart signal. A successful flush is a real
+    // happens-before edge, so a connected CLI reads the ack before teardown can
+    // affect the connection. If the client disconnected before the reply, the
+    // write error must not suppress the restart required for namespace safety.
     let trigger_restart = matches!(response, ControlResponse::Restarting);
-    write_response(&mut write_half, response).await?;
+    let write_result = write_response(&mut write_half, response).await;
     if trigger_restart {
         let _ = restart_tx.send(true);
     }
-    Ok(())
+    write_result
 }
 
 /// Writes one JSON response line and flushes.
@@ -280,7 +318,10 @@ async fn write_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::{FEDERATION_CONTROL_SOCK, PokeOutcome, poke_refederate};
+    use crate::control::{
+        FEDERATION_CONTROL_SOCK, FederationStatus, PeerReportWire, PokeOutcome, QueryStatusOutcome,
+        poke_refederate, query_status,
+    };
     use tokio::sync::mpsc;
 
     /// The daemon ack budget must cover the verifying poke's post-resolve work
@@ -290,10 +331,10 @@ mod tests {
     #[test]
     fn ack_budget_covers_the_verify_probe_and_client_outlasts_daemon() {
         use crate::control::POKE_READ_SLACK;
-        use crate::router_federation::PROBE_TIMEOUT;
+        use crate::router_federation::{APPLY_TIMEOUT, PROBE_TIMEOUT};
         assert!(
-            PROBE_TIMEOUT < APPLY_ACK_SLACK,
-            "the daemon ack slack must cover the verify probe (plus the bounce)"
+            APPLY_TIMEOUT + PROBE_TIMEOUT < APPLY_ACK_SLACK,
+            "the daemon ack slack must cover the router apply and verify probe"
         );
         assert!(
             APPLY_ACK_SLACK < POKE_READ_SLACK,
@@ -305,12 +346,22 @@ mod tests {
     /// distinct from a plain `error`, so the CLI can word it specifically.
     #[test]
     fn unreachable_outcome_maps_to_the_unreachable_response() {
-        let resp = ControlResponse::from(FederationOutcome::Unreachable(
-            "received fatal alert: UnknownCA".to_string(),
-        ));
+        let resp = ControlResponse::from(FederationOutcome::Unreachable {
+            reason: "received fatal alert: UnknownCA".to_string(),
+            applied: crate::router_federation::AppliedFederation {
+                backend: Some("tls/cap:7443".to_string()),
+                peers: Vec::new(),
+            },
+        });
         match resp {
-            ControlResponse::Unreachable { message } => {
-                assert_eq!(message, "received fatal alert: UnknownCA")
+            ControlResponse::Unreachable {
+                message,
+                applied,
+                peers,
+            } => {
+                assert_eq!(message, "received fatal alert: UnknownCA");
+                assert_eq!(applied.as_deref(), Some("tls/cap:7443"));
+                assert!(peers.is_empty());
             }
             other => panic!("expected Unreachable, got {other:?}"),
         }
@@ -324,14 +375,17 @@ mod tests {
     async fn poke_crosses_the_socket_and_acks() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<RefederateRequest>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
 
         // Stand in for the federation loop: ack a canned applied outcome.
         let consumer = tokio::spawn(async move {
-            if let Some(req) = trigger_rx.recv().await {
-                let _ = req
-                    .ack
-                    .send(FederationOutcome::Applied(Some("tls/cap:7443".to_string())));
+            if let Some(FederationRequest::Refederate { ack }) = trigger_rx.recv().await {
+                let _ = ack.send(FederationOutcome::Applied(
+                    crate::router_federation::AppliedFederation {
+                        backend: Some("tls/cap:7443".to_string()),
+                        peers: Vec::new(),
+                    },
+                ));
             }
         });
 
@@ -360,9 +414,59 @@ mod tests {
 
         assert_eq!(
             outcome,
-            PokeOutcome::Applied(Some("tls/cap:7443".to_string()))
+            PokeOutcome::Applied(crate::control::AppliedFederation {
+                backend: Some("tls/cap:7443".to_string()),
+                peers: Vec::new(),
+            })
         );
 
+        control.abort();
+        consumer.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn status_crosses_the_socket_without_refederating() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
+        let expected = FederationStatus {
+            backend: None,
+            peers: vec![PeerReportWire {
+                endpoint: "tls/peer:7449".to_string(),
+                error: Some("UnknownIssuer".to_string()),
+            }],
+            listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
+            pinned: false,
+        };
+        let response = expected.clone();
+        let consumer = tokio::spawn(async move {
+            match trigger_rx.recv().await {
+                Some(FederationRequest::Status { ack }) => {
+                    let _ = ack.send(response);
+                }
+                Some(FederationRequest::Refederate { .. }) => {
+                    panic!("status request must not refederate")
+                }
+                None => panic!("control channel closed"),
+            }
+        });
+        let listener = bind_listener(&socket).expect("bind control socket");
+        let (restart_tx, _restart_rx) = watch::channel(false);
+        let control = tokio::spawn(accept_loop(
+            listener,
+            trigger_tx,
+            Duration::from_secs(5),
+            restart_tx,
+        ));
+
+        let socket_for_client = socket.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            query_status(&socket_for_client, Duration::from_secs(5))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, QueryStatusOutcome::Status(expected));
         control.abort();
         consumer.abort();
     }
@@ -372,7 +476,7 @@ mod tests {
     async fn unknown_verb_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<RefederateRequest>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
 
         // Bind-before-client, as in `poke_crosses_the_socket_and_acks`.
         let listener = bind_listener(&socket).expect("bind control socket");
@@ -405,5 +509,49 @@ mod tests {
         // The federation loop was never poked.
         assert!(trigger_rx.try_recv().is_err());
         control.abort();
+    }
+
+    /// Once the federation loop detects a namespace change, a client that exits
+    /// before reading the ack must not strand the daemon in its old namespace.
+    #[tokio::test]
+    async fn restart_is_signaled_when_the_client_disconnects_before_the_ack() {
+        let (server, mut client) = UnixStream::pair().expect("create control socket pair");
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(1);
+        let (restart_tx, mut restart_rx) = watch::channel(false);
+
+        let handler = tokio::spawn(handle_conn(
+            server,
+            trigger_tx,
+            Duration::from_secs(1),
+            restart_tx,
+        ));
+        client
+            .write_all(format!("{REFEDERATE_VERB}\n").as_bytes())
+            .await
+            .expect("send refederate request");
+        drop(client);
+
+        let request = tokio::time::timeout(Duration::from_secs(1), trigger_rx.recv())
+            .await
+            .expect("handler forwards request promptly")
+            .expect("request channel remains open");
+        let FederationRequest::Refederate { ack } = request else {
+            panic!("expected a refederate request");
+        };
+        ack.send(FederationOutcome::Restart)
+            .expect("handler is awaiting the outcome");
+
+        let _write_error = tokio::time::timeout(Duration::from_secs(1), handler)
+            .await
+            .expect("handler completes promptly")
+            .expect("handler task does not panic")
+            .expect_err("replying to a disconnected client fails");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            restart_rx.wait_for(|restart| *restart),
+        )
+        .await
+        .expect("restart signal is not suppressed by the write failure")
+        .expect("restart sender remains open");
     }
 }

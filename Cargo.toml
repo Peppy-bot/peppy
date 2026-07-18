@@ -49,6 +49,7 @@ core-node = { path = "crates/core-node-internal" }
 daemon = { path = "crates/daemon-internal" }
 daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
+federation = { path = "crates/federation-internal" }
 generator = { path = "crates/generator-internal" }
 latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }

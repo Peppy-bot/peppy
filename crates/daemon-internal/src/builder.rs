@@ -1,7 +1,7 @@
 use super::core_node::CoreNodeRunner;
 use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
-use super::router_federation::RouterFederation;
+use super::router_federation::{FederationLinksSpec, RouterFederation};
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
 use crate::state::DaemonState;
@@ -61,6 +61,9 @@ pub struct ServeCommandBuilder {
     /// moved into the core node, and shared by [`RouterFederation`] and
     /// [`FederationControl`].
     federation_connect_timeout: Duration,
+    /// Static peer/listener state already rendered into the router's initial
+    /// config, then handed to the federation loop for later rewrites and status.
+    federation_links_spec: Option<FederationLinksSpec>,
     /// The organization namespace resolved once for this daemon generation
     /// (`"local"` when logged out, else the org id). Resolved in
     /// [`with_messaging_router`](Self::with_messaging_router) from the cached
@@ -98,6 +101,7 @@ impl ServeCommandBuilder {
             federation_connect_timeout: Duration::from_secs(
                 daemon_config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
             ),
+            federation_links_spec: None,
             // Default for the mock/other engines that never resolve a namespace;
             // the zenoh path overwrites this in `with_messaging_router`.
             organization_namespace: config::org::LOCAL_NAMESPACE.to_string(),
@@ -145,7 +149,9 @@ impl ServeCommandBuilder {
                 // `resolve_api_url` is a local config/env lookup (no I/O), so it
                 // is safe here; an invalid URL fails startup loudly rather than
                 // silently degrading the daemon to standalone mode.
-                if let Some(federation) = self.peppy_config.zenoh.federation() {
+                let mut initial_connect_endpoints = Vec::new();
+                let mut extra_listen_endpoints = Vec::new();
+                if let Some(federation_config) = self.peppy_config.zenoh.federation().cloned() {
                     let api_url =
                         auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers)
                             .map_err(|e| {
@@ -158,7 +164,87 @@ impl ServeCommandBuilder {
                     // is moved into the core node in `build`; both the federation
                     // task and its control socket share it.
                     self.federation_connect_timeout =
-                        Duration::from_secs(federation.connect_timeout_secs);
+                        Duration::from_secs(federation_config.connect_timeout_secs);
+
+                    let identity =
+                        federation::resolve_identity_paths(&self.peppy_dirs, &federation_config)
+                            .map_err(|error| {
+                                Error::ExecutionFailed(format!(
+                                    "invalid managed federation identity paths: {error}"
+                                ))
+                            })?;
+                    if let Some(listen_endpoint) = federation_config.listen_endpoint.as_deref() {
+                        let parsed = daemon_config::peppy_config::parse_endpoint(
+                            listen_endpoint,
+                            "tls",
+                            daemon_config::peppy_config::EndpointPurpose::Listen,
+                        )
+                        .map_err(|error| {
+                            Error::ExecutionFailed(format!(
+                                "invalid managed federation listener: {error}"
+                            ))
+                        })?;
+                        if parsed.port == listening_port {
+                            return Err(Error::ExecutionFailed(format!(
+                                "managed federation listener port {listening_port} conflicts with \
+                                 the local messaging port; use a different port such as 7449"
+                            )));
+                        }
+                        let missing: Vec<String> = [&identity.ca, &identity.cert, &identity.key]
+                            .into_iter()
+                            .filter(|path| !path.is_file())
+                            .map(|path| path.display().to_string())
+                            .collect();
+                        if !missing.is_empty() {
+                            return Err(Error::ExecutionFailed(format!(
+                                "managed federation listener identity is incomplete; missing {}. \
+                                 Create a fleet identity with `peppy federation ca init` and \
+                                 `peppy federation ca issue`, then restart the daemon",
+                                missing.join(", ")
+                            )));
+                        }
+                        extra_listen_endpoints.push(
+                            federation::listener_locator(listen_endpoint, &identity).map_err(
+                                |error| {
+                                    Error::ExecutionFailed(format!(
+                                        "could not render managed federation listener: {error}"
+                                    ))
+                                },
+                            )?,
+                        );
+                    }
+
+                    let registry = federation::load(&federation::registry_path(&self.peppy_dirs))
+                        .map_err(|error| {
+                        Error::ExecutionFailed(format!(
+                            "could not read federation registry: {error}"
+                        ))
+                    })?;
+                    let initial_peers: Vec<String> = registry
+                        .peers()
+                        .iter()
+                        .map(|peer| peer.endpoint().to_string())
+                        .collect();
+                    initial_connect_endpoints = registry
+                        .peers()
+                        .iter()
+                        .map(|peer| {
+                            federation::peer_connect_locator(peer.endpoint(), &identity).map_err(
+                                |error| {
+                                    Error::ExecutionFailed(format!(
+                                        "could not render federation peer `{}`: {error}",
+                                        peer.endpoint()
+                                    ))
+                                },
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    self.federation_links_spec = Some(FederationLinksSpec {
+                        extra_listen_endpoints: extra_listen_endpoints.clone(),
+                        identity,
+                        initial_peers,
+                        initial_pinned: false,
+                    });
                 }
 
                 // Resolve this generation's organization namespace once, from the
@@ -189,7 +275,8 @@ impl ServeCommandBuilder {
                         subscriber_buffers,
                         // Standalone: local nodes reach this router over plaintext
                         // loopback TCP. The federation task adds TLS upstream later.
-                        Vec::new(),
+                        initial_connect_endpoints,
+                        extra_listen_endpoints,
                         None,
                     )?,
                 }
@@ -203,6 +290,12 @@ impl ServeCommandBuilder {
                 MessengerAdapter::Mock(MockAdapter::default())
             }
         };
+        if let Some(links) = self.federation_links_spec.as_mut() {
+            links.initial_pinned = match &adapter {
+                MessengerAdapter::Zenoh(adapter) => adapter.router_config_is_pinned(),
+                MessengerAdapter::Mock(_) => false,
+            };
+        }
         let messenger = Arc::new(Mutex::new(Messenger::new(adapter)));
         let (messaging_ready_tx, messaging_ready_rx) = watch::channel(false);
         // Shutdown-side counterpart of `messaging_ready`: the core node signals
@@ -375,6 +468,7 @@ impl ServeCommandBuilder {
             && let Some(messenger) = self.messenger.clone()
             && let Some(messaging_ready) = self.messaging_ready.clone()
             && let Some(core_node_name) = federation_core_node_name
+            && let Some(links) = self.federation_links_spec.take()
         {
             let connect_timeout = self.federation_connect_timeout;
             // Poke channel: `auth login`/`logout` reach the federation loop through
@@ -411,6 +505,7 @@ impl ServeCommandBuilder {
                         // Opens the core node's presence-check gate once the initial
                         // federation poll settles (see above).
                         federation_settled_tx,
+                        links,
                         self.teardown_token.clone(),
                     )));
 
@@ -511,8 +606,41 @@ fn resolve_core_node_name(flag: Option<String>, config: Option<String>) -> Resul
 mod tests {
     use super::*;
 
+    // PMI's managed config filename is keyed by the messaging port, so tests
+    // that successfully render and then inspect it must not overlap.
+    static MANAGED_ROUTER_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn some(s: &str) -> Option<String> {
         Some(s.to_string())
+    }
+
+    fn managed_config(
+        federation_config: daemon_config::peppy_config::FederationConfig,
+    ) -> PeppyConfig {
+        let managed = daemon_config::peppy_config::ManagedZenohConfig {
+            federation: federation_config,
+            ..daemon_config::peppy_config::ManagedZenohConfig::default()
+        };
+        PeppyConfig {
+            zenoh: daemon_config::peppy_config::ZenohConfig::Managed(managed),
+            ..PeppyConfig::default()
+        }
+    }
+
+    fn port_other_than_messaging_port() -> u16 {
+        let messaging_port = extract_messaging_port();
+        if messaging_port == u16::MAX {
+            messaging_port - 1
+        } else {
+            messaging_port + 1
+        }
+    }
+
+    fn execution_error(result: Result<ServeCommandBuilder>) -> Error {
+        match result {
+            Ok(_) => panic!("expected builder startup to fail"),
+            Err(error) => error,
+        }
     }
 
     #[test]
@@ -618,7 +746,11 @@ mod tests {
         );
         assert!(
             !messenger
-                .refederate(vec!["tcp/unused.example:7448".to_string()], None)
+                .refederate(
+                    vec!["tcp/unused.example:7448".to_string()],
+                    Vec::new(),
+                    None,
+                )
                 .expect("external refederation is a no-op"),
             "an external adapter must not own a router config to rewrite"
         );
@@ -644,6 +776,9 @@ mod tests {
 
     #[test]
     fn managed_router_arms_federation() {
+        let _guard = MANAGED_ROUTER_CONFIG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let peppy_config = PeppyConfig {
             zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
                 daemon_config::peppy_config::ManagedZenohConfig::default(),
@@ -662,5 +797,135 @@ mod tests {
             builder.federation_api_url.is_some(),
             "managed mode must arm router federation"
         );
+    }
+
+    #[test]
+    fn managed_federation_registry_listener_and_identity_seed_startup_links() {
+        let _guard = MANAGED_ROUTER_CONFIG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        const PEER_ENDPOINT: &str = "tls/router-a.example:17449";
+
+        let temporary = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(temporary.path());
+        let identity_dir = temporary.path().join("configured-identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let identity = federation::IdentityPaths {
+            cert: identity_dir.join(federation::CERT_FILE),
+            key: identity_dir.join(federation::KEY_FILE),
+            ca: identity_dir.join(federation::CA_CERT_FILE),
+        };
+        for path in [&identity.cert, &identity.key, &identity.ca] {
+            std::fs::write(path, "test material").unwrap();
+        }
+
+        let mut registry = federation::Federations::default();
+        registry
+            .insert(
+                federation::FederationPeer::new(PEER_ENDPOINT, Some("daemon-a".into())).unwrap(),
+            )
+            .unwrap();
+        federation::save(&federation::registry_path(&peppy_dirs), &registry).unwrap();
+
+        let listen_endpoint = format!("tls/0.0.0.0:{}", port_other_than_messaging_port());
+        let config = managed_config(daemon_config::peppy_config::FederationConfig {
+            listen_endpoint: Some(listen_endpoint.clone()),
+            cert_path: Some(identity.cert.clone()),
+            key_path: Some(identity.key.clone()),
+            ca_path: Some(identity.ca.clone()),
+            ..daemon_config::peppy_config::FederationConfig::default()
+        });
+
+        let builder = ServeCommandBuilder::new("/unused", "regression-git-hash", peppy_dirs)
+            .unwrap()
+            .with_peppy_config(config)
+            .with_messaging_router("zenoh".to_string())
+            .expect("valid federation startup state must build");
+
+        let links = builder
+            .federation_links_spec
+            .as_ref()
+            .expect("managed startup must retain its federation link specification");
+        assert_eq!(links.identity, identity);
+        assert_eq!(links.initial_peers, [PEER_ENDPOINT]);
+        assert_eq!(
+            links.extra_listen_endpoints,
+            [federation::listener_locator(&listen_endpoint, &identity).unwrap()]
+        );
+
+        let messenger = builder
+            .messenger_handle()
+            .expect("builder retains its managed messenger");
+        assert!(
+            messenger.blocking_lock().router_links_probe().is_some(),
+            "the registry peer must seed the managed router's boot-time link probe"
+        );
+    }
+
+    #[test]
+    fn managed_federation_listener_rejects_the_messaging_port() {
+        let temporary = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(temporary.path());
+        let config = managed_config(daemon_config::peppy_config::FederationConfig {
+            listen_endpoint: Some(format!("tls/0.0.0.0:{}", extract_messaging_port())),
+            ..daemon_config::peppy_config::FederationConfig::default()
+        });
+
+        let error = execution_error(
+            ServeCommandBuilder::new("/unused", "regression-git-hash", peppy_dirs)
+                .unwrap()
+                .with_peppy_config(config)
+                .with_messaging_router("zenoh".to_string()),
+        );
+        assert!(matches!(error, Error::ExecutionFailed(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("conflicts with the local messaging port")
+        );
+    }
+
+    #[test]
+    fn managed_federation_listener_requires_a_complete_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(temporary.path());
+        let config = managed_config(daemon_config::peppy_config::FederationConfig {
+            listen_endpoint: Some(format!("tls/0.0.0.0:{}", port_other_than_messaging_port())),
+            ..daemon_config::peppy_config::FederationConfig::default()
+        });
+
+        let error = execution_error(
+            ServeCommandBuilder::new("/unused", "regression-git-hash", peppy_dirs)
+                .unwrap()
+                .with_peppy_config(config)
+                .with_messaging_router("zenoh".to_string()),
+        );
+        let message = error.to_string();
+        assert!(matches!(error, Error::ExecutionFailed(_)));
+        assert!(message.contains("listener identity is incomplete"));
+        assert!(message.contains("peppy federation ca init"));
+        assert!(message.contains("peppy federation ca issue"));
+    }
+
+    #[test]
+    fn managed_federation_malformed_registry_fails_startup_loudly() {
+        let temporary = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(temporary.path());
+        let registry_path = federation::registry_path(&peppy_dirs);
+        std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+        std::fs::write(&registry_path, "{ version: 1, federations: [").unwrap();
+
+        let error = execution_error(
+            ServeCommandBuilder::new("/unused", "regression-git-hash", peppy_dirs)
+                .unwrap()
+                .with_peppy_config(managed_config(
+                    daemon_config::peppy_config::FederationConfig::default(),
+                ))
+                .with_messaging_router("zenoh".to_string()),
+        );
+        let message = error.to_string();
+        assert!(matches!(error, Error::ExecutionFailed(_)));
+        assert!(message.contains("could not read federation registry"));
+        assert!(message.contains("failed to parse"));
     }
 }

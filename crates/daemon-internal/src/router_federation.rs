@@ -10,9 +10,11 @@
 //!   own `start_router`), the first poll resolves the upstream and federates the
 //!   local router to it. This task signals a readiness gate to `serve` once that
 //!   first poll completes, so `serve` only reports ready *after* federation is in
-//!   place, bounded by `connect_timeout` so a slow/unreachable backend can't
-//!   stall startup past it (the daemon then proceeds standalone and keeps
-//!   retrying in the background). At the same moments it fires the core node's
+//!   place. Once the local router is ready, backend resolution is bounded by
+//!   `connect_timeout` and router application by [`APPLY_TIMEOUT`], so a slow or
+//!   unreachable backend cannot stall startup indefinitely (the daemon then
+//!   proceeds standalone and keeps retrying in the background). At the same
+//!   moments it fires the core node's
 //!   *presence gate* (`presence_gate_tx`): the core node delays its boot-time
 //!   presence check and declaration until the initial federation has settled,
 //!   so the check sees the federated mesh (a same-name daemon reachable only
@@ -44,9 +46,11 @@
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
+use crate::control::{FederationStatus, PeerReportWire, UNVERIFIED_PEER_REASON};
 use crate::error::{Error, Result};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use daemon_config::consts::PeppyDirs;
+use federation::links::IdentityPaths;
 use pmi::{Messenger, MessengerBackend};
 use std::future::Future;
 use std::path::PathBuf;
@@ -54,6 +58,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -62,16 +67,99 @@ use tracing::{info, warn};
 /// (the resolve bound): a healthy handshake is sub-second, so a tight bound keeps
 /// the whole verifying poll (resolve + zenohd bounce + probe) inside the daemon's
 /// ack budget: `connect_timeout` + [`super::federation_control`]'s
-/// `APPLY_ACK_SLACK`, which is sized to cover this probe. An unreachable /
+/// `APPLY_ACK_SLACK`, which is sized to cover apply plus probe. An unreachable /
 /// firewalled router fails the probe within this bound and surfaces promptly as
 /// [`FederationOutcome::Unreachable`] rather than as a daemon-side ack timeout.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Resolves the desired upstream `(endpoint, tls)` for the local router, or
-/// `None` when there is nothing to federate to (logged out / unreachable). A
-/// boxed closure so tests can inject a deterministic resolver in place of the
-/// real (blocking, networked) `resolve_federation_target`.
-type Resolver = Arc<dyn Fn() -> Option<(String, pmi::TlsConfig)> + Send + Sync>;
+/// Post-resolve budget for rewriting the managed router and waiting for zenohd
+/// to accept connections again. Kept separate from the backend resolve timeout.
+pub(crate) const APPLY_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Failed resolves or rewrites are retried without turning the federation loop
+/// back into a keepalive poll. Once desired state applies, the timer is idle and
+/// zenohd owns link reconnection.
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// Static listener and identity inputs resolved once when the daemon starts.
+#[derive(Debug, Clone)]
+pub(crate) struct FederationLinksSpec {
+    pub(crate) extra_listen_endpoints: Vec<String>,
+    pub(crate) identity: IdentityPaths,
+    pub(crate) initial_peers: Vec<String>,
+    pub(crate) initial_pinned: bool,
+}
+
+impl FederationLinksSpec {
+    fn listen_endpoint(&self) -> Option<String> {
+        if self.initial_pinned {
+            return None;
+        }
+        self.extra_listen_endpoints
+            .first()
+            .map(|endpoint| endpoint_without_fragment(endpoint).to_string())
+    }
+}
+
+/// One user-managed router federation target. The durable endpoint remains
+/// separate from the rendered locator so status and registry joins never key
+/// off TLS fragment text.
+#[derive(Debug, Clone)]
+struct DesiredPeer {
+    endpoint: String,
+    locator: String,
+    probe_tls: pmi::TlsConfig,
+}
+
+#[derive(Debug)]
+enum ProbeTarget {
+    Backend,
+    Peer(String),
+}
+
+/// Complete desired router state from backend credentials plus the user peer
+/// registry.
+#[derive(Debug, Clone, Default)]
+struct DesiredFederation {
+    backend: Option<(String, pmi::TlsConfig)>,
+    peers: Vec<DesiredPeer>,
+}
+
+impl DesiredFederation {
+    fn backend_endpoint(&self) -> Option<String> {
+        self.backend
+            .as_ref()
+            .map(|(locator, _)| endpoint_without_fragment(locator).to_string())
+    }
+
+    fn peer_endpoints(&self) -> Vec<String> {
+        let mut endpoints: Vec<String> = self
+            .peers
+            .iter()
+            .map(|peer| peer.endpoint.clone())
+            .collect();
+        endpoints.sort();
+        endpoints
+    }
+
+    fn connect_locators(&self) -> Vec<String> {
+        self.backend
+            .iter()
+            .map(|(locator, _)| locator.clone())
+            .chain(self.peers.iter().map(|peer| peer.locator.clone()))
+            .collect()
+    }
+}
+
+fn endpoint_without_fragment(locator: &str) -> &str {
+    locator
+        .split_once('#')
+        .map_or(locator, |(endpoint, _)| endpoint)
+}
+
+/// Resolves the full desired state. Registry parse or read failures remain
+/// explicit so a bad file never silently drops existing links.
+type Resolver = Arc<dyn Fn() -> std::result::Result<DesiredFederation, String> + Send + Sync>;
 
 /// The future a [`Prober`] returns: `Ok(())` if the upstream's TLS link
 /// validates, `Err(reason)` (human-readable) otherwise.
@@ -91,6 +179,27 @@ fn real_prober() -> Prober {
     })
 }
 
+async fn probe_with_bound(
+    prober: Prober,
+    host: String,
+    port: u16,
+    tls: pmi::TlsConfig,
+    timeout: Duration,
+) -> std::result::Result<(), String> {
+    let address = format!("{host}:{port}");
+    match tokio::time::timeout(
+        timeout,
+        async move { prober(host, port, tls, timeout).await },
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "federation probe to {address} timed out after {timeout:?}"
+        )),
+    }
+}
+
 /// The future a [`Federator`] returns: `Ok(true)` ⇒ the local router's config was
 /// (re)rendered and zenohd bounced, `Ok(false)` ⇒ nothing was applied because the
 /// managed router uses a pinned `ZENOH_CONFIG`, `Err` ⇒ the apply failed.
@@ -101,15 +210,42 @@ type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 /// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned), in place of the
 /// real [`refederate_and_restart`], whose mock backend can only ever report
 /// `Ok(false)` and so cannot exercise the applied/verify path.
-type Federator = Arc<dyn Fn(Option<(String, pmi::TlsConfig)>) -> FederateFuture + Send + Sync>;
+type Federator = Arc<dyn Fn(Vec<String>) -> FederateFuture + Send + Sync>;
 
 /// The real federator: re-render the owned router's config with the upstream and,
 /// if it changed, bounce zenohd (see [`refederate_and_restart`]).
-fn real_federator(messenger: Arc<Mutex<Messenger>>) -> Federator {
-    Arc::new(move |target| -> FederateFuture {
+fn real_federator(
+    messenger: Arc<Mutex<Messenger>>,
+    extra_listen_endpoints: Vec<String>,
+) -> Federator {
+    Arc::new(move |connect_endpoints| -> FederateFuture {
         let messenger = messenger.clone();
-        Box::pin(async move { refederate_and_restart(&messenger, &target).await })
+        let extra_listen_endpoints = extra_listen_endpoints.clone();
+        Box::pin(async move {
+            refederate_and_restart(&messenger, connect_endpoints, extra_listen_endpoints).await
+        })
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PeerReport {
+    pub(crate) endpoint: String,
+    pub(crate) error: Option<String>,
+}
+
+impl From<PeerReport> for PeerReportWire {
+    fn from(report: PeerReport) -> Self {
+        Self {
+            endpoint: report.endpoint,
+            error: report.error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppliedFederation {
+    pub(crate) backend: Option<String>,
+    pub(crate) peers: Vec<PeerReport>,
 }
 
 /// Outcome of one federation poll, reported back to a control-socket poke so the
@@ -120,7 +256,7 @@ pub(crate) enum FederationOutcome {
     /// de-federated. Covers both "just applied" and "already in place" (a no-op
     /// poll where the upstream was unchanged). On a login poke this means the TLS
     /// link to the upstream was also verified to validate.
-    Applied(Option<String>),
+    Applied(AppliedFederation),
     /// The managed router uses a pinned `ZENOH_CONFIG`, so nothing changed.
     Pinned,
     /// The resolve or apply failed; the periodic loop will keep retrying.
@@ -129,7 +265,10 @@ pub(crate) enum FederationOutcome {
     /// to the per-user cloud router could not be established/validated, so
     /// federation with platform-backend is NOT actually in effect (e.g. an
     /// UnknownCA handshake loop). Only a verifying poke produces this.
-    Unreachable(String),
+    Unreachable {
+        reason: String,
+        applied: AppliedFederation,
+    },
     /// The credentials changed the daemon's *organization namespace*. A session's
     /// namespace is immutable after open and the core node holds long-lived
     /// declarations, so the change cannot be applied to the live session by a
@@ -162,16 +301,20 @@ fn real_namespace_resolver(creds_path: PathBuf) -> NamespaceResolver {
     })
 }
 
-/// A "refederate now" request from the control socket: run a poll immediately and
-/// reply with the resulting [`FederationOutcome`] over `ack`.
-pub(crate) struct RefederateRequest {
-    pub(crate) ack: oneshot::Sender<FederationOutcome>,
+/// Requests accepted from the control socket.
+pub(crate) enum FederationRequest {
+    Refederate {
+        ack: oneshot::Sender<FederationOutcome>,
+    },
+    Status {
+        ack: oneshot::Sender<FederationStatus>,
+    },
 }
 
 /// Sends pokes to the federation loop (held by [`FederationControl`]).
-pub(crate) type TriggerSender = mpsc::Sender<RefederateRequest>;
+pub(crate) type TriggerSender = mpsc::Sender<FederationRequest>;
 /// Receives pokes in the federation loop.
-pub(crate) type TriggerReceiver = mpsc::Receiver<RefederateRequest>;
+pub(crate) type TriggerReceiver = mpsc::Receiver<FederationRequest>;
 
 /// Background task (a [`ServeAsyncCommand`]) that federates the local router to
 /// the per-user cloud router and keeps it federated. See the module docs.
@@ -185,8 +328,8 @@ pub(crate) struct RouterFederation {
     messaging_ready: watch::Receiver<bool>,
     /// Immediate-refederation pokes from the control socket.
     trigger_rx: TriggerReceiver,
-    /// Bound on the initial federation (the startup gate) and on each resolve, so
-    /// a slow/unreachable backend can't stall startup or a poll past it.
+    /// Bound on backend resolution after the local router is ready. Router
+    /// application receives the separate [`APPLY_TIMEOUT`] budget.
     connect_timeout: Duration,
     /// This generation's organization namespace, resolved once at startup. A poll
     /// that re-resolves a *different* namespace from fresh creds requests a
@@ -212,6 +355,12 @@ pub(crate) struct RouterFederation {
     /// Shared coordinator token: the task tears down when it is cancelled (an
     /// in-process restart) or on a real OS shutdown signal.
     teardown_token: CancellationToken,
+    /// Peers already rendered into zenohd's spawn config by the builder.
+    initial_peers: Vec<String>,
+    /// Raw inbound listener endpoint for status reporting.
+    listen_endpoint: Option<String>,
+    /// Whether the router was operator-pinned before the federation task began.
+    initial_pinned: bool,
 }
 
 impl RouterFederation {
@@ -227,22 +376,51 @@ impl RouterFederation {
         startup_namespace: String,
         restart_tx: watch::Sender<bool>,
         presence_gate_tx: Option<watch::Sender<bool>>,
+        links: FederationLinksSpec,
         teardown_token: CancellationToken,
     ) -> Self {
         // Both ambient inputs the loop re-reads on every poll derive from the
         // generation's data root: the credentials file (namespace re-resolve)
         // and the federation resolve (credentials + materialized dev TLS).
         let creds_path = auth::storage::credentials_path(&peppy_dirs);
+        let resolver_dirs = peppy_dirs.clone();
+        let identity = links.identity.clone();
         let resolver: Resolver = Arc::new(move || {
-            auth::router::resolve_federation_target(
-                &peppy_dirs,
+            let backend = auth::router::resolve_federation_target(
+                &resolver_dirs,
                 &api_url,
                 connect_timeout,
                 &core_node_name,
             )
+            .map(|(endpoint, tls)| {
+                federation::backend_connect_locator(&endpoint, &tls)
+                    .map(|locator| (locator, tls))
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+
+            let registry = federation::load(&federation::registry_path(&resolver_dirs))
+                .map_err(|error| error.to_string())?;
+            let peers = registry
+                .peers()
+                .iter()
+                .map(|peer| {
+                    let endpoint = peer.endpoint().to_string();
+                    federation::peer_connect_locator(peer.endpoint(), &identity)
+                        .map(|locator| DesiredPeer {
+                            endpoint,
+                            locator,
+                            probe_tls: federation::peer_probe_tls(&identity),
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            Ok(DesiredFederation { backend, peers })
         });
+        let listen_endpoint = links.listen_endpoint();
         Self {
-            federator: real_federator(messenger),
+            federator: real_federator(messenger, links.extra_listen_endpoints),
             resolver,
             prober: real_prober(),
             messaging_ready,
@@ -253,6 +431,9 @@ impl RouterFederation {
             restart_tx,
             presence_gate_tx,
             teardown_token,
+            initial_peers: links.initial_peers,
+            listen_endpoint,
+            initial_pinned: links.initial_pinned,
         }
     }
 }
@@ -271,22 +452,27 @@ impl ServeAsyncCommand for RouterFederation {
             restart_tx,
             presence_gate_tx,
             teardown_token,
+            initial_peers,
+            listen_endpoint,
+            initial_pinned,
         } = *self;
         // Readiness gate: fired by `manage_federation` once the first federation
-        // poll completes (or the timeout elapses), so `serve` blocks on federation
-        // being in place but never longer than `connect_timeout`. `serve` treats
-        // this gate as non-fatal, so a drop here (e.g. shutdown wins the race
-        // below before it fires) degrades to "proceed standalone", never a crash.
+        // poll completes (or one of its bounds elapses), so after the local
+        // router is ready `serve` blocks at most `connect_timeout` for resolution
+        // plus `APPLY_TIMEOUT` for router application. `serve` treats this gate
+        // as non-fatal, so a drop here (e.g. shutdown wins the race below before
+        // it fires) degrades to "proceed standalone", never a crash.
         let (ready_tx, ready_rx) = oneshot::channel();
         let future = Box::pin(async move {
             // Race the maintenance loop against shutdown (a real signal or an
             // in-process restart via the shared token) so the daemon can exit
             // promptly (the loop is otherwise infinite).
             tokio::select! {
-                _ = manage_federation(
+                _ = manage_federation_with_links(
                     federator, resolver, prober, messaging_ready, trigger_rx, ready_tx,
                     connect_timeout, startup_namespace, namespace_resolver, restart_tx,
-                    presence_gate_tx,
+                    presence_gate_tx, initial_peers, listen_endpoint,
+                    initial_pinned,
                 ) => {}
                 _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
@@ -301,8 +487,8 @@ impl ServeAsyncCommand for RouterFederation {
 /// node's presence gate (a `watch`, so re-sends are harmless). The two fire at
 /// the same moments so the core node's boot presence check is delayed exactly
 /// as long as `serve`'s own readiness: until the initial federation settled,
-/// bounded by `connect_timeout`, and fail-open (a dropped sender ⇒ the waiter
-/// proceeds).
+/// bounded after local-router readiness by `connect_timeout` plus
+/// [`APPLY_TIMEOUT`], and fail-open (a dropped sender ⇒ the waiter proceeds).
 fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watch::Sender<bool>>) {
     if let Some(tx) = gate.take() {
         let _ = tx.send(());
@@ -322,12 +508,17 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watc
 /// [`FederationOutcome::Pinned`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct AppliedState {
-    /// The upstream now in effect: `Some(ep)` federated to `ep`, `None`
-    /// de-federated / nothing federated.
-    endpoint: Option<String>,
+    /// Platform backend endpoint now in effect.
+    backend: Option<String>,
+    /// User peer endpoints now rendered into the managed router config.
+    peers: Vec<String>,
     /// Whether the managed router uses a pinned `ZENOH_CONFIG` (so the desired
     /// change was not applied here), replayed so identical repeats stay `Pinned`.
     pinned: bool,
+    /// The last verifying poke found a TLS failure. A later verifying poke must
+    /// bounce the router even when endpoints are unchanged, because the user may
+    /// have replaced local certificate files before re-running the command.
+    needs_reapply: bool,
 }
 
 /// Waits for the router to come up, runs the initial federation (firing the
@@ -337,18 +528,109 @@ struct AppliedState {
 /// the local router holds its upstream link open on its own and the backend
 /// actively health-checks this daemon.
 #[allow(clippy::too_many_arguments)]
-async fn manage_federation(
+async fn manage_federation_with_links(
     federator: Federator,
     resolver: Resolver,
     prober: Prober,
-    mut messaging_ready: watch::Receiver<bool>,
-    mut trigger_rx: TriggerReceiver,
+    messaging_ready: watch::Receiver<bool>,
+    trigger_rx: TriggerReceiver,
     ready_tx: oneshot::Sender<()>,
     connect_timeout: Duration,
     startup_namespace: String,
     namespace_resolver: NamespaceResolver,
     restart_tx: watch::Sender<bool>,
     presence_gate_tx: Option<watch::Sender<bool>>,
+    initial_peers: Vec<String>,
+    listen_endpoint: Option<String>,
+    initial_pinned: bool,
+) {
+    let mut status_peers = initial_peers.clone();
+    status_peers.sort();
+    status_peers.dedup();
+    let (status_tx, status_rx) = watch::channel(FederationStatus {
+        backend: None,
+        peers: status_peers
+            .into_iter()
+            .map(|endpoint| PeerReportWire {
+                endpoint,
+                error: Some(UNVERIFIED_PEER_REASON.to_string()),
+            })
+            .collect(),
+        listen_endpoint: listen_endpoint.clone(),
+        pinned: initial_pinned,
+    });
+    let (refederate_tx, refederate_rx) = mpsc::unbounded_channel();
+
+    // Run request dispatch in its own task. Router lifecycle code may spend
+    // time in process-management work, and a sibling future in this same task
+    // would not be polled while that work is in progress.
+    let dispatcher = tokio::spawn(dispatch_federation_requests(
+        trigger_rx,
+        refederate_tx,
+        status_rx,
+    ));
+    manage_federation_core(
+        federator,
+        resolver,
+        prober,
+        messaging_ready,
+        refederate_rx,
+        ready_tx,
+        connect_timeout,
+        startup_namespace,
+        namespace_resolver,
+        restart_tx,
+        presence_gate_tx,
+        initial_peers,
+        listen_endpoint,
+        initial_pinned,
+        status_tx,
+    )
+    .await;
+    dispatcher.abort();
+}
+
+/// Keeps status queries responsive while a refederation is resolving, bouncing
+/// zenohd, or probing links. Refederation work remains serialized in the core
+/// loop; cached status requests are answered directly from the watch value.
+async fn dispatch_federation_requests(
+    mut trigger_rx: TriggerReceiver,
+    refederate_tx: mpsc::UnboundedSender<oneshot::Sender<FederationOutcome>>,
+    status_rx: watch::Receiver<FederationStatus>,
+) {
+    while let Some(request) = trigger_rx.recv().await {
+        match request {
+            FederationRequest::Status { ack } => {
+                let _ = ack.send(status_rx.borrow().clone());
+            }
+            FederationRequest::Refederate { ack } => {
+                if let Err(error) = refederate_tx.send(ack) {
+                    let _ = error.0.send(FederationOutcome::Failed(
+                        "federation task not running".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn manage_federation_core(
+    federator: Federator,
+    resolver: Resolver,
+    prober: Prober,
+    mut messaging_ready: watch::Receiver<bool>,
+    mut refederate_rx: mpsc::UnboundedReceiver<oneshot::Sender<FederationOutcome>>,
+    ready_tx: oneshot::Sender<()>,
+    connect_timeout: Duration,
+    startup_namespace: String,
+    namespace_resolver: NamespaceResolver,
+    restart_tx: watch::Sender<bool>,
+    presence_gate_tx: Option<watch::Sender<bool>>,
+    mut initial_peers: Vec<String>,
+    listen_endpoint: Option<String>,
+    initial_pinned: bool,
+    status_tx: watch::Sender<FederationStatus>,
 ) {
     let mut ready_tx = Some(ready_tx);
 
@@ -381,17 +663,21 @@ async fn manage_federation(
     }
 
     // Phase 2: initial federation. The router was started standalone, so nothing
-    // is federated yet. The resolve inside is itself bounded by `connect_timeout`,
-    // so this completes (and unblocks startup) within the bound plus a fast local
-    // bounce, even if the user is logged in but the backend is unreachable. The
+    // is federated yet. Resolution is bounded by `connect_timeout` and the local
+    // router apply by `APPLY_TIMEOUT`, so this completes within their combined
+    // bound even if the user is logged in but the backend is unreachable. The
     // initial poll does not verify (`verify = false`): startup must not block on a
     // TLS handshake, and the verifying check belongs to the login poke.
     // A managed router starts standalone, so `None` is already applied. A
     // pinned `ZENOH_CONFIG` is detected only if applying a later change returns
     // `Ok(false)`.
+    initial_peers.sort();
+    initial_peers.dedup();
     let mut applied = AppliedState {
-        endpoint: None,
-        pinned: false,
+        backend: None,
+        peers: initial_peers,
+        pinned: initial_pinned,
+        needs_reapply: false,
     };
     let initial_outcome = poll_and_apply(
         &federator,
@@ -404,6 +690,26 @@ async fn manage_federation(
         &namespace_resolver,
     )
     .await;
+    let mut last_peer_reports = match &initial_outcome {
+        FederationOutcome::Applied(report)
+        | FederationOutcome::Unreachable {
+            applied: report, ..
+        } => report.peers.clone(),
+        _ => applied
+            .peers
+            .iter()
+            .cloned()
+            .map(|endpoint| PeerReport {
+                endpoint,
+                error: Some(UNVERIFIED_PEER_REASON.to_string()),
+            })
+            .collect(),
+    };
+    status_tx.send_replace(status_from_cache(
+        &applied,
+        &last_peer_reports,
+        listen_endpoint.as_ref(),
+    ));
     fire_gate(&mut ready_tx, &presence_gate_tx);
 
     // The initial poll re-pulled the federation config, so the credentials now
@@ -417,7 +723,7 @@ async fn manage_federation(
     // (which flushes its ack first); the startup poll has no ack to flush, so it
     // raises the signal directly. The rebuilt generation resolves the namespace
     // afresh and federates normally.
-    if matches!(initial_outcome, FederationOutcome::Restart) {
+    if matches!(&initial_outcome, FederationOutcome::Restart) {
         info!(
             "router federation: startup resolved a namespace that differs from this generation's; \
              requesting a daemon restart instead of federating under the wrong namespace"
@@ -426,32 +732,92 @@ async fn manage_federation(
         return;
     }
 
-    // Phase 3, steady state: react to immediate login/logout pokes from `auth
-    // login`/`logout`. There is no periodic keepalive: the local router keeps its
-    // upstream link alive on its own (`reconnect: true`), and the backend now
-    // probes this daemon's `/health` service for liveness, so re-resolving on a
-    // timer is no longer needed. When every trigger sender drops (the control
-    // listener is gone, only at teardown in practice) there is nothing left to
-    // react to, so the loop ends and the task exits.
-    while let Some(req) = trigger_rx.recv().await {
-        // A login/logout poke verifies the link (`verify = true`) so the CLI
-        // learns whether federation actually validates.
+    // Phase 3, steady state: react to immediate CLI pokes. A failed resolve or
+    // rewrite is retried on a short timer until desired state applies. This is
+    // not a keepalive poll: after success the timer goes idle and zenohd owns
+    // link reconnection.
+    enum Work {
+        Poke(oneshot::Sender<FederationOutcome>),
+        Retry,
+    }
+    let mut retry_pending = matches!(&initial_outcome, FederationOutcome::Failed(_));
+    loop {
+        let work = if retry_pending {
+            tokio::select! {
+                request = refederate_rx.recv() => match request {
+                    Some(ack) => Work::Poke(ack),
+                    None => break,
+                },
+                _ = tokio::time::sleep(RETRY_DELAY) => Work::Retry,
+            }
+        } else {
+            let Some(ack) = refederate_rx.recv().await else {
+                break;
+            };
+            Work::Poke(ack)
+        };
+        let verify = matches!(&work, Work::Poke(_));
         let outcome = poll_and_apply(
             &federator,
             &resolver,
             &prober,
             connect_timeout,
             &mut applied,
-            true,
+            verify,
             &startup_namespace,
             &namespace_resolver,
         )
         .await;
-        // The CLI may have already given up (read timeout); ignore. On a namespace
-        // change this acks `Restart`; the control handler (`handle_conn`) flushes
-        // that ack and only then raises the in-process restart signal, so the
-        // restart is never triggered from this loop.
-        let _ = req.ack.send(outcome);
+        match &outcome {
+            FederationOutcome::Applied(report)
+            | FederationOutcome::Unreachable {
+                applied: report, ..
+            } => last_peer_reports = report.peers.clone(),
+            _ => {}
+        }
+        status_tx.send_replace(status_from_cache(
+            &applied,
+            &last_peer_reports,
+            listen_endpoint.as_ref(),
+        ));
+        retry_pending = matches!(&outcome, FederationOutcome::Failed(_));
+        match work {
+            Work::Poke(ack) => {
+                // The CLI may have already given up (read timeout); ignore. On
+                // a namespace change the control handler raises the restart
+                // after attempting to flush `Restarting`.
+                let _ = ack.send(outcome);
+            }
+            Work::Retry if matches!(&outcome, FederationOutcome::Restart) => {
+                let _ = restart_tx.send(true);
+                return;
+            }
+            Work::Retry => {}
+        }
+    }
+}
+
+fn status_from_cache(
+    applied: &AppliedState,
+    last_peer_reports: &[PeerReport],
+    listen_endpoint: Option<&String>,
+) -> FederationStatus {
+    let errors: std::collections::BTreeMap<&str, Option<String>> = last_peer_reports
+        .iter()
+        .map(|report| (report.endpoint.as_str(), report.error.clone()))
+        .collect();
+    FederationStatus {
+        backend: applied.backend.clone(),
+        peers: applied
+            .peers
+            .iter()
+            .map(|endpoint| PeerReportWire {
+                endpoint: endpoint.clone(),
+                error: errors.get(endpoint.as_str()).cloned().flatten(),
+            })
+            .collect(),
+        listen_endpoint: listen_endpoint.cloned(),
+        pinned: applied.pinned,
     }
 }
 
@@ -475,6 +841,36 @@ async fn poll_and_apply(
     startup_namespace: &str,
     namespace_resolver: &NamespaceResolver,
 ) -> FederationOutcome {
+    poll_and_apply_with_apply_timeout(
+        federator,
+        resolver,
+        prober,
+        connect_timeout,
+        APPLY_TIMEOUT,
+        applied,
+        verify,
+        startup_namespace,
+        namespace_resolver,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn poll_and_apply_with_apply_timeout(
+    federator: &Federator,
+    resolver: &Resolver,
+    prober: &Prober,
+    connect_timeout: Duration,
+    apply_timeout: Duration,
+    applied: &mut AppliedState,
+    verify: bool,
+    startup_namespace: &str,
+    namespace_resolver: &NamespaceResolver,
+) -> FederationOutcome {
+    // Backend resolution and the namespace refresh share the configured
+    // resolve deadline. Router process work receives its own bounded budget.
+    let resolve_deadline = tokio::time::Instant::now() + connect_timeout;
+
     // The resolver is blocking (HTTP + file I/O); keep it off the async worker. It
     // also re-pulls the cloud router's config when the cached copy has gone stale
     // (cache freshness only, not a keepalive). Bound the whole resolve by
@@ -482,13 +878,17 @@ async fn poll_and_apply(
     // stall a poll (or the startup gate) past it; the timed-out blocking thread is
     // harmless (its own HTTP timeout ends it) and its result is simply discarded.
     let resolver = resolver.clone();
-    let resolved = match tokio::time::timeout(
-        connect_timeout,
+    let resolved = match tokio::time::timeout_at(
+        resolve_deadline,
         tokio::task::spawn_blocking(move || resolver()),
     )
     .await
     {
-        Ok(Ok(t)) => t,
+        Ok(Ok(Ok(t))) => t,
+        Ok(Ok(Err(message))) => {
+            warn!(error = %message, "router federation: desired-state resolve failed; will retry");
+            return FederationOutcome::Failed(message);
+        }
         Ok(Err(e)) => {
             warn!(error = %e, "router federation: resolve task panicked; will retry");
             return FederationOutcome::Failed(format!("resolve task panicked: {e}"));
@@ -509,14 +909,23 @@ async fn poll_and_apply(
     // restart; the initial (non-poke) poll discards this outcome but, crucially,
     // also does not federate, so it stays fail-closed until the next generation.
     // Like the resolve above, the namespace re-resolve is blocking (a file-backed
-    // credentials read); keep it off the async worker. No timeout bound: it is a
-    // local read, not a network pull.
+    // credentials read); keep it off the async worker and inside the same poll
+    // deadline so unusual filesystem stalls cannot consume the control ack.
     let namespace_resolver = namespace_resolver.clone();
-    let current_namespace = match tokio::task::spawn_blocking(move || namespace_resolver()).await {
-        Ok(ns) => ns,
-        Err(e) => {
+    let current_namespace = match tokio::time::timeout_at(
+        resolve_deadline,
+        tokio::task::spawn_blocking(move || namespace_resolver()),
+    )
+    .await
+    {
+        Ok(Ok(ns)) => ns,
+        Ok(Err(e)) => {
             warn!(error = %e, "router federation: namespace resolve task panicked; will retry");
             return FederationOutcome::Failed(format!("namespace resolve task panicked: {e}"));
+        }
+        Err(_) => {
+            warn!("router federation: namespace resolve timed out; will retry");
+            return FederationOutcome::Failed("namespace resolve timed out".to_string());
         }
     };
     if current_namespace != startup_namespace {
@@ -529,29 +938,29 @@ async fn poll_and_apply(
         return FederationOutcome::Restart;
     }
 
-    let desired = resolved.as_ref().map(|(ep, _)| ep.clone());
+    let desired_backend = resolved.backend_endpoint();
+    let desired_peers = resolved.peer_endpoints();
+    let unchanged = desired_backend == applied.backend && desired_peers == applied.peers;
 
-    // Apply the change (or note the no-op) and derive the base outcome.
-    let outcome = if desired == applied.endpoint {
-        // Steady state (including the cache-gated re-pull): the upstream is
-        // unchanged, so there is nothing to re-render or restart. Replay the last
-        // outcome, crucially preserving `Pinned`, so an identical repeat of an
-        // operator-pinned target is not misreported as a positive `Applied`.
+    // Apply the full backend plus peer union, or replay the cached outcome when
+    // the endpoint-keyed set is unchanged.
+    let should_apply = !unchanged || (verify && applied.needs_reapply);
+    if !should_apply {
         if applied.pinned {
-            FederationOutcome::Pinned
-        } else {
-            FederationOutcome::Applied(applied.endpoint.clone())
+            return FederationOutcome::Pinned;
         }
     } else {
-        // Bound the apply (config re-render + zenohd bounce) like the resolve
-        // above: it awaits the messenger lock and stops/starts the router, so a
+        // Give the apply (config re-render + zenohd bounce) its own bound after
+        // resolution: it awaits the messenger lock and stops/starts the router, so a
         // wedged holder (e.g. a stuck watchdog restart) would otherwise keep the
         // startup readiness gate closed and the poke loop stuck indefinitely.
         // On timeout `applied` is left unchanged so the next poll retries. If
         // the timeout lands between the router stop and start, the watchdog
         // notices the dead router and respawns it with the already-rewritten
         // config, so the router cannot stay down.
-        match tokio::time::timeout(connect_timeout, federator(resolved.clone())).await {
+        let apply_deadline = tokio::time::Instant::now() + apply_timeout;
+        match tokio::time::timeout_at(apply_deadline, federator(resolved.connect_locators())).await
+        {
             Err(_elapsed) => {
                 warn!(
                     "router federation: applying the upstream change timed out, so federation \
@@ -561,21 +970,17 @@ async fn poll_and_apply(
                 return FederationOutcome::Failed("apply timed out".to_string());
             }
             Ok(Ok(true)) => {
-                match &desired {
-                    Some(ep) => {
-                        info!(upstream = %ep, "router federation: (re)federated local router to cloud router")
-                    }
-                    None => {
-                        info!(
-                            "router federation: de-federated local router (logged out / no upstream)"
-                        )
-                    }
-                }
+                info!(
+                    backend = ?desired_backend,
+                    peers = ?desired_peers,
+                    "router federation: applied desired backend and user-peer links"
+                );
                 *applied = AppliedState {
-                    endpoint: desired.clone(),
+                    backend: desired_backend.clone(),
+                    peers: desired_peers.clone(),
                     pinned: false,
+                    needs_reapply: false,
                 };
-                FederationOutcome::Applied(desired.clone())
             }
             Ok(Ok(false)) => {
                 // A managed router with a pinned `ZENOH_CONFIG` cannot be changed
@@ -588,10 +993,12 @@ async fn poll_and_apply(
                      ZENOH_CONFIG; the desired federation change was not applied"
                 );
                 *applied = AppliedState {
-                    endpoint: desired,
+                    backend: desired_backend,
+                    peers: desired_peers,
                     pinned: true,
+                    needs_reapply: false,
                 };
-                FederationOutcome::Pinned
+                return FederationOutcome::Pinned;
             }
             Ok(Err(e)) => {
                 // Leave `applied` unchanged so the next poll retries the apply.
@@ -603,49 +1010,110 @@ async fn poll_and_apply(
                 return FederationOutcome::Failed(e.to_string());
             }
         }
-    };
+    }
 
-    // Verify reachability only on a poke (`verify`), and only when an upstream is
-    // actually in effect. The non-verifying initial federation never reaches here.
-    // A failed handshake means the local router was federated but the link to
-    // platform-backend does not validate (e.g. UnknownCA), so federation is not
-    // really in effect.
-    if verify
-        && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
-            (&outcome, resolved.as_ref())
-    {
-        match auth::client::split_locator(ep).ok() {
-            Some((host, port)) => {
-                // Bound the probe by the small dedicated PROBE_TIMEOUT (NOT
-                // connect_timeout) so resolve + bounce + probe stays within the
-                // daemon's ack budget; otherwise a slow/unreachable router would
-                // blow the budget and surface as a generic ack timeout instead of
-                // the actionable Unreachable.
-                if let Err(reason) = prober(host, port, tls.clone(), PROBE_TIMEOUT).await {
-                    warn!(
-                        upstream = %ep, reason = %reason,
-                        "router federation: the local router was (re)federated, but the TLS \
-                         link to the per-user cloud router on platform-backend could not be \
-                         established; federation with platform-backend is NOT in effect \
-                         (check the router certificate / dev CA); will keep retrying"
-                    );
-                    return FederationOutcome::Unreachable(reason);
+    let mut peer_errors = std::collections::BTreeMap::new();
+    let mut backend_error = None;
+    if verify {
+        // Every probe is individually bounded and all probes run concurrently,
+        // keeping total verification inside the control-socket ack budget.
+        let mut probes = JoinSet::new();
+        if let Some((locator, tls)) = &resolved.backend {
+            let endpoint = endpoint_without_fragment(locator);
+            match daemon_config::peppy_config::parse_endpoint(
+                endpoint,
+                "tls",
+                daemon_config::peppy_config::EndpointPurpose::Dial,
+            ) {
+                Ok(parsed) => {
+                    let prober = prober.clone();
+                    let tls = tls.clone();
+                    let host = parsed.host.to_string();
+                    let port = parsed.port;
+                    probes.spawn(async move {
+                        (
+                            ProbeTarget::Backend,
+                            probe_with_bound(prober, host, port, tls, PROBE_TIMEOUT).await,
+                        )
+                    });
+                }
+                Err(_) => {
+                    backend_error = Some(format!("could not parse upstream endpoint `{endpoint}`"));
                 }
             }
-            None => {
-                warn!(
-                    upstream = %ep,
-                    "router federation: could not parse the upstream endpoint to verify the \
-                     federation link to platform-backend"
-                );
-                return FederationOutcome::Unreachable(format!(
-                    "could not parse upstream endpoint `{ep}`"
-                ));
+        }
+        for peer in &resolved.peers {
+            match daemon_config::peppy_config::parse_endpoint(
+                &peer.endpoint,
+                "tls",
+                daemon_config::peppy_config::EndpointPurpose::Dial,
+            ) {
+                Ok(parsed) => {
+                    let prober = prober.clone();
+                    let tls = peer.probe_tls.clone();
+                    let endpoint = peer.endpoint.clone();
+                    let host = parsed.host.to_string();
+                    let port = parsed.port;
+                    probes.spawn(async move {
+                        let result = probe_with_bound(prober, host, port, tls, PROBE_TIMEOUT).await;
+                        (ProbeTarget::Peer(endpoint), result)
+                    });
+                }
+                Err(_) => {
+                    peer_errors.insert(
+                        peer.endpoint.clone(),
+                        format!("could not parse peer endpoint `{}`", peer.endpoint),
+                    );
+                }
+            }
+        }
+
+        while let Some(joined) = probes.join_next().await {
+            match joined {
+                Ok((ProbeTarget::Backend, Err(reason))) => backend_error = Some(reason),
+                Ok((ProbeTarget::Peer(endpoint), Err(reason))) => {
+                    peer_errors.insert(endpoint, reason);
+                }
+                Ok((_, Ok(()))) => {}
+                Err(error) => {
+                    return FederationOutcome::Failed(format!(
+                        "federation probe task failed: {error}"
+                    ));
+                }
             }
         }
     }
 
-    outcome
+    let peer_failed = !peer_errors.is_empty();
+    let mut peers: Vec<PeerReport> = resolved
+        .peers
+        .iter()
+        .map(|peer| PeerReport {
+            endpoint: peer.endpoint.clone(),
+            error: if verify {
+                peer_errors.remove(&peer.endpoint)
+            } else {
+                Some(UNVERIFIED_PEER_REASON.to_string())
+            },
+        })
+        .collect();
+    peers.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
+    applied.needs_reapply = backend_error.is_some() || peer_failed;
+    let applied_report = AppliedFederation {
+        backend: resolved.backend_endpoint(),
+        peers,
+    };
+    if let Some(reason) = backend_error {
+        warn!(
+            reason = %reason,
+            "router federation: platform-backend link did not validate"
+        );
+        return FederationOutcome::Unreachable {
+            reason,
+            applied: applied_report,
+        };
+    }
+    FederationOutcome::Applied(applied_report)
 }
 
 /// Re-renders the local router's config with the (possibly empty) upstream and,
@@ -659,15 +1127,12 @@ async fn poll_and_apply(
 /// router bounced.
 async fn refederate_and_restart(
     messenger: &Arc<Mutex<Messenger>>,
-    target: &Option<(String, pmi::TlsConfig)>,
+    connect_endpoints: Vec<String>,
+    extra_listen_endpoints: Vec<String>,
 ) -> Result<bool> {
-    let (connect_endpoints, tls) = match target {
-        Some((ep, tls)) => (vec![ep.clone()], Some(tls.clone())),
-        None => (Vec::new(), None),
-    };
     let mut messenger = messenger.lock().await;
     let rewrote = messenger
-        .refederate(connect_endpoints, tls)
+        .refederate(connect_endpoints, extra_listen_endpoints, None)
         .map_err(Error::PeppyMessagingInterface)?;
     if !rewrote {
         // The managed router uses a pinned `ZENOH_CONFIG`, so bouncing zenohd
@@ -693,6 +1158,39 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     const ENDPOINT: &str = "tls/cap.zenoh.localhost:7443";
+
+    #[allow(clippy::too_many_arguments)]
+    async fn manage_federation(
+        federator: Federator,
+        resolver: Resolver,
+        prober: Prober,
+        messaging_ready: watch::Receiver<bool>,
+        trigger_rx: TriggerReceiver,
+        ready_tx: oneshot::Sender<()>,
+        connect_timeout: Duration,
+        startup_namespace: String,
+        namespace_resolver: NamespaceResolver,
+        restart_tx: watch::Sender<bool>,
+        presence_gate_tx: Option<watch::Sender<bool>>,
+    ) {
+        manage_federation_with_links(
+            federator,
+            resolver,
+            prober,
+            messaging_ready,
+            trigger_rx,
+            ready_tx,
+            connect_timeout,
+            startup_namespace,
+            namespace_resolver,
+            restart_tx,
+            presence_gate_tx,
+            Vec::new(),
+            None,
+            false,
+        )
+        .await;
+    }
 
     /// A federator simulating a real (non-pinned) rewrite: it reports the config
     /// was rewritten (`Ok(true)`), so the poll treats the upstream as actually
@@ -721,7 +1219,10 @@ mod tests {
         let counter = calls.clone();
         let resolver: Resolver = Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            value.clone()
+            Ok(DesiredFederation {
+                backend: value.clone(),
+                peers: Vec::new(),
+            })
         });
         (resolver, calls)
     }
@@ -756,11 +1257,52 @@ mod tests {
         Some((ENDPOINT.to_string(), pmi::TlsConfig::default()))
     }
 
+    fn peer(endpoint: &str) -> DesiredPeer {
+        DesiredPeer {
+            endpoint: endpoint.to_string(),
+            locator: endpoint.to_string(),
+            probe_tls: pmi::TlsConfig::default(),
+        }
+    }
+
+    fn fixed_resolver(desired: DesiredFederation) -> Resolver {
+        Arc::new(move || Ok(desired.clone()))
+    }
+
+    fn recording_federator() -> (Federator, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let federator: Federator = Arc::new(move |endpoints| {
+            recorded.lock().unwrap().push(endpoints);
+            Box::pin(async { Ok(true) })
+        });
+        (federator, calls)
+    }
+
     /// A namespace resolver that always returns `local`, matching the `local`
     /// startup namespace these tests pass, so no namespace change is detected and
     /// the existing federation behavior (Applied/Pinned/...) is exercised.
     fn local_ns_resolver() -> NamespaceResolver {
         Arc::new(|| "local".to_string())
+    }
+
+    #[tokio::test]
+    async fn daemon_enforces_the_probe_bound_for_a_noncompliant_prober() {
+        let prober: Prober =
+            Arc::new(|_host, _port, _tls, _timeout| Box::pin(std::future::pending()));
+        let started = tokio::time::Instant::now();
+        let error = probe_with_bound(
+            prober,
+            "peer.example".to_string(),
+            7449,
+            pmi::TlsConfig::default(),
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("the daemon-side deadline must end a stuck probe");
+
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     /// A namespace resolver returning a fixed value and counting its calls, for a
@@ -793,8 +1335,362 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn peers_only_apply_renders_the_peer_connect_set() {
+        let endpoint = "tls/peer-a.example:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: None,
+            peers: vec![peer(endpoint)],
+        });
+        let (federator, calls) = recording_federator();
+        let (prober, probe_calls) = counting_prober(Ok(()));
+        let mut applied = AppliedState::default();
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            false,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            FederationOutcome::Applied(AppliedFederation {
+                backend: None,
+                peers: vec![PeerReport {
+                    endpoint: endpoint.to_string(),
+                    error: Some(UNVERIFIED_PEER_REASON.to_string()),
+                }],
+            })
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![vec![endpoint.to_string()]]);
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn backend_and_peers_are_applied_as_one_union() {
+        let peer_endpoint = "tls/peer-a.example:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: upstream(),
+            peers: vec![peer(peer_endpoint)],
+        });
+        let (federator, calls) = recording_federator();
+        let (prober, _) = counting_prober(Ok(()));
+        let mut applied = AppliedState::default();
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            false,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert!(matches!(outcome, FederationOutcome::Applied(_)));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![vec![ENDPOINT.to_string(), peer_endpoint.to_string()]]
+        );
+        assert_eq!(applied.backend.as_deref(), Some(ENDPOINT));
+        assert_eq!(applied.peers, vec![peer_endpoint]);
+    }
+
+    #[tokio::test]
+    async fn peers_seeded_into_spawn_config_do_not_bounce_on_first_poll() {
+        let endpoint = "tls/peer-a.example:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: None,
+            peers: vec![peer(endpoint)],
+        });
+        let (federator, calls) = recording_federator();
+        let (prober, _) = counting_prober(Ok(()));
+        let mut applied = AppliedState {
+            backend: None,
+            peers: vec![endpoint.to_string()],
+            pinned: false,
+            needs_reapply: false,
+        };
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            false,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        let FederationOutcome::Applied(report) = outcome else {
+            panic!("seeded peers must remain applied without a startup bounce");
+        };
+        assert_eq!(
+            report.peers[0].error.as_deref(),
+            Some(UNVERIFIED_PEER_REASON)
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn seeded_state_from_a_pinned_router_is_never_reported_as_applied() {
+        let endpoint = "tls/peer-a.example:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: None,
+            peers: vec![peer(endpoint)],
+        });
+        let (federator, calls) = recording_federator();
+        let (prober, probe_calls) = counting_prober(Ok(()));
+        let mut applied = AppliedState {
+            backend: None,
+            peers: vec![endpoint.to_string()],
+            pinned: true,
+            needs_reapply: false,
+        };
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert_eq!(outcome, FederationOutcome::Pinned);
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn pinned_router_does_not_claim_the_configured_extra_listener() {
+        let links = FederationLinksSpec {
+            extra_listen_endpoints: vec!["tls/0.0.0.0:7449#enable_mtls=true".to_string()],
+            identity: IdentityPaths {
+                cert: "cert.pem".into(),
+                key: "key.pem".into(),
+                ca: "ca.pem".into(),
+            },
+            initial_peers: Vec::new(),
+            initial_pinned: true,
+        };
+
+        assert_eq!(links.listen_endpoint(), None);
+    }
+
+    #[tokio::test]
+    async fn a_peer_probe_failure_is_reported_without_backend_unreachable() {
+        let good = "tls/good.example:7449";
+        let bad = "tls/bad.example:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: upstream(),
+            peers: vec![peer(good), peer(bad)],
+        });
+        let (federator, _) = recording_federator();
+        let prober: Prober = Arc::new(|host, _port, _tls, _timeout| {
+            Box::pin(async move {
+                if host == "bad.example" {
+                    Err("UnknownIssuer".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let mut applied = AppliedState::default();
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        let FederationOutcome::Applied(report) = outcome else {
+            panic!("a peer-only probe error must keep the applied backend outcome");
+        };
+        assert_eq!(report.backend.as_deref(), Some(ENDPOINT));
+        assert_eq!(report.peers.len(), 2);
+        assert_eq!(
+            report
+                .peers
+                .iter()
+                .find(|report| report.endpoint == bad)
+                .and_then(|report| report.error.as_deref()),
+            Some("UnknownIssuer")
+        );
+        assert!(
+            report
+                .peers
+                .iter()
+                .find(|report| report.endpoint == good)
+                .is_some_and(|report| report.error.is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_and_peer_probes_run_concurrently() {
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: upstream(),
+            peers: vec![
+                peer("tls/peer-a.example:7449"),
+                peer("tls/peer-b.example:7449"),
+            ],
+        });
+        let (federator, _) = recording_federator();
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let prober: Prober = Arc::new({
+            let barrier = barrier.clone();
+            let in_flight = in_flight.clone();
+            let max_in_flight = max_in_flight.clone();
+            move |_host, _port, _tls, _timeout| {
+                let barrier = barrier.clone();
+                let in_flight = in_flight.clone();
+                let max_in_flight = max_in_flight.clone();
+                Box::pin(async move {
+                    let running = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_in_flight.fetch_max(running, Ordering::SeqCst);
+                    barrier.wait().await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }
+        });
+        let mut applied = AppliedState::default();
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            poll_and_apply(
+                &federator,
+                &resolver,
+                &prober,
+                Duration::from_secs(1),
+                &mut applied,
+                true,
+                "local",
+                &local_ns_resolver(),
+            ),
+        )
+        .await
+        .expect("both probes must enter before either can finish");
+
+        assert!(matches!(outcome, FederationOutcome::Applied(_)));
+        assert_eq!(max_in_flight.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn rerun_after_probe_failure_reloads_unchanged_certificate_paths() {
+        let endpoint = "tls/peer-a.example:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: None,
+            peers: vec![peer(endpoint)],
+        });
+        let (federator, applies) = recording_federator();
+        let probe_calls = Arc::new(AtomicUsize::new(0));
+        let probe_counter = probe_calls.clone();
+        let prober: Prober = Arc::new(move |_host, _port, _tls, _timeout| {
+            let fails = probe_counter.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if fails {
+                    Err("UnknownIssuer".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let mut applied = AppliedState::default();
+
+        let first = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+        let FederationOutcome::Applied(first) = first else {
+            panic!("peer probe errors stay in the applied peer report");
+        };
+        assert_eq!(first.peers[0].error.as_deref(), Some("UnknownIssuer"));
+
+        let second = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+        let FederationOutcome::Applied(second) = second else {
+            panic!("the corrected peer must verify on retry");
+        };
+        assert!(second.peers[0].error.is_none());
+        assert_eq!(
+            applies.lock().unwrap().len(),
+            2,
+            "the retry must bounce zenohd so replaced certificate files are reloaded"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_read_failure_is_failed_and_never_drops_applied_links() {
+        let resolver: Resolver = Arc::new(|| Err("malformed federations.json5".to_string()));
+        let (federator, calls) = recording_federator();
+        let (prober, _) = counting_prober(Ok(()));
+        let mut applied = AppliedState {
+            backend: None,
+            peers: vec!["tls/existing.example:7449".to_string()],
+            pinned: false,
+            needs_reapply: false,
+        };
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            FederationOutcome::Failed("malformed federations.json5".to_string())
+        );
+        assert_eq!(applied.peers, vec!["tls/existing.example:7449"]);
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
     /// A wedged apply (the federator never completes) must surface as `Failed`
-    /// within the connect-timeout bound instead of hanging the poll, which at
+    /// within the apply-timeout bound instead of hanging the poll, which at
     /// startup would keep the readiness gate closed indefinitely. `applied`
     /// stays unchanged so the next poll retries, and the link is never probed
     /// (there is no applied upstream to verify).
@@ -804,10 +1700,11 @@ mod tests {
         let (prober, probe_calls) = counting_prober(Ok(()));
         let mut applied = AppliedState::default();
 
-        let outcome = poll_and_apply(
+        let outcome = poll_and_apply_with_apply_timeout(
             &wedged_federator(),
             &resolver,
             &prober,
+            Duration::from_millis(50),
             Duration::from_millis(50),
             &mut applied,
             true,
@@ -829,6 +1726,77 @@ mod tests {
             probe_calls.load(Ordering::SeqCst),
             0,
             "no probe after a failed apply"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_receives_a_fresh_budget_after_a_slow_resolve() {
+        let resolver: Resolver = Arc::new(|| {
+            std::thread::sleep(Duration::from_millis(160));
+            Ok(DesiredFederation {
+                backend: upstream(),
+                peers: Vec::new(),
+            })
+        });
+        let federator: Federator = Arc::new(|_endpoints| {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(true)
+            })
+        });
+        let (prober, _) = counting_prober(Ok(()));
+        let mut applied = AppliedState::default();
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_millis(200),
+            &mut applied,
+            false,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, FederationOutcome::Applied(_)),
+            "the apply must not inherit only the resolve deadline's remaining 40ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn ipv6_peer_probe_receives_an_unbracketed_host() {
+        let endpoint = "tls/[2001:db8::1]:7449";
+        let resolver = fixed_resolver(DesiredFederation {
+            backend: None,
+            peers: vec![peer(endpoint)],
+        });
+        let (federator, _) = recording_federator();
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let capture = seen.clone();
+        let prober: Prober = Arc::new(move |host, port, _tls, _timeout| {
+            *capture.lock().unwrap() = Some((host, port));
+            Box::pin(async { Ok(()) })
+        });
+        let mut applied = AppliedState::default();
+
+        let outcome = poll_and_apply(
+            &federator,
+            &resolver,
+            &prober,
+            Duration::from_secs(1),
+            &mut applied,
+            true,
+            "local",
+            &local_ns_resolver(),
+        )
+        .await;
+
+        assert!(matches!(outcome, FederationOutcome::Applied(_)));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(("2001:db8::1".to_string(), 7449))
         );
     }
 
@@ -879,7 +1847,7 @@ mod tests {
         // Poke: must run a second resolve immediately, probe the link, and ack.
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(RefederateRequest { ack: ack_tx })
+            .send(FederationRequest::Refederate { ack: ack_tx })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -891,7 +1859,10 @@ mod tests {
         // re-resolves, the probe succeeds, and it reports applied.
         assert_eq!(
             outcome,
-            FederationOutcome::Applied(Some(ENDPOINT.to_string()))
+            FederationOutcome::Applied(AppliedFederation {
+                backend: Some(ENDPOINT.to_string()),
+                peers: Vec::new(),
+            })
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -903,6 +1874,134 @@ mod tests {
             1,
             "the poke probed the link exactly once"
         );
+
+        drop(messaging_tx);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cached_status_is_answered_while_a_refederation_is_slow() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let call_counter = calls.clone();
+        let resolver: Resolver = Arc::new(move || {
+            if call_counter.fetch_add(1, Ordering::SeqCst) > 0 {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+            Ok(DesiredFederation::default())
+        });
+        let (prober, _) = counting_prober(Ok(()));
+        let (messaging_tx, messaging_rx) = watch::channel(true);
+        let (trigger_tx, trigger_rx) = mpsc::channel(8);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let task = tokio::spawn(manage_federation(
+            applying_federator(),
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+            ready_tx,
+            Duration::from_secs(2),
+            "local".to_string(),
+            local_ns_resolver(),
+            watch::channel(false).0,
+            None,
+        ));
+        ready_rx.await.unwrap();
+
+        let (apply_tx, _apply_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationRequest::Refederate { ack: apply_tx })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the slow refederation started");
+
+        let (status_tx, status_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationRequest::Status { ack: status_tx })
+            .await
+            .unwrap();
+        let status = tokio::time::timeout(Duration::from_millis(500), status_rx)
+            .await
+            .expect("cached status must not queue behind refederation")
+            .unwrap();
+        assert!(status.backend.is_none());
+
+        drop(messaging_tx);
+        task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cached_status_has_an_independent_dispatch_task_during_blocking_apply() {
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_counter = resolver_calls.clone();
+        let resolver: Resolver = Arc::new(move || {
+            let backend = if resolver_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                None
+            } else {
+                upstream()
+            };
+            Ok(DesiredFederation {
+                backend,
+                peers: Vec::new(),
+            })
+        });
+        let apply_started = Arc::new(AtomicUsize::new(0));
+        let started_flag = apply_started.clone();
+        let blocking_federator: Federator = Arc::new(move |_endpoints| {
+            let started_flag = started_flag.clone();
+            Box::pin(async move {
+                started_flag.store(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1500));
+                Ok(true)
+            })
+        });
+        let (prober, _) = counting_prober(Ok(()));
+        let (messaging_tx, messaging_rx) = watch::channel(true);
+        let (trigger_tx, trigger_rx) = mpsc::channel(8);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let task = tokio::spawn(manage_federation(
+            blocking_federator,
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+            ready_tx,
+            Duration::from_secs(3),
+            "local".to_string(),
+            local_ns_resolver(),
+            watch::channel(false).0,
+            None,
+        ));
+        ready_rx.await.unwrap();
+
+        let (apply_tx, _apply_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationRequest::Refederate { ack: apply_tx })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while apply_started.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the blocking apply started");
+
+        let (status_tx, status_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationRequest::Status { ack: status_tx })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(500), status_rx)
+            .await
+            .expect("status dispatch must run independently of router lifecycle work")
+            .unwrap();
 
         drop(messaging_tx);
         task.abort();
@@ -940,7 +2039,7 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(RefederateRequest { ack: ack_tx })
+            .send(FederationRequest::Refederate { ack: ack_tx })
             .await
             .expect("trigger accepted");
         tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -991,7 +2090,7 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(RefederateRequest { ack: ack_tx })
+            .send(FederationRequest::Refederate { ack: ack_tx })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -1001,8 +2100,14 @@ mod tests {
 
         assert_eq!(
             outcome,
-            FederationOutcome::Unreachable(reason.to_string()),
-            "a failing probe ⇒ Unreachable"
+            FederationOutcome::Unreachable {
+                reason: reason.to_string(),
+                applied: AppliedFederation {
+                    backend: Some(ENDPOINT.to_string()),
+                    peers: Vec::new(),
+                },
+            },
+            "a failing probe returns Unreachable with the applied peer report"
         );
         assert_eq!(
             probe_calls.load(Ordering::SeqCst),
@@ -1048,7 +2153,7 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(RefederateRequest { ack: ack_tx })
+            .send(FederationRequest::Refederate { ack: ack_tx })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -1071,11 +2176,11 @@ mod tests {
         task.abort();
     }
 
-    /// The startup gate fires within the timeout even when the backend is slow
-    /// enough to blow the bound, so a hung backend can never stall `serve` past
-    /// `connect_timeout`. The federation loop then keeps retrying. The core
-    /// node's presence gate fires in the same breath, so a slow backend cannot
-    /// stall the boot presence check (and thus listener binding) either.
+    /// Once the local router is ready, the startup gate fires within the resolve
+    /// timeout even when the backend is slow enough to blow the bound. The
+    /// federation loop then keeps retrying. The core node's presence gate fires
+    /// in the same breath, so a slow backend cannot stall the boot presence check
+    /// (and thus listener binding) either.
     #[tokio::test]
     async fn startup_gate_fires_within_timeout_when_resolve_is_slow() {
         // Resolver sleeps past the (short) connect timeout, so the bounded resolve
@@ -1083,7 +2188,7 @@ mod tests {
         // fire.
         let resolver: Resolver = Arc::new(|| {
             std::thread::sleep(Duration::from_millis(400));
-            None
+            Ok(DesiredFederation::default())
         });
         let (prober, _) = counting_prober(Ok(()));
         let (messaging_tx, messaging_rx) = watch::channel(true);
@@ -1252,7 +2357,7 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(RefederateRequest { ack: ack_tx })
+            .send(FederationRequest::Refederate { ack: ack_tx })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)

@@ -218,23 +218,30 @@ async fn run_router_watchdog(messenger: &Arc<Mutex<Messenger>>, checker: &Router
             continue;
         }
 
-        let router_is_adopted = messenger.lock().await.router_is_adopted();
-        if router_is_adopted {
+        // Acquire the same lifecycle lock used by federation stop/start, then
+        // re-probe. The failure decision above may have gone stale while a
+        // federation bounce held this lock and successfully replaced zenohd.
+        let mut lifecycle = messenger.lock().await;
+        if checker.is_router_responsive(WATCHDOG_PROBE_TIMEOUT).await {
+            consecutive_failures = 0;
+            continue;
+        }
+
+        if lifecycle.router_is_adopted() {
+            drop(lifecycle);
             warn_external_router_unresponsive(consecutive_failures);
         } else {
             // The managed router is wedged. Warn loudly before touching it,
             // then respawn it.
             warn_messaging_restarting(consecutive_failures);
 
-            let restart = {
-                let mut messenger = messenger.lock().await;
-                // stop_router is best-effort: the old process may already be
-                // unresponsive, but we still need its listening port freed.
-                if let Err(e) = messenger.stop_router().await {
-                    warn!("Watchdog: stop_router returned an error (continuing to restart): {e}");
-                }
-                messenger.start_router().await
-            };
+            // stop_router is best-effort: the old process may already be
+            // unresponsive, but we still need its listening port freed.
+            if let Err(e) = lifecycle.stop_router().await {
+                warn!("Watchdog: stop_router returned an error (continuing to restart): {e}");
+            }
+            let restart = lifecycle.start_router().await;
+            drop(lifecycle);
 
             match restart {
                 Ok(()) => {

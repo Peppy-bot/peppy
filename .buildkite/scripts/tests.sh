@@ -25,6 +25,9 @@ isolated cargo test
 echo "--- :rust: container e2e tests"
 isolated cargo test -p core-node --features container_e2e --test container_e2e
 
+echo "--- :rust: multi-daemon Docker e2e tests"
+isolated cargo test -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+
 echo "--- :rust: documentation integration tests"
 isolated cargo test -p docs-integration-tests
 

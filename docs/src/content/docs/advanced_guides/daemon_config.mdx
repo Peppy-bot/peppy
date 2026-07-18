@@ -86,9 +86,9 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
         high_throughput_buffer_size: 1024,
       },
 
-      // Per-user zenoh-router federation: how the daemon links its local router to
-      // your private cloud router. Only tuned to bound a slow/unreachable backend
-      // during the federation step.
+      // Router federation settings. The timeout bounds resolution of your
+      // organization's cloud router. The optional listener lets other
+      // peppy-managed routers federate with this one over mutual TLS.
       federation: {
         // Seconds the daemon spends resolving your per-user cloud router before
         // giving up for this attempt (it retries in the background). Bounds the
@@ -96,6 +96,18 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
         // minimum 1. If the backend is unreachable within this window the daemon
         // stays standalone rather than blocking.
         connect_timeout_secs: 30,
+
+        // Optional inbound mTLS listener for user-managed server federation.
+        // null disables inbound federation. Port 7449 avoids the managed
+        // router's normal messaging port, 7448. Restart the daemon after changing
+        // the listener or identity paths. See `peppy federation ca` for PKI setup.
+        listen_endpoint: null,
+
+        // Identity files for inbound and outbound user-managed federation.
+        // null selects <PEPPY_HOME>/conf/federation/{cert.pem,key.pem,ca.pem}.
+        cert_path: null,
+        key_path: null,
+        ca_path: null,
       },
     },
   },
@@ -146,6 +158,10 @@ zenoh: {
     },
     federation: {
       connect_timeout_secs: 30,
+      listen_endpoint: null,
+      cert_path: null,
+      key_path: null,
+      ca_path: null,
     },
   },
 },
@@ -170,7 +186,7 @@ The managed knobs exist only because peppy controls that router process. Under `
 - **`"peer"`** (default): nodes run Zenoh peer sessions with gossip discovery enabled. After discovery, nodes form direct peer-to-peer links and data stops relaying through the central router, which removes a network hop from every message.
 - **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
 
-The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-cloud-router-timeout), whichever topology you pick.
+The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-router-federation), whichever topology you pick.
 
 [Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
 
@@ -187,11 +203,19 @@ When a subscriber falls behind and its local queue fills up, what happens next d
 
 Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
 
-## `zenoh.managed.federation`: cloud-router timeout
+## `zenoh.managed.federation`: router federation
 
-When you are logged in under `zenoh.managed`, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Authentication](/advanced_guides/authentication/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
+This block configures two ways a managed router can federate: the platform backend link established by authentication, and user-managed mTLS links established with `peppy federation`. See [Server federation](/advanced_guides/federation/) for the complete PKI, listener, firewall, and command walkthrough.
 
-- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
+- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the platform backend's cloud router. Resolution happens at startup and whenever an auth or federation command asks the daemon to reapply its desired links. Router apply and TLS verification have separate bounded budgets. A failed attempt does not block daemon startup; the daemon reports the failure and retries background reconciliation.
+- **`listen_endpoint`** (default `null`): an optional inbound mTLS listener in the form `tls/<host>:<port>`, for example `"tls/0.0.0.0:7449"`. A wildcard host is valid for a listener. The port must be from `1` through `65535` and must differ from the managed router's messaging port, which defaults to `7448`. Plain TCP, missing ports, and metadata or endpoint fragments containing `?`, `#`, `;`, or `=` are rejected. `null` disables inbound user-managed federation.
+- **`cert_path`** (default `null`): the PEM certificate chain presented by this router for inbound and outbound user-managed federation. `null` selects `<PEPPY_HOME>/conf/federation/cert.pem`.
+- **`key_path`** (default `null`): the private key corresponding to `cert_path`. `null` selects `<PEPPY_HOME>/conf/federation/key.pem`.
+- **`ca_path`** (default `null`): the PEM fleet CA used to verify peer certificates. `null` selects `<PEPPY_HOME>/conf/federation/ca.pem`.
+
+The three identity paths are used only for user-managed mTLS links. An enabled listener requires all three files to exist when the daemon starts. The same identity also authenticates outbound links created by `peppy federation federate`. Paths containing `#`, `;`, or `=` are rejected because those characters would corrupt the Zenoh endpoint syntax.
+
+Listener and identity-path changes take effect only after a daemon restart. Federation commands can add or remove outbound links without a manual restart because they update the saved registry and ask the running daemon to reapply it. User-managed federation is unavailable under `zenoh.external`; in that mode, the router operator owns its listeners, certificates, and links.
 
 ## `zenoh.external`: use an operator-run router
 
@@ -245,7 +269,11 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
-| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
+| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon allows for resolving desired federation links after the local router is ready. |
+| `zenoh.managed.federation.listen_endpoint` | `null` | `tls/<host>:<port>`; port differs from the messaging port | Optional inbound mTLS listener for user-managed federation. |
+| `zenoh.managed.federation.cert_path` | `null` | Path without `#`, `;`, or `=` | Router certificate chain; `null` selects `<PEPPY_HOME>/conf/federation/cert.pem`. |
+| `zenoh.managed.federation.key_path` | `null` | Path without `#`, `;`, or `=` | Router private key; `null` selects `<PEPPY_HOME>/conf/federation/key.pem`. |
+| `zenoh.managed.federation.ca_path` | `null` | Path without `#`, `;`, or `=` | Fleet CA certificate; `null` selects `<PEPPY_HOME>/conf/federation/ca.pem`. |
 | `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 
 Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.

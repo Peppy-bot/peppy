@@ -10,6 +10,7 @@ daemon = { workspace = true }
 pmi = { workspace = true, features = ["zenoh"] }
 config = { workspace = true }
 daemon-config = { workspace = true }
+federation = { workspace = true }
 containers = { workspace = true }
 peppylib = { workspace = true }
 core-node = { workspace = true }

@@ -9,6 +9,7 @@ auth = { workspace = true }
 config = { workspace = true }
 core-node = { workspace = true }
 daemon-config = { workspace = true }
+federation = { workspace = true }
 json5-pretty = { workspace = true }
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 # Safe wrappers over the libc syscalls the daemon needs (the between-generations

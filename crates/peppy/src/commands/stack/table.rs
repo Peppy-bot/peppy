@@ -19,7 +19,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// columns, so they are skipped here; otherwise a colored cell would measure
 /// wider than its plain text and skew the box against the borders. A cell
 /// argument must be a single line; callers split on `\n` first.
-pub(super) fn col_width(s: &str) -> usize {
+pub(crate) fn col_width(s: &str) -> usize {
     if !s.as_bytes().contains(&0x1b) {
         return UnicodeWidthStr::width(s);
     }
@@ -88,7 +88,7 @@ pub(super) fn wrap_ansi(s: &str, width: usize) -> String {
 /// widths are measured across every cell with [`col_width`] (per line, for
 /// multi-line cells), which strips ANSI so a colored cell aligns with its plain
 /// text. A trailing blank line is appended so callers can stack sections.
-pub(super) fn render_table(out: &mut String, headers: &[&str], blocks: &[Vec<Vec<String>>]) {
+pub(crate) fn render_table(out: &mut String, headers: &[&str], blocks: &[Vec<Vec<String>>]) {
     let mut widths: Vec<usize> = headers.iter().copied().map(col_width).collect();
     for row in blocks.iter().flatten() {
         for (i, cell) in row.iter().enumerate() {
@@ -113,6 +113,32 @@ pub(super) fn render_table(out: &mut String, headers: &[&str], blocks: &[Vec<Vec
     }
     write_border(out, &widths, '└', '┴', '┘');
     let _ = writeln!(out);
+}
+
+/// Encloses a titled report in one outer panel.
+pub(crate) fn render_section_panel(out: &mut String, header: &str, body: &str) {
+    let width = std::iter::once(header)
+        .chain(body.lines())
+        .map(col_width)
+        .max()
+        .unwrap_or(0);
+
+    let _ = writeln!(out, "┌{}┐", "─".repeat(width + 2));
+    write_panel_line(out, header, width);
+    let _ = writeln!(out, "├{}┤", "─".repeat(width + 2));
+    for line in body.lines() {
+        write_panel_line(out, line, width);
+    }
+    let _ = writeln!(out, "└{}┘", "─".repeat(width + 2));
+}
+
+pub(crate) fn write_panel_line(out: &mut String, line: &str, width: usize) {
+    let _ = writeln!(
+        out,
+        "│ {}{} │",
+        line,
+        " ".repeat(width.saturating_sub(col_width(line)))
+    );
 }
 
 fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right: char) {

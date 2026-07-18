@@ -23,6 +23,8 @@ use std::collections::HashMap;
 
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
+    FEDERATION_CA_PATH_FIELD_SNIPPET, FEDERATION_CERT_PATH_FIELD_SNIPPET,
+    FEDERATION_KEY_PATH_FIELD_SNIPPET, FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET,
     FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
     LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
@@ -97,12 +99,38 @@ const SECTIONS: &[EntrySpec] = &[
                     key: "federation",
                     snippet: FEDERATION_SECTION_SNIPPET,
                     alternatives: &[],
-                    children: &[EntrySpec {
-                        key: "connect_timeout_secs",
-                        snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
-                        alternatives: &[],
-                        children: &[],
-                    }],
+                    children: &[
+                        EntrySpec {
+                            key: "connect_timeout_secs",
+                            snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                        EntrySpec {
+                            key: "listen_endpoint",
+                            snippet: FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                        EntrySpec {
+                            key: "cert_path",
+                            snippet: FEDERATION_CERT_PATH_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                        EntrySpec {
+                            key: "key_path",
+                            snippet: FEDERATION_KEY_PATH_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                        EntrySpec {
+                            key: "ca_path",
+                            snippet: FEDERATION_CA_PATH_FIELD_SNIPPET,
+                            alternatives: &[],
+                            children: &[],
+                        },
+                    ],
                 },
             ],
         }],
@@ -950,20 +978,30 @@ mod tests {
         assert!(complete_config_content(&completed).is_none());
     }
 
-    /// The deepest schema path
-    /// (`zenoh.managed.federation.connect_timeout_secs`, four levels) is
-    /// spliced into its triply nested block, not a shallower one.
+    /// Federation leaves are spliced into their triply nested block, not a
+    /// shallower one.
     #[test]
-    fn empty_federation_block_gains_timeout_at_depth_four() {
+    fn empty_federation_block_gains_all_leaves_at_depth_four() {
         let completed = complete_config_content(r#"{ zenoh: { managed: { federation: {} } } }"#)
-            .expect("connect_timeout_secs and everything else missing")
+            .expect("federation leaves and everything else missing")
             .content;
         let config = parse(&completed);
         assert_eq!(config, PeppyConfig::default());
         // The field landed inside the existing federation block (which the
         // user spelled compactly), not as a second federation block.
         assert_eq!(completed.matches("federation: {").count(), 1);
-        assert!(completed.contains("connect_timeout_secs:"));
+        for field in [
+            "connect_timeout_secs:",
+            "listen_endpoint: null,",
+            "cert_path: null,",
+            "key_path: null,",
+            "ca_path: null,",
+        ] {
+            assert!(
+                completed.contains(field),
+                "missing {field} in:\n{completed}"
+            );
+        }
         assert!(complete_config_content(&completed).is_none());
     }
 

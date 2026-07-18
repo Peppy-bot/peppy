@@ -230,35 +230,6 @@ pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
 /// Encloses one core node's complete report in a panel. Nested table borders
 /// remain intact, while the continuous outer edge makes ownership clear when
 /// several independently queried stacks are printed together.
-fn render_section_panel(out: &mut String, header: &str, body: &str) {
-    use std::fmt::Write as _;
-
-    let width = std::iter::once(header)
-        .chain(body.lines())
-        .map(col_width)
-        .max()
-        .unwrap_or(0);
-
-    let _ = writeln!(out, "┌{}┐", "─".repeat(width + 2));
-    write_panel_line(out, header, width);
-    let _ = writeln!(out, "├{}┤", "─".repeat(width + 2));
-    for line in body.lines() {
-        write_panel_line(out, line, width);
-    }
-    let _ = writeln!(out, "└{}┘", "─".repeat(width + 2));
-}
-
-fn write_panel_line(out: &mut String, line: &str, width: usize) {
-    use std::fmt::Write as _;
-
-    let _ = writeln!(
-        out,
-        "│ {}{} │",
-        line,
-        " ".repeat(width.saturating_sub(col_width(line)))
-    );
-}
-
 /// Formats the existing tables inside one core-node section. `colorize` tints
 /// node labels, instances, and bindings; table width measurement strips those
 /// codes so colored and plain layouts remain identical.
@@ -342,7 +313,7 @@ use super::colors::{
     NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR, STATUS_RUNNING_COLOR,
     STATUS_STARTING_COLOR, paint,
 };
-use super::table::{col_width, render_table};
+use super::table::{render_section_panel, render_table};
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.

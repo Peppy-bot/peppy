@@ -2,7 +2,7 @@ mod benchmark;
 mod colors;
 mod launch;
 mod list;
-mod table;
+pub(crate) mod table;
 
 pub use list::{StackListReport, list_nodes_collecting};
 

@@ -243,14 +243,47 @@ const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
     ",\n"
 );
 
+/// The optional `zenoh.managed.federation.listen_endpoint` entry.
+const FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET: &str = r#"        // Optional inbound federation listener. Federation links always require mTLS;
+        // generate the fleet identity with `peppy federation ca init` and
+        // `peppy federation ca issue`. Example: "tls/0.0.0.0:7449". null
+        // disables inbound federation. Restart the daemon to apply a change.
+        listen_endpoint: null,
+"#;
+
+/// The optional machine-certificate path override.
+const FEDERATION_CERT_PATH_FIELD_SNIPPET: &str = r#"        // Machine certificate override, or null for <conf>/federation/cert.pem.
+        // Paths become Zenoh endpoint fragments and cannot contain #, ;, or =.
+        cert_path: null,
+"#;
+
+/// The optional machine-private-key path override.
+const FEDERATION_KEY_PATH_FIELD_SNIPPET: &str = r#"        // Machine private-key override, or null for <conf>/federation/key.pem.
+        // Paths become Zenoh endpoint fragments and cannot contain #, ;, or =.
+        key_path: null,
+"#;
+
+/// The optional fleet-CA path override.
+const FEDERATION_CA_PATH_FIELD_SNIPPET: &str = r#"        // Fleet CA override, or null for <conf>/federation/ca.pem.
+        // Paths become Zenoh endpoint fragments and cannot contain #, ;, or =.
+        ca_path: null,
+"#;
+
 /// The whole `zenoh.managed.federation` block with its explanatory comment.
 const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"      // Per-user zenoh-router federation: how the daemon links its local router to
-      // your private cloud router. Only tuned to bound a slow/unreachable backend
-      // during the federation step.
+    r#"      // Managed zenoh-router federation settings for the platform backend and
+      // user peers. User federation is always protected by mutual TLS.
       federation: {
 "#,
     FEDERATION_TIMEOUT_FIELD_SNIPPET,
+    "\n",
+    FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET,
+    "\n",
+    FEDERATION_CERT_PATH_FIELD_SNIPPET,
+    "\n",
+    FEDERATION_KEY_PATH_FIELD_SNIPPET,
+    "\n",
+    FEDERATION_CA_PATH_FIELD_SNIPPET,
     "      },\n"
 );
 
@@ -385,26 +418,60 @@ impl Default for ResourceServers {
 ///
 /// `#[serde(default)]` fills any field a partial `federation` block omits from
 /// [`FederationConfig::default`], matching the `LifecycleConfig` pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FederationConfig {
     pub connect_timeout_secs: u64,
+    /// Optional inbound fleet-mTLS listener. `None` leaves the managed router
+    /// without a user-federation listener.
+    pub listen_endpoint: Option<String>,
+    /// Machine certificate override, or the conventional federation identity
+    /// path when absent.
+    pub cert_path: Option<PathBuf>,
+    /// Machine private-key override, or the conventional federation identity
+    /// path when absent.
+    pub key_path: Option<PathBuf>,
+    /// Fleet CA override, or the conventional federation identity path when
+    /// absent.
+    pub ca_path: Option<PathBuf>,
 }
 
 impl Default for FederationConfig {
     fn default() -> Self {
         Self {
             connect_timeout_secs: DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
+            listen_endpoint: None,
+            cert_path: None,
+            key_path: None,
+            ca_path: None,
         }
     }
 }
 
-/// Validates the deliberately narrow locator surface supported for an external
-/// router. Peppy currently transports its daemon and node sessions over TCP, so
-/// accepting another Zenoh protocol here would create a config the rest of the
-/// stack cannot honor. This is syntax-only: hostnames are not resolved while
-/// loading the config.
-fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String> {
+/// Whether an endpoint is opened for outbound dialing or inbound listening.
+/// Listener parsing accepts wildcard hosts; dial parsing rejects them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointPurpose {
+    Dial,
+    Listen,
+}
+
+/// Parsed, syntax-checked `<scheme>/<host>:<port>` endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedEndpoint<'a> {
+    /// Host without IPv6 brackets.
+    pub host: &'a str,
+    pub port: u16,
+}
+
+/// Parses the deliberately narrow locator surface Peppy manages. The caller
+/// supplies the required transport scheme and whether wildcard hosts are
+/// meaningful. Hostnames are checked syntactically but never resolved.
+pub fn parse_endpoint<'a>(
+    endpoint: &'a str,
+    expected_scheme: &str,
+    purpose: EndpointPurpose,
+) -> std::result::Result<ParsedEndpoint<'a>, String> {
     if endpoint.is_empty() {
         return Err("must not be empty".to_string());
     }
@@ -412,15 +479,18 @@ fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String>
         return Err("must not contain leading or trailing whitespace".to_string());
     }
 
-    let Some(address) = endpoint.strip_prefix("tcp/") else {
-        return Err("must use the tcp/<host>:<port> locator form".to_string());
+    let expected_prefix = format!("{expected_scheme}/");
+    let Some(address) = endpoint.strip_prefix(&expected_prefix) else {
+        return Err(format!(
+            "must use the {expected_scheme}/<host>:<port> locator form"
+        ));
     };
-    if address.contains(['?', '#']) {
+    if address.contains(['?', '#', ';', '=']) {
         return Err("metadata and endpoint configuration are not supported".to_string());
     }
 
-    let (host, port, bracketed) = split_tcp_host_port(address)?;
-    validate_dial_host(host, bracketed)?;
+    let (host, port, bracketed) = split_endpoint_host_port(address)?;
+    validate_endpoint_host(host, bracketed, purpose)?;
     if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("port must be an integer from 1 through 65535".to_string());
     }
@@ -430,10 +500,10 @@ fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String>
     if port == 0 {
         return Err("port must be an integer from 1 through 65535".to_string());
     }
-    Ok(())
+    Ok(ParsedEndpoint { host, port })
 }
 
-fn split_tcp_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
+fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
     if let Some(bracketed) = address.strip_prefix('[') {
         let Some(close) = bracketed.find(']') else {
             return Err("IPv6 addresses must be enclosed in matching brackets".to_string());
@@ -458,7 +528,11 @@ fn split_tcp_host_port(address: &str) -> std::result::Result<(&str, &str, bool),
     Ok((host, port, false))
 }
 
-fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
+fn validate_endpoint_host(
+    host: &str,
+    bracketed: bool,
+    purpose: EndpointPurpose,
+) -> std::result::Result<(), String> {
     if host.is_empty() {
         return Err("host must not be empty".to_string());
     }
@@ -467,7 +541,7 @@ fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), St
         let address = host
             .parse::<Ipv6Addr>()
             .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
-        return if address.is_unspecified() {
+        return if address.is_unspecified() && purpose == EndpointPurpose::Dial {
             Err(
                 "host must be dialable; the wildcard address [::] is only valid for listening"
                     .to_string(),
@@ -478,7 +552,7 @@ fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), St
     }
 
     if let Ok(address) = host.parse::<Ipv4Addr>() {
-        return if address.is_unspecified() {
+        return if address.is_unspecified() && purpose == EndpointPurpose::Dial {
             Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string())
         } else {
             Ok(())
@@ -491,7 +565,11 @@ fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), St
         return Err("host is not a valid IPv4 address".to_string());
     }
     if host == "*" {
-        return Err("host must be dialable; * is only valid for listening".to_string());
+        return if purpose == EndpointPurpose::Dial {
+            Err("host must be dialable; * is only valid for listening".to_string())
+        } else {
+            Ok(())
+        };
     }
     let hostname = host.strip_suffix('.').unwrap_or(host);
     if host.len() > 253
@@ -675,15 +753,53 @@ impl ZenohConfig {
                         "invalid zenoh.managed.federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
                     )));
                 }
+                if let Some(endpoint) = &config.federation.listen_endpoint {
+                    parse_endpoint(endpoint, "tls", EndpointPurpose::Listen).map_err(|error| {
+                        cannot_parse_config(format!(
+                            "invalid zenoh.managed.federation.listen_endpoint: {error}"
+                        ))
+                    })?;
+                }
+                for (field, path) in [
+                    ("cert_path", config.federation.cert_path.as_deref()),
+                    ("key_path", config.federation.key_path.as_deref()),
+                    ("ca_path", config.federation.ca_path.as_deref()),
+                ] {
+                    if let Some(path) = path {
+                        validate_locator_path(path).map_err(|error| {
+                            cannot_parse_config(format!(
+                                "invalid zenoh.managed.federation.{field}: {error}"
+                            ))
+                        })?;
+                    }
+                }
                 Ok(())
             }
             Self::External(config) => {
-                validate_tcp_dial_endpoint(&config.endpoint).map_err(|error| {
-                    cannot_parse_config(format!("invalid zenoh.external.endpoint: {error}"))
-                })
+                parse_endpoint(&config.endpoint, "tcp", EndpointPurpose::Dial).map_err(
+                    |error| {
+                        cannot_parse_config(format!("invalid zenoh.external.endpoint: {error}"))
+                    },
+                )?;
+                Ok(())
             }
         }
     }
+}
+
+fn validate_locator_path(path: &Path) -> std::result::Result<(), String> {
+    let Some(path) = path.to_str() else {
+        return Err("must be valid UTF-8 for use in a Zenoh endpoint fragment".to_string());
+    };
+    if let Some(delimiter) = path
+        .chars()
+        .find(|character| ['#', ';', '='].contains(character))
+    {
+        return Err(format!(
+            "must not contain the reserved locator delimiter {delimiter:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// Deserializes the shared [`SubscriberBufferConfig`] through a strict local wire
@@ -1346,6 +1462,10 @@ mod tests {
             DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
         );
         assert_eq!(
+            cfg.zenoh.federation().unwrap(),
+            &FederationConfig::default()
+        );
+        assert_eq!(
             cfg.zenoh,
             ZenohConfig::Managed(ManagedZenohConfig::default())
         );
@@ -1396,6 +1516,114 @@ mod tests {
     }
 
     #[test]
+    fn full_federation_block_parses() {
+        let content = r#"{
+            zenoh: {
+                managed: {
+                    federation: {
+                        connect_timeout_secs: 5,
+                        listen_endpoint: "tls/0.0.0.0:7449",
+                        cert_path: "/etc/peppy/cert.pem",
+                        key_path: "/etc/peppy/key.pem",
+                        ca_path: "/etc/peppy/ca.pem",
+                    },
+                },
+            },
+        }"#;
+        let (_tmp, peppy_dirs, _) = dirs_with_config(content);
+
+        let config = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(
+            config.zenoh.federation(),
+            Some(&FederationConfig {
+                connect_timeout_secs: 5,
+                listen_endpoint: Some("tls/0.0.0.0:7449".into()),
+                cert_path: Some("/etc/peppy/cert.pem".into()),
+                key_path: Some("/etc/peppy/key.pem".into()),
+                ca_path: Some("/etc/peppy/ca.pem".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn listener_endpoint_accepts_tls_hosts_and_wildcards() {
+        for endpoint in [
+            "tls/0.0.0.0:7449",
+            "tls/*:7449",
+            "tls/[::]:7449",
+            "tls/router.example:7449",
+            "tls/192.0.2.1:7449",
+        ] {
+            let content = format!(
+                r#"{{ zenoh: {{ managed: {{ federation: {{ listen_endpoint: "{endpoint}" }} }} }} }}"#
+            );
+            let (_tmp, peppy_dirs, _) = dirs_with_config(&content);
+            let config = load_or_create(&peppy_dirs).unwrap();
+            assert_eq!(
+                config
+                    .zenoh
+                    .federation()
+                    .unwrap()
+                    .listen_endpoint
+                    .as_deref(),
+                Some(endpoint)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_listener_endpoints_fail_loud_and_leave_files_untouched() {
+        for (endpoint, expected_message) in [
+            ("tcp/0.0.0.0:7449", "tls/<host>:<port>"),
+            ("tls/0.0.0.0", "host and port"),
+            ("tls/0.0.0.0:0", "integer from 1 through 65535"),
+            (
+                "tls/0.0.0.0:7449#enable_mtls=true",
+                "metadata and endpoint configuration",
+            ),
+            (
+                "tls/0.0.0.0:7449;foo=bar",
+                "metadata and endpoint configuration",
+            ),
+        ] {
+            let content = format!(
+                r#"{{ zenoh: {{ managed: {{ federation: {{ listen_endpoint: "{endpoint}" }} }} }} }}"#
+            );
+            let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
+
+            let error = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains("zenoh.managed.federation.listen_endpoint")
+                        && message.contains(expected_message)),
+                "expected a listener error for {endpoint:?}, got {error:?}"
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn federation_identity_paths_reject_fragment_delimiters() {
+        for (field, path) in [
+            ("cert_path", "/identity/bad#cert.pem"),
+            ("key_path", "/identity/bad;key.pem"),
+            ("ca_path", "/identity/bad=ca.pem"),
+        ] {
+            let content =
+                format!(r#"{{ zenoh: {{ managed: {{ federation: {{ {field}: "{path}" }} }} }} }}"#);
+            let (_tmp, peppy_dirs, config_path) = dirs_with_config(&content);
+
+            let error = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(field) && message.contains("reserved locator delimiter")),
+                "expected a path error for {field}, got {error:?}"
+            );
+            assert_eq!(std::fs::read_to_string(config_path).unwrap(), content);
+        }
+    }
+
+    #[test]
     fn zenoh_defaults_to_managed_when_absent_or_empty() {
         for content in ["{}", "{ zenoh: {} }"] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
@@ -1439,6 +1667,24 @@ mod tests {
             let config = load_or_create(&peppy_dirs).unwrap();
             assert_eq!(config.zenoh.external_endpoint(), Some(endpoint));
         }
+    }
+
+    #[test]
+    fn endpoint_parser_returns_normalized_host_and_port() {
+        assert_eq!(
+            parse_endpoint("tls/router.example:7449", "tls", EndpointPurpose::Dial).unwrap(),
+            ParsedEndpoint {
+                host: "router.example",
+                port: 7449,
+            }
+        );
+        assert_eq!(
+            parse_endpoint("tls/[2001:db8::1]:7449", "tls", EndpointPurpose::Dial).unwrap(),
+            ParsedEndpoint {
+                host: "2001:db8::1",
+                port: 7449,
+            }
+        );
     }
 
     #[test]
@@ -1890,6 +2136,10 @@ mod tests {
                 },
                 federation: FederationConfig {
                     connect_timeout_secs: 45,
+                    listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
+                    cert_path: Some("/etc/peppy/federation/cert.pem".into()),
+                    key_path: Some("/etc/peppy/federation/key.pem".into()),
+                    ca_path: Some("/etc/peppy/federation/ca.pem".into()),
                 },
             }),
             lifecycle: LifecycleConfig {
