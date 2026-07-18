@@ -237,19 +237,31 @@ async fn handle_conn(
     }
 
     if line.trim() == STATUS_VERB {
+        let deadline = tokio::time::Instant::now() + STATUS_ACK_TIMEOUT;
         let (ack_tx, ack_rx) = oneshot::channel();
-        if trigger_tx
-            .send(FederationRequest::Status { ack: ack_tx })
-            .await
-            .is_err()
+        match tokio::time::timeout_at(
+            deadline,
+            trigger_tx.send(FederationRequest::Status { ack: ack_tx }),
+        )
+        .await
         {
-            return write_response(
-                &mut write_half,
-                ControlResponse::error("federation task not running"),
-            )
-            .await;
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                return write_response(
+                    &mut write_half,
+                    ControlResponse::error("federation task not running"),
+                )
+                .await;
+            }
+            Err(_) => {
+                return write_response(
+                    &mut write_half,
+                    ControlResponse::error("timed out reading federation status"),
+                )
+                .await;
+            }
         }
-        let response = match tokio::time::timeout(STATUS_ACK_TIMEOUT, ack_rx).await {
+        let response = match tokio::time::timeout_at(deadline, ack_rx).await {
             Ok(Ok(status)) => ControlResponse::FederationStatus(status),
             Ok(Err(_)) => ControlResponse::error("federation task dropped the status request"),
             Err(_) => ControlResponse::error("timed out reading federation status"),
@@ -263,19 +275,31 @@ async fn handle_conn(
 
     // Forward the poke and await the applied outcome. Bound the wait so a wedged
     // apply replies with a timeout rather than holding the connection open.
+    let deadline = tokio::time::Instant::now() + connect_timeout + APPLY_ACK_SLACK;
     let (ack_tx, ack_rx) = oneshot::channel();
-    if trigger_tx
-        .send(FederationRequest::Refederate { ack: ack_tx })
-        .await
-        .is_err()
+    match tokio::time::timeout_at(
+        deadline,
+        trigger_tx.send(FederationRequest::Refederate { ack: ack_tx }),
+    )
+    .await
     {
-        return write_response(
-            &mut write_half,
-            ControlResponse::error("federation task not running"),
-        )
-        .await;
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            return write_response(
+                &mut write_half,
+                ControlResponse::error("federation task not running"),
+            )
+            .await;
+        }
+        Err(_) => {
+            return write_response(
+                &mut write_half,
+                ControlResponse::error("timed out applying federation"),
+            )
+            .await;
+        }
     }
-    let response = match tokio::time::timeout(connect_timeout + APPLY_ACK_SLACK, ack_rx).await {
+    let response = match tokio::time::timeout_at(deadline, ack_rx).await {
         Ok(Ok(outcome)) => ControlResponse::from(outcome),
         Ok(Err(_)) => ControlResponse::error("federation task dropped the request"),
         Err(_elapsed) => ControlResponse::error("timed out applying federation"),
@@ -454,6 +478,50 @@ mod tests {
         assert_eq!(outcome, QueryStatusOutcome::Status(expected));
         control.abort();
         consumer.abort();
+    }
+
+    #[tokio::test]
+    async fn status_deadline_covers_enqueue_and_ack_waits() {
+        let (server, mut client) = UnixStream::pair().expect("create control socket pair");
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(1);
+        let (queued_ack, _queued_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationRequest::Status { ack: queued_ack })
+            .await
+            .expect("prefill trigger channel");
+        let (restart_tx, _restart_rx) = watch::channel(false);
+        let handler = tokio::spawn(handle_conn(
+            server,
+            trigger_tx,
+            Duration::from_secs(1),
+            restart_tx,
+        ));
+
+        let test_deadline =
+            tokio::time::Instant::now() + STATUS_ACK_TIMEOUT + Duration::from_millis(500);
+        client
+            .write_all(format!("{STATUS_VERB}\n").as_bytes())
+            .await
+            .expect("send status request");
+
+        // Keep the queue full for half the budget. The remaining acknowledgement
+        // wait must use the other half, not start a fresh STATUS_ACK_TIMEOUT.
+        tokio::time::sleep(STATUS_ACK_TIMEOUT / 2).await;
+        drop(
+            trigger_rx
+                .recv()
+                .await
+                .expect("remove the prefilled request"),
+        );
+
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        tokio::time::timeout_at(test_deadline, reader.read_line(&mut line))
+            .await
+            .expect("enqueue and ack waits share one status deadline")
+            .expect("read timeout response");
+        assert!(line.contains("timed out reading federation status"));
+        handler.await.expect("handler does not panic").unwrap();
     }
 
     /// An unknown verb is rejected without ever poking the federation loop.

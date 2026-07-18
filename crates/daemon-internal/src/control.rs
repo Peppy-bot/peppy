@@ -211,7 +211,10 @@ pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOu
         ),
         Err(e) => match e.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => QueryStatusOutcome::TimedOut,
-            _ => QueryStatusOutcome::DaemonNotRunning,
+            ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
+                QueryStatusOutcome::DaemonNotRunning
+            }
+            _ => QueryStatusOutcome::DaemonError(e.to_string()),
         },
     }
 }
@@ -414,6 +417,56 @@ mod tests {
                 listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
                 pinned: false,
             })
+        );
+    }
+
+    #[test]
+    fn query_status_reports_an_invalid_reply_as_a_daemon_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_req, stream| {
+            stream.write_all(b"not-json\n").unwrap();
+        });
+
+        let outcome = query_status(&path, Duration::from_secs(5));
+        handle.join().unwrap();
+
+        assert!(matches!(outcome, QueryStatusOutcome::DaemonError(message) if !message.is_empty()));
+    }
+
+    #[test]
+    fn query_status_reports_an_aborted_reply_as_a_daemon_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_req, _stream| {});
+
+        let outcome = query_status(&path, Duration::from_secs(5));
+        handle.join().unwrap();
+
+        assert!(matches!(outcome, QueryStatusOutcome::DaemonError(message)
+            if message.contains("closed the control connection")));
+    }
+
+    #[test]
+    fn query_status_without_a_socket_reports_not_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+
+        assert_eq!(
+            query_status(&path, Duration::from_secs(1)),
+            QueryStatusOutcome::DaemonNotRunning
+        );
+    }
+
+    #[test]
+    fn query_status_with_a_refused_socket_reports_not_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        drop(UnixListener::bind(&path).expect("bind stale socket"));
+
+        assert_eq!(
+            query_status(&path, Duration::from_secs(1)),
+            QueryStatusOutcome::DaemonNotRunning
         );
     }
 }

@@ -134,39 +134,12 @@ impl Command for FederateCommand {
             None => Vec::new(),
         };
 
-        if discovered.len() == 1 {
-            let core_node = discovered[0].clone();
-            if core_node == federation::RESERVED_BACKEND_NAME {
-                println!(
-                    "Federated with {endpoint}; the peer reported the reserved core-node name \
-                     `{}`, so it was not cached. Remove this federation by its exact endpoint.",
-                    federation::RESERVED_BACKEND_NAME
-                );
-                return Ok(());
-            }
-            let cached = federation::with_registry(&registry_path, |registry| {
-                if !registry
-                    .peers()
-                    .iter()
-                    .any(|peer| peer.endpoint().as_str() == endpoint)
-                {
-                    return Ok::<_, Error>(false);
-                }
-                registry.set_core_node(&endpoint, Some(core_node.clone()))?;
-                Ok(true)
-            })?;
-            if !cached {
-                println!(
-                    "Federated with {core_node} ({endpoint}), but its registry entry was removed concurrently."
-                );
-                return Ok(());
-            }
-            println!("Federated with {core_node} ({endpoint}).");
-        } else if discovered.is_empty() {
+        if discovered.is_empty() {
             println!("Federated with {endpoint}; the peer core-node name was not discovered.");
         } else {
             println!(
-                "Federated with {endpoint}; newly visible core nodes: {}.",
+                "Federated with {endpoint}; newly visible core nodes (not cached because the \
+                 daemon cannot correlate them to this endpoint): {}.",
                 discovered.join(", ")
             );
         }

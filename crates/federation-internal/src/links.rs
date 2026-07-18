@@ -6,7 +6,7 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::{FederationConfig, ParsedEndpointBuf, validate_locator_path};
 
 use crate::registry::Federations;
-use crate::{CA_CERT_FILE, CERT_FILE, Error, KEY_FILE, Result, federation_dir};
+use crate::{CA_CERT_FILE, CERT_FILE, Error, KEY_FILE, Result, federation_dir, pki};
 
 /// Certificate, key, and trust-anchor paths for one machine identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +49,59 @@ pub fn resolve_identity_paths(
             .clone()
             .unwrap_or_else(|| directory.join(CA_CERT_FILE)),
     };
+    let identity = pin_managed_generations(identity)?;
     validate_identity_paths(&identity)?;
     Ok(identity)
+}
+
+/// Refreshes a previously resolved identity to the generation that is current
+/// now. Callers that retry or reapply federation use this once per operation,
+/// then pass the returned snapshot to every locator and probe built by that
+/// operation.
+pub fn refresh_identity_paths(identity: &IdentityPaths) -> Result<IdentityPaths> {
+    pin_managed_generations(identity.clone())
+}
+
+/// Resolves each managed directory's generation pointer once and rewrites all
+/// conventional paths from that directory to the same immutable generation.
+/// Explicit conventional paths receive the same protection as defaults, while
+/// arbitrary operator-provided paths remain untouched.
+fn pin_managed_generations(mut identity: IdentityPaths) -> Result<IdentityPaths> {
+    let mut resolved = Vec::<(PathBuf, Option<PathBuf>)>::new();
+    for (path, conventional_name) in [
+        (&mut identity.cert, CERT_FILE),
+        (&mut identity.key, KEY_FILE),
+        (&mut identity.ca, CA_CERT_FILE),
+    ] {
+        if path.file_name().and_then(|name| name.to_str()) != Some(conventional_name) {
+            continue;
+        }
+        let Some(parent) = managed_root(path) else {
+            continue;
+        };
+        let generation = if let Some((_, generation)) =
+            resolved.iter().find(|(candidate, _)| candidate == &parent)
+        {
+            generation.clone()
+        } else {
+            let generation = pki::current_generation(&parent)?;
+            resolved.push((parent, generation.clone()));
+            generation
+        };
+        if let Some(generation) = generation {
+            *path = generation.join(conventional_name);
+        }
+    }
+    Ok(identity)
+}
+
+fn managed_root(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let generations = parent.parent();
+    if generations.and_then(Path::file_name) == Some(std::ffi::OsStr::new(pki::GENERATIONS_DIR)) {
+        return generations?.parent().map(Path::to_path_buf);
+    }
+    Some(parent.to_path_buf())
 }
 
 /// One registry peer paired with its rendered mTLS connect locator. The

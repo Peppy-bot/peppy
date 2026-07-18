@@ -849,6 +849,9 @@ pub fn validate_locator_path(path: &Path) -> std::result::Result<(), String> {
     let Some(path) = path.to_str() else {
         return Err("must be valid UTF-8 for use in a Zenoh endpoint fragment".to_string());
     };
+    if path.is_empty() {
+        return Err("must not be empty".to_string());
+    }
     if let Some(delimiter) = path
         .chars()
         .find(|character| ['#', ';', '='].contains(character))
@@ -1677,6 +1680,23 @@ mod tests {
                 matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
                     if message.contains(field) && message.contains("reserved locator delimiter")),
                 "expected a path error for {field}, got {error:?}"
+            );
+            assert_eq!(std::fs::read_to_string(config_path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn federation_identity_paths_reject_empty_values() {
+        for field in ["cert_path", "key_path", "ca_path"] {
+            let content =
+                format!(r#"{{ zenoh: {{ managed: {{ federation: {{ {field}: "" }} }} }} }}"#);
+            let (_tmp, peppy_dirs, config_path) = dirs_with_config(&content);
+
+            let error = load_or_create(&peppy_dirs).unwrap_err();
+            assert!(
+                matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
+                    if message.contains(field) && message.contains("must not be empty")),
+                "expected an empty path error for {field}, got {error:?}"
             );
             assert_eq!(std::fs::read_to_string(config_path).unwrap(), content);
         }

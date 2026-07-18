@@ -17,7 +17,7 @@ pub mod registry;
 
 pub use links::{
     IdentityPaths, PeerLink, backend_connect_locator, listener_locator, peer_connect_locator,
-    peer_links, peer_probe_tls, resolve_identity_paths,
+    peer_links, peer_probe_tls, refresh_identity_paths, resolve_identity_paths,
 };
 pub use pki::{ca_init, issue};
 pub use registry::{FederationPeer, Federations, RegistryLock, load, lock, save, with_registry};

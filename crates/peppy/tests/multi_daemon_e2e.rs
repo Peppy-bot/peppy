@@ -1,6 +1,6 @@
 #![cfg(feature = "multi_daemon_e2e")]
 
-use std::net::{IpAddr, Ipv4Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -246,7 +246,7 @@ struct DaemonOptions<'a> {
     managed_router: Option<ManagedRouterMount<'a>>,
     extra_hosts: &'a [(&'a str, &'a str)],
     network: Option<&'a str>,
-    publish: Option<(u16, u16)>,
+    publish: Option<u16>,
     federation_identity: Option<&'a Path>,
 }
 
@@ -324,7 +324,13 @@ impl Daemon {
         while started.elapsed() < duration {
             let output = self.stack_list(None).await;
             assert!(
-                !output.success() || !output.text.contains(needle),
+                output.success(),
+                "stack list failed while checking that {needle} stayed absent in {}:\n{}",
+                self.name,
+                output.text
+            );
+            assert!(
+                !output.text.contains(needle),
                 "{needle} unexpectedly became visible in {}:\n{}",
                 self.name,
                 output.text
@@ -379,6 +385,18 @@ impl Daemon {
             ),
             Err(error) => panic!("inspecting bridge IP for {}: {error}", self.name),
         }
+    }
+
+    async fn published_port(&self, container_port: u16) -> u16 {
+        self.container
+            .get_host_port_ipv4(container_port)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "inspecting published port {container_port} in {}: {error}",
+                    self.name
+                )
+            })
     }
 
     async fn stop(&self) {
@@ -453,14 +471,6 @@ fn run_peppy_on_host(peppy_home: &Path, args: &[&str]) -> ExecOutput {
         text: format!("{}{}", stdout, String::from_utf8_lossy(&output.stderr)),
         stdout,
     }
-}
-
-fn free_host_port() -> u16 {
-    TcpListener::bind((docker_host_gateway_ipv4(), 0))
-        .expect("bind a free Docker host-gateway port")
-        .local_addr()
-        .expect("read the free Docker host-gateway port")
-        .port()
 }
 
 /// Memoized: the gateway is constant for the host, and shelling out to
@@ -556,7 +566,11 @@ async fn start_daemon(
     config: &str,
     options: DaemonOptions<'_>,
 ) -> Daemon {
-    let mut request = GenericImage::new(launch.image_name.as_str(), launch.image_tag.as_str())
+    let mut image = GenericImage::new(launch.image_name.as_str(), launch.image_tag.as_str());
+    if let Some(container_port) = options.publish {
+        image = image.with_exposed_port(container_port.into());
+    }
+    let mut request = image
         .with_container_name(name)
         .with_hostname(hostname)
         .with_host("host.docker.internal", Host::HostGateway)
@@ -585,19 +599,6 @@ async fn start_daemon(
     }
     if let Some(network) = options.network {
         request = request.with_network(network);
-    }
-    if let Some((host_port, container_port)) = options.publish {
-        request = request
-            .with_mapped_port(host_port, container_port.into())
-            .with_host_config_modifier(|host_config| {
-                if let Some(port_bindings) = host_config.port_bindings.as_mut() {
-                    for bindings in port_bindings.values_mut().flatten() {
-                        for binding in bindings {
-                            binding.host_ip = Some(docker_host_gateway_ipv4().to_string());
-                        }
-                    }
-                }
-            });
     }
     if let Some(identity) = options.federation_identity {
         request = request.with_mount(read_only_bind(identity, "/data/conf/federation"));
@@ -854,8 +855,9 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
 }
 
 /// User-managed federation is always mTLS. This covers the complete CLI flow,
-/// including PKI generation, automatic peer naming, strict peer verification,
-/// a rogue fleet CA, and name-based removal.
+/// including PKI generation, strict peer verification, a rogue fleet CA, and
+/// exact-endpoint removal when the daemon cannot correlate mesh identity to a
+/// specific federation link.
 #[cfg_attr(not(target_os = "linux"), ignore = "requires a Linux Docker host")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
@@ -922,8 +924,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
     )
     .text;
     assert!(
-        federated.contains("daemon-b"),
-        "federate must report the discovered core-node name:\n{federated}"
+        federated.contains("not cached") && federated.contains("daemon-b"),
+        "federate must not attribute a mesh-wide presence delta to the endpoint:\n{federated}"
     );
 
     let list = require_success(
@@ -940,8 +942,8 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
         "core-node section missing:\n{list}"
     );
     assert!(
-        list.contains("daemon-b") && list.contains(&endpoint),
-        "discovered peer row missing:\n{list}"
+        list.contains(&endpoint),
+        "federation endpoint row missing:\n{list}"
     );
     assert!(
         list.to_ascii_lowercase().contains("platform-backend")
@@ -957,7 +959,7 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
         "listing daemon A federation as JSON",
     )
     .stdout;
-    assert_federated_json_row(&list_json, &endpoint, "daemon-b");
+    assert_federated_json_row(&list_json, &endpoint, "-");
 
     daemon_a
         .wait_for_stack(|text| {
@@ -1014,9 +1016,9 @@ async fn federation_federate_establishes_mtls_and_remove_tears_it_down() {
 
     require_success(
         daemon_a
-            .exec_peppy(&["federation", "remove", "daemon-b", "--yes"])
+            .exec_peppy(&["federation", "remove", &endpoint])
             .await,
-        "removing daemon B by its discovered name",
+        "removing daemon B by its exact endpoint",
     );
     let after_remove = require_success(
         daemon_a.exec_peppy(&["federation", "list"]).await,
@@ -1046,7 +1048,6 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
     let network_b = format!("peppy-fed-net-b-{suffix}");
     let _networks = Networks::create([network_a.clone(), network_b.clone()]);
     let pki = create_federation_pki();
-    let published_port = free_host_port();
     let listener = format!("tls/0.0.0.0:{FEDERATION_LISTENER_PORT}");
 
     // The two daemons live on isolated bridges and share no launch inputs, so
@@ -1083,7 +1084,7 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
                     config: None,
                 }),
                 network: Some(&network_b),
-                publish: Some((published_port, FEDERATION_LISTENER_PORT)),
+                publish: Some(FEDERATION_LISTENER_PORT),
                 federation_identity: Some(&pki.bundle_b),
                 ..DaemonOptions::default()
             },
@@ -1093,6 +1094,7 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
         daemon_a.wait_for_stack(|text| text.contains("Core node: daemon-a (host: robo-fed-a)")),
         daemon_b.wait_for_stack(|text| text.contains("Core node: daemon-b (host: robo-fed-b)")),
     );
+    let published_port = daemon_b.published_port(FEDERATION_LISTENER_PORT).await;
     let daemon_b_internal_ip = daemon_b.bridge_ip().await;
 
     let isolated_endpoint = format!("tls/{daemon_b_internal_ip}:{FEDERATION_LISTENER_PORT}");
@@ -1127,15 +1129,15 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
     )
     .text;
     assert!(
-        federated.contains("daemon-b"),
-        "published federation must discover daemon B:\n{federated}"
+        federated.contains("not cached") && federated.contains("daemon-b"),
+        "published federation must leave an uncorrelated identity uncached:\n{federated}"
     );
     let list_json = require_success(
         daemon_a.exec_peppy(&["federation", "list", "--json"]).await,
         "listing the published federation as JSON",
     )
     .stdout;
-    assert_federated_json_row(&list_json, &published_endpoint, "daemon-b");
+    assert_federated_json_row(&list_json, &published_endpoint, "-");
 
     daemon_a
         .wait_for_stack(|text| {
@@ -1158,7 +1160,7 @@ async fn federation_across_isolated_networks_federates_via_published_endpoint() 
 
     require_success(
         daemon_a
-            .exec_peppy(&["federation", "remove", "daemon-b"])
+            .exec_peppy(&["federation", "remove", &published_endpoint])
             .await,
         "removing the published federation",
     );

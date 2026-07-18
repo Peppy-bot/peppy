@@ -13,6 +13,11 @@ pub(super) struct RemoveCommand {
     pub peppy_dirs: Option<PeppyDirs>,
 }
 
+enum RegistryRemoval {
+    Removed(String),
+    ExactEndpointAlreadyAbsent { endpoint: String, error: Error },
+}
+
 impl Command for RemoveCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
@@ -36,23 +41,22 @@ impl Command for RemoveCommand {
         let socket = daemon_control::federation_control_socket_path(&dirs);
         let registry_path = federation::registry_path(&dirs);
         let removal = federation::with_registry(&registry_path, |registry| {
-            let endpoint = resolve_target(registry, &self.target)?;
-            registry.remove(&endpoint)?;
-            Ok(endpoint)
+            remove_registry_target(registry, &self.target)
         });
         let endpoint = match removal {
-            Ok(endpoint) => endpoint,
-            Err(_error)
-                if federation::FederationPeer::new(self.target.clone(), None).is_ok()
-                    && matches!(
-                        daemon_control::query_status(&socket, super::STATUS_TIMEOUT),
-                        daemon_control::QueryStatusOutcome::Status(status)
-                            if status.peers.iter().any(|peer| peer.endpoint == self.target)
-                    ) =>
-            {
-                // The durable entry is already gone but the previous apply
-                // failed. An exact-endpoint remove is an explicit retry.
-                self.target.clone()
+            Ok(RegistryRemoval::Removed(endpoint)) => endpoint,
+            Ok(RegistryRemoval::ExactEndpointAlreadyAbsent { endpoint, error }) => {
+                if matches!(
+                    daemon_control::query_status(&socket, super::STATUS_TIMEOUT),
+                    daemon_control::QueryStatusOutcome::Status(status)
+                        if status.peers.iter().any(|peer| peer.endpoint == endpoint)
+                ) {
+                    // The durable entry is already gone but the previous apply
+                    // failed. An exact-endpoint remove is an explicit retry.
+                    endpoint
+                } else {
+                    return Err(error);
+                }
             }
             Err(error) => return Err(error),
         };
@@ -117,6 +121,28 @@ impl Command for RemoveCommand {
         }
         Ok(())
     }
+}
+
+fn remove_registry_target(
+    registry: &mut federation::Federations,
+    target: &str,
+) -> Result<RegistryRemoval> {
+    if federation::FederationPeer::new(target.to_string(), None).is_ok()
+        && !registry
+            .peers()
+            .iter()
+            .any(|peer| peer.endpoint().as_str() == target)
+    {
+        let error = resolve_target(registry, target)
+            .expect_err("an absent exact endpoint cannot resolve from the registry");
+        return Ok(RegistryRemoval::ExactEndpointAlreadyAbsent {
+            endpoint: target.to_string(),
+            error,
+        });
+    }
+    let endpoint = resolve_target(registry, target)?;
+    registry.remove(&endpoint)?;
+    Ok(RegistryRemoval::Removed(endpoint))
 }
 
 fn print_removal_pending(endpoint: &str, reason: &str) {
@@ -259,6 +285,26 @@ mod tests {
     }
 
     #[test]
+    fn only_an_absent_exact_endpoint_gets_the_retry_outcome() {
+        let mut saved = registry(&[("tls/peer-a:7449", Some("robot-a"))]);
+        assert!(matches!(
+            remove_registry_target(&mut saved, "tls/missing:7449").unwrap(),
+            RegistryRemoval::ExactEndpointAlreadyAbsent { endpoint, .. }
+                if endpoint == "tls/missing:7449"
+        ));
+
+        let error = remove_registry_target(&mut saved, "missing")
+            .err()
+            .expect("a missing display name must remain an error");
+        assert!(error.to_string().contains("unknown federation target"));
+
+        assert!(matches!(
+            remove_registry_target(&mut saved, "robot-a").unwrap(),
+            RegistryRemoval::Removed(endpoint) if endpoint == "tls/peer-a:7449"
+        ));
+    }
+
+    #[test]
     fn non_interactive_backend_removal_requires_yes() {
         let error = require_confirmation_channel(false, false)
             .expect_err("non-interactive removal without --yes must be rejected");
@@ -308,5 +354,68 @@ mod tests {
 
         let saved = federation::load(&federation::registry_path(&dirs)).unwrap();
         assert!(saved.peers().is_empty());
+    }
+
+    #[test]
+    fn absent_exact_endpoint_retries_only_a_reported_live_removal() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(temporary.path());
+        let endpoint = "tls/peer-a.example:7449";
+        let socket = daemon_control::federation_control_socket_path(&dirs);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for expected in [daemon_control::STATUS_VERB, daemon_control::REFEDERATE_VERB] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                assert_eq!(request.trim(), expected);
+                let response = if expected == daemon_control::STATUS_VERB {
+                    b"{\"status\":\"federation_status\",\"backend\":null,\"peers\":[{\"endpoint\":\"tls/peer-a.example:7449\",\"state\":\"verified\"}],\"listen_endpoint\":null,\"pinned\":false}\n".as_slice()
+                } else {
+                    b"{\"status\":\"ok\",\"applied\":null,\"peers\":[]}\n".as_slice()
+                };
+                stream.write_all(response).unwrap();
+            }
+        });
+
+        RemoveCommand {
+            target: endpoint.to_string(),
+            yes: false,
+            peppy_dirs: Some(dirs),
+        }
+        .execute(&Arc::new(AppContext::new(temporary.path())))
+        .expect("an already-saved exact removal may retry a still-live link");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn corrupt_registry_error_does_not_enter_the_live_retry_fallback() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(temporary.path());
+        let registry_path = federation::registry_path(&dirs);
+        std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+        std::fs::write(&registry_path, "not a registry").unwrap();
+
+        let socket = daemon_control::federation_control_socket_path(&dirs);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+
+        let error = RemoveCommand {
+            target: "tls/peer-a.example:7449".to_string(),
+            yes: false,
+            peppy_dirs: Some(dirs),
+        }
+        .execute(&Arc::new(AppContext::new(temporary.path())))
+        .expect_err("registry corruption must be propagated");
+        assert!(error.to_string().contains("failed to parse"));
+
+        listener.set_nonblocking(true).unwrap();
+        assert!(matches!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        ));
     }
 }

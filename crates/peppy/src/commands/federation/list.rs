@@ -57,6 +57,12 @@ enum DaemonFederationView {
     OperatorManaged,
 }
 
+impl DaemonFederationView {
+    fn daemon_running(&self) -> bool {
+        !matches!(self, Self::DaemonDown)
+    }
+}
+
 pub(super) struct ListCommand {
     pub json: bool,
     pub peppy_dirs: Option<PeppyDirs>,
@@ -87,15 +93,15 @@ impl Command for ListCommand {
         let status_query = status_query.map_err(|error| {
             Error::ExecutionFailed(format!("federation status query task failed: {error}"))
         })?;
-        let (daemon_running, visible_core_nodes) = presence.unwrap_or((false, Vec::new()));
+        let (presence_daemon_running, visible_core_nodes) = presence.unwrap_or((false, Vec::new()));
         let external = config.zenoh.external_endpoint().is_some();
         let view = match status_query {
             QueryStatusOutcome::Status(status) => DaemonFederationView::Live(status),
             QueryStatusOutcome::TimedOut => DaemonFederationView::Unavailable,
-            QueryStatusOutcome::DaemonNotRunning if external && daemon_running => {
+            QueryStatusOutcome::DaemonNotRunning if external && presence_daemon_running => {
                 DaemonFederationView::OperatorManaged
             }
-            QueryStatusOutcome::DaemonNotRunning if daemon_running => {
+            QueryStatusOutcome::DaemonNotRunning if presence_daemon_running => {
                 DaemonFederationView::Unavailable
             }
             QueryStatusOutcome::DaemonNotRunning => DaemonFederationView::DaemonDown,
@@ -106,6 +112,7 @@ impl Command for ListCommand {
                 )));
             }
         };
+        let daemon_running = view.daemon_running();
         let document = build_document(
             &registry,
             &view,
@@ -388,6 +395,14 @@ mod tests {
             "pending (daemon not running)"
         );
         assert!(format_human(&document).contains("(daemon not running)"));
+    }
+
+    #[test]
+    fn daemon_liveness_comes_from_the_resolved_view() {
+        assert!(DaemonFederationView::Live(FederationStatus::default()).daemon_running());
+        assert!(DaemonFederationView::Unavailable.daemon_running());
+        assert!(DaemonFederationView::OperatorManaged.daemon_running());
+        assert!(!DaemonFederationView::DaemonDown.daemon_running());
     }
 
     #[test]
