@@ -71,7 +71,7 @@ pub struct StackLaunchTimeouts {
 pub struct StackLaunchDefaults {
     pub timeouts: StackLaunchTimeouts,
     pub use_sim_time: bool,
-    /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
+    /// Daemon-resolved defaults (messaging mode, subscriber buffers, liveness grace)
     /// injected into every launched node.
     pub daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor
@@ -166,7 +166,7 @@ struct ProcessLaunchContext {
     /// Daemon-wide default for `framework.use_sim_time` applied to instances
     /// that omit the per-instance override.
     daemon_use_sim_time: bool,
-    /// Daemon-resolved defaults (messaging mode, peer buffers, liveness grace)
+    /// Daemon-resolved defaults (messaging mode, subscriber buffers, liveness grace)
     /// injected into every launched node.
     daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor.

@@ -204,6 +204,7 @@ mod tests {
                 messenger: &handle,
                 core_node_name: "local-daemon".to_string(),
                 target_core_node: target.to_string(),
+                target_is_override: target != "local-daemon",
                 git_hash: "test-git-hash".to_string(),
                 shutdown_grace_secs: 5,
                 organization_namespace: "local".to_string(),

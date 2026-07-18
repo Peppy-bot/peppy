@@ -52,6 +52,11 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test -p core-node --features container_e2e --test container_e2e
 
+      - name: Run multi-daemon Docker e2e test
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+
       - name: Run documentation integration tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"

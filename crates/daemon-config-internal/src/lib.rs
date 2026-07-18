@@ -14,7 +14,7 @@
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
 //! node config model, runtime configs, fingerprints, org namespaces, and
 //! schema tags. Types crossing that boundary (`config::runtime::Name`,
-//! `config::node` manifest types, `config::peppy_config::PeerConfig`) are
+//! `config::node` manifest types, `config::peppy_config::SubscriberBufferConfig`) are
 //! used directly from `config` so each has exactly one definition.
 
 mod error;
@@ -59,8 +59,9 @@ pub mod consts {
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
-        FederationConfig, LifecycleConfig, LocalNodesTopology, MAX_CORE_NODE_NAME_LEN, PeppyConfig,
-        ResourceServers, ZenohConfig, ZenohdConfig, load_or_create,
+        ExternalZenohConfig, FederationConfig, LifecycleConfig, LocalNodesTopology,
+        MAX_CORE_NODE_NAME_LEN, ManagedZenohConfig, PeppyConfig, ResourceServers, ZenohConfig,
+        load_or_create,
     };
 }
 

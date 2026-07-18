@@ -1,8 +1,28 @@
 use super::*;
+use crate::test_support::LogCapture;
 use daemon_config::consts::PeppyDirs;
+use peppylib::CoreNodePresenceMessenger;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+async fn wait_for_log(capture: &LogCapture, needle: &str) {
+    let observed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if capture.logs().contains(needle) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    assert!(
+        observed.is_ok(),
+        "timed out waiting for log entry `{needle}`; captured logs:\n{}",
+        capture.logs()
+    );
+}
 
 async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
@@ -14,6 +34,69 @@ async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     Arc::new(Mutex::new(messenger))
 }
 
+/// A messenger handle over a started in-memory mock session, enough for
+/// service listeners and publisher loops to register and exchange messages.
+/// Shared with the sibling modules' unit tests (clock, presence).
+pub(crate) async fn started_mock_messenger() -> MessengerHandle {
+    MessengerHandle::from_shared(create_mock_messenger().await)
+}
+
+/// A named core node booted to its ready signal on a fresh mock messenger,
+/// holding the pieces the presence tests poke afterwards.
+struct BootedCoreNode {
+    /// Owns the on-disk layout backing the boot's `PeppyDirs`.
+    _root: tempfile::TempDir,
+    core_node: Arc<CoreNode>,
+    /// Second handle on the boot messenger, for presence queries.
+    presence_handle: MessengerHandle,
+    boot_task: tokio::task::JoinHandle<crate::Result<()>>,
+}
+
+impl BootedCoreNode {
+    async fn start(core_node_name: &str) -> Self {
+        let root = tempfile::tempdir().expect("tempdir");
+        let messenger = create_mock_messenger().await;
+        let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
+        let core_node = Arc::new(CoreNode::new(test_core_node_config(
+            messenger,
+            Some(core_node_name),
+            PeppyDirs::new(root.path()),
+        )));
+
+        let boot = Arc::clone(&core_node);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("presence-based boot should reach ready promptly")
+            .expect("ready signal should fire");
+
+        Self {
+            _root: root,
+            core_node,
+            presence_handle,
+            boot_task,
+        }
+    }
+
+    /// Stops the serving task and drops the core node, modeling the serve
+    /// runner's shutdown boundary (the last owner releases the retained
+    /// presence token).
+    async fn shut_down(self) {
+        self.boot_task.abort();
+        let _ = self.boot_task.await;
+        drop(self.core_node);
+    }
+}
+
+/// Live presence claims for one name, bounded for a mock router that answers
+/// immediately.
+async fn live_claims(handle: &MessengerHandle, core_node_name: &str) -> Vec<pmi::CoreNodePresence> {
+    CoreNodePresenceMessenger::list_live(handle, Some(core_node_name), Duration::from_secs(1))
+        .await
+        .expect("presence list should succeed")
+}
+
 fn test_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(5),
@@ -23,6 +106,10 @@ fn test_node_arguments() -> CoreNodeArguments {
         clock_publish_interval: Duration::from_millis(100),
         heartbeat_interval: Duration::from_secs(5),
         daemon_use_sim_time: false,
+        // Zero: the in-memory mock broker is authoritative immediately, so
+        // there is no propagation lag for a settle window to cover; the
+        // settling behavior has its own dedicated presence tests.
+        name_claim_settle: Duration::ZERO,
     }
 }
 
@@ -69,7 +156,7 @@ async fn core_node_execution_has_no_run_cmd_and_no_container() {
 }
 
 /// Verifies that, with no explicit name, the core node derives a deterministic
-/// machine-uid based name with the `core-node-` prefix. Two instances built on
+/// machine-uid based name with the `cn-` prefix. Two instances built on
 /// the same machine must produce the same name.
 #[tokio::test]
 async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
@@ -93,11 +180,11 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
         "default core node name must be deterministic across instances on the same machine"
     );
     assert!(
-        name_a.starts_with("core-node-"),
-        "default core node name must use the `core-node-` prefix, got `{name_a}`"
+        name_a.starts_with("cn-"),
+        "default core node name must use the `cn-` prefix, got `{name_a}`"
     );
     assert!(
-        name_a.len() > "core-node-".len(),
+        name_a.len() > "cn-".len(),
         "default core node name must include a machine-uid suffix, got `{name_a}`"
     );
 }
@@ -119,8 +206,7 @@ async fn core_node_explicit_name_overrides_machine_uid() {
 }
 
 /// The derived name is a pure function of the host identifier: same id, same
-/// name — including the digit suffix, which comes from the same digest that
-/// seeds the generator.
+/// name, with the digest deterministically seeding the readable generator.
 #[test]
 fn derived_name_is_deterministic_per_host_id() {
     assert_eq!(
@@ -133,51 +219,33 @@ fn derived_name_is_deterministic_per_host_id() {
     );
 }
 
-/// Shape: `core-node-{adj}-{surname}-{NNNN}-{DDDDDDDDDD}` — the generator's
-/// 4-digit base followed by the 10-digit zero-padded suffix — and the result
-/// passes `Name::new` validation.
+/// Shape: `cn-{adjective}-{surname}` — omitting the generator's numeric block —
+/// and the result passes `Name::new` validation.
 #[test]
-fn derived_name_has_generator_base_and_ten_digit_suffix() {
+fn derived_name_has_compact_two_word_shape() {
     let name = derive_name_from_host_id("some-machine-uid");
     let name = name.as_str();
 
     assert!(
-        name.starts_with("core-node-"),
-        "derived name must use the `core-node-` prefix, got `{name}`"
+        name.starts_with("cn-"),
+        "derived name must use the `cn-` prefix, got `{name}`"
     );
-    let mut segments = name.rsplit('-');
-    let suffix = segments.next().unwrap();
+    let segments: Vec<_> = name.split('-').collect();
     assert_eq!(
-        suffix.len(),
-        10,
-        "suffix must be 10 zero-padded decimal digits, got `{suffix}`"
+        segments.len(),
+        3,
+        "derived name must contain only the prefix, adjective, and surname: `{name}`"
     );
-    assert!(suffix.chars().all(|c| c.is_ascii_digit()));
-    let generator_digits = segments.next().unwrap();
-    assert_eq!(
-        generator_digits.len(),
-        4,
-        "the generator's 4-digit block must precede the suffix, got `{generator_digits}`"
+    assert_eq!(segments[0], "cn");
+    assert!(!segments[1].is_empty());
+    assert!(!segments[2].is_empty());
+    assert!(
+        !segments
+            .iter()
+            .any(|segment| { segment.len() == 4 && segment.chars().all(|c| c.is_ascii_digit()) })
     );
-    assert!(generator_digits.chars().all(|c| c.is_ascii_digit()));
 
     assert!(Name::new(name.to_string()).is_ok());
-}
-
-/// Distinct host identifiers must yield distinct digit suffixes (the suffix is
-/// the collision-entropy extension; if it collapsed to a constant it would add
-/// nothing over the generator's ~304M combinations).
-#[test]
-fn distinct_host_ids_yield_distinct_suffixes() {
-    let suffix = |host_id: &str| {
-        derive_name_from_host_id(host_id)
-            .as_str()
-            .rsplit('-')
-            .next()
-            .unwrap()
-            .to_string()
-    };
-    assert_ne!(suffix("host-a"), suffix("host-b"));
 }
 
 /// A second `start_with_ready` on the same instance is rejected rather than
@@ -209,25 +277,22 @@ async fn start_with_ready_rejects_a_second_start() {
     first_task.abort();
 }
 
-/// Boot refuses with `CoreNodeNameTaken` when a `health` listener already
-/// answers under the same core-node name (a foreign daemon claiming it): the
-/// mock adapter auto-answers reachability probes in its dispatch path, so a
-/// registered listener is all "another daemon" takes. The refusal must also
-/// happen before any destructive setup — the instances dir survives.
+/// Boot refuses with `CoreNodeNameTaken` when a foreign daemon presence token
+/// already claims the same core-node name. The refusal must also happen before
+/// any destructive setup — the instances dir survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_refuses_to_boot_when_name_already_claimed() {
     let messenger = create_mock_messenger().await;
 
-    // Simulate the foreign daemon: its health listener bound under the name.
-    let _foreign_health = health::listen_for_health(
+    // Simulate a foreign daemon generation. Keep the token alive until after
+    // the boot attempt so the presence query observes the claim.
+    let _foreign_presence = CoreNodePresenceMessenger::declare(
         &MessengerHandle::from_shared(Arc::clone(&messenger)),
         "collision_node",
         "foreign_instance",
-        "collision_node",
-        std::time::Instant::now(),
     )
     .await
-    .expect("foreign health listener should register");
+    .expect("foreign presence token should be declared");
 
     let root = tempfile::tempdir().expect("tempdir");
     let peppy_dirs = PeppyDirs::new(root.path());
@@ -254,26 +319,178 @@ async fn start_refuses_to_boot_when_name_already_claimed() {
     );
 }
 
-/// With no other daemon answering under the name, the self-probe passes and
-/// boot proceeds to the ready signal.
+/// With no other daemon advertising the name, boot proceeds to the ready
+/// signal and the daemon's own presence token is live immediately.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_boots_clean_when_name_unclaimed() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let core_node = Arc::new(CoreNode::new(test_core_node_config(
-        create_mock_messenger().await,
-        Some("unclaimed_node"),
-        PeppyDirs::new(root.path()),
+    let booted = BootedCoreNode::start("unclaimed_node").await;
+
+    let live = live_claims(&booted.presence_handle, "unclaimed_node").await;
+    assert_eq!(live.len(), 1, "exactly this daemon should claim the name");
+    assert_eq!(live[0].core_node, "unclaimed_node");
+    assert_eq!(live[0].instance_id, booted.core_node.instance_id());
+
+    booted.shut_down().await;
+}
+
+/// Two daemons with the same derived default name arbitrate on their generation
+/// ids: one reaches ready and retains the only live claim, while the other
+/// fails with `CoreNodeNameTaken`. This is the uniqueness guarantee behind the
+/// compact generated format, including cloned machine ids and the finite
+/// readable-name space.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
+    let messenger = create_mock_messenger().await;
+    let presence_handle = MessengerHandle::from_shared(Arc::clone(&messenger));
+    let first_root = tempfile::tempdir().expect("first tempdir");
+    let second_root = tempfile::tempdir().expect("second tempdir");
+    let first = Arc::new(CoreNode::new(test_core_node_config(
+        Arc::clone(&messenger),
+        None,
+        PeppyDirs::new(first_root.path()),
     )));
+    let second = Arc::new(CoreNode::new(test_core_node_config(
+        messenger,
+        None,
+        PeppyDirs::new(second_root.path()),
+    )));
+    let core_node_name = first.node_name().to_string();
+    assert_eq!(second.node_name(), core_node_name);
 
-    let boot = Arc::clone(&core_node);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let (first_ready_tx, first_ready_rx) = tokio::sync::oneshot::channel();
+    let (second_ready_tx, second_ready_rx) = tokio::sync::oneshot::channel();
+    let first_task = {
+        let core_node = Arc::clone(&first);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            core_node.start_with_ready(Some(first_ready_tx)).await
+        })
+    };
+    let second_task = {
+        let core_node = Arc::clone(&second);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            core_node.start_with_ready(Some(second_ready_tx)).await
+        })
+    };
 
-    // The self-probe alone costs ~2s (4 unanswered probes); leave headroom.
-    tokio::time::timeout(Duration::from_secs(30), ready_rx)
+    barrier.wait().await;
+    let (first_ready, second_ready) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(first_ready_rx, second_ready_rx)
+    })
+    .await
+    .expect("both startup outcomes should settle promptly");
+    assert_eq!(
+        usize::from(first_ready.is_ok()) + usize::from(second_ready.is_ok()),
+        1,
+        "exactly one competing daemon must reach ready"
+    );
+
+    let live = live_claims(&presence_handle, &core_node_name).await;
+    assert_eq!(live.len(), 1, "exactly one claim must remain live");
+    let expected_winner = if first_ready.is_ok() {
+        first.instance_id()
+    } else {
+        second.instance_id()
+    };
+    assert_eq!(live[0].instance_id, expected_winner);
+
+    let (winner_task, loser_task) = if first_ready.is_ok() {
+        (first_task, second_task)
+    } else {
+        (second_task, first_task)
+    };
+    let loser_error = loser_task
         .await
-        .expect("boot should reach ready despite the unanswered self-probe")
-        .expect("ready signal should fire");
+        .expect("losing startup task should not panic")
+        .expect_err("losing startup must fail");
+    assert!(matches!(
+        loser_error,
+        crate::Error::CoreNodeNameTaken { ref name } if name == &core_node_name
+    ));
+    winner_task.abort();
+}
 
-    boot_task.abort();
+/// Dropping a stopped core node drops its retained token, removing the daemon
+/// generation from presence enumeration without an explicit heartbeat grace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_token_is_released_when_core_node_drops() {
+    let booted = BootedCoreNode::start("released_node").await;
+    let presence_handle = booted.presence_handle.clone();
+
+    assert_eq!(
+        live_claims(&presence_handle, "released_node").await.len(),
+        1
+    );
+
+    booted.shut_down().await;
+
+    assert!(
+        live_claims(&presence_handle, "released_node")
+            .await
+            .is_empty(),
+        "dropping the core node must release its retained presence token"
+    );
+}
+
+/// A foreign token appearing after boot is observed by the daemon's real
+/// history-enabled watcher and produces one error alarm. A second foreign
+/// `Alive` within the cooldown is consumed but must not produce another alarm.
+#[tokio::test]
+async fn duplicate_name_presence_alarm_is_rate_limited() {
+    const CORE_NODE_NAME: &str = "duplicate_alarm_node";
+    const FIRST_FOREIGN_INSTANCE: &str = "foreign_instance_one";
+    const SECOND_FOREIGN_INSTANCE: &str = "foreign_instance_two";
+    const ALARM: &str = "core-node name collision:";
+
+    // A current-thread runtime keeps this scoped subscriber active for the
+    // daemon's spawned watcher tasks, avoiding process-global log state and
+    // interference with parallel tests.
+    let log_capture = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(log_capture.clone())
+        .finish();
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    let booted = BootedCoreNode::start(CORE_NODE_NAME).await;
+
+    let _first_foreign = CoreNodePresenceMessenger::declare(
+        &booted.presence_handle,
+        CORE_NODE_NAME,
+        FIRST_FOREIGN_INSTANCE,
+    )
+    .await
+    .expect("first foreign presence should be declared");
+    wait_for_log(&log_capture, FIRST_FOREIGN_INSTANCE).await;
+    assert_eq!(
+        log_capture.logs().matches(ALARM).count(),
+        1,
+        "the first foreign Alive must emit one collision alarm; logs:\n{}",
+        log_capture.logs()
+    );
+
+    let _second_foreign = CoreNodePresenceMessenger::declare(
+        &booted.presence_handle,
+        CORE_NODE_NAME,
+        SECOND_FOREIGN_INSTANCE,
+    )
+    .await
+    .expect("second foreign presence should be declared");
+    // The debug observation proves the watcher consumed the second Alive; the
+    // unchanged error count therefore exercises the cooldown, not scheduling.
+    wait_for_log(&log_capture, SECOND_FOREIGN_INSTANCE).await;
+    assert_eq!(
+        log_capture.logs().matches(ALARM).count(),
+        1,
+        "a second foreign Alive within the cooldown must not emit another alarm; logs:\n{}",
+        log_capture.logs()
+    );
+
+    booted.shut_down().await;
 }

@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use daemon_config::consts::PeppyDirs;
+
 use super::http::HttpClient;
 use super::storage::{self, RouterSession};
 use super::{client, resolver};
@@ -75,17 +77,16 @@ pub struct RouterEndpoint {
     pub organization_id: String,
 }
 
-/// The router trust anchor, resolved CLI-side with zero configuration. In a debug
-/// build it is the committed dev CA embedded at compile time, materialized once
-/// to a stable file under the cache dir (since [`pmi::TlsConfig::client`] takes a
-/// path) and that path returned. In a release build there is no embedded CA, so
-/// this returns `None` and router certificates validate against the system trust
-/// store. No env var, no runtime override.
-pub fn resolve_router_ca() -> Option<PathBuf> {
-    resolve_router_ca_from(
-        EMBEDDED_DEV_CA,
-        &daemon_config::consts::PeppyDirs::default().cache_dir(),
-    )
+/// The router trust anchor, resolved client-side with zero configuration. In a
+/// debug build it is the committed dev CA embedded at compile time, materialized
+/// once to a stable file under `cache_dir` (since [`pmi::TlsConfig::client`]
+/// takes a path) and that path returned. In a release build there is no embedded
+/// CA, so this returns `None` and router certificates validate against the
+/// system trust store. No env var, no runtime override. The caller supplies the
+/// cache dir (its resolved [`PeppyDirs::cache_dir`]) so the resolve never
+/// reaches for the process-global default root.
+pub fn resolve_router_ca(cache_dir: &Path) -> Option<PathBuf> {
+    resolve_router_ca_from(EMBEDDED_DEV_CA, cache_dir)
 }
 
 /// Testable core of [`resolve_router_ca`]: materialize `embedded` (if any) to
@@ -98,17 +99,18 @@ pub fn resolve_router_ca_from(embedded: Option<&[u8]>, cache_dir: &Path) -> Opti
     materialize_embedded(cache_dir, "peppy-dev-ca.pem", embedded?)
 }
 
-/// The client identity (cert + key) the CLI presents for mTLS, resolved CLI-side
-/// with zero configuration, mirroring [`resolve_router_ca`]. In a debug build it is
-/// the committed dev client leaf embedded at compile time, materialized to the cache
-/// dir (since [`pmi::TlsConfig`] takes paths). A release build embeds neither, so it
-/// returns `None` and the CLI does one-way TLS (no client cert); per-user client
-/// certs are a follow-up.
-pub fn resolve_router_client_identity() -> Option<(PathBuf, PathBuf)> {
+/// The client identity (cert + key) the CLI presents for mTLS, resolved
+/// client-side with zero configuration, mirroring [`resolve_router_ca`]
+/// (including the caller-supplied `cache_dir`). In a debug build it is the
+/// committed dev client leaf embedded at compile time, materialized to the cache
+/// dir (since [`pmi::TlsConfig`] takes paths). A release build embeds neither, so
+/// it returns `None` and the CLI does one-way TLS (no client cert); per-user
+/// client certs are a follow-up.
+pub fn resolve_router_client_identity(cache_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     resolve_router_client_identity_from(
         EMBEDDED_DEV_CLIENT_CERT,
         EMBEDDED_DEV_CLIENT_KEY,
-        &daemon_config::consts::PeppyDirs::default().cache_dir(),
+        cache_dir,
     )
 }
 
@@ -312,17 +314,25 @@ fn pull_and_cache(
 /// `core_node_name` is the daemon's core-node name, sent in every pull's POST
 /// body so the backend registry records which daemon federated (and when it
 /// last pulled).
+///
+/// `peppy_dirs` is the caller's resolved peppy data root: the credentials file
+/// and the materialized dev TLS material both derive from it, so a daemon
+/// running under an injected root (a test) never reads the machine's real
+/// peppy home. Only the PAT stays ambient (`PEPPY_API_KEY` is an explicit
+/// operator override, read here).
 pub fn resolve_federation_target(
+    peppy_dirs: &PeppyDirs,
     api_url: &str,
     connect_timeout: Duration,
     core_node_name: &str,
 ) -> Option<(String, pmi::TlsConfig)> {
+    let cache_dir = peppy_dirs.cache_dir();
     resolve_federation_target_at(
-        &storage::default_path(),
+        &storage::credentials_path(peppy_dirs),
         api_url,
         resolver::pat_from_env(),
-        resolve_router_ca(),
-        resolve_router_client_identity(),
+        resolve_router_ca(&cache_dir),
+        resolve_router_client_identity(&cache_dir),
         connect_timeout,
         core_node_name,
     )
@@ -408,11 +418,6 @@ pub fn cached_organization_id(creds_path: &Path) -> Option<String> {
         .router
         .map(|r| r.organization_id)
         .filter(|s| !s.is_empty())
-}
-
-/// [`cached_organization_id`] against the process-global credentials path.
-pub fn cached_organization_id_default() -> Option<String> {
-    cached_organization_id(&storage::default_path())
 }
 
 /// Client TLS material for dialing the shared router: validate it against the

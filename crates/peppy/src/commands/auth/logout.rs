@@ -28,6 +28,10 @@ impl Command for LogoutCommand {
         let dirs = self.peppy_dirs.unwrap_or_default();
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
+        // Managed vs external follows the RUNNING daemon's mode (from its state
+        // file), not the disk config, which may have been edited since it
+        // started; only with no daemon running does the disk config decide.
+        let federation = super::federation_poke_timeout_secs(&dirs, &config);
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
@@ -51,11 +55,14 @@ impl Command for LogoutCommand {
             return Ok(());
         };
 
-        // Warn (before revoking) that logging out clears the namespace, which
-        // restarts the daemon and wipes the running node stack. Bypassed by
-        // `--yes`, skipped when no daemon is running or its node stack holds no
-        // user nodes (so the restart wipes nothing).
-        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Logout)? {
+        // With a managed router, warn (before revoking) that logging out clears
+        // the namespace, which restarts the daemon and wipes the running node
+        // stack. Bypassed by `--yes`, skipped when no daemon is running or its
+        // node stack holds no user nodes (so the restart wipes nothing). External
+        // mode never pokes or restarts the daemon.
+        if federation.is_some()
+            && !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Logout)?
+        {
             println!("Logout aborted.");
             return Ok(());
         }
@@ -80,14 +87,21 @@ impl Command for LogoutCommand {
         storage::save(&creds_path, &creds)?;
         println!("Logged out ({}).", profile::build_env_name());
 
-        // Poke the running daemon so it re-resolves (now logged out) and
-        // de-federates the local router immediately, not on its next poll. Best
-        // effort: never fails logout (the result is intentionally discarded).
-        let _ = super::poke_federation_and_report(
-            &dirs,
-            config.zenoh.federation.connect_timeout_secs,
-            super::FederationPokeAction::Logout,
-        );
+        // In managed mode, poke the running daemon so it re-resolves (now logged
+        // out) and de-federates the local router immediately, not on its next
+        // poll. Best effort: never fails logout (the result is intentionally
+        // discarded). External mode leaves federation untouched and tells the
+        // operator that sessions change on the next manual restart.
+        match federation {
+            Some(connect_timeout_secs) => {
+                let _ = super::poke_federation_and_report(
+                    &dirs,
+                    connect_timeout_secs,
+                    super::FederationPokeAction::Logout,
+                );
+            }
+            None => println!("{}", super::EXTERNAL_ROUTER_NOTE),
+        }
         Ok(())
     }
 }

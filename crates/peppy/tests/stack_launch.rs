@@ -160,7 +160,7 @@ async fn node_launch_command_succeed() {
         .expect("messenger handle should be available");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -238,7 +238,7 @@ async fn node_launch_command_succeed() {
     .expect("launch command should succeed");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -287,7 +287,7 @@ async fn node_launch_command_succeed() {
     .expect("node stop command should succeed");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -388,7 +388,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         .expect("messenger handle should be available");
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -442,7 +442,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     );
 
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -1352,7 +1352,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -2321,7 +2321,7 @@ async fn stack_launch_rejects_unbound_slot() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,

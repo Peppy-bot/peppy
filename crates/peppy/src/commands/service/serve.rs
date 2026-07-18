@@ -1,13 +1,15 @@
 //! Thin CLI wrapper over [`daemon::serve`]: the daemon process body (the
 //! supervised generation loop, router host, core-node runner, and federation)
 //! lives in the `daemon` workspace crate; this command only assembles its
-//! options from clap and the CLI context.
+//! options from clap, the CLI context, and the process environment (the data
+//! root, the compile-time git hash).
 
 use std::sync::Arc;
 
 use super::Command;
 use crate::context::AppContext;
 use crate::error::Result;
+use daemon_config::consts::PeppyDirs;
 
 pub use tokio_util::sync::CancellationToken;
 
@@ -21,6 +23,11 @@ pub struct ServeCommand {
     pub core_node_name: Option<String>,
     pub clock_source: super::ClockSource,
     pub shutdown_token: Option<CancellationToken>,
+    /// The peppy data root the daemon runs under (config, state, singleton
+    /// lock). The CLI passes [`PeppyDirs::default`]; the serve integration
+    /// test passes a per-test temp root so it never reads the machine's real
+    /// peppy home.
+    pub peppy_dirs: PeppyDirs,
 }
 
 impl Command for ServeCommand {
@@ -31,6 +38,7 @@ impl Command for ServeCommand {
             core_node_name: self.core_node_name,
             clock_source: self.clock_source.into(),
             git_hash: GIT_HASH.to_string(),
+            peppy_dirs: self.peppy_dirs,
             shutdown_token: self.shutdown_token,
         })?;
         Ok(())

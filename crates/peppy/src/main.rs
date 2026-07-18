@@ -146,7 +146,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Stack {
-                command: stack::StackCommands::List { .. }
+                command: stack::StackCommands::List
             }
         ));
     }

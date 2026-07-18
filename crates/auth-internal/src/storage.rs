@@ -192,18 +192,13 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
 
 /// Credentials path under a given peppy root: `<root>/conf/credentials.json5`.
 /// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
-/// both auth files from one [`PeppyDirs`].
+/// both auth files from one [`PeppyDirs`]. Every caller threads the `PeppyDirs`
+/// it resolved at its own process boundary; there is deliberately no
+/// default-root variant, so no auth read can silently reach the machine-global
+/// peppy home.
 pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
     dirs.conf_dir()
         .join(daemon_config::consts::CREDENTIALS_FILE)
-}
-
-/// Default credentials path: `<peppy root>/conf/credentials.json5`, honouring
-/// `PEPPY_HOME`. The root is the global peppy data dir, never the cwd.
-pub fn default_path() -> PathBuf {
-    credentials_path(&daemon_config::consts::PeppyDirs::new(
-        daemon_config::consts::peppy_root_dir(),
-    ))
 }
 
 /// Loads the credentials document, returning an empty one when the file does

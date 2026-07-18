@@ -3,6 +3,8 @@
 
 mod error;
 mod services;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use error::{Error, Result};
 pub use services::repo::cache::{
@@ -11,6 +13,6 @@ pub use services::repo::cache::{
 };
 pub use services::repo::{InitOutcome, ensure_default_repos};
 pub use services::{
-    CoreNode, CoreNodeArguments, CoreNodeConfig, TEARDOWN_REAP_BUDGET, check_runtime_prerequisites,
-    force_kill_deadline, teardown_all_instances,
+    CoreNode, CoreNodeArguments, CoreNodeConfig, NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET,
+    check_runtime_prerequisites, force_kill_deadline, teardown_all_instances,
 };

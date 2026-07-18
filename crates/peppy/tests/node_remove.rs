@@ -96,7 +96,7 @@ fn node_remove_command_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -138,7 +138,7 @@ fn node_remove_command_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -283,7 +283,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -436,7 +436,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,

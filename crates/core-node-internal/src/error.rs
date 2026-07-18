@@ -60,4 +60,16 @@ pub enum Error {
          to give this daemon a unique name, then restart it"
     )]
     CoreNodeNameTaken { name: String },
+
+    #[error(
+        "cannot verify core node name '{name}' is free: liveliness queries went \
+         {blind_for:.1?} without reporting this daemon's own claim candidacy, so the broker \
+         view is degraded (queries timing out or replies dropped, typically an overloaded or \
+         unreachable router); refusing to commit the name blind. Restart the daemon once the \
+         router is responsive"
+    )]
+    NameClaimUnverifiable {
+        name: String,
+        blind_for: std::time::Duration,
+    },
 }

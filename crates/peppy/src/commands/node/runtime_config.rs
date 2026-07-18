@@ -61,7 +61,7 @@ async fn print_runtime_config_async(
 
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,

@@ -23,10 +23,16 @@ use crate::{context::AppContext, error::Result};
 use daemon::control::{self as daemon_control, PokeOutcome};
 use daemon::state::DaemonState;
 
-/// Shown when the daemon's router is operator-managed, so the CLI does not
-/// auto-manage federation. Used by both login and logout reporting.
-const PINNED_NOTE: &str = "Note: this daemon's router is operator-managed (ZENOH_CONFIG pin or \
-     an adopted external endpoint); federation is not auto-managed.";
+/// Shown when the managed router uses an operator-pinned config, so the daemon
+/// cannot rewrite it. Used by both login and logout reporting.
+const PINNED_NOTE: &str = "Note: this daemon's router uses an operator-pinned ZENOH_CONFIG; \
+     federation is not auto-managed.";
+
+/// Shown after login/logout in external mode. No federation control task exists
+/// in that mode, so the CLI deliberately leaves the operator's router alone.
+const EXTERNAL_ROUTER_NOTE: &str = "Note: this daemon dials an operator-run router \
+     (`zenoh.external`); federation belongs to the operator and was left untouched. Restart the \
+     daemon to apply the new sign-in state to its sessions.";
 
 /// Re-poke cadence and overall deadline while waiting for the daemon to restart
 /// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)
@@ -40,12 +46,14 @@ const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
 /// login/logout prompt only briefly before we fall back to showing the warning.
 const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The namespace the current on-disk credentials resolve to (`local` when logged
-/// out, else the org id). The same resolution the daemon does at startup, so the
-/// CLI can confirm the daemon came back under exactly what it just wrote.
-fn current_creds_namespace() -> String {
+/// The namespace the on-disk credentials under `dirs` resolve to (`local` when
+/// logged out, else the org id). The same resolution the daemon does at startup,
+/// so the CLI can confirm the daemon came back under exactly what it just wrote.
+/// Reads the credentials from the same `dirs` the command resolved, so a test
+/// seam isolates it.
+fn current_creds_namespace(dirs: &PeppyDirs) -> String {
     config::org::resolve_session_namespace(
-        auth::router::cached_organization_id_default().as_deref(),
+        auth::router::cached_organization_id(&auth::storage::credentials_path(dirs)).as_deref(),
     )
     .as_str()
     .to_string()
@@ -60,12 +68,38 @@ pub(crate) enum FederationPokeAction {
     Logout,
 }
 
-/// Confirms (before authentication begins) a login/logout that may restart the
-/// daemon and wipe the running node stack, unless `--yes` was passed. Returns
-/// `Ok(true)` to proceed. Only prompts when a daemon is actually running (else
-/// there is nothing to restart), stdin is a TTY (so a script is never blocked on
-/// a prompt), and the daemon is running at least one user node (else the restart
-/// wipes nothing worth warning about).
+/// The managed-federation connect timeout (seconds) a login/logout should honor:
+/// `Some` means "managed mode: warn about the restart and poke the control
+/// socket with this timeout", `None` means "external mode: leave federation to
+/// the operator, never warn or poke".
+///
+/// A RUNNING daemon is authoritative: its state file records whether that
+/// generation armed managed-router federation (and with which timeout), so a
+/// config edited on disk after it started can neither make login/logout poke a
+/// control socket that does not exist (external daemon, managed config on disk)
+/// nor skip the poke a managed daemon needs to (de)federate immediately
+/// (managed daemon, external config on disk). Only when no daemon is running,
+/// so there is nothing to poke or restart either way, does the on-disk `config`
+/// decide, matching what the next daemon start will do. The state file is read
+/// from the same `dirs` the command resolved, so a test seam isolates it.
+pub(crate) fn federation_poke_timeout_secs(
+    dirs: &PeppyDirs,
+    config: &daemon_config::peppy_config::PeppyConfig,
+) -> Option<u64> {
+    match DaemonState::read_from(&DaemonState::state_file_in(dirs.root())) {
+        Ok(state) if state.is_running() => state.federation_connect_timeout_secs,
+        _ => config.zenoh.federation().map(|f| f.connect_timeout_secs),
+    }
+}
+
+/// Confirms (before authentication begins) a managed-router login/logout that
+/// may restart the daemon and wipe the running node stack, unless `--yes` was
+/// passed. Callers skip this entirely for `zenoh.external`, where authentication
+/// never pokes or restarts the daemon. Returns `Ok(true)` to proceed. Only
+/// prompts when a daemon is actually running (else there is nothing to restart),
+/// stdin is a TTY (so a script is never blocked on a prompt), and the daemon is
+/// running at least one user node (else the restart wipes nothing worth warning
+/// about).
 pub(crate) fn confirm_restart(
     ctx: &Arc<AppContext>,
     yes: bool,
@@ -126,7 +160,7 @@ fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
         // this probe backs the "login/logout restarts the local daemon" warning,
         // so a global `--core-node` override must not redirect it.
         let response = poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             conn.messenger,
             &conn.core_node_name,
             CALLER_INSTANCE_ID,
@@ -204,7 +238,7 @@ pub(crate) fn poke_federation_and_report(
     // ack is `Restarting`; poll the (path-stable) control socket until the daemon
     // is back under the namespace we just wrote, then report the settled outcome.
     if matches!(outcome, PokeOutcome::Restarting) {
-        return await_restart(&socket, read_timeout, &action);
+        return await_restart(dirs, &socket, read_timeout, &action);
     }
     match action {
         FederationPokeAction::Login => report_login(outcome),
@@ -220,12 +254,13 @@ pub(crate) fn poke_federation_and_report(
 /// credentials change (a second login/logout mid-restart) and a never-recovers
 /// timeout. Bounded by [`RESTART_POLL_DEADLINE`].
 fn await_restart(
+    dirs: &PeppyDirs,
     socket: &std::path::Path,
     read_timeout: Duration,
     action: &FederationPokeAction,
 ) -> Result<()> {
     // The namespace the daemon must come back under (what we just wrote).
-    let expected = current_creds_namespace();
+    let expected = current_creds_namespace(dirs);
     // This helper is shared by both flows, so the recovery guidance must name the
     // caller's own subcommand rather than always saying `login`.
     let subcommand = match action {
@@ -246,7 +281,7 @@ fn await_restart(
 
         // A concurrent login/logout rewrote the credentials mid-restart, so the
         // daemon will not come back under what we wrote.
-        if current_creds_namespace() != expected {
+        if current_creds_namespace(dirs) != expected {
             break Err(Error::Auth(format!(
                 "credentials changed during restart; re-run `peppy auth {subcommand}`"
             )));
@@ -255,8 +290,11 @@ fn await_restart(
         // The (path-stable) daemon state records the live generation's namespace,
         // written before the control socket binds. While the daemon is down or the
         // old generation is still up, this is unreadable or carries the old value.
-        let back_under_expected =
-            matches!(DaemonState::read(), Ok(state) if state.organization_namespace == expected);
+        // Read from the same `dirs` the command resolved, like the socket path.
+        let back_under_expected = matches!(
+            DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
+            Ok(state) if state.organization_namespace == expected
+        );
         if !back_under_expected {
             continue;
         }
@@ -289,10 +327,10 @@ fn await_restart(
     result
 }
 
-/// Strict reporting for a login poke: success and the operator-managed case print
-/// and return `Ok`; every "federation not in effect" outcome returns an
-/// actionable [`Error::Auth`] (credentials are already saved by the caller, so
-/// the identity is kept; only the command fails).
+/// Strict reporting for a login poke: success and a managed router pinned via
+/// `ZENOH_CONFIG` print and return `Ok`; every "federation not in effect" outcome
+/// returns an actionable [`Error::Auth`] (credentials are already saved by the
+/// caller, so the identity is kept; only the command fails).
 fn report_login(outcome: PokeOutcome) -> Result<()> {
     match outcome {
         PokeOutcome::Applied(Some(_)) => {
@@ -300,8 +338,8 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
             Ok(())
         }
         PokeOutcome::Pinned => {
-            // The operator owns this router, so the CLI is not responsible for
-            // federating it. Treat as non-fatal.
+            // The managed router's `ZENOH_CONFIG` pin prevents the daemon from
+            // rewriting it. Treat that operator choice as non-fatal.
             println!("{PINNED_NOTE}");
             Ok(())
         }
@@ -432,12 +470,101 @@ impl Command for AuthCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{report_login, report_logout, stack_has_user_nodes};
+    use super::{federation_poke_timeout_secs, report_login, report_logout, stack_has_user_nodes};
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
     use daemon::control::PokeOutcome;
+    use daemon::state::DaemonState;
+    use daemon_config::consts::PeppyDirs;
+    use daemon_config::peppy_config::{
+        ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
+    };
     use std::collections::BTreeMap;
+
+    fn managed_config() -> PeppyConfig {
+        PeppyConfig {
+            zenoh: ZenohConfig::Managed(ManagedZenohConfig::default()),
+            ..PeppyConfig::default()
+        }
+    }
+
+    fn external_config() -> PeppyConfig {
+        PeppyConfig {
+            zenoh: ZenohConfig::External(ExternalZenohConfig {
+                endpoint: "tcp/router.example:7447".to_string(),
+            }),
+            ..PeppyConfig::default()
+        }
+    }
+
+    /// Writes a daemon state file under `dirs` whose recorded pid is this test
+    /// process (so `is_running` holds) and whose federation field is `timeout`.
+    fn write_running_state(dirs: &PeppyDirs, timeout: Option<u64>) {
+        let state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", timeout);
+        DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
+            .expect("write daemon state");
+    }
+
+    #[test]
+    fn with_no_daemon_running_the_disk_config_decides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+        let managed = managed_config();
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &managed),
+            managed.zenoh.federation().map(|f| f.connect_timeout_secs),
+            "no state file: a managed disk config supplies the poke timeout"
+        );
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &external_config()),
+            None,
+            "no state file: an external disk config means no poke"
+        );
+    }
+
+    #[test]
+    fn a_running_daemon_beats_the_disk_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+
+        // Managed daemon, external config on disk: the poke must still happen,
+        // with the daemon's own timeout.
+        write_running_state(&dirs, Some(7));
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &external_config()),
+            Some(7),
+            "a running managed daemon must be poked even if the disk config went external"
+        );
+
+        // External daemon, managed config on disk: there is no control socket,
+        // so login/logout must not warn about a restart or poke anything.
+        write_running_state(&dirs, None);
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &managed_config()),
+            None,
+            "a running external daemon has no control socket to poke"
+        );
+    }
+
+    #[test]
+    fn a_stale_state_file_from_a_dead_daemon_falls_back_to_the_disk_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+        let mut state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", None);
+        // A pid outside the valid range names no live process, so the state is
+        // stale and the disk config decides again.
+        state.daemon_pid = Some(u32::MAX);
+        DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
+            .expect("write daemon state");
+
+        let managed = managed_config();
+        assert_eq!(
+            federation_poke_timeout_secs(&dirs, &managed),
+            managed.zenoh.federation().map(|f| f.connect_timeout_secs),
+            "a dead daemon's state must not override the disk config"
+        );
+    }
 
     /// Builds an instance-less node fixed at `stage`. The bindings/instances are
     /// irrelevant to the user-node predicate, which keys only on `stage`.
@@ -445,6 +572,7 @@ mod tests {
         SerializedNode {
             name: name.to_string(),
             tag: "v1".to_string(),
+            core_node: "test-core".to_string(),
             config_path: format!("/tmp/{name}.json5"),
             artifact_path: None,
             stage: Some(stage),
@@ -507,7 +635,7 @@ mod tests {
         );
         assert!(
             report_login(PokeOutcome::Pinned).is_ok(),
-            "an operator-managed router is non-fatal for login"
+            "a managed router pinned via ZENOH_CONFIG is non-fatal for login"
         );
     }
 

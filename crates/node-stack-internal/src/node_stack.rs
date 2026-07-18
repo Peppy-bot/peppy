@@ -4,6 +4,7 @@ mod entity;
 mod pairing;
 mod run_steps;
 
+use entity::serialize_node_entity;
 pub use entity::{
     BuildContext, NodeEntity, NodeStage, OutputSinks, StartContext, StartedInstanceCtx,
     TrackedNodeInstance, WorkingDirGuard,
@@ -25,7 +26,6 @@ use names_generator2::get_random;
 use parking_lot::RwLock;
 use petgraph::{
     Direction,
-    dot::{Config, Dot},
     stable_graph::{NodeIndex, StableDiGraph},
     visit::EdgeRef,
 };
@@ -771,37 +771,13 @@ impl NodeStackInner {
         out
     }
 
-    /// Returns the graph in DOT format for visualization.
-    fn to_dot(&self) -> String {
-        let dot = Dot::with_attr_getters(
-            &self.graph,
-            &[Config::EdgeNoLabel, Config::NodeNoLabel],
-            &|_, _| String::new(),
-            &|_, (_, handle)| {
-                let guard = handle.read();
-                let name = guard.config().manifest.name.as_str();
-                let tag = &guard.config().manifest.tag;
-                let stage = guard.stage().name();
-                let instance_count = guard.instances().len();
-                format!(
-                    "label=\"{}:{}\\n[{}] ({} instance{})\"",
-                    name,
-                    tag,
-                    stage,
-                    instance_count,
-                    if instance_count == 1 { "" } else { "s" }
-                )
-            },
-        );
-        format!("{:?}", dot)
-    }
-
     /// Returns a serializable representation of the graph.
     fn to_serialized_graph(&self) -> SerializedNodeGraph {
+        let core_node = self.root_key.name.clone();
         // The node list and the edge endpoints must serialize each entity
         // identically. Both go through this closure so the two views cannot
         // drift apart.
-        let serialize_entity = |entity: &NodeEntity| SerializedNode::from(entity);
+        let serialize_entity = |entity: &NodeEntity| serialize_node_entity(entity, &core_node);
 
         // One read-lock per entity yields both its serialized node and a clone
         // of its config; the configs feed the contract-implementation edges
@@ -826,7 +802,6 @@ impl NodeStackInner {
         // Stack-scoped v1: every pair lives under this daemon, so the peer's
         // core_node is the daemon's own (the root entity's manifest name —
         // the core node binds to itself).
-        let core_node = self.root_key.name.clone();
         for (node, config) in nodes.iter_mut().zip(&configs) {
             let Some(deps) = config.manifest.depends_on.as_ref() else {
                 continue;
@@ -1187,12 +1162,6 @@ impl NodeStack {
         let mut guard = self.shared.write();
         guard.clear();
         self.add_log_paths.lock().clear();
-    }
-
-    /// Returns the graph in DOT format for visualization.
-    pub fn to_dot(&self) -> String {
-        let guard = self.shared.read();
-        guard.to_dot()
     }
 
     /// Returns a serializable representation of the graph.
