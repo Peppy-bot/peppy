@@ -127,7 +127,13 @@ async fn print_runtime_config_async(
     // could race a restart and pair this generation's stack lookup with another
     // generation's namespace.
     let mut runtime_config = runtime_config;
-    runtime_config.discovery.organization_id = Some(conn.organization_namespace);
+    runtime_config.discovery.namespace = Some(
+        config::namespace::Namespace::parse(&conn.namespace).map_err(|error| {
+            Error::ExecutionFailed(format!(
+                "the daemon state carries an invalid namespace: {error}"
+            ))
+        })?,
+    );
 
     let runtime_config_json = serde_json::to_string(&runtime_config).map_err(|e| {
         Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))

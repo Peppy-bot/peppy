@@ -1060,7 +1060,6 @@ dependencies = [
  "auth",
  "core-node",
  "daemon-config",
- "federation",
  "json5-pretty",
  "peppy-config-model",
  "pmi",
@@ -1460,23 +1459,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 dependencies = [
  "getrandom 0.3.4",
-]
-
-[[package]]
-name = "federation"
-version = "0.0.1"
-dependencies = [
- "daemon-config",
- "json5-pretty",
- "peppy-config-model",
- "pmi",
- "rcgen",
- "serde",
- "serde_json5",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "x509-parser",
 ]
 
 [[package]]
@@ -3301,7 +3283,6 @@ dependencies = [
  "daemon-config",
  "derive_more",
  "dirs 6.0.0",
- "federation",
  "futures",
  "gix-url",
  "httpmock",

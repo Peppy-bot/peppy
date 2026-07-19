@@ -5,6 +5,7 @@
 //! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
 //! distinct messages so an ops problem isn't mistaken for a bad token.
 
+use config::namespace::Namespace;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, de::DeserializeOwned};
 
@@ -67,12 +68,14 @@ pub struct ZenohRouterConfig {
     /// still-fresh config (rather than re-pulling) never risks the router being torn
     /// down.
     pub reconnect_after_secs: u64,
-    /// The caller's organization id (the platform's stable per-user `Uuid`, as a
-    /// string). Becomes the daemon's session namespace so robots of the same org
-    /// interoperate across the federation while different orgs stay routing-isolated.
-    /// Required: a backend that predates this field fails to parse, which is the
-    /// intended clean break (re-run `peppy auth login`).
-    pub organization_id: String,
+    /// The daemon's session namespace, deserialized directly from the backend's
+    /// `workspace_id` (the platform's stable per-workspace `Uuid`). Typed at the
+    /// HTTP boundary: an invalid workspace id fails the pull instead of leaking
+    /// toward a live session, and everything Peppy-side speaks only `namespace`.
+    /// Required with no legacy alias: a backend that still sends
+    /// `organization_id` fails to parse, which is the intended clean break.
+    #[serde(rename = "workspace_id")]
+    pub namespace: Namespace,
 }
 
 impl ZenohRouterConfig {
@@ -281,7 +284,8 @@ mod tests {
             endpoint: endpoint.to_string(),
             protocol: "tls".to_string(),
             reconnect_after_secs: 3000,
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            namespace: Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
+                .expect("valid test namespace"),
         }
     }
 
@@ -320,22 +324,57 @@ mod tests {
 
     #[test]
     fn router_config_parses_tolerantly() {
-        // A backend that adds an unknown field still deserializes.
+        // A backend that adds an unknown field still deserializes, and the wire
+        // `workspace_id` lands in the Peppy-side `namespace` field.
         let json = r#"{
             "endpoint": "tls/abc.zenoh.localhost:7443",
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
             "some_future_field": "ignored"
         }"#;
         let cfg: ZenohRouterConfig = serde_json::from_str(json).expect("tolerant parse");
         assert_eq!(cfg.protocol, "tls");
         assert_eq!(cfg.reconnect_after_secs, 3000);
-        assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            cfg.namespace.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
         assert_eq!(
             cfg.host_port().unwrap(),
             ("abc.zenoh.localhost".to_string(), 7443)
         );
+    }
+
+    #[test]
+    fn router_config_rejects_a_legacy_organization_id_payload() {
+        // No aliases: a backend still sending `organization_id` (and no
+        // `workspace_id`) must fail the parse, the intended clean break.
+        let json = r#"{
+            "endpoint": "tls/abc.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "organization_id": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let err = serde_json::from_str::<ZenohRouterConfig>(json)
+            .expect_err("a legacy payload must fail to parse");
+        assert!(
+            err.to_string().contains("workspace_id"),
+            "the error should name the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn router_config_rejects_an_invalid_workspace_id() {
+        // Fail-closed one layer early: a workspace id that is not a valid zenoh
+        // namespace fails the HTTP parse and can never reach the federation gate.
+        let json = r#"{
+            "endpoint": "tls/abc.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "workspace_id": "**"
+        }"#;
+        assert!(serde_json::from_str::<ZenohRouterConfig>(json).is_err());
     }
 }

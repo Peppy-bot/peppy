@@ -1,8 +1,9 @@
-//! Federates the daemon's local zenohd router to the caller's *per-user cloud
-//! router* and keeps it federated for the daemon's lifetime.
+//! Federates the daemon's local zenohd router to the *platform router* (the
+//! shared hub run by platform-backend) and keeps it federated for the daemon's
+//! lifetime.
 //!
 //! The local router is always started *standalone* by the builder; resolving the
-//! cloud-router endpoint needs a backend round-trip. This task owns the whole
+//! platform endpoint needs a backend round-trip. This task owns the whole
 //! federation lifecycle:
 //!
 //! * **Initial federation (gates startup).** Once the router is up (it waits on
@@ -18,27 +19,27 @@
 //!   *presence gate* (`presence_gate_tx`): the core node delays its boot-time
 //!   presence check and declaration until the initial federation has settled,
 //!   so the check sees the federated mesh (a same-name daemon reachable only
-//!   through the cloud router refuses boot) rather than the always-standalone
+//!   through the platform router refuses boot) rather than the always-standalone
 //!   just-started local router.
-//! * **Immediate (re)federation on login/logout.** `peppy auth login`/`logout`
+//! * **Immediate (re)federation on login/logout.** `peppy platform login`/`logout`
 //!   poke the daemon over the control socket
 //!   ([`FederationControl`](super::federation_control)); the poke is delivered
-//!   here as a [`RefederateRequest`] that runs a poll *now* (not on the next
+//!   here as a [`FederationRequest`] that runs a poll *now* (not on the next
 //!   interval) and acks the resulting [`FederationOutcome`] so the CLI knows
 //!   federation is in place before it returns. A login poke additionally
 //!   *verifies* the federation link with a real TLS handshake
-//!   ([`pmi::probe_tls_reachable`]) so a silent UnknownCA loop is reported as
-//!   [`FederationOutcome::Unreachable`] rather than a false success.
+//!   ([`pmi::probe_tls_reachable`]) so a silent UnknownCA loop is reported as a
+//!   [`LinkState::Error`] rather than a false success.
 //! * **Liveness (backend-driven).** There is no client-side keepalive poll. Once
-//!   federated, the local router holds its link to the cloud router open on its
-//!   own (`reconnect: true`); the backend actively probes this daemon's `/health`
-//!   service over the federated link and tears the cloud router down when the
-//!   daemon stops answering. The config pull on startup/login tells the backend
-//!   this daemon's `core_node` name so it knows which `/health` service to probe.
+//!   federated, the local router holds its link to the platform router open on
+//!   its own (`reconnect: true`); the backend actively probes this daemon's
+//!   `/health` service over the federated link. The config pull on startup/login
+//!   tells the backend this daemon's `core_node` name so it knows which
+//!   `/health` service to probe.
 //! * **Registration cadence.** Every config pull's POST carries this daemon's
 //!   core-node name, upserting it into the backend's per-principal core-node
-//!   registry. The POST fires on cache-stale pulls and on login/logout pokes —
-//!   login clears the router cache, so every login re-registers — never on a
+//!   registry. The POST fires on cache-stale pulls and on login/logout pokes
+//!   (login clears the router cache, so every login re-registers), never on a
 //!   timer. The backend's `last_seen_at` for a core node therefore means "last
 //!   federation config pull", not liveness.
 //! * **Live (re)federation.** When the resolved upstream changes (the user logs
@@ -46,13 +47,12 @@
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
-use crate::control::{AppliedFederation, FederationStatus, PeerLinkState, PeerReport};
+use crate::control::{FederationStatus, LinkState, PlatformLink};
 use crate::error::{Error, Result};
+use crate::platform_locator::platform_connect_locator;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::{EndpointPurpose, ParsedEndpointBuf};
-use federation::PeerLink;
-use federation::links::IdentityPaths;
 use pmi::{Messenger, MessengerBackend, RouterLinks};
 use std::future::Future;
 use std::path::PathBuf;
@@ -60,7 +60,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -71,7 +70,7 @@ use tracing::{info, warn};
 /// ack budget: `connect_timeout` + [`super::federation_control`]'s
 /// `APPLY_ACK_SLACK`, which is sized to cover apply plus probe. An unreachable /
 /// firewalled router fails the probe within this bound and surfaces promptly as
-/// [`FederationOutcome::Unreachable`] rather than as a daemon-side ack timeout.
+/// a [`LinkState::Error`] rather than as a daemon-side ack timeout.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Post-resolve budget for rewriting the managed router and waiting for zenohd
@@ -87,36 +86,9 @@ const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// requests bypass this queue and remain immediately answerable from the cache.
 const REFEDERATE_QUEUE_CAPACITY: usize = 1;
 
-/// Static listener and identity inputs resolved once when the daemon starts.
-#[derive(Debug, Clone)]
-pub(crate) struct FederationLinksSpec {
-    pub(crate) extra_listen_endpoints: Vec<String>,
-    pub(crate) identity: IdentityPaths,
-    pub(crate) initial_peers: Vec<String>,
-    /// Raw inbound listener endpoint (fragment-free) for status reporting.
-    pub(crate) listen_endpoint: Option<String>,
-    pub(crate) initial_pinned: bool,
-}
-
-impl FederationLinksSpec {
-    /// A pinned router never opens the user-federation listener, so status
-    /// must not report one.
-    fn status_listen_endpoint(&self) -> Option<String> {
-        if self.initial_pinned {
-            return None;
-        }
-        self.listen_endpoint.clone()
-    }
-}
-
-#[derive(Debug)]
-enum ProbeTarget {
-    Backend,
-    Peer(String),
-}
-
-/// The platform-backend federation target: the durable endpoint stays
-/// separate from the rendered locator, mirroring [`PeerLink`].
+/// The platform federation target: the durable endpoint stays separate from the
+/// rendered locator (which carries the mTLS material as endpoint fragments), so
+/// status never keys off fragment text.
 #[derive(Debug, Clone)]
 struct DesiredBackend {
     endpoint: ParsedEndpointBuf,
@@ -124,50 +96,9 @@ struct DesiredBackend {
     tls: pmi::TlsConfig,
 }
 
-/// Complete desired router state from backend credentials plus the user peer
-/// registry.
-#[derive(Debug, Clone, Default)]
-struct DesiredFederation {
-    backend: Option<DesiredBackend>,
-    peers: Vec<PeerLink>,
-    /// Managed machine identity pinned once for this resolve/apply operation.
-    identity: Option<IdentityPaths>,
-    /// Listener locators rendered from the same identity generation as peers.
-    extra_listen_endpoints: Vec<String>,
-    /// Probe TLS settings for every user peer: there is one fleet identity per
-    /// daemon, so a single config covers the whole registry.
-    peer_probe_tls: pmi::TlsConfig,
-}
-
-impl DesiredFederation {
-    fn backend_endpoint(&self) -> Option<String> {
-        self.backend
-            .as_ref()
-            .map(|backend| backend.endpoint.as_str().to_string())
-    }
-
-    fn peer_endpoints(&self) -> Vec<String> {
-        let mut endpoints: Vec<String> = self
-            .peers
-            .iter()
-            .map(|peer| peer.endpoint.as_str().to_string())
-            .collect();
-        endpoints.sort();
-        endpoints
-    }
-
-    fn connect_locators(&self) -> Vec<String> {
-        self.backend
-            .iter()
-            .map(|backend| backend.locator.clone())
-            .chain(self.peers.iter().map(|peer| peer.locator.clone()))
-            .collect()
-    }
-}
-
-/// Resolves the full desired state. Registry parse or read failures remain
-/// explicit so a bad file never silently drops existing links.
-type Resolver = Arc<dyn Fn() -> std::result::Result<DesiredFederation, String> + Send + Sync>;
+/// Resolves the desired platform upstream from the credentials: `None` is
+/// logged out (standalone).
+type Resolver = Arc<dyn Fn() -> std::result::Result<Option<DesiredBackend>, String> + Send + Sync>;
 
 /// The future a [`Prober`] returns: `Ok(())` if the upstream's TLS link
 /// validates, `Err(reason)` (human-readable) otherwise.
@@ -208,9 +139,10 @@ async fn probe_with_bound(
     }
 }
 
-/// The future a [`Federator`] returns: `Ok(true)` ⇒ the local router's config was
-/// (re)rendered and zenohd bounced, `Ok(false)` ⇒ nothing was applied because the
-/// managed router uses a pinned `ZENOH_CONFIG`, `Err` ⇒ the apply failed.
+/// The future a [`Federator`] returns: `Ok(true)` means the local router's config
+/// was (re)rendered and zenohd bounced, `Ok(false)` means nothing was applied
+/// because the managed router uses a pinned `ZENOH_CONFIG`, `Err` means the apply
+/// failed.
 type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 
 /// Applies a desired upstream to the local router (re-render + bounce). A boxed
@@ -218,113 +150,58 @@ type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 /// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned), in place of the
 /// real [`refederate_and_restart`], whose mock backend can only ever report
 /// `Ok(false)` and so cannot exercise the applied/verify path.
-type Federator = Arc<dyn Fn(Vec<String>, Vec<String>) -> FederateFuture + Send + Sync>;
+type Federator = Arc<dyn Fn(Option<String>) -> FederateFuture + Send + Sync>;
 
 /// The real federator: re-render the owned router's config with the upstream and,
 /// if it changed, bounce zenohd (see [`refederate_and_restart`]).
 fn real_federator(messenger: Arc<Mutex<Messenger>>) -> Federator {
-    Arc::new(
-        move |connect_endpoints, extra_listen_endpoints| -> FederateFuture {
-            let messenger = messenger.clone();
-            Box::pin(async move {
-                refederate_and_restart(&messenger, connect_endpoints, extra_listen_endpoints).await
-            })
-        },
-    )
-}
-
-fn refresh_listener_locators(
-    static_listeners: &[String],
-    federation_listener: Option<&str>,
-    identity: &IdentityPaths,
-) -> std::result::Result<Vec<String>, String> {
-    let Some(federation_listener) = federation_listener else {
-        return Ok(static_listeners.to_vec());
-    };
-    let listener = ParsedEndpointBuf::parse(federation_listener, "tls", EndpointPurpose::Listen)
-        .map_err(|error| format!("invalid federation listener {federation_listener:?}: {error}"))?;
-    let refreshed =
-        federation::listener_locator(&listener, identity).map_err(|error| error.to_string())?;
-    let mut replaced = false;
-    let mut listeners = static_listeners
-        .iter()
-        .map(|existing| {
-            if existing.split('#').next() == Some(listener.as_str()) {
-                replaced = true;
-                refreshed.clone()
-            } else {
-                existing.clone()
-            }
-        })
-        .collect::<Vec<_>>();
-    if !replaced {
-        listeners.push(refreshed);
-    }
-    Ok(listeners)
-}
-
-/// Peers not yet checked by a verifying poke, as seeded into the status cache
-/// at startup and replayed while no verified report exists.
-fn unverified_reports(endpoints: &[String]) -> Vec<PeerReport> {
-    endpoints
-        .iter()
-        .map(|endpoint| PeerReport {
-            endpoint: endpoint.clone(),
-            state: PeerLinkState::Unverified,
-        })
-        .collect()
+    Arc::new(move |upstream| -> FederateFuture {
+        let messenger = messenger.clone();
+        Box::pin(async move { refederate_and_restart(&messenger, upstream).await })
+    })
 }
 
 /// Outcome of one federation poll, reported back to a control-socket poke so the
 /// CLI can tell the user the post-apply state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FederationOutcome {
-    /// Federation is in effect: `Some(ep)` federated to `ep`, `None`
-    /// de-federated. Covers both "just applied" and "already in place" (a no-op
-    /// poll where the upstream was unchanged). On a login poke this means the TLS
-    /// link to the upstream was also verified to validate.
-    Applied(AppliedFederation),
+    /// The poll settled: the platform link now applied (or cleared) and its
+    /// verification state. Covers both "just applied" and "already in place" (a
+    /// no-op poll where the upstream was unchanged). On a verifying poke a
+    /// [`LinkState::Error`] means the config was applied but the TLS link to the
+    /// platform router does not actually validate.
+    Applied(PlatformLink),
     /// The managed router uses a pinned `ZENOH_CONFIG`, so nothing changed.
     Pinned,
-    /// The resolve or apply failed; the periodic loop will keep retrying.
+    /// The resolve or apply failed; the loop keeps retrying.
     Failed(String),
-    /// The config was applied (the local router was federated), but the TLS link
-    /// to the per-user cloud router could not be established/validated, so
-    /// federation with platform-backend is NOT actually in effect (e.g. an
-    /// UnknownCA handshake loop). Only a verifying poke produces this.
-    Unreachable {
-        reason: String,
-        applied: AppliedFederation,
-    },
-    /// The credentials changed the daemon's *organization namespace*. A session's
-    /// namespace is immutable after open and the core node holds long-lived
-    /// declarations, so the change cannot be applied to the live session by a
-    /// zenohd bounce; it needs a full daemon-generation restart. This poll does
-    /// NOT (de)federate (federating under a namespace that differs from the live
-    /// session's would leak across tenants); it just signals the restart. The
-    /// control handler owns triggering it (after flushing the ack); the federation
-    /// loop only reports it.
-    Restart,
+    /// The credentials changed the daemon's *namespace*. A session's namespace
+    /// is immutable after open and the core node holds long-lived declarations,
+    /// so the change cannot be applied to the live session by a zenohd bounce;
+    /// it needs a full daemon-generation restart into `target_namespace`. This
+    /// poll does NOT (de)federate (federating under a namespace that differs
+    /// from the live session's would leak across tenants); it just signals the
+    /// restart. The control handler owns triggering it (after flushing the
+    /// ack); the federation loop only reports it.
+    Restart { target_namespace: String },
 }
 
-/// Resolves the daemon's *current* organization namespace from the credentials
-/// (after a federation pull has warmed the cache), so the federation loop can
-/// compare it to the generation's startup namespace. A boxed closure so tests can
-/// inject a deterministic value in place of the real credentials read.
+/// Resolves the daemon's *current* namespace from the credentials (after a
+/// federation pull has warmed the cache), so the federation loop can compare it
+/// to the generation's startup namespace. A boxed closure so tests can inject a
+/// deterministic value in place of the real credentials read.
 type NamespaceResolver = Arc<dyn Fn() -> String + Send + Sync>;
 
-/// The real namespace resolver: read the cached organization id from the
-/// generation's credentials file and resolve it to a namespace (absent ->
-/// `local`), matching exactly how the daemon generation resolved its own
-/// namespace at startup (the same [`auth::storage::credentials_path`] derived
-/// from the same `PeppyDirs`).
+/// The real namespace resolver: read the cached namespace from the generation's
+/// credentials file (absent resolves to `local`), matching exactly how the
+/// daemon generation resolved its own namespace at startup (the same
+/// [`auth::storage::credentials_path`] derived from the same `PeppyDirs`).
 fn real_namespace_resolver(creds_path: PathBuf) -> NamespaceResolver {
     Arc::new(move || {
-        config::org::resolve_session_namespace(
-            auth::router::cached_organization_id(&creds_path).as_deref(),
-        )
-        .as_str()
-        .to_string()
+        auth::router::cached_namespace(&creds_path)
+            .unwrap_or_else(config::namespace::Namespace::local)
+            .as_str()
+            .to_string()
     })
 }
 
@@ -355,9 +232,9 @@ struct FederationPoller {
     /// Bound on the router apply (config re-render + zenohd bounce),
     /// [`APPLY_TIMEOUT`] outside tests.
     apply_timeout: Duration,
-    /// This generation's organization namespace, resolved once at startup. A poll
-    /// that re-resolves a *different* namespace from fresh creds requests a
-    /// restart instead of a live re-federation.
+    /// This generation's namespace, resolved once at startup. A poll that
+    /// re-resolves a *different* namespace from fresh creds requests a restart
+    /// instead of a live re-federation.
     startup_namespace: String,
     /// Resolves the current namespace from the credentials (post-pull), compared
     /// against `startup_namespace` to detect a namespace change.
@@ -365,7 +242,7 @@ struct FederationPoller {
 }
 
 /// Background task (a [`ServeAsyncCommand`]) that federates the local router to
-/// the per-user cloud router and keeps it federated. See the module docs.
+/// the platform router and keeps it federated. See the module docs.
 pub(crate) struct RouterFederation {
     poller: FederationPoller,
     /// Goes `true` once the router process is up (MessagingRouter ran
@@ -391,14 +268,8 @@ pub(crate) struct RouterFederation {
     /// Shared coordinator token: the task tears down when it is cancelled (an
     /// in-process restart) or on a real OS shutdown signal.
     teardown_token: CancellationToken,
-    /// Peers already rendered into zenohd's spawn config by the builder.
-    initial_peers: Vec<String>,
-    /// Raw inbound listener endpoint for status reporting.
-    listen_endpoint: Option<String>,
     /// Whether the router was operator-pinned before the federation task began.
     initial_pinned: bool,
-    /// Identity generation rendered into a non-pinned router's spawn config.
-    initial_identity: Option<IdentityPaths>,
 }
 
 impl RouterFederation {
@@ -414,7 +285,7 @@ impl RouterFederation {
         startup_namespace: String,
         restart_tx: watch::Sender<bool>,
         presence_gate_tx: Option<watch::Sender<bool>>,
-        links: FederationLinksSpec,
+        initial_pinned: bool,
         teardown_token: CancellationToken,
     ) -> Self {
         // Both ambient inputs the loop re-reads on every poll derive from the
@@ -422,12 +293,8 @@ impl RouterFederation {
         // and the federation resolve (credentials + materialized dev TLS).
         let creds_path = auth::storage::credentials_path(&peppy_dirs);
         let resolver_dirs = peppy_dirs.clone();
-        let initial_identity = (!links.initial_pinned).then(|| links.identity.clone());
-        let identity = links.identity.clone();
-        let static_listeners = links.extra_listen_endpoints.clone();
-        let federation_listener = links.listen_endpoint.clone();
         let resolver: Resolver = Arc::new(move || {
-            let backend = auth::router::resolve_federation_target(
+            auth::router::resolve_federation_target(
                 &resolver_dirs,
                 &api_url,
                 connect_timeout,
@@ -439,40 +306,15 @@ impl RouterFederation {
                         .map_err(|error| {
                             format!("invalid backend endpoint {endpoint:?}: {error}")
                         })?;
-                let locator = federation::backend_connect_locator(&endpoint, &tls)
-                    .map_err(|error| error.to_string())?;
+                let locator = platform_connect_locator(&endpoint, &tls)?;
                 Ok::<_, String>(DesiredBackend {
                     endpoint,
                     locator,
                     tls,
                 })
             })
-            .transpose()?;
-
-            // Pin one immutable PKI generation for this whole poll. A later
-            // certificate re-issue is picked up by the next poll without ever
-            // mixing its certificate, key, and CA within this one.
-            let identity =
-                federation::refresh_identity_paths(&identity).map_err(|error| error.to_string())?;
-            let registry = federation::load(&federation::registry_path(&resolver_dirs))
-                .map_err(|error| error.to_string())?;
-            let peers =
-                federation::peer_links(&registry, &identity).map_err(|error| error.to_string())?;
-            let extra_listen_endpoints = refresh_listener_locators(
-                &static_listeners,
-                federation_listener.as_deref(),
-                &identity,
-            )?;
-
-            Ok(DesiredFederation {
-                backend,
-                peers,
-                identity: Some(identity.clone()),
-                extra_listen_endpoints,
-                peer_probe_tls: federation::peer_probe_tls(&identity),
-            })
+            .transpose()
         });
-        let listen_endpoint = links.status_listen_endpoint();
         Self {
             poller: FederationPoller {
                 federator: real_federator(messenger),
@@ -488,10 +330,7 @@ impl RouterFederation {
             restart_tx,
             presence_gate_tx,
             teardown_token,
-            initial_peers: links.initial_peers,
-            listen_endpoint,
-            initial_pinned: links.initial_pinned,
-            initial_identity,
+            initial_pinned,
         }
     }
 }
@@ -527,7 +366,7 @@ impl ServeAsyncCommand for RouterFederation {
 /// the same moments so the core node's boot presence check is delayed exactly
 /// as long as `serve`'s own readiness: until the initial federation settled,
 /// bounded after local-router readiness by `connect_timeout` plus
-/// [`APPLY_TIMEOUT`], and fail-open (a dropped sender ⇒ the waiter proceeds).
+/// [`APPLY_TIMEOUT`], and fail-open (a dropped sender lets the waiter proceed).
 fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watch::Sender<bool>>) {
     if let Some(tx) = gate.take() {
         let _ = tx.send(());
@@ -537,49 +376,46 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watc
     }
 }
 
-/// Endpoint-keyed desired state whose apply attempt reached a settled outcome:
-/// either it was applied or an operator-pinned router rejected it. Keeping this
-/// separate from [`AppliedState`] lets identical pinned requests use the cache
-/// without publishing their desired endpoints as actually applied.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct FederationStateKey {
-    backend: Option<String>,
-    peers: Vec<String>,
-    identity: Option<IdentityPaths>,
-}
-
-/// What the last completed poll actually left in effect. The separate settled
-/// desired-state key preserves the unchanged fast path even when an
-/// operator-pinned `ZENOH_CONFIG` rejected that desired state.
+/// What the last completed poll actually left in effect: the platform link
+/// (endpoint + verification state) plus the caches that keep repeat polls
+/// cheap and pinned routers honest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppliedState {
-    /// Platform backend endpoint now in effect.
-    backend: Option<String>,
-    /// User peer endpoints now rendered into the managed router config.
-    peers: Vec<String>,
-    /// Managed identity generation actually rendered into the router config.
-    identity: Option<IdentityPaths>,
-    /// Last desired state whose apply attempt completed with `Ok(true)` or
+    /// The platform endpoint now in effect (`None` is standalone).
+    endpoint: Option<String>,
+    /// The link's verification state as of the last poll that touched it.
+    link_state: LinkState,
+    /// Last desired locator whose apply attempt completed with `Ok(true)` or
     /// `Ok(false)`. Failures leave this unchanged so the desired state retries.
-    last_settled_desired: Option<FederationStateKey>,
+    /// Keyed on the rendered locator (endpoint + TLS fragments), so a changed
+    /// certificate path re-applies even when the endpoint is unchanged.
+    last_settled_desired: Option<Option<String>>,
     /// Whether the managed router uses a pinned `ZENOH_CONFIG`, even though its
-    /// desired endpoints may differ from the endpoints actually applied above.
+    /// desired upstream may differ from what is actually in effect.
     pinned: bool,
     /// The last verifying poke found a TLS failure. A later verifying poke must
-    /// bounce the router even when endpoints are unchanged, because the user may
-    /// have replaced local certificate files before re-running the command.
+    /// bounce the router even when the upstream is unchanged, because the user
+    /// may have replaced local certificate files before re-running the command.
     needs_reapply: bool,
 }
 
 impl Default for AppliedState {
     fn default() -> Self {
         Self {
-            backend: None,
-            peers: Vec::new(),
-            identity: None,
-            last_settled_desired: Some(FederationStateKey::default()),
+            endpoint: None,
+            link_state: LinkState::NotConfigured,
+            last_settled_desired: Some(None),
             pinned: false,
             needs_reapply: false,
+        }
+    }
+}
+
+impl AppliedState {
+    fn platform_link(&self) -> PlatformLink {
+        PlatformLink {
+            endpoint: self.endpoint.clone(),
+            link_state: self.link_state.clone(),
         }
     }
 }
@@ -599,26 +435,11 @@ impl RouterFederation {
             restart_tx,
             presence_gate_tx,
             teardown_token: _,
-            mut initial_peers,
-            listen_endpoint,
             initial_pinned,
-            initial_identity,
         } = self;
-        // Normalized once: seeds both the status cache and the applied-state
-        // cache below. A pinned router did not consume the managed links that
-        // the builder prepared, so none of those desired peers are known to be
-        // applied.
-        initial_peers.sort();
-        initial_peers.dedup();
-        let initial_applied_peers = if initial_pinned {
-            Vec::new()
-        } else {
-            initial_peers
-        };
         let (status_tx, status_rx) = watch::channel(FederationStatus {
-            backend: None,
-            peers: unverified_reports(&initial_applied_peers),
-            listen_endpoint: listen_endpoint.clone(),
+            endpoint: None,
+            link_state: LinkState::NotConfigured,
             pinned: initial_pinned,
         });
         let (refederate_tx, refederate_rx) = mpsc::channel(REFEDERATE_QUEUE_CAPACITY);
@@ -637,20 +458,16 @@ impl RouterFederation {
             restart_tx,
             presence_gate_tx,
             status_tx,
-            listen_endpoint,
         };
-        // The backend starts absent. Non-pinned peers were rendered into the
-        // spawn config; no managed peer is known to be applied to a pinned router.
-        let last_settled_desired = (!initial_pinned).then(|| FederationStateKey {
-            backend: None,
-            peers: initial_applied_peers.clone(),
-            identity: initial_identity.clone(),
-        });
+        // The router spawns standalone. For a non-pinned router that standalone
+        // state IS the settled desired state (no upstream), so a logged-out
+        // first poll never bounces it; a pinned router settled nothing (the
+        // rendered config was not consumed), so the first poll always attempts
+        // an apply and caches the Pinned rejection.
         let initial = AppliedState {
-            backend: None,
-            peers: initial_applied_peers,
-            identity: initial_identity,
-            last_settled_desired,
+            endpoint: None,
+            link_state: LinkState::NotConfigured,
+            last_settled_desired: (!initial_pinned).then_some(None),
             pinned: initial_pinned,
             needs_reapply: false,
         };
@@ -660,7 +477,7 @@ impl RouterFederation {
 }
 
 /// Keeps status queries responsive while a refederation is resolving, bouncing
-/// zenohd, or probing links. Refederation work remains serialized in the core
+/// zenohd, or probing the link. Refederation work remains serialized in the core
 /// loop; cached status requests are answered directly from the watch value.
 async fn dispatch_federation_requests(
     mut trigger_rx: TriggerReceiver,
@@ -689,10 +506,9 @@ async fn dispatch_federation_requests(
     }
 }
 
-/// The federation lifecycle after setup: the poll engine plus the channels and
-/// cached listener state its phases share. Split from
-/// [`RouterFederation::manage`] so the phases can early-return while the
-/// dispatcher abort stays with the caller.
+/// The federation lifecycle after setup: the poll engine plus the channels its
+/// phases share. Split from [`RouterFederation::manage`] so the phases can
+/// early-return while the dispatcher abort stays with the caller.
 struct FederationLoop {
     poller: FederationPoller,
     /// Startup readiness gate, `take`n by [`fire_gate`] on first fire.
@@ -700,7 +516,6 @@ struct FederationLoop {
     restart_tx: watch::Sender<bool>,
     presence_gate_tx: Option<watch::Sender<bool>>,
     status_tx: watch::Sender<FederationStatus>,
-    listen_endpoint: Option<String>,
 }
 
 impl FederationLoop {
@@ -748,28 +563,21 @@ impl FederationLoop {
         // initial poll does not verify (`verify = false`): startup must not block on a
         // TLS handshake, and the verifying check belongs to the login poke.
         let initial_outcome = self.poller.poll_and_apply(&mut applied, false).await;
-        let mut last_peer_reports = match &initial_outcome {
-            FederationOutcome::Applied(report)
-            | FederationOutcome::Unreachable {
-                applied: report, ..
-            } => report.peers.clone(),
-            _ => unverified_reports(&applied.peers),
-        };
-        self.publish_status(&applied, &last_peer_reports);
+        self.publish_status(&applied);
         fire_gate(&mut self.ready_tx, &self.presence_gate_tx);
 
         // The initial poll re-pulled the federation config, so the credentials now
-        // reflect the current org. If that resolves to a *different* namespace than
-        // this generation started under (e.g. the daemon started logged-in but with a
-        // cleared/stale router cache, so `startup_namespace` was `local` before the
-        // pull discovered the real org), the live session can't be re-namespaced.
-        // Request a generation restart now; otherwise the daemon would run
-        // un-federated under the wrong namespace until the next login/logout poke. The
-        // steady-state poke path leaves the actual restart to the control handler
+        // reflect the current workspace. If that resolves to a *different* namespace
+        // than this generation started under (e.g. the daemon started logged-in but
+        // with a cleared/stale router cache, so `startup_namespace` was `local` before
+        // the pull discovered the real workspace), the live session can't be
+        // re-namespaced. Request a generation restart now; otherwise the daemon would
+        // run un-federated under the wrong namespace until the next login/logout poke.
+        // The steady-state poke path leaves the actual restart to the control handler
         // (which flushes its ack first); the startup poll has no ack to flush, so it
         // raises the signal directly. The rebuilt generation resolves the namespace
         // afresh and federates normally.
-        if matches!(&initial_outcome, FederationOutcome::Restart) {
+        if matches!(&initial_outcome, FederationOutcome::Restart { .. }) {
             info!(
                 "router federation: startup resolved a namespace that differs from this generation's; \
                  requesting a daemon restart instead of federating under the wrong namespace"
@@ -804,14 +612,7 @@ impl FederationLoop {
             };
             let verify = matches!(&work, Work::Poke(_));
             let outcome = self.poller.poll_and_apply(&mut applied, verify).await;
-            match &outcome {
-                FederationOutcome::Applied(report)
-                | FederationOutcome::Unreachable {
-                    applied: report, ..
-                } => last_peer_reports = report.peers.clone(),
-                _ => {}
-            }
-            self.publish_status(&applied, &last_peer_reports);
+            self.publish_status(&applied);
             retry_pending = matches!(&outcome, FederationOutcome::Failed(_));
             match work {
                 Work::Poke(ack) => {
@@ -820,7 +621,7 @@ impl FederationLoop {
                     // after attempting to flush `Restarting`.
                     let _ = ack.send(outcome);
                 }
-                Work::Retry if matches!(&outcome, FederationOutcome::Restart) => {
+                Work::Retry if matches!(&outcome, FederationOutcome::Restart { .. }) => {
                     let _ = self.restart_tx.send(true);
                     return;
                 }
@@ -830,28 +631,11 @@ impl FederationLoop {
     }
 
     /// Publishes the cached status answered to [`FederationRequest::Status`]
-    /// queries: the applied endpoints, each peer carrying its last reported
-    /// link state. An applied peer without a report has not yet been verified,
-    /// so it is explicitly reported as unverified.
-    fn publish_status(&self, applied: &AppliedState, last_peer_reports: &[PeerReport]) {
-        let states: std::collections::BTreeMap<&str, &PeerLinkState> = last_peer_reports
-            .iter()
-            .map(|report| (report.endpoint.as_str(), &report.state))
-            .collect();
+    /// queries: the platform link now in effect plus router-config ownership.
+    fn publish_status(&self, applied: &AppliedState) {
         self.status_tx.send_replace(FederationStatus {
-            backend: applied.backend.clone(),
-            peers: applied
-                .peers
-                .iter()
-                .map(|endpoint| PeerReport {
-                    endpoint: endpoint.clone(),
-                    state: states
-                        .get(endpoint.as_str())
-                        .map(|state| (*state).clone())
-                        .unwrap_or(PeerLinkState::Unverified),
-                })
-                .collect(),
-            listen_endpoint: self.listen_endpoint.clone(),
+            endpoint: applied.endpoint.clone(),
+            link_state: applied.link_state.clone(),
             pinned: applied.pinned,
         });
     }
@@ -863,21 +647,20 @@ impl FederationPoller {
     /// [`FederationOutcome`] (so a poke can ack the post-apply state).
     ///
     /// When `verify` is set (login/logout pokes only, not the initial startup
-    /// federation), and an upstream is in effect, a real TLS handshake confirms the link
-    /// actually validates; a failed handshake is reported as
-    /// [`FederationOutcome::Unreachable`] (and logged loudly) instead of a false
-    /// `Applied`.
+    /// federation), and an upstream is desired, a real TLS handshake confirms the
+    /// link actually validates; a failed handshake is reported (and logged loudly)
+    /// as a [`LinkState::Error`] instead of a false verified success.
     async fn poll_and_apply(&self, applied: &mut AppliedState, verify: bool) -> FederationOutcome {
         // Backend resolution and the namespace refresh share the configured
         // resolve deadline. Router process work receives its own bounded budget.
         let resolve_deadline = tokio::time::Instant::now() + self.connect_timeout;
 
         // The resolver is blocking (HTTP + file I/O); keep it off the async worker. It
-        // also re-pulls the cloud router's config when the cached copy has gone stale
-        // (cache freshness only, not a keepalive). Bound the whole resolve by
-        // `connect_timeout` so a hung pull can't
-        // stall a poll (or the startup gate) past it; the timed-out blocking thread is
-        // harmless (its own HTTP timeout ends it) and its result is simply discarded.
+        // also re-pulls the platform router's config when the cached copy has gone
+        // stale (cache freshness only, not a keepalive). Bound the whole resolve by
+        // `connect_timeout` so a hung pull can't stall a poll (or the startup gate)
+        // past it; the timed-out blocking thread is harmless (its own HTTP timeout
+        // ends it) and its result is simply discarded.
         let resolver = self.resolver.clone();
         let resolved = match tokio::time::timeout_at(
             resolve_deadline,
@@ -901,10 +684,10 @@ impl FederationPoller {
         };
 
         // Namespace-change gate. The resolve above re-pulled (and re-cached) the
-        // federation config, so the credentials now reflect the current org id. A
+        // federation config, so the credentials now reflect the current workspace. A
         // session's namespace is immutable after open, so if the re-resolved namespace
         // differs from this generation's startup namespace the change cannot be applied
-        // by a live zenodh bounce: request a full restart instead, WITHOUT federating
+        // by a live zenohd bounce: request a full restart instead, WITHOUT federating
         // (federating under a namespace that differs from the live session's would leak
         // across tenants). The control handler flushes the ack before triggering the
         // restart; the initial (non-poke) poll discards this outcome but, crucially,
@@ -933,24 +716,22 @@ impl FederationPoller {
             info!(
                 from = %self.startup_namespace,
                 to = %current_namespace,
-                "router federation: organization namespace changed; requesting a daemon restart \
+                "router federation: namespace changed; requesting a daemon restart \
                  (a namespace change cannot be applied to a live session)"
             );
-            return FederationOutcome::Restart;
+            return FederationOutcome::Restart {
+                target_namespace: current_namespace,
+            };
         }
 
-        let desired_backend = resolved.backend_endpoint();
-        let desired_peers = resolved.peer_endpoints();
-        let desired_identity = resolved.identity.clone();
-        let desired_key = FederationStateKey {
-            backend: desired_backend.clone(),
-            peers: desired_peers.clone(),
-            identity: desired_identity.clone(),
-        };
-        let unchanged = applied.last_settled_desired.as_ref() == Some(&desired_key);
+        let desired_endpoint = resolved
+            .as_ref()
+            .map(|backend| backend.endpoint.as_str().to_string());
+        let desired_locator = resolved.as_ref().map(|backend| backend.locator.clone());
+        let unchanged = applied.last_settled_desired.as_ref() == Some(&desired_locator);
 
-        // Apply the full backend plus peer union, or replay the cached outcome
-        // when both endpoint keys and the managed identity generation are unchanged.
+        // Apply the desired upstream, or replay the cached outcome when the
+        // rendered locator (endpoint + TLS material) is unchanged.
         let should_apply = !unchanged || (verify && applied.needs_reapply);
         if !should_apply {
             if applied.pinned {
@@ -966,50 +747,45 @@ impl FederationPoller {
             // notices the dead router and respawns it with the already-rewritten
             // config, so the router cannot stay down.
             let apply_deadline = tokio::time::Instant::now() + self.apply_timeout;
-            match tokio::time::timeout_at(
-                apply_deadline,
-                (self.federator)(
-                    resolved.connect_locators(),
-                    resolved.extra_listen_endpoints.clone(),
-                ),
-            )
-            .await
+            match tokio::time::timeout_at(apply_deadline, (self.federator)(desired_locator.clone()))
+                .await
             {
                 Err(_elapsed) => {
                     warn!(
                         "router federation: applying the upstream change timed out, so federation \
-                         with the per-user cloud router on platform-backend is NOT in effect; will \
-                         retry"
+                         with the platform router is NOT in effect; will retry"
                     );
                     return FederationOutcome::Failed("apply timed out".to_string());
                 }
                 Ok(Ok(true)) => {
                     info!(
-                        backend = ?desired_backend,
-                        peers = ?desired_peers,
-                        "router federation: applied desired backend and user-peer links"
+                        endpoint = ?desired_endpoint,
+                        "router federation: applied the desired platform upstream"
                     );
                     *applied = AppliedState {
-                        backend: desired_backend.clone(),
-                        peers: desired_peers.clone(),
-                        identity: desired_identity.clone(),
-                        last_settled_desired: Some(desired_key.clone()),
+                        endpoint: desired_endpoint.clone(),
+                        link_state: if desired_endpoint.is_some() {
+                            LinkState::Unverified
+                        } else {
+                            LinkState::NotConfigured
+                        },
+                        last_settled_desired: Some(desired_locator.clone()),
                         pinned: false,
                         needs_reapply: false,
                     };
                 }
                 Ok(Ok(false)) => {
                     // A managed router with a pinned `ZENOH_CONFIG` cannot be changed
-                    // here. Preserve the endpoints known to be in effect: the desired
-                    // endpoints were not applied and must not leak into status as if
-                    // they were. Remember the pinned bit so an unchanged applied target
+                    // here. Preserve the endpoint known to be in effect: the desired
+                    // upstream was not applied and must not leak into status as if
+                    // it were. Remember the pinned bit so an unchanged desired target
                     // is still reported as pinned; warn so the operator knows
                     // federation is not being auto-managed.
                     warn!(
                         "router federation: the managed router uses an operator-pinned \
                          ZENOH_CONFIG; the desired federation change was not applied"
                     );
-                    applied.last_settled_desired = Some(desired_key.clone());
+                    applied.last_settled_desired = Some(desired_locator.clone());
                     applied.pinned = true;
                     applied.needs_reapply = false;
                     return FederationOutcome::Pinned;
@@ -1018,107 +794,48 @@ impl FederationPoller {
                     // Leave `applied` unchanged so the next poll retries the apply.
                     warn!(
                         error = %e,
-                        "router federation: failed to apply the upstream change, so federation with \
-                         the per-user cloud router on platform-backend is NOT in effect; will retry"
+                        "router federation: failed to apply the upstream change, so federation \
+                         with the platform router is NOT in effect; will retry"
                     );
                     return FederationOutcome::Failed(e.to_string());
                 }
             }
         }
 
-        let mut peer_errors = std::collections::BTreeMap::new();
-        let mut backend_error = None;
-        if verify {
-            // Every probe is individually bounded and all probes run concurrently,
-            // keeping total verification inside the control-socket ack budget.
-            let mut probes = JoinSet::new();
-            if let Some(backend) = &resolved.backend {
-                self.spawn_probe(
-                    &mut probes,
-                    ProbeTarget::Backend,
-                    &backend.endpoint,
-                    backend.tls.clone(),
-                );
-            }
-            for peer in &resolved.peers {
-                self.spawn_probe(
-                    &mut probes,
-                    ProbeTarget::Peer(peer.endpoint.as_str().to_string()),
-                    &peer.endpoint,
-                    resolved.peer_probe_tls.clone(),
-                );
-            }
-
-            while let Some(joined) = probes.join_next().await {
-                match joined {
-                    Ok((ProbeTarget::Backend, Err(reason))) => backend_error = Some(reason),
-                    Ok((ProbeTarget::Peer(endpoint), Err(reason))) => {
-                        peer_errors.insert(endpoint, reason);
-                    }
-                    Ok((_, Ok(()))) => {}
-                    Err(error) => {
-                        return FederationOutcome::Failed(format!(
-                            "federation probe task failed: {error}"
-                        ));
-                    }
+        // Verify the link with a real, bounded TLS handshake (login/logout pokes
+        // only). A failed handshake marks the link errored and requests a bounce on
+        // the next verifying poke (the user may replace certificate files between
+        // attempts).
+        if verify && let Some(backend) = &resolved {
+            let result = probe_with_bound(
+                self.prober.clone(),
+                backend.endpoint.host().to_string(),
+                backend.endpoint.port(),
+                backend.tls.clone(),
+                PROBE_TIMEOUT,
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    applied.link_state = LinkState::Verified;
+                    applied.needs_reapply = false;
+                }
+                Err(reason) => {
+                    warn!(
+                        reason = %reason,
+                        "router federation: the platform link did not validate"
+                    );
+                    applied.link_state = LinkState::Error(reason);
+                    applied.needs_reapply = true;
                 }
             }
         }
 
-        let peer_failed = !peer_errors.is_empty();
-        let mut peers: Vec<PeerReport> = resolved
-            .peers
-            .iter()
-            .map(|peer| PeerReport {
-                endpoint: peer.endpoint.as_str().to_string(),
-                state: if !verify {
-                    PeerLinkState::Unverified
-                } else {
-                    match peer_errors.remove(peer.endpoint.as_str()) {
-                        Some(reason) => PeerLinkState::Error(reason),
-                        None => PeerLinkState::Verified,
-                    }
-                },
-            })
-            .collect();
-        peers.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
-        applied.needs_reapply = backend_error.is_some() || peer_failed;
-        let applied_report = AppliedFederation {
-            backend: resolved.backend_endpoint(),
-            peers,
-        };
-        if let Some(reason) = backend_error {
-            warn!(
-                reason = %reason,
-                "router federation: platform-backend link did not validate"
-            );
-            return FederationOutcome::Unreachable {
-                reason,
-                applied: applied_report,
-            };
-        }
-        FederationOutcome::Applied(applied_report)
-    }
-
-    /// Starts one bounded reachability probe against a federation endpoint.
-    fn spawn_probe(
-        &self,
-        probes: &mut JoinSet<(ProbeTarget, std::result::Result<(), String>)>,
-        target: ProbeTarget,
-        endpoint: &ParsedEndpointBuf,
-        tls: pmi::TlsConfig,
-    ) {
-        let prober = self.prober.clone();
-        let host = endpoint.host().to_string();
-        let port = endpoint.port();
-        probes.spawn(async move {
-            let result = probe_with_bound(prober, host, port, tls, PROBE_TIMEOUT).await;
-            (target, result)
-        });
+        FederationOutcome::Applied(applied.platform_link())
     }
 }
 
-/// Re-renders the local router's config with the (possibly empty) upstream and,
+/// Re-renders the local router's config with the (possibly absent) upstream and,
 /// if the config actually changed, restarts zenohd so it takes effect. Holds the
 /// messenger lock across the whole stop/start so it cannot interleave with the
 /// watchdog's own restart.
@@ -1129,14 +846,12 @@ impl FederationPoller {
 /// router bounced.
 async fn refederate_and_restart(
     messenger: &Arc<Mutex<Messenger>>,
-    connect_endpoints: Vec<String>,
-    extra_listen_endpoints: Vec<String>,
+    upstream: Option<String>,
 ) -> Result<bool> {
     let mut messenger = messenger.lock().await;
     let rewrote = messenger
         .refederate(RouterLinks {
-            connect_endpoints,
-            extra_listen_endpoints,
+            upstream,
             tls: None,
         })
         .map_err(Error::PeppyMessagingInterface)?;
@@ -1164,6 +879,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     const ENDPOINT: &str = "tls/cap.zenoh.localhost:7443";
+    const WORKSPACE: &str = "550e8400-e29b-41d4-a716-446655440000";
 
     /// A poll engine with injected seams and test defaults. Tests override
     /// fields (timeouts, namespace resolver) before calling `poll_and_apply`.
@@ -1183,9 +899,9 @@ mod tests {
         }
     }
 
-    /// A `RouterFederation` with injected seams, no links, and test defaults.
-    /// Tests override fields (gates, restart signal, poller bounds) before
-    /// calling `manage`.
+    /// A `RouterFederation` with injected seams and test defaults. Tests
+    /// override fields (gates, restart signal, poller bounds) before calling
+    /// `manage`.
     fn federation_under_test(
         federator: Federator,
         resolver: Resolver,
@@ -1200,10 +916,7 @@ mod tests {
             restart_tx: watch::channel(false).0,
             presence_gate_tx: None,
             teardown_token: CancellationToken::new(),
-            initial_peers: Vec::new(),
-            listen_endpoint: None,
             initial_pinned: false,
-            initial_identity: None,
         }
     }
 
@@ -1213,7 +926,7 @@ mod tests {
     /// real `refederate` can only ever report `Ok(false)`, i.e. pinned, so the
     /// applied path is reachable in tests only via an injected federator.)
     fn applying_federator() -> Federator {
-        Arc::new(|_target, _listeners| -> FederateFuture { Box::pin(async { Ok(true) }) })
+        Arc::new(|_upstream| -> FederateFuture { Box::pin(async { Ok(true) }) })
     }
 
     /// A federator simulating an operator-pinned config and recording attempts:
@@ -1221,7 +934,7 @@ mod tests {
     fn counting_pinned_federator() -> (Federator, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
-        let federator: Federator = Arc::new(move |_target, _listeners| {
+        let federator: Federator = Arc::new(move |_upstream| {
             counter.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(false) })
         });
@@ -1231,7 +944,7 @@ mod tests {
     /// A federator that never completes, simulating a wedged apply (e.g. the
     /// messenger lock held forever by a stuck watchdog restart).
     fn wedged_federator() -> Federator {
-        Arc::new(|_target, _listeners| -> FederateFuture { Box::pin(std::future::pending()) })
+        Arc::new(|_upstream| -> FederateFuture { Box::pin(std::future::pending()) })
     }
 
     /// A resolver returning a fixed value and counting its calls.
@@ -1240,10 +953,7 @@ mod tests {
         let counter = calls.clone();
         let resolver: Resolver = Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok(DesiredFederation {
-                backend: value.clone(),
-                ..DesiredFederation::default()
-            })
+            Ok(value.clone())
         });
         (resolver, calls)
     }
@@ -1286,22 +996,15 @@ mod tests {
         })
     }
 
-    fn peer(endpoint: &str) -> PeerLink {
-        PeerLink {
-            endpoint: dial(endpoint),
-            locator: endpoint.to_string(),
-        }
-    }
-
-    fn fixed_resolver(desired: DesiredFederation) -> Resolver {
+    fn fixed_resolver(desired: Option<DesiredBackend>) -> Resolver {
         Arc::new(move || Ok(desired.clone()))
     }
 
-    fn recording_federator() -> (Federator, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
+    fn recording_federator() -> (Federator, Arc<std::sync::Mutex<Vec<Option<String>>>>) {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = calls.clone();
-        let federator: Federator = Arc::new(move |endpoints, _listeners| {
-            recorded.lock().unwrap().push(endpoints);
+        let federator: Federator = Arc::new(move |upstream| {
+            recorded.lock().unwrap().push(upstream);
             Box::pin(async { Ok(true) })
         });
         (federator, calls)
@@ -1312,25 +1015,6 @@ mod tests {
     /// the existing federation behavior (Applied/Pinned/...) is exercised.
     fn local_ns_resolver() -> NamespaceResolver {
         Arc::new(|| "local".to_string())
-    }
-
-    #[tokio::test]
-    async fn daemon_enforces_the_probe_bound_for_a_noncompliant_prober() {
-        let prober: Prober =
-            Arc::new(|_host, _port, _tls, _timeout| Box::pin(std::future::pending()));
-        let started = tokio::time::Instant::now();
-        let error = probe_with_bound(
-            prober,
-            "peer.example".to_string(),
-            7449,
-            pmi::TlsConfig::default(),
-            Duration::from_millis(50),
-        )
-        .await
-        .expect_err("the daemon-side deadline must end a stuck probe");
-
-        assert!(error.contains("timed out"));
-        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     /// A namespace resolver returning a fixed value and counting its calls, for a
@@ -1364,13 +1048,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peers_only_apply_renders_the_peer_connect_set() {
-        let endpoint = "tls/peer-a.example:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: None,
-            peers: vec![peer(endpoint)],
-            ..DesiredFederation::default()
-        });
+    async fn daemon_enforces_the_probe_bound_for_a_noncompliant_prober() {
+        let prober: Prober =
+            Arc::new(|_host, _port, _tls, _timeout| Box::pin(std::future::pending()));
+        let started = tokio::time::Instant::now();
+        let error = probe_with_bound(
+            prober,
+            "hub.example".to_string(),
+            7447,
+            pmi::TlsConfig::default(),
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("the daemon-side deadline must end a stuck probe");
+
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn an_upstream_apply_renders_the_single_platform_locator() {
+        let resolver = fixed_resolver(upstream());
         let (federator, calls) = recording_federator();
         let (prober, probe_calls) = counting_prober(Ok(()));
         let mut applied = AppliedState::default();
@@ -1381,130 +1079,66 @@ mod tests {
 
         assert_eq!(
             outcome,
-            FederationOutcome::Applied(AppliedFederation {
-                backend: None,
-                peers: vec![PeerReport {
-                    endpoint: endpoint.to_string(),
-                    state: PeerLinkState::Unverified,
-                }],
+            FederationOutcome::Applied(PlatformLink {
+                endpoint: Some(ENDPOINT.to_string()),
+                link_state: LinkState::Unverified,
             })
         );
-        assert_eq!(*calls.lock().unwrap(), vec![vec![endpoint.to_string()]]);
-        assert_eq!(probe_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(*calls.lock().unwrap(), vec![Some(ENDPOINT.to_string())]);
+        assert_eq!(
+            probe_calls.load(Ordering::SeqCst),
+            0,
+            "a non-verifying poll never probes"
+        );
+        assert_eq!(applied.endpoint.as_deref(), Some(ENDPOINT));
     }
 
     #[tokio::test]
-    async fn backend_and_peers_are_applied_as_one_union() {
-        let peer_endpoint = "tls/peer-a.example:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: upstream(),
-            peers: vec![peer(peer_endpoint)],
-            ..DesiredFederation::default()
-        });
+    async fn a_standalone_start_with_no_upstream_never_bounces_the_router() {
+        // Logged out: the router spawned standalone, and the resolve agrees
+        // (no upstream), so the first poll must not bounce zenohd.
+        let resolver = fixed_resolver(None);
         let (federator, calls) = recording_federator();
-        let (prober, _) = counting_prober(Ok(()));
+        let (prober, probe_calls) = counting_prober(Ok(()));
         let mut applied = AppliedState::default();
 
         let outcome = poller_under_test(federator, resolver, prober)
             .poll_and_apply(&mut applied, false)
             .await;
 
-        assert!(matches!(outcome, FederationOutcome::Applied(_)));
         assert_eq!(
-            *calls.lock().unwrap(),
-            vec![vec![ENDPOINT.to_string(), peer_endpoint.to_string()]]
+            outcome,
+            FederationOutcome::Applied(PlatformLink {
+                endpoint: None,
+                link_state: LinkState::NotConfigured,
+            })
         );
-        assert_eq!(applied.backend.as_deref(), Some(ENDPOINT));
-        assert_eq!(applied.peers, vec![peer_endpoint]);
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "an unchanged standalone state must not bounce the router"
+        );
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn peers_seeded_into_spawn_config_do_not_bounce_on_first_poll() {
-        let endpoint = "tls/peer-a.example:7449";
-        let identity = IdentityPaths {
-            cert: "/identity/generation-1/cert.pem".into(),
-            key: "/identity/generation-1/key.pem".into(),
-            ca: "/identity/generation-1/ca.pem".into(),
-        };
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: None,
-            peers: vec![peer(endpoint)],
-            identity: Some(identity.clone()),
-            ..DesiredFederation::default()
+    async fn a_changed_locator_reapplies_the_unchanged_endpoint() {
+        // Same endpoint, refreshed TLS material (a re-issued certificate changes
+        // the fragment paths): the rendered locator differs, so the poll must
+        // re-apply even though the endpoint string is identical.
+        let refreshed = Some(DesiredBackend {
+            endpoint: dial(ENDPOINT),
+            locator: format!("{ENDPOINT}#connect_certificate_file=/certs/generation-2/cert.pem"),
+            tls: pmi::TlsConfig::default(),
         });
+        let resolver = fixed_resolver(refreshed.clone());
         let (federator, calls) = recording_federator();
         let (prober, _) = counting_prober(Ok(()));
         let mut applied = AppliedState {
-            backend: None,
-            peers: vec![endpoint.to_string()],
-            identity: Some(identity.clone()),
-            last_settled_desired: Some(FederationStateKey {
-                backend: None,
-                peers: vec![endpoint.to_string()],
-                identity: Some(identity),
-            }),
-            pinned: false,
-            needs_reapply: false,
-        };
-
-        let outcome = poller_under_test(federator, resolver, prober)
-            .poll_and_apply(&mut applied, false)
-            .await;
-
-        let FederationOutcome::Applied(report) = outcome else {
-            panic!("seeded peers must remain applied without a startup bounce");
-        };
-        assert_eq!(report.peers[0].state, PeerLinkState::Unverified);
-        assert!(calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn changed_identity_reapplies_same_endpoints_with_refreshed_locators() {
-        let endpoint = "tls/peer-a.example:7449";
-        let old_identity = IdentityPaths {
-            cert: "/identity/generation-1/cert.pem".into(),
-            key: "/identity/generation-1/key.pem".into(),
-            ca: "/identity/generation-1/ca.pem".into(),
-        };
-        let new_identity = IdentityPaths {
-            cert: "/identity/generation-2/cert.pem".into(),
-            key: "/identity/generation-2/key.pem".into(),
-            ca: "/identity/generation-2/ca.pem".into(),
-        };
-        let peer_endpoint = dial(endpoint);
-        let peer_locator = federation::peer_connect_locator(&peer_endpoint, &new_identity).unwrap();
-        let listener_endpoint =
-            ParsedEndpointBuf::parse("tls/0.0.0.0:7449", "tls", EndpointPurpose::Listen).unwrap();
-        let listener_locator =
-            federation::listener_locator(&listener_endpoint, &new_identity).unwrap();
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: None,
-            peers: vec![PeerLink {
-                endpoint: peer_endpoint,
-                locator: peer_locator.clone(),
-            }],
-            identity: Some(new_identity.clone()),
-            extra_listen_endpoints: vec![listener_locator.clone()],
-            ..DesiredFederation::default()
-        });
-        let calls = Arc::new(std::sync::Mutex::new(
-            Vec::<(Vec<String>, Vec<String>)>::new(),
-        ));
-        let recorded = calls.clone();
-        let federator: Federator = Arc::new(move |connect, listeners| {
-            recorded.lock().unwrap().push((connect, listeners));
-            Box::pin(async { Ok(true) })
-        });
-        let (prober, _) = counting_prober(Ok(()));
-        let mut applied = AppliedState {
-            backend: None,
-            peers: vec![endpoint.to_string()],
-            identity: Some(old_identity.clone()),
-            last_settled_desired: Some(FederationStateKey {
-                backend: None,
-                peers: vec![endpoint.to_string()],
-                identity: Some(old_identity),
-            }),
+            endpoint: Some(ENDPOINT.to_string()),
+            link_state: LinkState::Unverified,
+            last_settled_desired: Some(Some(format!(
+                "{ENDPOINT}#connect_certificate_file=/certs/generation-1/cert.pem"
+            ))),
             pinned: false,
             needs_reapply: false,
         };
@@ -1516,361 +1150,135 @@ mod tests {
         assert!(matches!(outcome, FederationOutcome::Applied(_)));
         assert_eq!(
             *calls.lock().unwrap(),
-            vec![(vec![peer_locator], vec![listener_locator])]
+            vec![refreshed.map(|backend| backend.locator)],
+            "a changed locator must re-render the router config"
         );
-        assert_eq!(applied.identity, Some(new_identity));
     }
 
     #[tokio::test]
     async fn cached_desired_state_from_a_pinned_router_is_not_reapplied() {
-        let endpoint = "tls/peer-a.example:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: None,
-            peers: vec![peer(endpoint)],
-            ..DesiredFederation::default()
-        });
-        let (federator, calls) = recording_federator();
+        let resolver = fixed_resolver(upstream());
+        let (federator, apply_calls) = counting_pinned_federator();
         let (prober, probe_calls) = counting_prober(Ok(()));
-        let mut applied = AppliedState {
-            backend: None,
-            peers: Vec::new(),
-            identity: None,
-            last_settled_desired: Some(FederationStateKey {
-                backend: None,
-                peers: vec![endpoint.to_string()],
-                identity: None,
-            }),
-            pinned: true,
-            needs_reapply: false,
-        };
+        let mut applied = AppliedState::default();
 
-        let outcome = poller_under_test(federator, resolver, prober)
-            .poll_and_apply(&mut applied, true)
-            .await;
+        let poller = poller_under_test(federator, resolver, prober);
+        let first = poller.poll_and_apply(&mut applied, false).await;
+        let second = poller.poll_and_apply(&mut applied, false).await;
 
-        assert_eq!(outcome, FederationOutcome::Pinned);
-        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(first, FederationOutcome::Pinned);
+        assert_eq!(
+            second,
+            FederationOutcome::Pinned,
+            "an identical desired state must replay the cached pinned outcome"
+        );
+        assert_eq!(
+            apply_calls.load(Ordering::SeqCst),
+            1,
+            "the second poll must not re-attempt the rejected apply"
+        );
         assert_eq!(probe_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
     async fn pinned_apply_preserves_actual_state_and_caches_the_rejected_target() {
-        let old_backend = "tls/old-backend.example:7443";
-        let old_peer = "tls/old-peer.example:7449";
-        let new_peer = "tls/new-peer.example:7449";
-        let changed_peer = "tls/changed-peer.example:7449";
-        let old_identity = IdentityPaths {
-            cert: "/identity/generation-1/cert.pem".into(),
-            key: "/identity/generation-1/key.pem".into(),
-            ca: "/identity/generation-1/ca.pem".into(),
-        };
-        let new_identity = IdentityPaths {
-            cert: "/identity/generation-2/cert.pem".into(),
-            key: "/identity/generation-2/key.pem".into(),
-            ca: "/identity/generation-2/ca.pem".into(),
-        };
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: upstream(),
-            peers: vec![peer(new_peer)],
-            identity: Some(new_identity.clone()),
-            ..DesiredFederation::default()
-        });
-        let (prober, probe_calls) = counting_prober(Ok(()));
-        let (federator, apply_calls) = counting_pinned_federator();
-        let mut applied = AppliedState {
-            backend: Some(old_backend.to_string()),
-            peers: vec![old_peer.to_string()],
-            identity: Some(old_identity.clone()),
-            last_settled_desired: Some(FederationStateKey {
-                backend: Some(old_backend.to_string()),
-                peers: vec![old_peer.to_string()],
-                identity: Some(old_identity.clone()),
-            }),
-            pinned: false,
-            needs_reapply: true,
-        };
-
-        let poller = poller_under_test(federator.clone(), resolver, prober.clone());
-        let first = poller.poll_and_apply(&mut applied, true).await;
-        let second = poller.poll_and_apply(&mut applied, true).await;
-
-        assert_eq!(first, FederationOutcome::Pinned);
-        assert_eq!(second, FederationOutcome::Pinned);
-        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(probe_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(applied.backend.as_deref(), Some(old_backend));
-        assert_eq!(applied.peers, [old_peer]);
-        assert_eq!(applied.identity, Some(old_identity.clone()));
-        assert!(applied.pinned);
-        assert!(!applied.needs_reapply);
-
-        let changed_resolver = fixed_resolver(DesiredFederation {
-            backend: upstream(),
-            peers: vec![peer(changed_peer)],
-            identity: Some(new_identity),
-            ..DesiredFederation::default()
-        });
-        let changed = poller_under_test(federator, changed_resolver, prober)
-            .poll_and_apply(&mut applied, true)
-            .await;
-
-        assert_eq!(changed, FederationOutcome::Pinned);
-        assert_eq!(apply_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(applied.backend.as_deref(), Some(old_backend));
-        assert_eq!(applied.peers, [old_peer]);
-        assert_eq!(applied.identity, Some(old_identity));
-    }
-
-    #[test]
-    fn status_defaults_applied_peers_without_reports_to_unverified() {
-        let endpoint = "tls/peer-a.example:7449";
-        let (status_tx, status_rx) = watch::channel(FederationStatus::default());
-        let (resolver, _) = counting_resolver(None);
+        let resolver = fixed_resolver(upstream());
+        let (federator, _) = counting_pinned_federator();
         let (prober, _) = counting_prober(Ok(()));
-        let lifecycle = FederationLoop {
-            poller: poller_under_test(applying_federator(), resolver, prober),
-            ready_tx: None,
-            restart_tx: watch::channel(false).0,
-            presence_gate_tx: None,
-            status_tx,
-            listen_endpoint: None,
-        };
-        let applied = AppliedState {
-            backend: None,
-            peers: vec![endpoint.to_string()],
-            identity: None,
-            last_settled_desired: Some(FederationStateKey {
-                backend: None,
-                peers: vec![endpoint.to_string()],
-                identity: None,
-            }),
-            pinned: false,
-            needs_reapply: false,
-        };
-
-        lifecycle.publish_status(&applied, &[]);
-
-        assert_eq!(
-            status_rx.borrow().peers,
-            [PeerReport {
-                endpoint: endpoint.to_string(),
-                state: PeerLinkState::Unverified,
-            }]
-        );
-    }
-
-    #[test]
-    fn listener_refresh_uses_poll_identity_and_preserves_other_listeners() {
-        let identity = IdentityPaths {
-            cert: "/identity/generation-2/cert.pem".into(),
-            key: "/identity/generation-2/key.pem".into(),
-            ca: "/identity/generation-2/ca.pem".into(),
-        };
-        let static_listeners = vec![
-            "tcp/0.0.0.0:7555".to_string(),
-            "tls/0.0.0.0:7449#stale=true".to_string(),
-        ];
-
-        let refreshed =
-            refresh_listener_locators(&static_listeners, Some("tls/0.0.0.0:7449"), &identity)
-                .unwrap();
-
-        assert_eq!(refreshed[0], static_listeners[0]);
-        assert_eq!(
-            refreshed[1],
-            "tls/0.0.0.0:7449#listen_certificate_file=/identity/generation-2/cert.pem;listen_private_key_file=/identity/generation-2/key.pem;root_ca_certificate_file=/identity/generation-2/ca.pem;enable_mtls=true"
-        );
-    }
-
-    #[test]
-    fn pinned_router_does_not_claim_the_configured_extra_listener() {
-        let links = FederationLinksSpec {
-            extra_listen_endpoints: vec!["tls/0.0.0.0:7449#enable_mtls=true".to_string()],
-            identity: IdentityPaths {
-                cert: "cert.pem".into(),
-                key: "key.pem".into(),
-                ca: "ca.pem".into(),
-            },
-            initial_peers: Vec::new(),
-            listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
-            initial_pinned: true,
-        };
-
-        assert_eq!(links.status_listen_endpoint(), None);
-    }
-
-    #[tokio::test]
-    async fn a_peer_probe_failure_is_reported_without_backend_unreachable() {
-        let good = "tls/good.example:7449";
-        let bad = "tls/bad.example:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: upstream(),
-            peers: vec![peer(good), peer(bad)],
-            ..DesiredFederation::default()
-        });
-        let (federator, _) = recording_federator();
-        let prober: Prober = Arc::new(|host, _port, _tls, _timeout| {
-            Box::pin(async move {
-                if host == "bad.example" {
-                    Err("UnknownIssuer".to_string())
-                } else {
-                    Ok(())
-                }
-            })
-        });
         let mut applied = AppliedState::default();
 
         let outcome = poller_under_test(federator, resolver, prober)
-            .poll_and_apply(&mut applied, true)
+            .poll_and_apply(&mut applied, false)
             .await;
 
-        let FederationOutcome::Applied(report) = outcome else {
-            panic!("a peer-only probe error must keep the applied backend outcome");
-        };
-        assert_eq!(report.backend.as_deref(), Some(ENDPOINT));
-        assert_eq!(report.peers.len(), 2);
+        assert_eq!(outcome, FederationOutcome::Pinned);
         assert_eq!(
-            report
-                .peers
-                .iter()
-                .find(|report| report.endpoint == bad)
-                .map(|report| &report.state),
-            Some(&PeerLinkState::Error("UnknownIssuer".to_string()))
+            applied.endpoint, None,
+            "the rejected desired endpoint must not leak into applied state"
         );
-        assert!(
-            report
-                .peers
-                .iter()
-                .find(|report| report.endpoint == good)
-                .is_some_and(|report| report.state == PeerLinkState::Verified)
+        assert_eq!(applied.link_state, LinkState::NotConfigured);
+        assert!(applied.pinned);
+        assert_eq!(
+            applied.last_settled_desired,
+            Some(Some(ENDPOINT.to_string())),
+            "the rejected target is cached so an identical repeat stays Pinned"
         );
     }
 
     #[tokio::test]
-    async fn backend_and_peer_probes_run_concurrently() {
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: upstream(),
-            peers: vec![
-                peer("tls/peer-a.example:7449"),
-                peer("tls/peer-b.example:7449"),
-            ],
-            ..DesiredFederation::default()
-        });
-        let (federator, _) = recording_federator();
-        let barrier = Arc::new(tokio::sync::Barrier::new(3));
-        let in_flight = Arc::new(AtomicUsize::new(0));
-        let max_in_flight = Arc::new(AtomicUsize::new(0));
-        let prober: Prober = Arc::new({
-            let barrier = barrier.clone();
-            let in_flight = in_flight.clone();
-            let max_in_flight = max_in_flight.clone();
-            move |_host, _port, _tls, _timeout| {
-                let barrier = barrier.clone();
-                let in_flight = in_flight.clone();
-                let max_in_flight = max_in_flight.clone();
-                Box::pin(async move {
-                    let running = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                    max_in_flight.fetch_max(running, Ordering::SeqCst);
-                    barrier.wait().await;
-                    in_flight.fetch_sub(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            }
-        });
-        let mut applied = AppliedState::default();
-
-        let poller = poller_under_test(federator, resolver, prober);
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(1),
-            poller.poll_and_apply(&mut applied, true),
-        )
-        .await
-        .expect("both probes must enter before either can finish");
-
-        assert!(matches!(outcome, FederationOutcome::Applied(_)));
-        assert_eq!(max_in_flight.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn rerun_after_probe_failure_reloads_unchanged_certificate_paths() {
-        let endpoint = "tls/peer-a.example:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: None,
-            peers: vec![peer(endpoint)],
-            ..DesiredFederation::default()
-        });
-        let (federator, applies) = recording_federator();
-        let probe_calls = Arc::new(AtomicUsize::new(0));
-        let probe_counter = probe_calls.clone();
-        let prober: Prober = Arc::new(move |_host, _port, _tls, _timeout| {
-            let fails = probe_counter.fetch_add(1, Ordering::SeqCst) == 0;
-            Box::pin(async move {
-                if fails {
-                    Err("UnknownIssuer".to_string())
-                } else {
-                    Ok(())
-                }
-            })
-        });
-        let mut applied = AppliedState::default();
-        let poller = poller_under_test(federator, resolver, prober);
-
-        let first = poller.poll_and_apply(&mut applied, true).await;
-        let FederationOutcome::Applied(first) = first else {
-            panic!("peer probe errors stay in the applied peer report");
-        };
-        assert_eq!(
-            first.peers[0].state,
-            PeerLinkState::Error("UnknownIssuer".to_string())
-        );
-
-        let second = poller.poll_and_apply(&mut applied, true).await;
-        let FederationOutcome::Applied(second) = second else {
-            panic!("the corrected peer must verify on retry");
-        };
-        assert_eq!(second.peers[0].state, PeerLinkState::Verified);
-        assert_eq!(
-            applies.lock().unwrap().len(),
-            2,
-            "the retry must bounce zenohd so replaced certificate files are reloaded"
-        );
-    }
-
-    #[tokio::test]
-    async fn registry_read_failure_is_failed_and_never_drops_applied_links() {
-        let resolver: Resolver = Arc::new(|| Err("malformed federations.json5".to_string()));
+    async fn a_resolver_error_is_failed_and_preserves_applied_state() {
+        let resolver: Resolver = Arc::new(|| Err("credentials file unreadable".to_string()));
         let (federator, calls) = recording_federator();
         let (prober, _) = counting_prober(Ok(()));
         let mut applied = AppliedState {
-            backend: None,
-            peers: vec!["tls/existing.example:7449".to_string()],
-            identity: None,
-            last_settled_desired: Some(FederationStateKey {
-                backend: None,
-                peers: vec!["tls/existing.example:7449".to_string()],
-                identity: None,
-            }),
+            endpoint: Some(ENDPOINT.to_string()),
+            link_state: LinkState::Verified,
+            last_settled_desired: Some(Some(ENDPOINT.to_string())),
             pinned: false,
             needs_reapply: false,
         };
+        let before = applied.clone();
 
         let outcome = poller_under_test(federator, resolver, prober)
-            .poll_and_apply(&mut applied, true)
+            .poll_and_apply(&mut applied, false)
             .await;
 
+        assert!(matches!(outcome, FederationOutcome::Failed(_)));
         assert_eq!(
-            outcome,
-            FederationOutcome::Failed("malformed federations.json5".to_string())
+            applied, before,
+            "a failed resolve must never drop the applied link"
         );
-        assert_eq!(applied.peers, vec!["tls/existing.example:7449"]);
         assert!(calls.lock().unwrap().is_empty());
     }
 
-    /// A wedged apply (the federator never completes) must surface as `Failed`
-    /// within the apply-timeout bound instead of hanging the poll, which at
-    /// startup would keep the readiness gate closed indefinitely. `applied`
-    /// stays unchanged so the next poll retries, and the link is never probed
-    /// (there is no applied upstream to verify).
+    /// A verifying re-run after a probe failure must bounce the router even
+    /// though the desired locator is unchanged: the user may have replaced the
+    /// certificate files between attempts.
+    #[tokio::test]
+    async fn a_verifying_rerun_after_probe_failure_rebounces_the_unchanged_upstream() {
+        let resolver = fixed_resolver(upstream());
+        let (federator, calls) = recording_federator();
+        let failures = Arc::new(AtomicUsize::new(0));
+        let fail_once = failures.clone();
+        let prober: Prober = Arc::new(move |_host, _port, _tls, _timeout| -> ProbeFuture {
+            let first = fail_once.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if first {
+                    Err("received fatal alert: UnknownCA".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let poller = poller_under_test(federator, resolver, prober);
+        let mut applied = AppliedState::default();
+
+        let first = poller.poll_and_apply(&mut applied, true).await;
+        assert_eq!(
+            first,
+            FederationOutcome::Applied(PlatformLink {
+                endpoint: Some(ENDPOINT.to_string()),
+                link_state: LinkState::Error("received fatal alert: UnknownCA".to_string()),
+            })
+        );
+        assert!(applied.needs_reapply);
+
+        let second = poller.poll_and_apply(&mut applied, true).await;
+        assert_eq!(
+            second,
+            FederationOutcome::Applied(PlatformLink {
+                endpoint: Some(ENDPOINT.to_string()),
+                link_state: LinkState::Verified,
+            })
+        );
+        assert!(!applied.needs_reapply);
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "the verifying re-run must bounce the router again"
+        );
+    }
+
     #[tokio::test]
     async fn a_wedged_apply_times_out_and_reports_failed() {
         let (resolver, _) = counting_resolver(upstream());
@@ -1902,12 +1310,9 @@ mod tests {
     async fn apply_receives_a_fresh_budget_after_a_slow_resolve() {
         let resolver: Resolver = Arc::new(|| {
             std::thread::sleep(Duration::from_millis(160));
-            Ok(DesiredFederation {
-                backend: upstream(),
-                ..DesiredFederation::default()
-            })
+            Ok(upstream())
         });
-        let federator: Federator = Arc::new(|_endpoints, _listeners| {
+        let federator: Federator = Arc::new(|_upstream| {
             Box::pin(async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 Ok(true)
@@ -1927,13 +1332,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ipv6_peer_probe_receives_an_unbracketed_host() {
-        let endpoint = "tls/[2001:db8::1]:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: None,
-            peers: vec![peer(endpoint)],
-            ..DesiredFederation::default()
-        });
+    async fn the_upstream_probe_receives_an_unbracketed_ipv6_host() {
+        let endpoint = "tls/[2001:db8::1]:7447";
+        let resolver = fixed_resolver(Some(DesiredBackend {
+            endpoint: dial(endpoint),
+            locator: endpoint.to_string(),
+            tls: pmi::TlsConfig::default(),
+        }));
         let (federator, _) = recording_federator();
         let seen = Arc::new(std::sync::Mutex::new(None));
         let capture = seen.clone();
@@ -1950,7 +1355,7 @@ mod tests {
         assert!(matches!(outcome, FederationOutcome::Applied(_)));
         assert_eq!(
             *seen.lock().unwrap(),
-            Some(("2001:db8::1".to_string(), 7449))
+            Some(("2001:db8::1".to_string(), 7447))
         );
     }
 
@@ -2006,12 +1411,12 @@ mod tests {
             .expect("ack sender not dropped");
 
         // The upstream is already in effect from the initial poll, so the poke
-        // re-resolves, the probe succeeds, and it reports applied.
+        // re-resolves, the probe succeeds, and it reports the verified link.
         assert_eq!(
             outcome,
-            FederationOutcome::Applied(AppliedFederation {
-                backend: Some(ENDPOINT.to_string()),
-                peers: Vec::new(),
+            FederationOutcome::Applied(PlatformLink {
+                endpoint: Some(ENDPOINT.to_string()),
+                link_state: LinkState::Verified,
             })
         );
         assert_eq!(
@@ -2037,7 +1442,7 @@ mod tests {
             if call_counter.fetch_add(1, Ordering::SeqCst) > 0 {
                 std::thread::sleep(Duration::from_millis(1500));
             }
-            Ok(DesiredFederation::default())
+            Ok(None)
         });
         let (prober, _) = counting_prober(Ok(()));
         let (messaging_tx, messaging_rx) = watch::channel(true);
@@ -2076,7 +1481,8 @@ mod tests {
             .await
             .expect("cached status must not queue behind refederation")
             .unwrap();
-        assert!(status.backend.is_none());
+        assert!(status.endpoint.is_none());
+        assert_eq!(status.link_state, LinkState::NotConfigured);
 
         drop(messaging_tx);
         task.abort();
@@ -2123,19 +1529,15 @@ mod tests {
         let resolver_calls = Arc::new(AtomicUsize::new(0));
         let resolver_counter = resolver_calls.clone();
         let resolver: Resolver = Arc::new(move || {
-            let backend = if resolver_counter.fetch_add(1, Ordering::SeqCst) == 0 {
-                None
+            if resolver_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(None)
             } else {
-                upstream()
-            };
-            Ok(DesiredFederation {
-                backend,
-                ..DesiredFederation::default()
-            })
+                Ok(upstream())
+            }
         });
         let apply_started = Arc::new(AtomicUsize::new(0));
         let started_flag = apply_started.clone();
-        let blocking_federator: Federator = Arc::new(move |_endpoints, _listeners| {
+        let blocking_federator: Federator = Arc::new(move |_upstream| {
             let started_flag = started_flag.clone();
             Box::pin(async move {
                 started_flag.store(1, Ordering::SeqCst);
@@ -2232,10 +1634,10 @@ mod tests {
     }
 
     /// A login poke whose TLS link does not validate (e.g. UnknownCA loop) is
-    /// reported as `Unreachable(reason)`, not a false `Applied`, even though the
-    /// config was applied.
+    /// reported as an errored link, not a false verified success, even though
+    /// the config was applied, and the cached status carries the same error.
     #[tokio::test]
-    async fn poke_with_failing_probe_reports_unreachable() {
+    async fn poke_with_failing_probe_reports_a_link_error() {
         let (resolver, _calls) = counting_resolver(upstream());
         let reason = "received fatal alert: UnknownCA";
         let (prober, probe_calls) = counting_prober(Err(reason.to_string()));
@@ -2270,20 +1672,27 @@ mod tests {
 
         assert_eq!(
             outcome,
-            FederationOutcome::Unreachable {
-                reason: reason.to_string(),
-                applied: AppliedFederation {
-                    backend: Some(ENDPOINT.to_string()),
-                    peers: Vec::new(),
-                },
-            },
-            "a failing probe returns Unreachable with the applied peer report"
+            FederationOutcome::Applied(PlatformLink {
+                endpoint: Some(ENDPOINT.to_string()),
+                link_state: LinkState::Error(reason.to_string()),
+            }),
+            "a failing probe reports the applied endpoint with an errored link"
         );
         assert_eq!(
             probe_calls.load(Ordering::SeqCst),
             1,
             "the poke probed once"
         );
+
+        // The cached status carries the same errored link for `platform federations`.
+        let (status_tx, status_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationRequest::Status { ack: status_tx })
+            .await
+            .expect("status trigger accepted");
+        let status = status_rx.await.expect("status returned");
+        assert_eq!(status.endpoint.as_deref(), Some(ENDPOINT));
+        assert_eq!(status.link_state, LinkState::Error(reason.to_string()));
 
         drop(messaging_tx);
         task.abort();
@@ -2294,12 +1703,7 @@ mod tests {
     /// as applied or probe it.
     #[tokio::test]
     async fn poke_on_pinned_config_stays_pinned_and_does_not_probe() {
-        let desired_peer = "tls/desired-peer.example:7449";
-        let resolver = fixed_resolver(DesiredFederation {
-            backend: upstream(),
-            peers: vec![peer(desired_peer)],
-            ..DesiredFederation::default()
-        });
+        let resolver = fixed_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
@@ -2309,7 +1713,6 @@ mod tests {
         let mut federation =
             federation_under_test(federator, resolver, prober, messaging_rx, trigger_rx);
         federation.poller.connect_timeout = Duration::from_secs(5);
-        federation.initial_peers = vec![desired_peer.to_string()];
         federation.initial_pinned = true;
         let task = tokio::spawn(federation.manage(ready_tx));
 
@@ -2324,8 +1727,8 @@ mod tests {
             .await
             .expect("status trigger accepted");
         let status = status_rx.await.expect("status returned");
-        assert!(status.backend.is_none());
-        assert!(status.peers.is_empty());
+        assert!(status.endpoint.is_none());
+        assert_eq!(status.link_state, LinkState::NotConfigured);
         assert!(status.pinned);
 
         let (ack_tx, ack_rx) = oneshot::channel();
@@ -2360,23 +1763,17 @@ mod tests {
 
     /// Once the local router is ready, the startup gate fires within the resolve
     /// timeout even when the backend is slow enough to blow the bound. The
-    /// federation loop then keeps retrying. The core node's presence gate fires
-    /// in the same breath, so a slow backend cannot stall the boot presence check
-    /// (and thus listener binding) either.
+    /// federation loop then keeps retrying.
     #[tokio::test]
     async fn startup_gate_fires_within_timeout_when_resolve_is_slow() {
-        // Resolver sleeps past the (short) connect timeout, so the bounded resolve
-        // elapses and the first poll completes as a failure; the gate must still
-        // fire.
         let resolver: Resolver = Arc::new(|| {
-            std::thread::sleep(Duration::from_millis(400));
-            Ok(DesiredFederation::default())
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(None)
         });
         let (prober, _) = counting_prober(Ok(()));
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (_trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
-        let (presence_gate_tx, mut presence_gate_rx) = watch::channel(false);
 
         let mut federation = federation_under_test(
             applying_federator(),
@@ -2386,37 +1783,28 @@ mod tests {
             trigger_rx,
         );
         federation.poller.connect_timeout = Duration::from_millis(100);
-        federation.presence_gate_tx = Some(presence_gate_tx);
         let task = tokio::spawn(federation.manage(ready_tx));
 
-        // Gate fires close to the 100ms bound, well before the 400ms resolve.
-        tokio::time::timeout(Duration::from_secs(1), ready_rx)
-            .await
-            .expect("gate fires within the timeout despite a slow backend")
-            .expect("gate sender not dropped");
-        // The presence gate fires in lockstep, so the core node boots (standalone)
-        // rather than waiting on the hung backend.
-        tokio::time::timeout(Duration::from_secs(1), presence_gate_rx.wait_for(|g| *g))
-            .await
-            .expect("presence gate fires within the timeout despite a slow backend")
-            .expect("presence gate sender not dropped");
+        let fired = tokio::time::timeout(Duration::from_secs(2), ready_rx).await;
+        assert!(
+            fired.is_ok(),
+            "the startup gate must fire within the bound even when the resolve is slow"
+        );
 
         drop(messaging_tx);
         task.abort();
     }
 
-    /// The core node's presence gate opens only after the *initial* federation
-    /// poll has settled (in lockstep with the startup gate), so the boot-time
-    /// presence check runs against the federated mesh rather than the
-    /// always-standalone just-started router.
+    /// The core node's presence gate fires in lockstep with the startup gate,
+    /// once the initial federation has settled.
     #[tokio::test]
     async fn presence_gate_fires_once_the_initial_federation_settled() {
-        let (resolver, calls) = counting_resolver(upstream());
+        let (resolver, _) = counting_resolver(None);
         let (prober, _) = counting_prober(Ok(()));
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (_trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
-        let (presence_gate_tx, mut presence_gate_rx) = watch::channel(false);
+        let (presence_tx, mut presence_rx) = watch::channel(false);
 
         let mut federation = federation_under_test(
             applying_federator(),
@@ -2426,33 +1814,22 @@ mod tests {
             trigger_rx,
         );
         federation.poller.connect_timeout = Duration::from_secs(5);
-        federation.presence_gate_tx = Some(presence_gate_tx);
+        federation.presence_gate_tx = Some(presence_tx);
         let task = tokio::spawn(federation.manage(ready_tx));
 
-        tokio::time::timeout(Duration::from_secs(1), presence_gate_rx.wait_for(|g| *g))
-            .await
-            .expect("presence gate fires promptly")
-            .expect("presence gate sender not dropped");
-        // The generous timeout means the gate fired via the initial-poll path,
-        // so the federation had already been resolved (and applied) when the
-        // gate opened.
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "the initial federation poll settled before the presence gate opened"
-        );
-        // The startup gate fired in the same breath.
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
-            .expect("startup gate fires with the presence gate")
+            .expect("startup gate fires")
             .expect("gate sender not dropped");
+        tokio::time::timeout(Duration::from_secs(1), presence_rx.wait_for(|fired| *fired))
+            .await
+            .expect("presence gate fires with the startup gate")
+            .expect("presence sender not dropped");
 
         drop(messaging_tx);
         task.abort();
     }
 
-    /// A poll with no upstream (logged out / pull failed) reports `Applied(None)`
-    /// when nothing was federated, the gate still fires, and nothing is probed.
     #[tokio::test]
     async fn logged_out_initial_poll_is_a_noop_and_fires_the_gate() {
         let (resolver, calls) = counting_resolver(None);
@@ -2479,7 +1856,7 @@ mod tests {
         assert_eq!(
             probe_calls.load(Ordering::SeqCst),
             0,
-            "no upstream ⇒ nothing to probe"
+            "no upstream means nothing to probe"
         );
 
         drop(messaging_tx);
@@ -2487,17 +1864,18 @@ mod tests {
     }
 
     /// A poke after the credentials change the daemon's namespace acks `Restart`
-    /// (the control handler then triggers a generation restart). The loop must NOT
-    /// federate or probe on a namespace change; a restart is fail-closed. The
-    /// change appears only at the poke (the startup poll still sees `local`), so the
-    /// startup-restart path stays dormant and the steady-state ack is exercised.
+    /// carrying the target namespace (the control handler then triggers a
+    /// generation restart). The loop must NOT federate or probe on a namespace
+    /// change; a restart is fail-closed. The change appears only at the poke (the
+    /// startup poll still sees `local`), so the startup-restart path stays dormant
+    /// and the steady-state ack is exercised.
     #[tokio::test]
     async fn poke_acks_restart_on_a_namespace_change() {
         let (resolver, _calls) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
-        // Startup resolves `local` (matches the startup namespace ⇒ no startup
-        // restart); the poke resolves the changed org id ⇒ a steady-state Restart.
-        let ns_resolver = switching_ns_resolver("local", "550e8400-e29b-41d4-a716-446655440000");
+        // Startup resolves `local` (matches the startup namespace, so no startup
+        // restart); the poke resolves the changed workspace, a steady-state Restart.
+        let ns_resolver = switching_ns_resolver("local", WORKSPACE);
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -2522,7 +1900,7 @@ mod tests {
             .expect("gate sender not dropped");
         assert!(
             !*restart_rx.borrow(),
-            "the startup poll saw an unchanged namespace ⇒ no startup restart"
+            "the startup poll saw an unchanged namespace, so no startup restart"
         );
 
         let (ack_tx, ack_rx) = oneshot::channel();
@@ -2537,8 +1915,10 @@ mod tests {
 
         assert_eq!(
             outcome,
-            FederationOutcome::Restart,
-            "a namespace change must ack Restart, not Applied"
+            FederationOutcome::Restart {
+                target_namespace: WORKSPACE.to_string()
+            },
+            "a namespace change must ack Restart with the target namespace"
         );
         assert_eq!(
             probe_calls.load(Ordering::SeqCst),
@@ -2560,9 +1940,9 @@ mod tests {
     async fn startup_poll_requests_restart_on_namespace_drift() {
         let (resolver, _calls) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
-        // Every resolve returns an org id that differs from the `local` startup
+        // Every resolve returns a workspace that differs from the `local` startup
         // namespace, so the very first (startup) poll detects the drift.
-        let (ns_resolver, ns_calls) = counting_ns_resolver("550e8400-e29b-41d4-a716-446655440000");
+        let (ns_resolver, ns_calls) = counting_ns_resolver(WORKSPACE);
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (_trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();

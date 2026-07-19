@@ -1,8 +1,11 @@
-//! `peppy auth login`: OAuth 2.0 device-authorization login (RFC 8628).
+//! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628),
+//! or an immediate PAT-authenticated federation when `PEPPY_API_KEY` is set.
 //!
-//! Fetches the public `/cli/auth-config`, runs OIDC discovery against the returned
-//! issuer, performs the device flow (opening the browser on a TTY), caches the
-//! tokens as the single session, and prints the resolved identity.
+//! OAuth path: fetches the public `/cli/auth-config`, runs OIDC discovery
+//! against the returned issuer, performs the device flow (opening the browser
+//! on a TTY), caches the tokens as the single session, and prints the resolved
+//! identity. PAT path: verifies the key against `/me`, persists nothing (a PAT
+//! is environment-scoped), and goes straight to the federation poke.
 
 use std::sync::Arc;
 
@@ -28,6 +31,9 @@ pub struct LoginCommand {
     /// test isolates all auth state under one tempdir without touching
     /// `PEPPY_HOME`.
     pub peppy_dirs: Option<PeppyDirs>,
+    /// The `PEPPY_API_KEY` PAT, injected by the dispatcher (never read from
+    /// the environment here). `Some` skips the OAuth device flow entirely.
+    pub pat: Option<String>,
 }
 
 impl Command for LoginCommand {
@@ -58,6 +64,33 @@ impl Command for LoginCommand {
             return Ok(());
         }
 
+        // PAT fast path: `PEPPY_API_KEY` is valid platform authentication on
+        // its own and takes precedence over stored OAuth credentials, so login
+        // skips the device flow entirely and applies federation immediately.
+        // Nothing is persisted (a PAT is environment-scoped; `platform logout`
+        // cannot clear it). Strict: a rejected key or unreachable backend
+        // fails here, before any daemon poke.
+        if let Some(pat) = self.pat {
+            let mut cred = resolver::resolve(&creds_path, &http, Some(pat))?;
+            let principal = client::get_me(&http, &api_url, &mut cred)?;
+            println!(
+                "Authenticated via PEPPY_API_KEY as {} ({}).",
+                principal.display_name(),
+                profile::build_env_name()
+            );
+            return match federation {
+                Some(connect_timeout_secs) => super::poke_federation_and_report(
+                    &dirs,
+                    connect_timeout_secs,
+                    super::FederationPokeAction::Login,
+                ),
+                None => {
+                    println!("{}", super::EXTERNAL_ROUTER_NOTE);
+                    Ok(())
+                }
+            };
+        }
+
         let cfg = cli_config::fetch(&http, &api_url)?;
         let endpoints = discovery::discover(&http, &cfg.issuer)?;
         let tokens = run_device_flow(
@@ -69,7 +102,7 @@ impl Command for LoginCommand {
         )?;
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
-        // Load-resilient: a malformed / pre-`organization_id` / version-mismatched
+        // Load-resilient: a malformed / pre-v2 / version-mismatched
         // file fails to parse with `Error::Auth`; start fresh rather than wedge
         // login on it (the stale file self-heals on this save).
         let mut creds = match storage::load(&creds_path) {

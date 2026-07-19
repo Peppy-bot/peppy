@@ -73,9 +73,9 @@ fn serve_with_invalid_peppy_config_env_exits_one_naming_the_var() {
 }
 
 #[test]
-fn auth_whoami_with_invalid_peppy_config_env_exits_one() {
+fn platform_whoami_with_invalid_peppy_config_env_exits_one() {
     let home = tempfile::tempdir().expect("temp home");
-    let output = run_with_invalid_override(home.path(), &["auth", "whoami"]);
+    let output = run_with_invalid_override(home.path(), &["platform", "whoami"]);
     let combined = combined_output(&output);
 
     assert_eq!(

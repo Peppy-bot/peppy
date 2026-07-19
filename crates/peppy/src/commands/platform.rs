@@ -1,8 +1,9 @@
-//! The `peppy auth` command group: `login`, `logout`, and `whoami`. Each
-//! variant maps to a handler in this module's directory; the OAuth device flow,
-//! token storage, and credential resolution they share live in the separate
-//! `auth` engine crate.
+//! The `peppy platform` command group: `login`, `logout`, `whoami` (alias
+//! `status`), and `federations`. Each variant maps to a handler in this
+//! module's directory; the OAuth device flow, token storage, and credential
+//! resolution they share live in the separate `auth` engine crate.
 
+pub mod federations;
 pub mod login;
 pub mod logout;
 pub mod whoami;
@@ -20,8 +21,12 @@ use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
-use daemon::control::{self as daemon_control, PokeOutcome};
+use daemon::control::{self as daemon_control, LinkState, PokeOutcome};
 use daemon::state::DaemonState;
+
+/// Display name of the platform hub in federation reports: the `via` column
+/// and the middle hop of every inferred path.
+pub(crate) const PLATFORM_HUB_NAME: &str = "platform-backend";
 
 /// Shown when the managed router uses an operator-pinned config, so the daemon
 /// cannot rewrite it. Used by both login and logout reporting.
@@ -34,6 +39,14 @@ pub(crate) const EXTERNAL_ROUTER_NOTE: &str = "Note: this daemon dials an operat
      (`zenoh.external`); federation belongs to the operator and was left untouched. Restart the \
      daemon to apply the new sign-in state to its sessions.";
 
+/// Shown after a logout while `PEPPY_API_KEY` is still set: the environment
+/// PAT is valid platform authentication on its own, so signing the OAuth
+/// session out does not end authentication (or federation) until the variable
+/// is removed from every environment that carries it (this shell and the
+/// daemon's service environment).
+pub(crate) const PAT_STILL_ACTIVE_NOTE: &str = "Note: PEPPY_API_KEY is set, so platform \
+     authentication and federation remain active until the environment variable is removed.";
+
 /// Re-poke cadence and overall deadline while waiting for the daemon to restart
 /// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)
 /// plus the federation connect timeout and slack.
@@ -45,19 +58,6 @@ const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
 /// (pid alive but its messaging router not yet reachable) delays the
 /// login/logout prompt only briefly before we fall back to showing the warning.
 const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// The namespace the on-disk credentials under `dirs` resolve to (`local` when
-/// logged out, else the org id). The same resolution the daemon does at startup,
-/// so the CLI can confirm the daemon came back under exactly what it just wrote.
-/// Reads the credentials from the same `dirs` the command resolved, so a test
-/// seam isolates it.
-fn current_creds_namespace(dirs: &PeppyDirs) -> String {
-    config::org::resolve_session_namespace(
-        auth::router::cached_organization_id(&auth::storage::credentials_path(dirs)).as_deref(),
-    )
-    .as_str()
-    .to_string()
-}
 
 /// Whether a federation poke follows a login (federate) or a logout
 /// (de-federate). Affects the user-facing wording and, crucially, whether a
@@ -129,8 +129,8 @@ pub(crate) fn confirm_restart(
         FederationPokeAction::Logout => "Logging out",
     };
     eprintln!(
-        "{verb} changes this machine's organization namespace, which restarts the messaging \
-         daemon and wipes the running node stack."
+        "{verb} changes this machine's namespace, which restarts the messaging daemon and wipes \
+         the running node stack."
     );
     eprint!("Continue? [y/N] ");
     std::io::stderr().flush().ok();
@@ -202,7 +202,7 @@ fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
 /// For [`FederationPokeAction::Login`] this is **strict**: if federation cannot
 /// be established (the daemon isn't running, the apply timed out, no upstream
 /// resolved, or the federation link does not validate), it returns an actionable
-/// [`Error::Auth`]. The caller has already persisted the credentials, so the user
+/// [`Error::Auth`]. The caller has already handled the credentials, so the user
 /// stays authenticated; only the command exits non-zero. For
 /// [`FederationPokeAction::Logout`] it is best-effort and never returns `Err`
 /// (de-federation that didn't reach the daemon is harmless; the daemon
@@ -214,7 +214,7 @@ pub(crate) fn poke_federation_and_report(
 ) -> Result<()> {
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = Duration::from_secs(connect_timeout_secs) + daemon_control::POKE_READ_SLACK;
-    // The poke blocks while the daemon re-resolves the user's cloud router and
+    // The poke blocks while the daemon re-resolves the platform router and
     // verifies the TLS link, which can take a few seconds; show the same
     // steady-tick spinner as the browser-approval wait so the step isn't a silent
     // pause. Only for a login: a logout's de-federation is best-effort and quick.
@@ -230,10 +230,11 @@ pub(crate) fn poke_federation_and_report(
         pb.finish_and_clear();
     }
     // A namespace change makes the daemon restart its whole generation. The first
-    // ack is `Restarting`; poll the (path-stable) control socket until the daemon
-    // is back under the namespace we just wrote, then report the settled outcome.
-    if matches!(outcome, PokeOutcome::Restarting) {
-        return await_restart(dirs, &socket, read_timeout, &action);
+    // ack is `Restarting` and names the namespace the daemon is restarting into;
+    // poll the (path-stable) control socket until the daemon is back under it,
+    // then report the settled outcome.
+    if let PokeOutcome::Restarting { target_namespace } = outcome {
+        return await_restart(dirs, &socket, read_timeout, &action, target_namespace);
     }
     match action {
         FederationPokeAction::Login => report_login(outcome),
@@ -244,18 +245,19 @@ pub(crate) fn poke_federation_and_report(
     }
 }
 
-/// Polls until the daemon is back under the namespace the credentials now resolve
-/// to, then reports the settled federation outcome. Detects a concurrent
-/// credentials change (a second login/logout mid-restart) and a never-recovers
-/// timeout. Bounded by [`RESTART_POLL_DEADLINE`].
+/// Polls until the daemon is back under the namespace the `Restarting` ack
+/// named, then reports the settled federation outcome. The target comes from
+/// the daemon's own ack (not a credentials re-read), so a PAT-driven change,
+/// where nothing is persisted CLI-side, converges the same way; a concurrent
+/// credentials change surfaces as a fresh `Restarting` ack carrying the newer
+/// target. Bounded by [`RESTART_POLL_DEADLINE`].
 fn await_restart(
     dirs: &PeppyDirs,
     socket: &std::path::Path,
     read_timeout: Duration,
     action: &FederationPokeAction,
+    mut expected: String,
 ) -> Result<()> {
-    // The namespace the daemon must come back under (what we just wrote).
-    let expected = current_creds_namespace(dirs);
     // This helper is shared by both flows, so the recovery guidance must name the
     // caller's own subcommand rather than always saying `login`.
     let subcommand = match action {
@@ -269,18 +271,10 @@ fn await_restart(
         if Instant::now() >= deadline {
             break Err(Error::Auth(format!(
                 "the daemon did not come back under namespace `{expected}` within the timeout; \
-                 check the `peppy service serve` logs and re-run `peppy auth {subcommand}`"
+                 check the `peppy service serve` logs and re-run `peppy platform {subcommand}`"
             )));
         }
         std::thread::sleep(RESTART_POLL_INTERVAL);
-
-        // A concurrent login/logout rewrote the credentials mid-restart, so the
-        // daemon will not come back under what we wrote.
-        if current_creds_namespace(dirs) != expected {
-            break Err(Error::Auth(format!(
-                "credentials changed during restart; re-run `peppy auth {subcommand}`"
-            )));
-        }
 
         // The (path-stable) daemon state records the live generation's namespace,
         // written before the control socket binds. While the daemon is down or the
@@ -288,7 +282,7 @@ fn await_restart(
         // Read from the same `dirs` the command resolved, like the socket path.
         let back_under_expected = matches!(
             DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
-            Ok(state) if state.organization_namespace == expected
+            Ok(state) if state.namespace == expected
         );
         if !back_under_expected {
             continue;
@@ -297,12 +291,18 @@ fn await_restart(
         // Back under the expected namespace. Confirm the settled federation state
         // with a fresh poke (which now resolves "unchanged" and federates live).
         match daemon_control::poke_refederate(socket, read_timeout) {
+            // A concurrent login/logout changed the credentials mid-restart: the
+            // daemon acks a fresh restart into the newer namespace. Track it.
+            PokeOutcome::Restarting { target_namespace } => {
+                expected = target_namespace;
+                continue;
+            }
             // Still settling: the new generation wrote its state (so we got here)
             // but its control socket may not have bound yet, so a poke can
             // transiently find no socket or time out. Keep polling until it
             // actually answers (or the deadline above fires) rather than reporting
             // one of these in-flight outcomes as the settled state.
-            PokeOutcome::Restarting | PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {
+            PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {
                 continue;
             }
             other => {
@@ -322,51 +322,64 @@ fn await_restart(
     result
 }
 
-/// Strict reporting for a login poke: success and a managed router pinned via
-/// `ZENOH_CONFIG` print and return `Ok`; every "federation not in effect" outcome
-/// returns an actionable [`Error::Auth`] (credentials are already saved by the
-/// caller, so the identity is kept; only the command fails).
+/// Strict reporting for a login poke: a verified platform link and a managed
+/// router pinned via `ZENOH_CONFIG` print and return `Ok`; every "federation not
+/// in effect" outcome returns an actionable [`Error::Auth`] (the identity is
+/// kept; only the command fails).
 fn report_login(outcome: PokeOutcome) -> Result<()> {
     match outcome {
-        PokeOutcome::Applied(applied) if applied.backend.is_some() => {
-            println!("Router federation established.");
-            Ok(())
-        }
+        PokeOutcome::Applied(link) => match link.link_state {
+            LinkState::Verified => {
+                println!("Platform federation established.");
+                Ok(())
+            }
+            LinkState::Error(reason) => Err(Error::Auth(format!(
+                "logged in, but federation with the platform could not be established: {reason}. \
+                 The platform router is unreachable or its certificate is not trusted; in dev, \
+                 ensure the router cert is signed by the committed dev CA (re-run \
+                 gen_dev_certs), then run `peppy platform login` again."
+            ))),
+            LinkState::NotConfigured => Err(Error::Auth(
+                "logged in, but no platform router resolved to federate to. Confirm the backend \
+                 is reachable and your account is provisioned; if you authenticated with \
+                 PEPPY_API_KEY, the daemon resolves credentials from its OWN environment, so set \
+                 the variable in the daemon's service environment too. Then run \
+                 `peppy platform login` again."
+                    .to_string(),
+            )),
+            // A verifying login poke always settles the link into one of the
+            // three states above; an unverified ack means the daemon skipped
+            // verification, which login must not accept silently.
+            LinkState::Unverified => Err(Error::Auth(
+                "logged in, but the daemon did not verify the federation link. Run \
+                 `peppy platform login` again."
+                    .to_string(),
+            )),
+        },
         PokeOutcome::Pinned => {
             // The managed router's `ZENOH_CONFIG` pin prevents the daemon from
             // rewriting it. Treat that operator choice as non-fatal.
             println!("{PINNED_NOTE}");
             Ok(())
         }
-        PokeOutcome::Unreachable { reason, .. } => Err(Error::Auth(format!(
-            "logged in, but federation with the platform could not be established: {reason}. \
-             The per-user cloud router is unreachable or its certificate is not trusted; in \
-             dev, ensure the router cert is signed by the committed dev CA (re-run \
-             gen_dev_certs), then run `peppy auth login` again."
-        ))),
         PokeOutcome::DaemonError(msg) => Err(Error::Auth(format!(
             "logged in, but the daemon could not apply federation: {msg}. Check the \
-             `peppy service serve` logs and run `peppy auth login` again."
+             `peppy service serve` logs and run `peppy platform login` again."
         ))),
         PokeOutcome::TimedOut => Err(Error::Auth(
             "logged in, but the daemon did not apply federation within the timeout. Check the \
-             `peppy service serve` logs and run `peppy auth login` again."
+             `peppy service serve` logs and run `peppy platform login` again."
                 .to_string(),
         )),
         PokeOutcome::DaemonNotRunning => Err(Error::Auth(
             "logged in, but no running peppy daemon was found to establish federation. Start it \
-             with `peppy service serve`, then run `peppy auth login` again."
-                .to_string(),
-        )),
-        PokeOutcome::Applied(_) => Err(Error::Auth(
-            "logged in, but no cloud router resolved to federate to. Confirm the backend is \
-             reachable and your account is provisioned, then run `peppy auth login` again."
+             with `peppy service serve`, then run `peppy platform login` again."
                 .to_string(),
         )),
         // `Restarting` is intercepted by `poke_federation_and_report` (it drives
         // the restart poll), so it should not reach here; treat defensively.
-        PokeOutcome::Restarting => Err(Error::Auth(
-            "the daemon is restarting to apply the new namespace; re-run `peppy auth login` \
+        PokeOutcome::Restarting { .. } => Err(Error::Auth(
+            "the daemon is restarting to apply the new namespace; re-run `peppy platform login` \
              once it is back."
                 .to_string(),
         )),
@@ -377,12 +390,17 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
 /// fail. De-federation that didn't reach the daemon is harmless.
 fn report_logout(outcome: PokeOutcome) {
     match outcome {
-        PokeOutcome::Applied(applied) if applied.backend.is_none() => {
-            println!("Router federation cleared.")
+        PokeOutcome::Applied(link) if link.endpoint.is_none() => {
+            println!("Platform federation cleared.")
         }
-        PokeOutcome::Applied(_) => println!("Router federation refreshed."),
+        PokeOutcome::Applied(link) => match link.link_state {
+            LinkState::Error(reason) => println!(
+                "Note: the daemon could not re-establish federation now ({reason}); it will retry."
+            ),
+            _ => println!("Platform federation refreshed."),
+        },
         PokeOutcome::Pinned => println!("{PINNED_NOTE}"),
-        PokeOutcome::Unreachable { reason: msg, .. } | PokeOutcome::DaemonError(msg) => {
+        PokeOutcome::DaemonError(msg) => {
             println!("Note: the daemon could not apply federation now ({msg}); it will retry.")
         }
         PokeOutcome::DaemonNotRunning => {
@@ -392,15 +410,15 @@ fn report_logout(outcome: PokeOutcome) {
             println!("Federation poke timed out; the daemon will retry shortly.")
         }
         // Intercepted by `poke_federation_and_report`; defensive only.
-        PokeOutcome::Restarting => {
+        PokeOutcome::Restarting { .. } => {
             println!("The daemon is restarting to apply the cleared namespace.")
         }
     }
 }
 
 #[derive(Subcommand)]
-pub enum AuthCommands {
-    /// Log in to Peppy via the browser (OAuth device flow)
+pub enum PlatformCommands {
+    /// Log in to the Peppy platform (browser OAuth device flow, or PEPPY_API_KEY)
     Login {
         /// Override the backend base URL (else the build default / PEPPY_API_URL).
         #[arg(long = "api-url")]
@@ -420,7 +438,7 @@ pub enum AuthCommands {
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
-    /// Show the current Peppy identity, backend, and token status
+    /// Show the current platform identity, backend, and token status
     #[command(visible_alias = "status")]
     Whoami {
         #[arg(long = "api-url")]
@@ -429,16 +447,26 @@ pub enum AuthCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Report platform federation state and the core nodes reachable through it
+    Federations {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
-pub struct AuthCommand {
-    pub command: AuthCommands,
+pub struct PlatformCommand {
+    pub command: PlatformCommands,
 }
 
-impl Command for AuthCommand {
+impl Command for PlatformCommand {
     fn execute(self, app_ctx: &Arc<AppContext>) -> Result<()> {
+        // The single ambient read of `PEPPY_API_KEY`: handlers receive the PAT
+        // as data, so tests inject it explicitly and can never race a
+        // developer's environment.
+        let pat = auth::resolver::pat_from_env();
         match self.command {
-            AuthCommands::Login {
+            PlatformCommands::Login {
                 api_url,
                 no_browser,
                 yes,
@@ -447,18 +475,27 @@ impl Command for AuthCommand {
                 no_browser,
                 yes,
                 peppy_dirs: None,
+                pat,
             }
             .execute(app_ctx),
-            AuthCommands::Logout { api_url, yes } => logout::LogoutCommand {
+            PlatformCommands::Logout { api_url, yes } => logout::LogoutCommand {
                 api_url,
                 yes,
                 peppy_dirs: None,
+                pat,
             }
             .execute(app_ctx),
-            AuthCommands::Whoami { api_url, json } => whoami::WhoamiCommand {
+            PlatformCommands::Whoami { api_url, json } => whoami::WhoamiCommand {
                 api_url,
                 json,
                 peppy_dirs: None,
+                pat,
+            }
+            .execute(app_ctx),
+            PlatformCommands::Federations { json } => federations::FederationsCommand {
+                json,
+                peppy_dirs: None,
+                pat,
             }
             .execute(app_ctx),
         }
@@ -471,7 +508,7 @@ mod tests {
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
-    use daemon::control::PokeOutcome;
+    use daemon::control::{LinkState, PlatformLink, PokeOutcome};
     use daemon::state::DaemonState;
     use daemon_config::consts::PeppyDirs;
     use daemon_config::peppy_config::{
@@ -584,10 +621,10 @@ mod tests {
         }
     }
 
-    fn applied(backend: Option<&str>) -> PokeOutcome {
-        PokeOutcome::Applied(daemon::control::AppliedFederation {
-            backend: backend.map(str::to_string),
-            peers: Vec::new(),
+    fn applied(endpoint: Option<&str>, link_state: LinkState) -> PokeOutcome {
+        PokeOutcome::Applied(PlatformLink {
+            endpoint: endpoint.map(str::to_string),
+            link_state,
         })
     }
 
@@ -632,10 +669,10 @@ mod tests {
     }
 
     #[test]
-    fn login_is_ok_for_applied_some_and_pinned() {
+    fn login_is_ok_for_a_verified_link_and_pinned() {
         assert!(
-            report_login(applied(Some("tls/cap:7443"))).is_ok(),
-            "a verified upstream ⇒ login succeeds"
+            report_login(applied(Some("tls/hub:7447"), LinkState::Verified)).is_ok(),
+            "a verified upstream means login succeeds"
         );
         assert!(
             report_login(PokeOutcome::Pinned).is_ok(),
@@ -646,8 +683,12 @@ mod tests {
     #[test]
     fn login_fails_strictly_for_every_not_in_effect_outcome() {
         let failing = [
-            applied(None),
-            unreachable("UnknownCA"),
+            applied(None, LinkState::NotConfigured),
+            applied(
+                Some("tls/hub:7447"),
+                LinkState::Error("UnknownCA".to_string()),
+            ),
+            applied(Some("tls/hub:7447"), LinkState::Unverified),
             PokeOutcome::DaemonError("boom".to_string()),
             PokeOutcome::TimedOut,
             PokeOutcome::DaemonNotRunning,
@@ -661,9 +702,12 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_login_error_is_actionable_and_carries_the_reason() {
-        let err = report_login(unreachable("received fatal alert: UnknownCA"))
-            .expect_err("an unreachable upstream fails login");
+    fn link_error_login_message_is_actionable_and_carries_the_reason() {
+        let err = report_login(applied(
+            Some("tls/hub:7447"),
+            LinkState::Error("received fatal alert: UnknownCA".to_string()),
+        ))
+        .expect_err("an unverifiable upstream fails login");
         let msg = err.to_string();
         assert!(
             msg.contains("UnknownCA"),
@@ -676,29 +720,29 @@ mod tests {
     }
 
     #[test]
+    fn a_pat_only_login_failure_points_at_the_daemon_environment() {
+        let err = report_login(applied(None, LinkState::NotConfigured))
+            .expect_err("no resolved upstream fails login");
+        assert!(
+            err.to_string().contains("PEPPY_API_KEY"),
+            "the no-upstream guidance must mention the daemon-side PAT: {err}"
+        );
+    }
+
+    #[test]
     fn logout_is_always_best_effort() {
         // `report_logout` returns `()` for every variant; a logout can never be
         // failed by the federation poke.
         for outcome in [
-            applied(None),
-            applied(Some("tls/cap:7443")),
+            applied(None, LinkState::NotConfigured),
+            applied(Some("tls/hub:7447"), LinkState::Verified),
+            applied(Some("tls/hub:7447"), LinkState::Error("x".to_string())),
             PokeOutcome::Pinned,
-            unreachable("x"),
             PokeOutcome::DaemonError("y".to_string()),
             PokeOutcome::DaemonNotRunning,
             PokeOutcome::TimedOut,
         ] {
             report_logout(outcome);
-        }
-    }
-
-    fn unreachable(reason: &str) -> PokeOutcome {
-        PokeOutcome::Unreachable {
-            reason: reason.to_string(),
-            applied: daemon::control::AppliedFederation {
-                backend: Some("tls/cap:7443".to_string()),
-                peers: Vec::new(),
-            },
         }
     }
 }

@@ -7,7 +7,7 @@ use tracing::error;
 
 use daemon_config::consts::AppEnv;
 use peppy::{
-    commands::{Command, auth, container, federation, info, node, repo, service, stack},
+    commands::{Command, container, info, node, platform, repo, service, stack},
     context::AppContext,
 };
 
@@ -24,7 +24,7 @@ struct Cli {
     /// Core-node name of the daemon to target (see `peppy info`). Defaults
     /// to the local daemon. The local daemon must be running either way (its
     /// router and federation carry the traffic), and a remote daemon must
-    /// belong to the same organization.
+    /// belong to the same workspace.
     #[arg(long = "core-node", global = true, value_name = "NAME", value_parser = parse_core_node_target)]
     core_node: Option<String>,
 }
@@ -74,15 +74,10 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Authentication: log in, log out, and show the current identity
-    Auth {
+    /// Platform account and federation: login, logout, whoami, federations
+    Platform {
         #[command(subcommand)]
-        command: auth::AuthCommands,
-    },
-    /// Manage mTLS federation with other Peppy routers
-    Federation {
-        #[command(subcommand)]
-        command: federation::FederationCommands,
+        command: platform::PlatformCommands,
     },
     /// Display peppy version information
     Info {},
@@ -127,10 +122,7 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
-        Commands::Auth { command } => auth::AuthCommand { command }.execute(&app_ctx),
-        Commands::Federation { command } => {
-            federation::FederationCommand { command }.execute(&app_ctx)
-        }
+        Commands::Platform { command } => platform::PlatformCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 
@@ -173,8 +165,8 @@ mod tests {
         assert_eq!(cli.core_node, None, "absent flag targets the local daemon");
     }
 
-    /// A malformed `--core-node` must be rejected at parse time — the same
-    /// `Name` rules `service serve --core-node-name` enforces — rather than
+    /// A malformed `--core-node` must be rejected at parse time (the same
+    /// `Name` rules `service serve --core-node-name` enforces) rather than
     /// silently becoming an unreachable request target.
     #[test]
     fn core_node_flag_rejects_invalid_names() {
@@ -183,6 +175,57 @@ mod tests {
             assert!(
                 Cli::try_parse_from(["peppy", "stack", "list", "--core-node", bad]).is_err(),
                 "--core-node {bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_subcommands_parse() {
+        for args in [
+            vec!["peppy", "platform", "login", "--no-browser", "--yes"],
+            vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "logout", "-y"],
+            vec!["peppy", "platform", "whoami", "--json"],
+            vec!["peppy", "platform", "whoami", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "federations"],
+            vec!["peppy", "platform", "federations", "--json"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "{args:?} should parse"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_status_is_an_alias_for_whoami() {
+        let cli = Cli::try_parse_from(["peppy", "platform", "status"])
+            .expect("the status alias should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Platform {
+                command: platform::PlatformCommands::Whoami { .. }
+            }
+        ));
+    }
+
+    /// The former root commands are removed outright, with no aliases: the
+    /// spec'd user-visible break, pinned so a stray re-introduction fails.
+    #[test]
+    fn removed_auth_and_federation_commands_fail_to_parse() {
+        for args in [
+            vec!["peppy", "auth", "login"],
+            vec!["peppy", "auth", "logout"],
+            vec!["peppy", "auth", "whoami"],
+            vec!["peppy", "auth", "status"],
+            vec!["peppy", "federation", "list"],
+            vec!["peppy", "federation", "federate", "tls/peer:7449"],
+            vec!["peppy", "federation", "remove", "peer"],
+            vec!["peppy", "federation", "ca", "init"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_err(),
+                "{args:?} must no longer parse"
             );
         }
     }

@@ -1,7 +1,10 @@
-//! `peppy auth logout`: kill the access token on the backend (cross-replica) and
-//! delete the local session credentials. Does not revoke the refresh token at
-//! Zitadel (out of scope for v1); a backend that's unreachable or returns
-//! 401/503 still results in the local credentials being cleared.
+//! `peppy platform logout`: kill the access token on the backend
+//! (cross-replica) and delete the local session credentials. Does not revoke
+//! the refresh token at Zitadel (out of scope for v1); a backend that's
+//! unreachable or returns 401/503 still results in the local credentials being
+//! cleared. An environment `PEPPY_API_KEY` cannot be cleared from here: the
+//! command reports that authentication and federation remain active until the
+//! variable is removed.
 
 use std::sync::Arc;
 
@@ -21,6 +24,10 @@ pub struct LogoutCommand {
     /// Test seam: override the peppy data dirs (the credentials file and
     /// `peppy_config.json5` both derive from it).
     pub peppy_dirs: Option<PeppyDirs>,
+    /// The `PEPPY_API_KEY` PAT, injected by the dispatcher (never read from
+    /// the environment here). `Some` means auth stays active after this
+    /// command; the user is told so.
+    pub pat: Option<String>,
 }
 
 impl Command for LogoutCommand {
@@ -36,7 +43,7 @@ impl Command for LogoutCommand {
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
 
-        // Load-resilient: a malformed / pre-`organization_id` file fails to parse
+        // Load-resilient: a malformed / pre-v2 file fails to parse
         // with `Error::Auth`; treat it as "already effectively logged out" rather
         // than wedging logout. A default has no session, so the early return below
         // would otherwise leave the bad file on disk; overwrite it with a clean
@@ -52,6 +59,9 @@ impl Command for LogoutCommand {
         };
         let Some(pc) = creds.session.as_ref() else {
             println!("Not logged in ({}).", profile::build_env_name());
+            if self.pat.is_some() {
+                println!("{}", super::PAT_STILL_ACTIVE_NOTE);
+            }
             return Ok(());
         };
 
@@ -101,6 +111,12 @@ impl Command for LogoutCommand {
                 );
             }
             None => println!("{}", super::EXTERNAL_ROUTER_NOTE),
+        }
+        // The environment PAT survives this command by design: it is valid
+        // platform authentication on its own (the daemon re-resolves with it),
+        // so the sign-out is not complete until the variable is removed.
+        if self.pat.is_some() {
+            println!("{}", super::PAT_STILL_ACTIVE_NOTE);
         }
         Ok(())
     }

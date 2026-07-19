@@ -1,12 +1,13 @@
 //! Client and wire protocol for the daemon's *federation control socket*.
 //!
-//! `peppy auth login`/`logout` run in a separate, short-lived process from the
-//! `serve` daemon; their only shared state is the on-disk credentials file, which
-//! the daemon would otherwise only re-read on its periodic poll (so federation
-//! would lag a login by up to that interval). To apply it immediately, the
-//! command **pokes** the running daemon over a per-user Unix-domain socket: it
-//! sends [`REFEDERATE_VERB`] and waits for the daemon to re-resolve and
-//! (de)federate, so federation is in place by the time the command returns.
+//! `peppy platform login`/`logout` run in a separate, short-lived process from
+//! the `serve` daemon; their only shared state is the on-disk credentials file,
+//! which the daemon would otherwise only re-read on its periodic poll (so
+//! federation would lag a login by up to that interval). To apply it
+//! immediately, the command **pokes** the running daemon over a per-user
+//! Unix-domain socket: it sends [`REFEDERATE_VERB`] and waits for the daemon to
+//! re-resolve and (de)federate, so federation is in place by the time the
+//! command returns.
 //!
 //! The transport is a UDS rather than the daemon's Zenoh session on purpose: the
 //! federation apply *bounces the local zenohd*, which would tear down a Zenoh-
@@ -30,10 +31,10 @@ use serde::{Deserialize, Serialize};
 /// File name of the daemon's federation control socket under the runtime dir.
 pub const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
 
-/// The only request the control socket understands: re-resolve the caller's
+/// The only request the control socket understands: re-resolve the platform
 /// upstream and (de)federate the local router to match the current credentials.
 /// One verb covers both login (resolves to an upstream) and logout (resolves to
-/// none ⇒ de-federate).
+/// none, de-federating).
 pub const REFEDERATE_VERB: &str = "refederate";
 
 /// Reads the daemon's cached federation state without resolving, rewriting the
@@ -48,6 +49,11 @@ pub const STATUS_VERB: &str = "status";
 /// than a client-side timeout. (The `ack_budget_*` test guards this ordering.)
 pub const POKE_READ_SLACK: Duration = Duration::from_secs(11);
 
+/// The message a control client shows when the daemon speaks a different
+/// control-protocol version (a still-running pre-upgrade daemon).
+const INCOMPATIBLE_PROTOCOL: &str =
+    "daemon sent an incompatible control-protocol reply; restart the daemon after upgrading peppy";
+
 /// Where the daemon binds (and the client connects to) the federation control
 /// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
 pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
@@ -56,76 +62,70 @@ pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
         .join(FEDERATION_CONTROL_SOCK)
 }
 
-/// Health of one user-peer federation link as the daemon last saw it.
+/// Health of the daemon's single platform link as it last saw it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PeerLinkState {
-    /// A verifying poke confirmed the link's TLS handshake validates.
-    Verified,
+pub enum LinkState {
+    /// No upstream resolved (logged out, or nothing pulled yet); the managed
+    /// router is standalone.
+    NotConfigured,
     /// Rendered into the router config but not yet checked by an explicit
     /// verifying federation request from this daemon generation.
     Unverified,
-    /// The last verifying poke failed with this human-readable reason.
+    /// A verifying poke confirmed the link's TLS handshake validates.
+    Verified,
+    /// The upstream was applied but the last verifying poke failed with this
+    /// human-readable reason, so federation is not actually in effect.
     Error(String),
 }
 
-/// One user-peer link in a daemon reply. Shared by the daemon (which writes
-/// it) and this client (which parses it).
+/// The platform link a refederation poke reports: the applied upstream
+/// endpoint (when any) and its verification state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerReport {
-    pub endpoint: String,
-    pub state: PeerLinkState,
+pub struct PlatformLink {
+    pub endpoint: Option<String>,
+    pub link_state: LinkState,
 }
 
-/// Applied state returned by a refederation poke. Serialized inline into
-/// [`ControlResponse`] replies; `backend` keeps its pre-peer-federation wire
-/// name `applied` so mixed-version daemon/CLI pokes still parse.
+/// Cached federation state returned by [`query_status`]: the platform link
+/// plus whether an operator-pinned `ZENOH_CONFIG` owns the router config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppliedFederation {
-    #[serde(rename = "applied")]
-    pub backend: Option<String>,
-    #[serde(default)]
-    pub peers: Vec<PeerReport>,
-}
-
-/// Cached federation state returned by [`query_status`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationStatus {
-    pub backend: Option<String>,
-    #[serde(default)]
-    pub peers: Vec<PeerReport>,
-    pub listen_endpoint: Option<String>,
+    pub endpoint: Option<String>,
+    pub link_state: LinkState,
     pub pinned: bool,
+}
+
+impl Default for FederationStatus {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            link_state: LinkState::NotConfigured,
+            pinned: false,
+        }
+    }
 }
 
 /// The daemon's one-line JSON reply to a control-socket request.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ControlResponse {
-    /// Federation is in effect: `Some(ep)` federated to `ep`, `None`
-    /// de-federated.
-    Ok(AppliedFederation),
+    /// The refederation ran: the platform link now applied (or cleared) and
+    /// its verification state.
+    Ok(PlatformLink),
     /// Cached state for a [`STATUS_VERB`] request.
     FederationStatus(FederationStatus),
     /// An operator-pinned `ZENOH_CONFIG` owns the router config; not auto-managed.
     Pinned,
-    /// The config was applied (the local router was federated), but the TLS link
-    /// to the per-user cloud router could not be established/validated, so
-    /// federation with platform-backend is not actually in effect.
-    Unreachable {
-        message: String,
-        #[serde(flatten)]
-        applied: AppliedFederation,
-    },
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
     /// within the federation timeout).
     Error { message: String },
-    /// The credentials changed the daemon's *organization namespace*, which is
-    /// immutable for a live session, so the daemon is restarting its whole
-    /// generation to re-open every session under the new namespace. The daemon
-    /// flushes this ack and only then tears down; the CLI polls the (path-stable)
-    /// control socket until the daemon is back under the expected namespace.
-    Restarting,
+    /// The credentials changed the daemon's *namespace*, which is immutable for
+    /// a live session, so the daemon is restarting its whole generation to
+    /// re-open every session under `target_namespace`. The daemon flushes this
+    /// ack and only then tears down; the CLI polls the (path-stable) control
+    /// socket until the daemon is back under exactly that namespace.
+    Restarting { target_namespace: String },
 }
 
 impl ControlResponse {
@@ -139,28 +139,22 @@ impl ControlResponse {
 /// What [`poke_refederate`] could determine about the daemon's federation state.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PokeOutcome {
-    /// The daemon acked with the applied backend and user-peer state.
-    Applied(AppliedFederation),
+    /// The daemon acked with the applied platform link and its state.
+    Applied(PlatformLink),
     /// Operator-pinned `ZENOH_CONFIG` owns the router config (not auto-managed).
     Pinned,
-    /// The daemon acked an error (e.g. the backend was unreachable in time).
+    /// The daemon acked an error (e.g. the backend was unreachable in time), or
+    /// replied something this client cannot interpret (protocol skew).
     DaemonError(String),
-    /// The daemon federated the local router but the TLS link to the per-user
-    /// cloud router does not validate (e.g. UnknownCA); federation with
-    /// platform-backend is not in effect.
-    Unreachable {
-        reason: String,
-        applied: AppliedFederation,
-    },
     /// No running daemon to poke (no socket, or the connection was refused).
     /// Federation will be applied the next time `serve` starts.
     DaemonNotRunning,
     /// Connected, but the daemon did not ack within the read deadline.
     TimedOut,
-    /// The credentials changed the daemon's organization namespace, so the daemon
-    /// acked and is restarting its whole generation. The caller then polls until
-    /// the daemon is back under the expected namespace.
-    Restarting,
+    /// The credentials changed the daemon's namespace, so the daemon acked and
+    /// is restarting its whole generation. The caller then polls until the
+    /// daemon is back under `target_namespace`.
+    Restarting { target_namespace: String },
 }
 
 /// What [`query_status`] could determine about the daemon's cached state.
@@ -170,6 +164,11 @@ pub enum QueryStatusOutcome {
     DaemonError(String),
     DaemonNotRunning,
     TimedOut,
+    /// The daemon acked that it is mid-restart into `target_namespace` (a
+    /// status query racing a namespace change).
+    Restarting {
+        target_namespace: String,
+    },
 }
 
 /// Pokes the running daemon over `socket_path` to re-resolve and (re)apply
@@ -177,17 +176,17 @@ pub enum QueryStatusOutcome {
 ///
 /// Best effort by design: a poke failure must never fail the calling command, so
 /// a missing/refused socket maps to [`PokeOutcome::DaemonNotRunning`] and any
-/// other I/O error to a benign outcome rather than an `Err`.
+/// other I/O error to a definite outcome rather than an `Err`. A reply this
+/// client cannot parse is protocol skew (a pre-upgrade daemon still running),
+/// reported as an explicit [`PokeOutcome::DaemonError`], never as "not running".
 pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
     match request(socket_path, read_timeout, REFEDERATE_VERB) {
-        Ok(ControlResponse::Ok(applied)) => PokeOutcome::Applied(applied),
+        Ok(ControlResponse::Ok(link)) => PokeOutcome::Applied(link),
         Ok(ControlResponse::Pinned) => PokeOutcome::Pinned,
-        Ok(ControlResponse::Unreachable { message, applied }) => PokeOutcome::Unreachable {
-            reason: message,
-            applied,
-        },
         Ok(ControlResponse::Error { message }) => PokeOutcome::DaemonError(message),
-        Ok(ControlResponse::Restarting) => PokeOutcome::Restarting,
+        Ok(ControlResponse::Restarting { target_namespace }) => {
+            PokeOutcome::Restarting { target_namespace }
+        }
         Ok(ControlResponse::FederationStatus(_)) => {
             PokeOutcome::DaemonError("daemon returned status state to a refederate request".into())
         }
@@ -196,7 +195,11 @@ pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcom
             // with a deadline set.
             ErrorKind::WouldBlock | ErrorKind::TimedOut => PokeOutcome::TimedOut,
             // No socket file, or nothing listening: no daemon to poke.
-            _ => PokeOutcome::DaemonNotRunning,
+            ErrorKind::NotFound | ErrorKind::ConnectionRefused => PokeOutcome::DaemonNotRunning,
+            // The daemon answered something this client cannot parse: version
+            // skew, not absence.
+            ErrorKind::InvalidData => PokeOutcome::DaemonError(INCOMPATIBLE_PROTOCOL.into()),
+            _ => PokeOutcome::DaemonError(e.to_string()),
         },
     }
 }
@@ -206,6 +209,9 @@ pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOu
     match request(socket_path, read_timeout, STATUS_VERB) {
         Ok(ControlResponse::FederationStatus(status)) => QueryStatusOutcome::Status(status),
         Ok(ControlResponse::Error { message }) => QueryStatusOutcome::DaemonError(message),
+        Ok(ControlResponse::Restarting { target_namespace }) => {
+            QueryStatusOutcome::Restarting { target_namespace }
+        }
         Ok(_) => QueryStatusOutcome::DaemonError(
             "daemon returned a refederation reply to a status request".into(),
         ),
@@ -214,6 +220,7 @@ pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOu
             ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
                 QueryStatusOutcome::DaemonNotRunning
             }
+            ErrorKind::InvalidData => QueryStatusOutcome::DaemonError(INCOMPATIBLE_PROTOCOL.into()),
             _ => QueryStatusOutcome::DaemonError(e.to_string()),
         },
     }
@@ -267,12 +274,14 @@ mod tests {
     }
 
     #[test]
-    fn poke_sends_refederate_and_parses_ok() {
+    fn poke_sends_refederate_and_parses_the_v2_ack() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FEDERATION_CONTROL_SOCK);
         let handle = stub_daemon(path.clone(), |_req, stream| {
             stream
-                .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap.example:7443\"}\n")
+                .write_all(
+                    b"{\"status\":\"ok\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"verified\"}\n",
+                )
                 .unwrap();
         });
 
@@ -282,21 +291,21 @@ mod tests {
         assert_eq!(request, REFEDERATE_VERB);
         assert_eq!(
             outcome,
-            PokeOutcome::Applied(AppliedFederation {
-                backend: Some("tls/cap.example:7443".to_string()),
-                peers: Vec::new(),
+            PokeOutcome::Applied(PlatformLink {
+                endpoint: Some("tls/hub.example:7447".to_string()),
+                link_state: LinkState::Verified,
             })
         );
     }
 
     #[test]
-    fn poke_parses_defederated_and_pinned_and_error() {
+    fn poke_parses_defederated_pinned_error_and_link_error() {
         for (reply, expected) in [
             (
-                "{\"status\":\"ok\",\"applied\":null}\n",
-                PokeOutcome::Applied(AppliedFederation {
-                    backend: None,
-                    peers: Vec::new(),
+                "{\"status\":\"ok\",\"endpoint\":null,\"link_state\":\"not_configured\"}\n",
+                PokeOutcome::Applied(PlatformLink {
+                    endpoint: None,
+                    link_state: LinkState::NotConfigured,
                 }),
             ),
             ("{\"status\":\"pinned\"}\n", PokeOutcome::Pinned),
@@ -305,14 +314,11 @@ mod tests {
                 PokeOutcome::DaemonError("boom".to_string()),
             ),
             (
-                "{\"status\":\"unreachable\",\"message\":\"received fatal alert: UnknownCA\",\"applied\":\"tls/cap.example:7443\",\"peers\":[]}\n",
-                PokeOutcome::Unreachable {
-                    reason: "received fatal alert: UnknownCA".to_string(),
-                    applied: AppliedFederation {
-                        backend: Some("tls/cap.example:7443".to_string()),
-                        peers: Vec::new(),
-                    },
-                },
+                "{\"status\":\"ok\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":{\"error\":\"received fatal alert: UnknownCA\"}}\n",
+                PokeOutcome::Applied(PlatformLink {
+                    endpoint: Some("tls/hub.example:7447".to_string()),
+                    link_state: LinkState::Error("received fatal alert: UnknownCA".to_string()),
+                }),
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();
@@ -351,73 +357,136 @@ mod tests {
         assert_eq!(outcome, PokeOutcome::TimedOut);
     }
 
-    /// An `ok` reply from a daemon that predates peer federation (no `peers`
-    /// key) must still parse, with the peer list defaulting to empty.
+    /// A still-running pre-upgrade daemon replies the old wire shape; that is
+    /// protocol skew and must surface as an explicit daemon error telling the
+    /// user to restart the daemon, never as "daemon not running".
     #[test]
-    fn ok_without_peers_uses_the_empty_default() {
-        let response: ControlResponse =
-            serde_json::from_str(r#"{"status":"ok","applied":"tls/cap.example:7443"}"#)
-                .expect("ok response parses");
-        match response {
-            ControlResponse::Ok(applied) => {
-                assert_eq!(applied.backend.as_deref(), Some("tls/cap.example:7443"));
-                assert!(applied.peers.is_empty());
-            }
-            other => panic!("expected ok response, got {other:?}"),
-        }
+    fn poke_reports_an_incompatible_reply_as_a_daemon_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_req, stream| {
+            stream
+                .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap.example:7443\"}\n")
+                .unwrap();
+        });
+
+        let outcome = poke_refederate(&path, Duration::from_secs(5));
+        handle.join().unwrap();
+
+        assert!(
+            matches!(outcome, PokeOutcome::DaemonError(ref message)
+                if message.contains("restart the daemon")),
+            "protocol skew must be an actionable daemon error, got {outcome:?}"
+        );
     }
 
-    /// The refederate ack keeps its pre-peer-federation wire shape: the
-    /// backend serializes under the `applied` key and peer states are typed.
+    /// The v2 ack and status wire shapes, pinned exactly: the platform link is
+    /// `endpoint` + typed `link_state`, and the restarting ack carries the
+    /// target namespace.
     #[test]
-    fn applied_federation_wire_shape_is_stable() {
-        let response = ControlResponse::Ok(AppliedFederation {
-            backend: Some("tls/cap.example:7443".to_string()),
-            peers: vec![
-                PeerReport {
-                    endpoint: "tls/peer:7449".to_string(),
-                    state: PeerLinkState::Verified,
-                },
-                PeerReport {
-                    endpoint: "tls/other:7449".to_string(),
-                    state: PeerLinkState::Error("UnknownIssuer".to_string()),
-                },
-            ],
+    fn platform_status_v2_wire_shape_is_stable() {
+        let ack = ControlResponse::Ok(PlatformLink {
+            endpoint: Some("tls/hub.example:7447".to_string()),
+            link_state: LinkState::Error("UnknownIssuer".to_string()),
         });
         assert_eq!(
-            serde_json::to_string(&response).unwrap(),
-            r#"{"status":"ok","applied":"tls/cap.example:7443","peers":[{"endpoint":"tls/peer:7449","state":"verified"},{"endpoint":"tls/other:7449","state":{"error":"UnknownIssuer"}}]}"#
+            serde_json::to_string(&ack).unwrap(),
+            r#"{"status":"ok","endpoint":"tls/hub.example:7447","link_state":{"error":"UnknownIssuer"}}"#
+        );
+
+        let status = ControlResponse::FederationStatus(FederationStatus {
+            endpoint: Some("tls/hub.example:7447".to_string()),
+            link_state: LinkState::Verified,
+            pinned: false,
+        });
+        assert_eq!(
+            serde_json::to_string(&status).unwrap(),
+            r#"{"status":"federation_status","endpoint":"tls/hub.example:7447","link_state":"verified","pinned":false}"#
+        );
+
+        let restarting = ControlResponse::Restarting {
+            target_namespace: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&restarting).unwrap(),
+            r#"{"status":"restarting","target_namespace":"550e8400-e29b-41d4-a716-446655440000"}"#
         );
     }
 
     #[test]
-    fn query_status_sends_status_and_parses_cached_state() {
+    fn restarting_ack_carries_the_target_namespace() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FEDERATION_CONTROL_SOCK);
         let handle = stub_daemon(path.clone(), |_req, stream| {
             stream
                 .write_all(
-                    b"{\"status\":\"federation_status\",\"backend\":null,\"peers\":[{\"endpoint\":\"tls/peer:7449\",\"state\":\"verified\"}],\"listen_endpoint\":\"tls/0.0.0.0:7449\",\"pinned\":false}\n",
+                    b"{\"status\":\"restarting\",\"target_namespace\":\"550e8400-e29b-41d4-a716-446655440000\"}\n",
                 )
                 .unwrap();
         });
 
-        let outcome = query_status(&path, Duration::from_secs(5));
-        let request = handle.join().unwrap();
+        let outcome = poke_refederate(&path, Duration::from_secs(5));
+        handle.join().unwrap();
 
-        assert_eq!(request, STATUS_VERB);
         assert_eq!(
             outcome,
-            QueryStatusOutcome::Status(FederationStatus {
-                backend: None,
-                peers: vec![PeerReport {
-                    endpoint: "tls/peer:7449".to_string(),
-                    state: PeerLinkState::Verified,
-                }],
-                listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
-                pinned: false,
-            })
+            PokeOutcome::Restarting {
+                target_namespace: "550e8400-e29b-41d4-a716-446655440000".to_string()
+            }
         );
+    }
+
+    #[test]
+    fn query_status_sends_status_and_parses_the_v2_platform_state() {
+        for (reply, expected) in [
+            (
+                "{\"status\":\"federation_status\",\"endpoint\":null,\"link_state\":\"not_configured\",\"pinned\":false}\n",
+                FederationStatus {
+                    endpoint: None,
+                    link_state: LinkState::NotConfigured,
+                    pinned: false,
+                },
+            ),
+            (
+                "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"unverified\",\"pinned\":false}\n",
+                FederationStatus {
+                    endpoint: Some("tls/hub.example:7447".to_string()),
+                    link_state: LinkState::Unverified,
+                    pinned: false,
+                },
+            ),
+            (
+                "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"verified\",\"pinned\":true}\n",
+                FederationStatus {
+                    endpoint: Some("tls/hub.example:7447".to_string()),
+                    link_state: LinkState::Verified,
+                    pinned: true,
+                },
+            ),
+            (
+                "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":{\"error\":\"UnknownCA\"},\"pinned\":false}\n",
+                FederationStatus {
+                    endpoint: Some("tls/hub.example:7447".to_string()),
+                    link_state: LinkState::Error("UnknownCA".to_string()),
+                    pinned: false,
+                },
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+            let handle = stub_daemon(path.clone(), move |req, stream| {
+                assert_eq!(req, STATUS_VERB);
+                stream.write_all(reply.as_bytes()).unwrap();
+            });
+
+            let outcome = query_status(&path, Duration::from_secs(5));
+            handle.join().unwrap();
+            assert_eq!(
+                outcome,
+                QueryStatusOutcome::Status(expected),
+                "reply {reply:?}"
+            );
+        }
     }
 
     #[test]

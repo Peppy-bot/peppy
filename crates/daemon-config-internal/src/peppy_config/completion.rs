@@ -23,8 +23,6 @@ use std::collections::HashMap;
 
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
-    FEDERATION_CA_PATH_FIELD_SNIPPET, FEDERATION_CERT_PATH_FIELD_SNIPPET,
-    FEDERATION_KEY_PATH_FIELD_SNIPPET, FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET,
     FEDERATION_SECTION_SNIPPET, FEDERATION_TIMEOUT_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
     LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET,
@@ -99,38 +97,12 @@ const SECTIONS: &[EntrySpec] = &[
                     key: "federation",
                     snippet: FEDERATION_SECTION_SNIPPET,
                     alternatives: &[],
-                    children: &[
-                        EntrySpec {
-                            key: "connect_timeout_secs",
-                            snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
-                            alternatives: &[],
-                            children: &[],
-                        },
-                        EntrySpec {
-                            key: "listen_endpoint",
-                            snippet: FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET,
-                            alternatives: &[],
-                            children: &[],
-                        },
-                        EntrySpec {
-                            key: "cert_path",
-                            snippet: FEDERATION_CERT_PATH_FIELD_SNIPPET,
-                            alternatives: &[],
-                            children: &[],
-                        },
-                        EntrySpec {
-                            key: "key_path",
-                            snippet: FEDERATION_KEY_PATH_FIELD_SNIPPET,
-                            alternatives: &[],
-                            children: &[],
-                        },
-                        EntrySpec {
-                            key: "ca_path",
-                            snippet: FEDERATION_CA_PATH_FIELD_SNIPPET,
-                            alternatives: &[],
-                            children: &[],
-                        },
-                    ],
+                    children: &[EntrySpec {
+                        key: "connect_timeout_secs",
+                        snippet: FEDERATION_TIMEOUT_FIELD_SNIPPET,
+                        alternatives: &[],
+                        children: &[],
+                    }],
                 },
             ],
         }],
@@ -990,18 +962,10 @@ mod tests {
         // The field landed inside the existing federation block (which the
         // user spelled compactly), not as a second federation block.
         assert_eq!(completed.matches("federation: {").count(), 1);
-        for field in [
-            "connect_timeout_secs:",
-            "listen_endpoint: null,",
-            "cert_path: null,",
-            "key_path: null,",
-            "ca_path: null,",
-        ] {
-            assert!(
-                completed.contains(field),
-                "missing {field} in:\n{completed}"
-            );
-        }
+        assert!(
+            completed.contains("connect_timeout_secs:"),
+            "missing connect_timeout_secs in:\n{completed}"
+        );
         assert!(complete_config_content(&completed).is_none());
     }
 

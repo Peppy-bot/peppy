@@ -3,6 +3,7 @@ use super::gate::ConcurrencyGate;
 use super::pairing::{PairingCoordinator, plan_requested_pairs};
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
+use config::namespace::Namespace;
 use config::peppy_config::SubscriberBufferConfig;
 use config::runtime::Name;
 use config::runtime::RuntimeConfig;
@@ -103,27 +104,31 @@ pub struct DaemonDefaults {
     /// node so its runtime bounds registered shutdown hooks by the same window
     /// the daemon waits before force-killing a stopping node.
     pub shutdown_grace_secs: u64,
-    /// The daemon's organization namespace (`"local"` when logged out, else the
-    /// org id), stamped onto every spawned node's `discovery.organization_id` so
-    /// the node opens its session under exactly the daemon's namespace and stays
-    /// routing-isolated across the federation. Resolved per daemon generation
-    /// from the cached credentials, not from `peppy_config`, so it is threaded in
-    /// rather than derived in `from_peppy_config`.
-    pub organization_namespace: String,
+    /// The daemon's namespace (`"local"` when logged out, else the workspace
+    /// id), stamped onto every spawned node's `discovery.namespace` so the node
+    /// opens its session under exactly the daemon's namespace and stays
+    /// routing-isolated across the platform federation. Resolved per daemon
+    /// generation from the cached credentials, not from `peppy_config`, so it
+    /// is threaded in rather than derived in `from_peppy_config`. Typed: an
+    /// invalid value can never reach a launch config.
+    pub namespace: Namespace,
 }
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
     /// (the single place that knows which of its fields are shipped to
-    /// spawned nodes) plus the daemon's resolved `organization_namespace`
-    /// (which comes from the credentials, not `peppy_config`).
-    pub fn from_peppy_config(config: &PeppyConfig, organization_namespace: String) -> Self {
+    /// spawned nodes) plus the daemon's resolved `namespace` (which comes from
+    /// the credentials, not `peppy_config`). Gossip goes through
+    /// `session_gossip`, the same enforcement bit as the daemon's own session:
+    /// under a workspace namespace every spawned node relays through the
+    /// router (client mode) so nothing bypasses the platform hub.
+    pub fn from_peppy_config(config: &PeppyConfig, namespace: Namespace) -> Self {
         Self {
-            gossip: config.zenoh.gossip(),
+            gossip: config.zenoh.session_gossip(&namespace),
             subscriber_buffers: config.zenoh.subscriber_buffers(),
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
-            organization_namespace,
+            namespace,
         }
     }
 }
@@ -179,10 +184,10 @@ fn apply_daemon_defaults(
         defaults.subscriber_buffers.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
     cfg.lifecycle.shutdown_grace_secs = defaults.shutdown_grace_secs;
-    // Stamp the daemon's organization namespace so the spawned node opens its
-    // session under it (`peppylib` resolves `discovery.organization_id` through
-    // `resolve_session_namespace`). Always set: `"local"` when logged out.
-    cfg.discovery.organization_id = Some(defaults.organization_namespace.clone());
+    // Stamp the daemon's namespace so the spawned node opens its session under
+    // it (`peppylib` reads `discovery.namespace` at session open). Always set:
+    // `"local"` when logged out.
+    cfg.discovery.namespace = Some(defaults.namespace.clone());
 }
 
 struct ProcessNodeRunContext {
@@ -1847,7 +1852,7 @@ mod tests {
             subscriber_buffers,
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
-            organization_namespace: "local".to_string(),
+            namespace: Namespace::local(),
         }
     }
 
@@ -1894,8 +1899,8 @@ mod tests {
         );
     }
 
-    /// Subscriber buffer sizes, both grace periods, and the organization
-    /// namespace are applied regardless of topology or container placement.
+    /// Subscriber buffer sizes, both grace periods, and the namespace are
+    /// applied regardless of topology or container placement.
     #[test]
     fn apply_daemon_defaults_always_applies_subscriber_buffers_and_grace() {
         let subscriber_buffers = SubscriberBufferConfig {
@@ -1915,7 +1920,10 @@ mod tests {
             assert_eq!(cfg.lifecycle.shutdown_grace_secs, 17);
             // The node is stamped with the daemon's namespace, so it opens its
             // session under the same routing-isolation prefix as the daemon.
-            assert_eq!(cfg.discovery.organization_id.as_deref(), Some("local"));
+            assert_eq!(
+                cfg.discovery.namespace.as_ref().map(|n| n.as_str()),
+                Some("local")
+            );
         }
     }
 
@@ -1930,7 +1938,7 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let defaults = DaemonDefaults::from_peppy_config(&config, "local".to_string());
+        let defaults = DaemonDefaults::from_peppy_config(&config, Namespace::local());
 
         assert!(!defaults.gossip);
         assert_eq!(
@@ -1939,16 +1947,41 @@ mod tests {
         );
     }
 
-    /// A logged-in daemon stamps the org id (not `local`) onto every node.
+    /// A logged-in daemon stamps the workspace namespace (not `local`) onto
+    /// every node.
     #[test]
-    fn apply_daemon_defaults_stamps_the_org_namespace() {
+    fn apply_daemon_defaults_stamps_the_workspace_namespace() {
         let mut defaults = daemon_defaults(true, SubscriberBufferConfig::default());
-        defaults.organization_namespace = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        defaults.namespace =
+            Namespace::parse("550e8400-e29b-41d4-a716-446655440000").expect("valid namespace");
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(&mut cfg, defaults, false);
         assert_eq!(
-            cfg.discovery.organization_id.as_deref(),
+            cfg.discovery.namespace.as_ref().map(|n| n.as_str()),
             Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    /// The enforcement bit: under a workspace namespace, `from_peppy_config`
+    /// forces gossip off even when the configured local topology is peer, so a
+    /// spawned node relays through the router and can never form direct links
+    /// that bypass the platform hub. Logged out keeps the configured topology.
+    #[test]
+    fn from_peppy_config_forces_no_gossip_under_a_workspace_namespace() {
+        let peer_config = PeppyConfig::default(); // local_nodes_topology: peer
+        let workspace =
+            Namespace::parse("550e8400-e29b-41d4-a716-446655440000").expect("valid namespace");
+
+        let logged_out = DaemonDefaults::from_peppy_config(&peer_config, Namespace::local());
+        assert!(
+            logged_out.gossip,
+            "logged-out operation keeps the configured peer topology"
+        );
+
+        let authenticated = DaemonDefaults::from_peppy_config(&peer_config, workspace);
+        assert!(
+            !authenticated.gossip,
+            "an authenticated daemon must force spawned nodes into router relay"
         );
     }
 

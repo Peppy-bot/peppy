@@ -1,4 +1,3 @@
-mod auth_flow;
 mod common;
 mod container;
 mod daemon_lifecycle_e2e;
@@ -14,6 +13,7 @@ mod node_runtime_config;
 mod node_stop;
 mod node_sync;
 mod peppy_config_env;
+mod platform_flow;
 mod repo_add;
 mod repo_exclude;
 mod repo_init;

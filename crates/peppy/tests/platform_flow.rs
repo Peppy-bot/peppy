@@ -1,9 +1,10 @@
-//! Command-level auth tests (`peppy auth login` / `logout` / `whoami`) with
-//! every HTTP endpoint mocked (`httpmock`): the public `/cli/auth-config`, OIDC
-//! discovery, the Zitadel device/token endpoints, and the backend `/me` +
+//! Command-level platform tests (`peppy platform login` / `logout` / `whoami`)
+//! with every HTTP endpoint mocked (`httpmock`): the public `/cli/auth-config`,
+//! OIDC discovery, the Zitadel device/token endpoints, and the backend `/me` +
 //! `/logout`. All auth state is isolated per test via the `peppy_dirs` seam
 //! pointed at a tempdir (no `PEPPY_HOME` mutation, so tests run in parallel);
-//! the credentials file and `peppy_config.json5` both land there. The engine
+//! the credentials file and `peppy_config.json5` both land there, and the PAT
+//! rides the command's injected `pat` field, never the environment. The engine
 //! internals (resolver, router-config cache, federation-target resolution) are
 //! covered by the `auth` crate's own tests.
 
@@ -17,9 +18,9 @@ use serde_json::json;
 
 use auth::storage::{self, Credentials, ProfileCreds};
 use peppy::commands::Command;
-use peppy::commands::auth::login::LoginCommand;
-use peppy::commands::auth::logout::LogoutCommand;
-use peppy::commands::auth::whoami::WhoamiCommand;
+use peppy::commands::platform::login::LoginCommand;
+use peppy::commands::platform::logout::LogoutCommand;
+use peppy::commands::platform::whoami::WhoamiCommand;
 use peppy::context::AppContext;
 
 /// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
@@ -125,6 +126,7 @@ fn login_persists_credentials_and_resolves_identity() {
         no_browser: true,
         yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: None,
     }
     .execute(&ctx())
     .expect_err("login fails strictly when no daemon is running to federate");
@@ -169,6 +171,7 @@ fn external_login_succeeds_without_a_daemon_control_socket() {
         no_browser: true,
         yes: true,
         peppy_dirs: Some(peppy_dirs),
+        pat: None,
     }
     .execute(&ctx())
     .expect("external login must not require a running daemon");
@@ -212,7 +215,9 @@ fn login_pokes_the_running_daemon_to_refederate() {
         let mut line = String::new();
         reader.read_line(&mut line).expect("read poke request");
         stream
-            .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap:7443\"}\n")
+            .write_all(
+                b"{\"status\":\"ok\",\"endpoint\":\"tls/hub:7447\",\"link_state\":\"verified\"}\n",
+            )
             .expect("reply");
         line.trim().to_string()
     });
@@ -222,6 +227,7 @@ fn login_pokes_the_running_daemon_to_refederate() {
         no_browser: true,
         yes: true,
         peppy_dirs: Some(peppy_dirs),
+        pat: None,
     }
     .execute(&ctx())
     .expect("login should succeed");
@@ -248,6 +254,7 @@ fn login_seeds_peppy_config_with_resource_servers_block() {
         no_browser: true,
         yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: None,
     }
     .execute(&ctx());
 
@@ -285,6 +292,7 @@ fn login_writes_credentials_file_0600() {
         no_browser: true,
         yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: None,
     }
     .execute(&ctx());
 
@@ -314,6 +322,7 @@ fn logout_calls_backend_and_clears_local_credentials() {
         api_url: Some(server.base_url()),
         yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: None,
     }
     .execute(&ctx())
     .expect("logout");
@@ -367,7 +376,9 @@ fn external_logout_does_not_poke_federation_control() {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     stream
-                        .write_all(b"{\"status\":\"ok\",\"applied\":null}\n")
+                        .write_all(
+                            b"{\"status\":\"ok\",\"endpoint\":null,\"link_state\":\"not_configured\"}\n",
+                        )
                         .expect("reply to unexpected poke");
                     return true;
                 }
@@ -386,6 +397,7 @@ fn external_logout_does_not_poke_federation_control() {
         api_url: Some(server.base_url()),
         yes: true,
         peppy_dirs: Some(peppy_dirs),
+        pat: None,
     }
     .execute(&ctx());
     command_finished.store(true, Ordering::SeqCst);
@@ -402,8 +414,8 @@ fn external_logout_does_not_poke_federation_control() {
 
 #[test]
 fn logout_heals_a_malformed_credentials_file() {
-    // A malformed (e.g. pre-`organization_id`/unversioned) credentials file fails
-    // to parse with `AuthError::Auth`. Logout treats that as "already logged out",
+    // A malformed (e.g. unversioned pre-v2) credentials file fails to parse
+    // with `AuthError::Auth`. Logout treats that as "already logged out",
     // but it must still rewrite the file to a clean default so the bad file does
     // not linger on disk (the early "Not logged in" return used to skip the save).
     let dir = tempfile::tempdir().expect("temp dir");
@@ -424,6 +436,7 @@ fn logout_heals_a_malformed_credentials_file() {
         api_url: Some("http://127.0.0.1:9".to_string()),
         yes: true,
         peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: None,
     }
     .execute(&ctx())
     .expect("logout tolerates a malformed file");
@@ -454,10 +467,128 @@ fn whoami_runs_against_a_seeded_session() {
             api_url: Some(server.base_url()),
             json,
             peppy_dirs: Some(PeppyDirs::new(dir.path())),
+            pat: None,
         }
         .execute(&ctx())
         .expect("whoami");
     }
+}
+
+#[test]
+fn login_with_a_pat_skips_the_device_flow_and_pokes_federation() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let server = MockServer::start();
+    let me = mock_me(&server);
+    // The device flow must never start: a named mock pins zero calls.
+    let device = server.mock(|when, then| {
+        when.method(POST).path("/oauth/v2/device_authorization");
+        then.status(500);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    let runtime = peppy_dirs.runtime_config_dir();
+    std::fs::create_dir_all(&runtime).expect("runtime dir");
+    let socket = runtime.join("federation_control.sock");
+    let listener = UnixListener::bind(&socket).expect("bind stub control socket");
+    let stub = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept poke");
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read poke request");
+        stream
+            .write_all(
+                b"{\"status\":\"ok\",\"endpoint\":\"tls/hub:7447\",\"link_state\":\"verified\"}\n",
+            )
+            .expect("reply");
+        line.trim().to_string()
+    });
+
+    LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        yes: true,
+        peppy_dirs: Some(peppy_dirs),
+        pat: Some("the-personal-access-token".to_string()),
+    }
+    .execute(&ctx())
+    .expect("a PAT login with a verified link succeeds");
+
+    let request = stub.join().expect("stub thread");
+    assert_eq!(request, "refederate", "a PAT login pokes federation");
+    assert!(me.calls() >= 1, "the PAT is verified against /me");
+    assert_eq!(
+        device.calls(),
+        0,
+        "a PAT login never starts the device flow"
+    );
+    assert!(
+        !creds_path(&dir).exists(),
+        "a PAT is environment-scoped; login must persist nothing"
+    );
+}
+
+#[test]
+fn login_with_a_pat_fails_strictly_without_a_daemon() {
+    let server = MockServer::start();
+    let _me = mock_me(&server);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let err = LoginCommand {
+        api_url: Some(server.base_url()),
+        no_browser: true,
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: Some("the-personal-access-token".to_string()),
+    }
+    .execute(&ctx())
+    .expect_err("a PAT login fails strictly when no daemon is running to federate");
+    assert!(
+        err.to_string().contains("federation"),
+        "the error explains the federation failure: {err}"
+    );
+    assert!(
+        !creds_path(&dir).exists(),
+        "the failed PAT login still persists nothing"
+    );
+}
+
+#[test]
+fn logout_with_a_pat_clears_the_session_but_leaves_pat_auth_active() {
+    let server = MockServer::start();
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(&server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+
+    // The PAT cannot be cleared from here; the command still clears the OAuth
+    // session and succeeds (the federation poke is best-effort with no daemon).
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+        pat: Some("the-personal-access-token".to_string()),
+    }
+    .execute(&ctx())
+    .expect("logout with a PAT present still succeeds");
+
+    assert!(logout.calls() >= 1, "the session token was revoked");
+    let after = storage::load(&path).expect("load creds");
+    assert!(after.session.is_none(), "the OAuth session is cleared");
+    assert!(after.router.is_none(), "the router cache is cleared");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.

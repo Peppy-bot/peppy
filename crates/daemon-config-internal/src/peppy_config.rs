@@ -54,7 +54,7 @@ pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 /// The backend resource-server URL for this build: the local dev backend in
 /// debug builds, the prod backend in release builds. The single source of truth
 /// for both the seeded `resource_servers` block and the built-in fallback the
-/// `peppy auth login` / `whoami` / `logout` commands resolve when no `--api-url` /
+/// `peppy platform login` / `whoami` / `logout` commands resolve when no `--api-url` /
 /// `PEPPY_API_URL` override is given.
 #[cfg(debug_assertions)]
 pub const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
@@ -221,7 +221,7 @@ const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_A
 /// CLI auth commands read this URL; the daemon ignores it but seeds and
 /// completes the block like every other knob.
 const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Backend resource-server URL the `peppy auth login` / `whoami` / `logout`
+    r#"  // Backend resource-server URL the `peppy platform login` / `whoami` / `logout`
   // commands talk to. Baked in at compile time (the dev backend in debug
   // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
   resource_servers: {
@@ -233,9 +233,9 @@ const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
 /// The `zenoh.managed.federation.connect_timeout_secs` entry with its comment,
 /// indented for the `federation` block.
 const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
-    r#"        // Seconds the daemon spends resolving your per-user cloud router before
-        // giving up for this attempt (it retries in the background). Bounds the
-        // federation done at startup and on each `peppy auth login`/`logout`;
+    r#"        // Seconds the daemon spends resolving the platform router before giving
+        // up for this attempt (it retries in the background). Bounds the
+        // federation done at startup and on each `peppy platform login`/`logout`;
         // minimum 1. If the backend is unreachable within this window the daemon
         // stays standalone rather than blocking.
         connect_timeout_secs: "#,
@@ -243,47 +243,14 @@ const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
     ",\n"
 );
 
-/// The optional `zenoh.managed.federation.listen_endpoint` entry.
-const FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET: &str = r#"        // Optional inbound federation listener. Federation links always require mTLS;
-        // generate the fleet identity with `peppy federation ca init` and
-        // `peppy federation ca issue`. Example: "tls/0.0.0.0:7449". null
-        // disables inbound federation. Restart the daemon to apply a change.
-        listen_endpoint: null,
-"#;
-
-/// The optional machine-certificate path override.
-const FEDERATION_CERT_PATH_FIELD_SNIPPET: &str = r#"        // Machine certificate override, or null for <conf>/federation/cert.pem.
-        // Paths become Zenoh endpoint fragments and cannot contain #, ;, or =.
-        cert_path: null,
-"#;
-
-/// The optional machine-private-key path override.
-const FEDERATION_KEY_PATH_FIELD_SNIPPET: &str = r#"        // Machine private-key override, or null for <conf>/federation/key.pem.
-        // Paths become Zenoh endpoint fragments and cannot contain #, ;, or =.
-        key_path: null,
-"#;
-
-/// The optional fleet-CA path override.
-const FEDERATION_CA_PATH_FIELD_SNIPPET: &str = r#"        // Fleet CA override, or null for <conf>/federation/ca.pem.
-        // Paths become Zenoh endpoint fragments and cannot contain #, ;, or =.
-        ca_path: null,
-"#;
-
 /// The whole `zenoh.managed.federation` block with its explanatory comment.
 const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"      // Managed zenoh-router federation settings for the platform backend and
-      // user peers. User federation is always protected by mutual TLS.
+    r#"      // Managed zenoh-router federation with the platform backend. An
+      // authenticated daemon holds exactly one outbound mTLS upstream to the
+      // platform router; logged out it stays standalone.
       federation: {
 "#,
     FEDERATION_TIMEOUT_FIELD_SNIPPET,
-    "\n",
-    FEDERATION_LISTEN_ENDPOINT_FIELD_SNIPPET,
-    "\n",
-    FEDERATION_CERT_PATH_FIELD_SNIPPET,
-    "\n",
-    FEDERATION_KEY_PATH_FIELD_SNIPPET,
-    "\n",
-    FEDERATION_CA_PATH_FIELD_SNIPPET,
     "      },\n"
 );
 
@@ -410,9 +377,9 @@ impl Default for ResourceServers {
     }
 }
 
-/// Per-user zenoh-router federation knobs. `connect_timeout_secs` bounds the
-/// backend round-trip the daemon makes to resolve the caller's cloud router so a
-/// slow or unreachable backend never stalls the federation step past it (read at
+/// Platform federation knobs. `connect_timeout_secs` bounds the backend
+/// round-trip the daemon makes to resolve the platform router so a slow or
+/// unreachable backend never stalls the federation step past it (read at
 /// startup, where it gates `serve` reporting ready, and on every login/logout
 /// poke).
 ///
@@ -422,28 +389,12 @@ impl Default for ResourceServers {
 #[serde(default, deny_unknown_fields)]
 pub struct FederationConfig {
     pub connect_timeout_secs: u64,
-    /// Optional inbound fleet-mTLS listener. `None` leaves the managed router
-    /// without a user-federation listener.
-    pub listen_endpoint: Option<String>,
-    /// Machine certificate override, or the conventional federation identity
-    /// path when absent.
-    pub cert_path: Option<PathBuf>,
-    /// Machine private-key override, or the conventional federation identity
-    /// path when absent.
-    pub key_path: Option<PathBuf>,
-    /// Fleet CA override, or the conventional federation identity path when
-    /// absent.
-    pub ca_path: Option<PathBuf>,
 }
 
 impl Default for FederationConfig {
     fn default() -> Self {
         Self {
             connect_timeout_secs: DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
-            listen_endpoint: None,
-            cert_path: None,
-            key_path: None,
-            ca_path: None,
         }
     }
 }
@@ -756,6 +707,18 @@ impl ZenohConfig {
         }
     }
 
+    /// The effective gossip bit for every session of one daemon generation:
+    /// the configured local topology, forced off under a non-local (workspace)
+    /// namespace. An authenticated managed daemon relays everything through
+    /// its router so separate daemons cannot form direct links that bypass the
+    /// platform hub; logged-out operation keeps its configured local topology.
+    /// The single source shared by the daemon session, the spawned-node
+    /// defaults, and the managed router render, so the three can never
+    /// disagree within a generation.
+    pub fn session_gossip(&self, namespace: &config::namespace::Namespace) -> bool {
+        self.gossip() && namespace.is_local()
+    }
+
     /// Subscriber buffers for local sessions under either managed topology.
     /// External mode always uses the built-in defaults because this tuning is
     /// managed-only.
@@ -807,26 +770,6 @@ impl ZenohConfig {
                     return Err(cannot_parse_config(format!(
                         "invalid zenoh.managed.federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
                     )));
-                }
-                if let Some(endpoint) = &config.federation.listen_endpoint {
-                    parse_endpoint(endpoint, "tls", EndpointPurpose::Listen).map_err(|error| {
-                        cannot_parse_config(format!(
-                            "invalid zenoh.managed.federation.listen_endpoint: {error}"
-                        ))
-                    })?;
-                }
-                for (field, path) in [
-                    ("cert_path", config.federation.cert_path.as_deref()),
-                    ("key_path", config.federation.key_path.as_deref()),
-                    ("ca_path", config.federation.ca_path.as_deref()),
-                ] {
-                    if let Some(path) = path {
-                        validate_locator_path(path).map_err(|error| {
-                            cannot_parse_config(format!(
-                                "invalid zenoh.managed.federation.{field}: {error}"
-                            ))
-                        })?;
-                    }
                 }
                 Ok(())
             }
@@ -1584,10 +1527,6 @@ mod tests {
                 managed: {
                     federation: {
                         connect_timeout_secs: 5,
-                        listen_endpoint: "tls/0.0.0.0:7449",
-                        cert_path: "/etc/peppy/cert.pem",
-                        key_path: "/etc/peppy/key.pem",
-                        ca_path: "/etc/peppy/ca.pem",
                     },
                 },
             },
@@ -1599,107 +1538,25 @@ mod tests {
             config.zenoh.federation(),
             Some(&FederationConfig {
                 connect_timeout_secs: 5,
-                listen_endpoint: Some("tls/0.0.0.0:7449".into()),
-                cert_path: Some("/etc/peppy/cert.pem".into()),
-                key_path: Some("/etc/peppy/key.pem".into()),
-                ca_path: Some("/etc/peppy/ca.pem".into()),
             })
         );
     }
 
     #[test]
-    fn listener_endpoint_accepts_tls_hosts_and_wildcards() {
-        for endpoint in [
-            "tls/0.0.0.0:7449",
-            "tls/*:7449",
-            "tls/[::]:7449",
-            "tls/router.example:7449",
-            "tls/192.0.2.1:7449",
-        ] {
-            let content = format!(
-                r#"{{ zenoh: {{ managed: {{ federation: {{ listen_endpoint: "{endpoint}" }} }} }} }}"#
-            );
-            let (_tmp, peppy_dirs, _) = dirs_with_config(&content);
-            let config = load_or_create(&peppy_dirs).unwrap();
-            assert_eq!(
-                config
-                    .zenoh
-                    .federation()
-                    .unwrap()
-                    .listen_endpoint
-                    .as_deref(),
-                Some(endpoint)
-            );
-        }
-    }
+    fn managed_federation_rejects_the_removed_listener_field() {
+        // The direct-federation inbound listener is gone; a config still
+        // carrying it fails loud naming the field (deny_unknown_fields), the
+        // intended clean break, and the file is left untouched.
+        let content =
+            r#"{ zenoh: { managed: { federation: { listen_endpoint: "tls/0.0.0.0:7449" } } } }"#;
+        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
 
-    #[test]
-    fn invalid_listener_endpoints_fail_loud_and_leave_files_untouched() {
-        for (endpoint, expected_message) in [
-            ("tcp/0.0.0.0:7449", "tls/<host>:<port>"),
-            ("tls/0.0.0.0", "host and port"),
-            ("tls/0.0.0.0:0", "integer from 1 through 65535"),
-            (
-                "tls/0.0.0.0:7449#enable_mtls=true",
-                "metadata and endpoint configuration",
-            ),
-            (
-                "tls/0.0.0.0:7449;foo=bar",
-                "metadata and endpoint configuration",
-            ),
-        ] {
-            let content = format!(
-                r#"{{ zenoh: {{ managed: {{ federation: {{ listen_endpoint: "{endpoint}" }} }} }} }}"#
-            );
-            let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
-
-            let error = load_or_create(&peppy_dirs).unwrap_err();
-            assert!(
-                matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains("zenoh.managed.federation.listen_endpoint")
-                        && message.contains(expected_message)),
-                "expected a listener error for {endpoint:?}, got {error:?}"
-            );
-            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
-        }
-    }
-
-    #[test]
-    fn federation_identity_paths_reject_fragment_delimiters() {
-        for (field, path) in [
-            ("cert_path", "/identity/bad#cert.pem"),
-            ("key_path", "/identity/bad;key.pem"),
-            ("ca_path", "/identity/bad=ca.pem"),
-        ] {
-            let content =
-                format!(r#"{{ zenoh: {{ managed: {{ federation: {{ {field}: "{path}" }} }} }} }}"#);
-            let (_tmp, peppy_dirs, config_path) = dirs_with_config(&content);
-
-            let error = load_or_create(&peppy_dirs).unwrap_err();
-            assert!(
-                matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains(field) && message.contains("reserved locator delimiter")),
-                "expected a path error for {field}, got {error:?}"
-            );
-            assert_eq!(std::fs::read_to_string(config_path).unwrap(), content);
-        }
-    }
-
-    #[test]
-    fn federation_identity_paths_reject_empty_values() {
-        for field in ["cert_path", "key_path", "ca_path"] {
-            let content =
-                format!(r#"{{ zenoh: {{ managed: {{ federation: {{ {field}: "" }} }} }} }}"#);
-            let (_tmp, peppy_dirs, config_path) = dirs_with_config(&content);
-
-            let error = load_or_create(&peppy_dirs).unwrap_err();
-            assert!(
-                matches!(error, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains(field) && message.contains("must not be empty")),
-                "expected an empty path error for {field}, got {error:?}"
-            );
-            assert_eq!(std::fs::read_to_string(config_path).unwrap(), content);
-        }
+        let error = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            error.to_string().contains("listen_endpoint"),
+            "the error should name the removed field: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
     }
 
     #[test]
@@ -2215,10 +2072,6 @@ mod tests {
                 },
                 federation: FederationConfig {
                     connect_timeout_secs: 45,
-                    listen_endpoint: Some("tls/0.0.0.0:7449".to_string()),
-                    cert_path: Some("/etc/peppy/federation/cert.pem".into()),
-                    key_path: Some("/etc/peppy/federation/key.pem".into()),
-                    ca_path: Some("/etc/peppy/federation/ca.pem".into()),
                 },
             }),
             lifecycle: LifecycleConfig {

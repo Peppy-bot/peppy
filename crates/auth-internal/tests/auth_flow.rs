@@ -2,7 +2,7 @@
 //! discovery, the Zitadel token endpoint, and the backend `/me` +
 //! `/me/cli/federation`. All auth state is isolated per test via an
 //! explicit credentials path under a tempdir (no `PEPPY_HOME` mutation, so
-//! tests run in parallel). The command-level flows (`peppy auth login` /
+//! tests run in parallel). The command-level flows (`peppy platform login` /
 //! `logout` / `whoami`) are covered by the `peppy` crate's own auth tests.
 
 use std::path::PathBuf;
@@ -141,7 +141,7 @@ fn establish_federation_parses_the_contract() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
             "some_future_field": "ignored by a tolerant client",
         }));
     });
@@ -156,7 +156,10 @@ fn establish_federation_parses_the_contract() {
         .expect("fetch shared router config");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
-    assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(
+        cfg.namespace.as_str(),
+        "550e8400-e29b-41d4-a716-446655440000"
+    );
     assert_eq!(
         cfg.host_port().expect("parse endpoint"),
         ("localhost".to_string(), 7447)
@@ -209,7 +212,7 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -278,7 +281,7 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
             protocol: "tls".into(),
             // Far in the future ⇒ fresh ⇒ reuse.
             repull_after: storage::now_unix() + 100_000,
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            namespace: test_namespace(),
             // Matches `seeded_creds`'s subject so the identity tag agrees and the
             // fresh cache is reused (a mismatch would force a re-pull).
             subject: "user-123".into(),
@@ -323,7 +326,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -394,12 +397,11 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
 }
 
 #[test]
-fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
-    // Fail closed: a logged-in pull whose `organization_id` cannot be a zenoh
-    // namespace (here a wildcard) must NOT federate. The local router stays
-    // standalone rather than dialing the shared router under a bogus namespace.
-    // The daemon resolves its session namespace from the same org id, so a value
-    // that cannot federate also cannot carry a federating namespace.
+fn resolve_federation_target_fails_closed_on_an_invalid_workspace_namespace() {
+    // Fail closed: a logged-in pull whose `workspace_id` cannot be a zenoh
+    // namespace (here a wildcard) must NOT federate. The typed HTTP boundary
+    // rejects the response outright, so the local router stays standalone
+    // rather than dialing the shared router under a bogus namespace.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
         when.method(POST).path("/me/cli/federation");
@@ -407,7 +409,7 @@ fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
             "reconnect_after_secs": 3000,
-            "organization_id": "**",
+            "workspace_id": "**",
         }));
     });
 
@@ -430,11 +432,11 @@ fn resolve_federation_target_fails_closed_on_an_invalid_org_namespace() {
     );
     assert!(
         target.is_none(),
-        "an org id that is not a valid namespace must fail closed (no federation)"
+        "a workspace id that is not a valid namespace must fail closed (no federation)"
     );
     assert!(
         pull.calls() >= 1,
-        "the gate is applied after the pull, not before"
+        "the rejection happens at the pull's parse, not before the pull"
     );
 }
 
@@ -456,7 +458,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
                 "endpoint": "tls/cap.zenoh.localhost:7443",
                 "protocol": "tls",
                 "reconnect_after_secs": 3000,
-                "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+                "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
             }));
     });
 
@@ -517,7 +519,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -529,7 +531,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             endpoint: "tls/stale.zenoh.localhost:7443".into(),
             protocol: "tls".into(),
             repull_after: 1, // long past ⇒ stale ⇒ re-pull
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            namespace: test_namespace(),
             subject: "user-123".into(),
             core_node_name: CORE_NODE.into(),
         }),
@@ -586,7 +588,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
 
@@ -599,7 +601,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
             protocol: "tls".into(),
             // Far in the future ⇒ fresh; only the name tag differs.
             repull_after: storage::now_unix() + 100_000,
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            namespace: test_namespace(),
             subject: "user-123".into(),
             core_node_name: "the-old-name".into(),
         }),
@@ -638,16 +640,16 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
 fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
     // A PAT-authenticated pull must tag the cache with the PAT owner's stable
     // backend subject (`/me`), NOT the on-disk session subject. Otherwise, once the
-    // PAT is gone, a session resolve would reuse the PAT's org, a cross-identity
+    // PAT is gone, a session resolve would reuse the PAT's workspace, a cross-identity
     // (cross-tenant) leak.
     let server = MockServer::start();
     let pull = server.mock(|when, then| {
         when.method(POST).path("/me/cli/federation");
         then.status(200).json_body(json!({
-            "endpoint": "tls/pat-org.zenoh.localhost:7443",
+            "endpoint": "tls/pat-workspace.zenoh.localhost:7443",
             "protocol": "tls",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
         }));
     });
     // Only a PAT pull resolves `/me` (to learn the PAT owner's stable subject).
@@ -679,7 +681,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         CORE_NODE,
     )
     .expect("PAT pull resolves");
-    assert_eq!(ep.host, "pat-org.zenoh.localhost");
+    assert_eq!(ep.host, "pat-workspace.zenoh.localhost");
     assert_eq!(pull.calls(), 1, "the PAT pull hit the backend once");
     assert_eq!(
         me.calls(),
@@ -698,7 +700,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
     );
 
     // With the PAT gone, a session resolve must NOT reuse the PAT's cache: the
-    // subjects differ, so it re-pulls rather than leaking the PAT's org.
+    // subjects differ, so it re-pulls rather than leaking the PAT's workspace.
     let _ = router::resolve_router_endpoint(
         &path,
         &http,
@@ -715,6 +717,12 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         "the session must re-pull, not reuse the PAT-identity cache"
     );
     assert_eq!(me.calls(), 1, "a session pull does not need /me");
+}
+
+/// The workspace namespace every seeded router cache in this file was pulled for.
+fn test_namespace() -> config::namespace::Namespace {
+    config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
+        .expect("valid test namespace")
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.

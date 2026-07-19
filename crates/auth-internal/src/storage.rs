@@ -19,10 +19,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::{Error, Result};
 
 /// On-disk schema version of `credentials.json5`. Bumped on any shape change;
-/// there is intentionally **no reader for an older version**. A clean break: a
-/// pre-Phase-F file has no `version`, deserializes to `0`, and is rejected by
-/// [`load`], so dev users simply re-run `peppy auth login` (acceptable pre-GA).
-pub const CREDENTIALS_VERSION: u32 = 1;
+/// there is intentionally **no reader for an older version**. A clean break:
+/// v1 files (whose router cache spoke `organization_id`) and unversioned files
+/// (which deserialize to `0`) are rejected by [`load`], so users simply re-run
+/// `peppy platform login` (acceptable pre-GA).
+pub const CREDENTIALS_VERSION: u32 = 2;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
 /// session, and the cached shared-router connection, or empty (just the
@@ -70,26 +71,27 @@ pub struct RouterSession {
     /// next poke instead of reusing this cached config. A cache-freshness deadline
     /// only; derived at pull time from the server's `reconnect_after_secs`.
     pub repull_after: i64,
-    /// The organization id this config was pulled for (the platform's stable
-    /// per-user `Uuid`, as a string). Drives the daemon's session namespace, so
-    /// it is cached alongside the endpoint. Required: a pre-`organization_id`
-    /// file fails to parse with [`Error::Auth`], the intended clean break (the
-    /// load-resilient `auth login`/`logout` then start fresh).
-    pub organization_id: String,
+    /// The namespace this config was pulled for (the backend's `workspace_id`,
+    /// already validated at the HTTP boundary). Drives the daemon's session
+    /// namespace, so it is cached alongside the endpoint. Required with no
+    /// legacy alias: a v1 file carrying `organization_id` fails the version
+    /// gate, the intended clean break (the load-resilient `platform
+    /// login`/`logout` then start fresh).
+    pub namespace: config::namespace::Namespace,
     /// The OAuth subject the config was pulled for, tagging the cache to one
     /// identity. On reuse the daemon re-pulls when this no longer matches the
     /// active session, so a cache that survives an identity change can never be
-    /// reused under the wrong org. Empty for a PAT pull (no session). Required
-    /// for the same clean-break reason as `organization_id`.
+    /// reused under the wrong workspace. Empty for a PAT pull (no session).
+    /// Required for the same clean-break reason as `namespace`.
     pub subject: String,
     /// The core-node name the config was pulled under (the pull's POST body,
     /// which registers the daemon in the backend's core-node registry). Tags
     /// the cache like `subject` does: a fresh cache pulled under a *different*
     /// name is not reused, so a renamed daemon (e.g. after a
-    /// `CoreNodeNameTaken` collision fix) re-pulls — and re-registers — on its
+    /// `CoreNodeNameTaken` collision fix) re-pulls, and re-registers, on its
     /// next resolve instead of staying absent from the registry until the
     /// cache goes stale. Required for the same clean-break reason as
-    /// `organization_id`.
+    /// `namespace`.
     pub core_node_name: String,
 }
 
@@ -206,20 +208,32 @@ pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
 pub fn load(path: &Path) -> Result<Credentials> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            let creds: Credentials = serde_json5::from_str(&content)
+            // Gate on the schema version BEFORE the strict field parse: an old
+            // document must fail with the actionable re-login hint, not with
+            // whichever renamed field its old shape happens to trip over first.
+            // The probe tolerates unknown fields, so any parseable JSON5
+            // document yields its version (absent reads as 0).
+            #[derive(Deserialize)]
+            struct VersionProbe {
+                #[serde(default)]
+                version: u32,
+            }
+            let probe: VersionProbe = serde_json5::from_str(&content)
                 .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
             // No back-compat reader: any other version (including the
             // unversioned old format, which reads as 0) is rejected outright so
             // a stale-shaped file is never half-interpreted.
-            if creds.version != CREDENTIALS_VERSION {
+            if probe.version != CREDENTIALS_VERSION {
                 return Err(Error::Auth(format!(
                     "credentials file {} is an unsupported format (v{}, expected v{}); \
-                     run `peppy auth login` again",
+                     run `peppy platform login` again",
                     path.display(),
-                    creds.version,
+                    probe.version,
                     CREDENTIALS_VERSION
                 )));
             }
+            let creds: Credentials = serde_json5::from_str(&content)
+                .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
             Ok(creds)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
@@ -295,7 +309,10 @@ mod tests {
                 endpoint: "tls/cap.zenoh.localhost:7443".into(),
                 protocol: "tls".into(),
                 repull_after: 1_700_000_000,
-                organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                namespace: config::namespace::Namespace::parse(
+                    "550e8400-e29b-41d4-a716-446655440000",
+                )
+                .expect("valid test namespace"),
                 subject: "auth0|alice".into(),
                 core_node_name: "core-node-alice-1".into(),
             }),
@@ -308,14 +325,17 @@ mod tests {
         assert_eq!(rs.endpoint, "tls/cap.zenoh.localhost:7443");
         assert_eq!(rs.protocol, "tls");
         assert_eq!(rs.repull_after, 1_700_000_000);
-        assert_eq!(rs.organization_id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            rs.namespace.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
         assert_eq!(rs.subject, "auth0|alice");
         assert_eq!(rs.core_node_name, "core-node-alice-1");
     }
 
     /// A cached router session missing the `core_node_name` tag is rejected
-    /// outright (no back-compat default), the same clean break as
-    /// `organization_id`: `auth login`/`logout` start fresh.
+    /// outright (no back-compat default), the same clean break as `namespace`:
+    /// `platform login`/`logout` start fresh.
     #[test]
     fn rejects_a_router_session_missing_the_core_node_name() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -326,7 +346,7 @@ mod tests {
             format!(
                 r#"{{ version: {CREDENTIALS_VERSION}, router: {{
                     endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
-                    organization_id: "550e8400-e29b-41d4-a716-446655440000",
+                    namespace: "550e8400-e29b-41d4-a716-446655440000",
                     subject: "auth0|alice" }} }}"#
             ),
         )
@@ -336,6 +356,55 @@ mod tests {
         assert!(
             err.to_string().contains("failed to parse"),
             "rejection should surface as a parse error: {err}"
+        );
+    }
+
+    /// A v2 file whose router cache still speaks the removed `organization_id`
+    /// field is rejected (no serde alias): `namespace` is simply missing.
+    #[test]
+    fn rejects_a_router_session_with_the_legacy_organization_id_field() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{ version: {CREDENTIALS_VERSION}, router: {{
+                    endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
+                    organization_id: "550e8400-e29b-41d4-a716-446655440000",
+                    subject: "auth0|alice", core_node_name: "core-node-a" }} }}"#
+            ),
+        )
+        .expect("write legacy-field file");
+
+        let err = load(&path).expect_err("the legacy field must be rejected");
+        assert!(
+            err.to_string().contains("failed to parse"),
+            "rejection should surface as a parse error: {err}"
+        );
+    }
+
+    /// A v1 document (the last `organization_id`-speaking schema) is rejected by
+    /// the version gate with the re-login hint.
+    #[test]
+    fn rejects_a_version_1_credentials_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &path,
+            r#"{ version: 1, router: {
+                endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
+                organization_id: "550e8400-e29b-41d4-a716-446655440000",
+                subject: "auth0|alice", core_node_name: "core-node-a" } }"#,
+        )
+        .expect("write v1 file");
+
+        let err = load(&path).expect_err("a v1 file must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported format") && msg.contains("peppy platform login"),
+            "rejection should be actionable: {msg}"
         );
     }
 
@@ -361,7 +430,7 @@ mod tests {
         let err = load(&path).expect_err("old format must be rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("unsupported format") && msg.contains("peppy auth login"),
+            msg.contains("unsupported format") && msg.contains("peppy platform login"),
             "rejection should be actionable: {msg}"
         );
     }
@@ -372,7 +441,8 @@ mod tests {
             endpoint: "tls/cap:7443".into(),
             protocol: "tls".into(),
             repull_after: 1_000,
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            namespace: config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
+                .expect("valid test namespace"),
             subject: "auth0|alice".into(),
             core_node_name: "core-node-alice-1".into(),
         };

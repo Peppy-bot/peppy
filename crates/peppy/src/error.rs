@@ -38,10 +38,6 @@ pub enum Error {
     #[from]
     AuthEngine(auth::AuthError),
 
-    // -- federation: errors surfaced by the `federation` engine crate
-    #[from]
-    Federation(federation::Error),
-
     // -- peppylib
     #[from]
     Peppy(peppylib::PeppyError),
@@ -65,7 +61,6 @@ impl Display for Error {
             Error::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
             Error::Auth(msg) => write!(fmt, "{msg}"),
             Error::AuthEngine(e) => write!(fmt, "{e}"),
-            Error::Federation(e) => write!(fmt, "{e}"),
             Error::Peppy(e) => write!(fmt, "{e}"),
         }
     }

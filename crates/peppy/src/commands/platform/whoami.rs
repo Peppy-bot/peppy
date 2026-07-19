@@ -1,6 +1,6 @@
-//! `peppy auth whoami` (alias `status`): resolve the cached credential, call
-//! `GET /me`, and print the identity, backend, and token validity. `--json`
-//! emits a machine-readable object (never including raw tokens).
+//! `peppy platform whoami` (alias `status`): resolve the cached credential,
+//! call `GET /me`, and print the identity, backend, and token validity.
+//! `--json` emits a machine-readable object (never including raw tokens).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,6 +20,9 @@ pub struct WhoamiCommand {
     /// Test seam: override the peppy data dirs (the credentials file and
     /// `peppy_config.json5` both derive from it).
     pub peppy_dirs: Option<PeppyDirs>,
+    /// The `PEPPY_API_KEY` PAT, injected by the dispatcher (never read from
+    /// the environment here); it beats the stored OAuth session.
+    pub pat: Option<String>,
 }
 
 impl Command for WhoamiCommand {
@@ -30,9 +33,8 @@ impl Command for WhoamiCommand {
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
-        let pat = resolver::pat_from_env();
 
-        match resolver::resolve(&creds_path, &http, pat) {
+        match resolver::resolve(&creds_path, &http, self.pat) {
             Ok(mut cred) => {
                 let principal = client::get_me(&http, &api_url, &mut cred)?;
                 let expires_at = session_expiry(&creds_path);
@@ -54,7 +56,7 @@ impl Command for WhoamiCommand {
                     println!("{doc}");
                 } else {
                     println!(
-                        "Not authenticated ({}). Run `peppy auth login`.",
+                        "Not authenticated ({}). Run `peppy platform login`.",
                         profile::build_env_name()
                     );
                 }

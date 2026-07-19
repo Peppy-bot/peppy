@@ -139,11 +139,11 @@ pub struct CoreNodeConfig {
     /// Daemon-global messaging mode + subscriber buffer sizes, injected into every
     /// spawned node's runtime config (see `node::run`).
     pub peppy_config: daemon_config::peppy_config::PeppyConfig,
-    /// The daemon's organization namespace for this generation (`"local"` when
-    /// logged out, else the org id). Stamped onto every spawned node's
-    /// `discovery.organization_id` so the node opens its session under the same
+    /// The daemon's namespace for this generation (`"local"` when logged out,
+    /// else the workspace id). Stamped onto every spawned node's
+    /// `discovery.namespace` so the node opens its session under the same
     /// namespace as the daemon.
-    pub organization_namespace: String,
+    pub namespace: config::namespace::Namespace,
     /// Cancelled at the start of daemon shutdown to stop the core node's own
     /// clock + heartbeat publishers before the messaging session is closed, so
     /// they do not spin against a closed session logging a failed publish on
@@ -171,9 +171,9 @@ pub struct CoreNode {
     /// Daemon-global messaging mode + subscriber buffer sizes, read once at startup.
     /// Injected into every spawned node's runtime config (see `node::run`).
     peppy_config: daemon_config::peppy_config::PeppyConfig,
-    /// The daemon's organization namespace for this generation, stamped onto
-    /// every spawned node so it opens its session under the daemon's namespace.
-    organization_namespace: String,
+    /// The daemon's namespace for this generation, stamped onto every spawned
+    /// node so it opens its session under the daemon's namespace.
+    namespace: config::namespace::Namespace,
     /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
     /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
     shutdown_token: CancellationToken,
@@ -303,7 +303,7 @@ impl CoreNode {
             root_dir,
             peppy_dirs,
             peppy_config,
-            organization_namespace,
+            namespace,
             shutdown_token,
         } = config;
 
@@ -365,7 +365,7 @@ impl CoreNode {
             daemon_use_sim_time,
             name_claim_settle,
             peppy_config,
-            organization_namespace,
+            namespace,
             shutdown_token,
             presence_token: std::sync::Mutex::new(None),
             started: AtomicBool::new(false),
@@ -591,7 +591,7 @@ impl CoreNode {
                     use_sim_time: self.daemon_use_sim_time,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
-                        self.organization_namespace.clone(),
+                        self.namespace.clone(),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                 },
@@ -640,7 +640,7 @@ impl CoreNode {
                     health_monitor_timeout: self.health_monitor_timeout,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
-                        self.organization_namespace.clone(),
+                        self.namespace.clone(),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     pairing: Arc::clone(&ctx.pairing),
