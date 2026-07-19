@@ -436,6 +436,31 @@ async fn presence_token_is_released_when_core_node_drops() {
     );
 }
 
+/// Generation teardown must be able to withdraw presence before the core-node
+/// object itself drops, so a managed router can propagate the undeclare while
+/// its upstream link is still alive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_token_can_be_released_before_core_node_drop() {
+    let booted = BootedCoreNode::start("explicitly_released_node").await;
+
+    assert_eq!(
+        live_claims(&booted.presence_handle, "explicitly_released_node")
+            .await
+            .len(),
+        1
+    );
+
+    booted.core_node.release_presence();
+
+    assert!(
+        live_claims(&booted.presence_handle, "explicitly_released_node")
+            .await
+            .is_empty(),
+        "explicit teardown must withdraw presence before the core node drops"
+    );
+    booted.shut_down().await;
+}
+
 /// A foreign token appearing after boot is observed by the daemon's real
 /// history-enabled watcher and produces one error alarm. A second foreign
 /// `Alive` within the cooldown is consumed but must not produce another alarm.

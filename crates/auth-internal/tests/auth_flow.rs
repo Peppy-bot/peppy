@@ -63,6 +63,7 @@ fn resolver_refreshes_an_expired_session_token() {
     server.mock(|when, then| {
         when.method(GET).path("/.well-known/openid-configuration");
         then.status(200).json_body(json!({
+            "issuer": base.clone(),
             "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
             "token_endpoint": format!("{base}/oauth/v2/token"),
         }));
@@ -121,6 +122,142 @@ fn get_me_parses_principal_with_unknown_fields() {
     assert_eq!(principal.display_name(), "alice");
 }
 
+#[test]
+fn session_bearer_is_never_sent_to_a_different_api_origin() {
+    let origin = MockServer::start();
+    let attacker = MockServer::start();
+    let received = attacker.mock(|when, then| {
+        when.method(GET).path("/me");
+        then.status(200).json_body(json!({ "sub": "unexpected" }));
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = creds_path(&dir);
+    let credentials = Credentials {
+        session: Some(seeded_creds(&origin, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&path, &credentials).unwrap();
+    let mut credential = resolver::resolve(&path, &HttpClient::new(), None).unwrap();
+
+    let error = client::get_me(&HttpClient::new(), &attacker.base_url(), &mut credential)
+        .expect_err("cross-origin OAuth bearer use must fail before I/O");
+    assert!(error.to_string().contains("refusing to send"), "{error}");
+    assert_eq!(
+        received.calls(),
+        0,
+        "the foreign origin must see no request"
+    );
+}
+
+#[test]
+fn stale_request_cannot_adopt_a_concurrent_same_origin_login() {
+    let server = MockServer::start();
+    let received = server.mock(|when, then| {
+        when.method(GET).path("/me");
+        then.status(401);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = creds_path(&dir);
+    let old = seeded_creds(&server, 9_999_999_999);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(old.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut stale = resolver::session_credential(&path, &old);
+    storage::update(&path, |credentials| {
+        let mut replacement = seeded_creds(&server, 9_999_999_999);
+        replacement.subject = "other-account".into();
+        replacement.access_token = storage::secret("other-access".into());
+        replacement.refresh_token = storage::secret("other-refresh".into());
+        credentials.session = Some(replacement);
+        Ok(())
+    })
+    .unwrap();
+
+    let error = client::get_me(&HttpClient::new(), &server.base_url(), &mut stale)
+        .expect_err("stale request must fail CAS");
+    assert!(matches!(error, auth::AuthError::NotAuthenticated));
+    assert_eq!(
+        received.calls(),
+        0,
+        "neither the stale nor replacement bearer may be transmitted"
+    );
+}
+
+#[test]
+fn logout_never_sends_a_session_bearer_cross_origin() {
+    let origin = MockServer::start();
+    let attacker = MockServer::start();
+    let received = attacker.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = creds_path(&dir);
+    let session = seeded_creds(&origin, 9_999_999_999);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(session.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let credential = resolver::session_credential(&path, &session);
+
+    let error = client::logout(&HttpClient::new(), &attacker.base_url(), &credential)
+        .expect_err("logout must reject cross-origin bearer use before I/O");
+    assert!(error.to_string().contains("refusing to send"), "{error}");
+    assert_eq!(
+        received.calls(),
+        0,
+        "the foreign origin must see no request"
+    );
+}
+
+#[test]
+fn logout_never_sends_a_stale_same_origin_session() {
+    let server = MockServer::start();
+    let received = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = creds_path(&dir);
+    let old = seeded_creds(&server, 9_999_999_999);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(old.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let stale = resolver::session_credential(&path, &old);
+    storage::update(&path, |credentials| {
+        let mut replacement = seeded_creds(&server, 9_999_999_999);
+        replacement.subject = "other-account".into();
+        replacement.access_token = storage::secret("other-access".into());
+        replacement.refresh_token = storage::secret("other-refresh".into());
+        credentials.session = Some(replacement);
+        Ok(())
+    })
+    .unwrap();
+
+    let error = client::logout(&HttpClient::new(), &server.base_url(), &stale)
+        .expect_err("logout must reject a stale same-origin session before I/O");
+    assert!(matches!(error, auth::AuthError::NotAuthenticated));
+    assert_eq!(
+        received.calls(),
+        0,
+        "neither the stale nor replacement bearer may be transmitted"
+    );
+}
+
 /// The core-node name the federation-pull tests identify the daemon with. The
 /// pull mocks *require* it as the POST body (`json_body`), so a pull that
 /// drops or malforms the body gets no mock response and fails its test.
@@ -166,6 +303,146 @@ fn establish_federation_parses_the_contract() {
 }
 
 #[test]
+fn establish_federation_returns_a_typed_current_workspace_conflict() {
+    let server = MockServer::start();
+    let mismatch = server.mock(|when, then| {
+        when.method(POST)
+            .path("/me/cli/federation")
+            .json_body(json!({ "core_node_name": CORE_NODE }));
+        then.status(409).json_body(json!({
+            "error": "core_node_workspace_mismatch",
+            "message": "certificate belongs to the former workspace",
+            "workspace_id": "7a040224-4dd3-4b73-8d09-f809b176ed2d",
+        }));
+    });
+    let mut credential = auth::Credential {
+        token: storage::secret("any-token".to_string()),
+        kind: CredentialKind::Pat,
+    };
+
+    let error = client::establish_federation(
+        &HttpClient::new(),
+        &server.base_url(),
+        &mut credential,
+        CORE_NODE,
+    )
+    .expect_err("workspace drift must deny discovery with a typed error");
+    match error {
+        auth::AuthError::DiscoveryWorkspaceMismatch { current } => {
+            assert_eq!(current.as_str(), "7a040224-4dd3-4b73-8d09-f809b176ed2d")
+        }
+        other => panic!("expected typed workspace mismatch, got {other}"),
+    }
+    assert_eq!(mismatch.calls(), 1);
+}
+
+#[test]
+fn establish_federation_rejects_an_invalid_workspace_conflict_uuid() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/me/cli/federation");
+        then.status(409).json_body(json!({
+            "error": "core_node_workspace_mismatch",
+            "message": "certificate belongs to the former workspace",
+            "workspace_id": "not-a-workspace-uuid",
+        }));
+    });
+    let mut credential = auth::Credential {
+        token: storage::secret("any-token".to_string()),
+        kind: CredentialKind::Pat,
+    };
+
+    let error = client::establish_federation(
+        &HttpClient::new(),
+        &server.base_url(),
+        &mut credential,
+        CORE_NODE,
+    )
+    .expect_err("an invalid server workspace must not trigger re-enrollment");
+    assert!(
+        matches!(error, auth::AuthError::Http(_)),
+        "invalid UUID must remain a fail-closed transport contract error: {error}"
+    );
+}
+
+#[test]
+fn establish_federation_does_not_reinterpret_other_409_conflicts() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/me/cli/federation");
+        then.status(409).json_body(json!({
+            "error": "core_node_name_taken",
+            "message": "the name belongs to another principal",
+        }));
+    });
+    let mut credential = auth::Credential {
+        token: storage::secret("any-token".to_string()),
+        kind: CredentialKind::Pat,
+    };
+
+    let error = client::establish_federation(
+        &HttpClient::new(),
+        &server.base_url(),
+        &mut credential,
+        CORE_NODE,
+    )
+    .expect_err("the normal discovery conflict must retain generic status handling");
+    assert!(
+        matches!(error, auth::AuthError::Http(ref message) if message.contains("returned 409")),
+        "an unrelated 409 must not be reported as a malformed workspace conflict: {error}"
+    );
+}
+
+#[test]
+fn router_resolve_compares_denied_workspace_with_the_local_certificate() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/me/cli/federation");
+        then.status(409).json_body(json!({
+            "error": "core_node_workspace_mismatch",
+            "message": "certificate belongs to the former workspace",
+            "workspace_id": "7a040224-4dd3-4b73-8d09-f809b176ed2d",
+        }));
+    });
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(&server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+    let mut identity = test_client_identity();
+    identity.workspace_id = Some(test_namespace());
+    identity.subject = Some("user-123".into());
+
+    let error = match router::resolve_router_endpoint(
+        &path,
+        &HttpClient::new(),
+        &server.base_url(),
+        None,
+        None,
+        identity,
+        CORE_NODE,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("denied discovery must request re-enrollment, not use old workspace data"),
+    };
+    match error {
+        auth::AuthError::WorkspaceMismatch {
+            discovered,
+            certificate,
+        } => {
+            assert_eq!(discovered.as_str(), "7a040224-4dd3-4b73-8d09-f809b176ed2d");
+            assert_eq!(certificate, test_namespace());
+        }
+        other => panic!("expected compared workspace mismatch, got {other}"),
+    }
+}
+
+#[test]
 fn router_config_pull_refreshes_on_401_then_re_pulls() {
     // Mid-session 401 ⇒ refresh the access token ⇒ retry the pull with the
     // rotated token. The single most important Phase F acceptance check.
@@ -176,6 +453,7 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
     server.mock(|when, then| {
         when.method(GET).path("/.well-known/openid-configuration");
         then.status(200).json_body(json!({
+            "issuer": base.clone(),
             "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
             "token_endpoint": format!("{base}/oauth/v2/token"),
         }));
@@ -227,8 +505,10 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
     let mut cred = auth::Credential {
         token: storage::secret("seeded-access".to_string()),
         kind: CredentialKind::Session(SessionContext {
+            api_url: server.base_url(),
             issuer: server.base_url(),
             client_id: "cli-client-id".to_string(),
+            subject: "user-123".to_string(),
             refresh_token: storage::secret("seeded-refresh".to_string()),
             creds_path: path.clone(),
         }),
@@ -286,6 +566,7 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
             subject: "user-123".into(),
             // Matches the resolve's core-node name for the same reason.
             core_node_name: CORE_NODE.into(),
+            certificate_generation: "test-generation".into(),
         }),
         ..Default::default()
     };
@@ -298,7 +579,7 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
         &server.base_url(),
         None,
         None,
-        None,
+        test_client_identity(),
         CORE_NODE,
     )
     .expect("resolve from cache");
@@ -338,16 +619,12 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     storage::save(&path, &creds).expect("seed creds");
 
     let ca = std::path::PathBuf::from("/etc/peppy/ca.pem");
-    let client_identity = (
-        std::path::PathBuf::from("/etc/peppy/client.pem"),
-        std::path::PathBuf::from("/etc/peppy/client-key.pem"),
-    );
     let resolved = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
         None,
         Some(ca),
-        Some(client_identity),
+        Some(test_client_identity()),
         SECS_30,
         CORE_NODE,
     );
@@ -397,7 +674,7 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
         &server.base_url(),
         None,
         None,
-        None,
+        Some(test_client_identity()),
         SECS_30,
         CORE_NODE,
     );
@@ -442,7 +719,7 @@ fn resolve_federation_target_fails_closed_on_an_invalid_workspace_namespace() {
         &server.base_url(),
         None,
         None,
-        None,
+        Some(test_client_identity()),
         SECS_30,
         CORE_NODE,
     );
@@ -492,7 +769,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         &server.base_url(),
         None,
         None,
-        None,
+        Some(test_client_identity()),
         Duration::from_millis(100),
         CORE_NODE,
     );
@@ -507,7 +784,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         &server.base_url(),
         None,
         None,
-        None,
+        Some(test_client_identity()),
         SECS_30,
         CORE_NODE,
     );
@@ -550,6 +827,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
             namespace: test_namespace(),
             subject: "user-123".into(),
             core_node_name: CORE_NODE.into(),
+            certificate_generation: "test-generation".into(),
         }),
         ..Default::default()
     };
@@ -563,7 +841,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
         &server.base_url(),
         None,
         Some(ca.clone()),
-        None,
+        test_client_identity(),
         CORE_NODE,
     )
     .expect("re-pull");
@@ -620,6 +898,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
             namespace: test_namespace(),
             subject: "user-123".into(),
             core_node_name: "the-old-name".into(),
+            certificate_generation: "test-generation".into(),
         }),
         ..Default::default()
     };
@@ -632,7 +911,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
         &server.base_url(),
         None,
         None,
-        None,
+        test_client_identity(),
         CORE_NODE,
     )
     .expect("resolve re-pulls under the new name");
@@ -693,7 +972,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         &server.base_url(),
         Some("the-pat".to_string()),
         None,
-        None,
+        test_client_identity(),
         CORE_NODE,
     )
     .expect("PAT pull resolves");
@@ -723,7 +1002,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         &server.base_url(),
         None,
         None,
-        None,
+        test_client_identity(),
         CORE_NODE,
     )
     .expect("session resolve");
@@ -739,6 +1018,19 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
 fn test_namespace() -> config::namespace::Namespace {
     config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
         .expect("valid test namespace")
+}
+
+/// A non-secret dummy identity for HTTP/cache tests. No network TLS dial occurs;
+/// the paths only prove that production target construction is never one-way.
+fn test_client_identity() -> router::RouterClientIdentity {
+    router::RouterClientIdentity {
+        certificate: std::path::PathBuf::from("/etc/peppy/client.pem"),
+        private_key: std::path::PathBuf::from("/etc/peppy/client-key.pem"),
+        generation: "test-generation".into(),
+        workspace_id: None,
+        subject: None,
+        certificate_not_after: None,
+    }
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.

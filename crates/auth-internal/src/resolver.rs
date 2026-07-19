@@ -43,8 +43,13 @@ pub enum CredentialKind {
 
 /// Everything needed to refresh a session token and persist the rotation.
 pub struct SessionContext {
+    /// Platform API URL this access token was minted/cached for. Authenticated
+    /// resource-server requests enforce this normalized origin before sending
+    /// the bearer.
+    pub api_url: String,
     pub issuer: String,
     pub client_id: String,
+    pub subject: String,
     pub refresh_token: SecretString,
     pub creds_path: PathBuf,
 }
@@ -93,12 +98,37 @@ pub fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {
         token: storage::secret(pc.access_token.expose_secret().to_string()),
         kind: CredentialKind::Session(SessionContext {
+            api_url: pc.api_url.clone(),
             issuer: pc.issuer.clone(),
             client_id: pc.client_id.clone(),
+            subject: pc.subject.clone(),
             refresh_token: storage::secret(pc.refresh_token.expose_secret().to_string()),
             creds_path: creds_path.to_path_buf(),
         }),
     }
+}
+
+/// Compare-and-swap guard for a request built from an on-disk OAuth session.
+/// It runs immediately before authenticated I/O and returns the exact matching
+/// snapshot; a concurrent login/logout/refresh is reported as logged out rather
+/// than donating its bearer to the stale request.
+pub fn ensure_session_credential_current(credential: &Credential) -> Result<Option<ProfileCreds>> {
+    let CredentialKind::Session(ctx) = &credential.kind else {
+        return Ok(None);
+    };
+    let current = storage::load(&ctx.creds_path)?
+        .session
+        .ok_or(Error::NotAuthenticated)?;
+    if current.api_url != ctx.api_url
+        || current.issuer != ctx.issuer
+        || current.client_id != ctx.client_id
+        || current.subject != ctx.subject
+        || current.refresh_token.expose_secret() != ctx.refresh_token.expose_secret()
+        || current.access_token.expose_secret() != credential.token.expose_secret()
+    {
+        return Err(Error::NotAuthenticated);
+    }
+    Ok(Some(current))
 }
 
 /// The single implementation of the refresh pipeline: discovers the token
@@ -123,12 +153,26 @@ pub(crate) fn refresh_and_persist(
     )?;
 
     let updated = apply_tokens(pc, &tokens);
-    let mut creds = storage::load(creds_path)?;
-    if creds.session.is_some() {
-        creds.session = Some(updated.clone());
-        storage::save(creds_path, &creds)?;
-    }
-    Ok(updated)
+    storage::update(creds_path, |creds| {
+        let Some(current) = creds.session.as_mut() else {
+            // Logout won the race while discovery/refresh was in flight. Never
+            // resurrect the session from the stale pre-network snapshot.
+            return Err(Error::NotAuthenticated);
+        };
+        if current.refresh_token.expose_secret() != pc.refresh_token.expose_secret()
+            || current.api_url != pc.api_url
+            || current.issuer != pc.issuer
+            || current.client_id != pc.client_id
+            || current.subject != pc.subject
+        {
+            // Another refresh/login/logout changed the session while the
+            // network exchange was in flight. Never adopt that session into a
+            // request created from the old bearer, even on the same origin.
+            return Err(Error::NotAuthenticated);
+        }
+        *current = updated.clone();
+        Ok(updated)
+    })
 }
 
 /// Returns a [`ProfileCreds`] with the token fields replaced by `tokens`,

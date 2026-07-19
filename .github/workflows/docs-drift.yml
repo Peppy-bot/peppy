@@ -35,6 +35,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+          # The follow-up PR action receives its own narrowly scoped bot token;
+          # do not leave the checkout token available to generated-doc code.
+          persist-credentials: false
 
       - name: Check docs are up to date
         id: check

@@ -31,11 +31,16 @@ use serde::{Deserialize, Serialize};
 /// File name of the daemon's federation control socket under the runtime dir.
 pub const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
 
-/// The only request the control socket understands: re-resolve the platform
-/// upstream and (de)federate the local router to match the current credentials.
-/// One verb covers both login (resolves to an upstream) and logout (resolves to
-/// none, de-federating).
+/// Re-resolve the platform upstream and (de)federate the local router to match
+/// the current credentials. One verb covers both ordinary login and logout;
+/// logout resolves the cleared credentials to standalone and can therefore
+/// detect the required workspace-to-local namespace restart.
 pub const REFEDERATE_VERB: &str = "refederate";
+
+/// Force the managed router standalone without resolving retained auth state.
+/// Reserved for post-auth-change failures (and partial logout cleanup errors)
+/// where credentials may intentionally remain and must not be reused.
+pub const DEFEDERATE_VERB: &str = "defederate";
 
 /// Reads the daemon's cached federation state without resolving, rewriting the
 /// router config, or restarting zenohd.
@@ -68,7 +73,7 @@ pub enum LinkState {
     /// Rendered into the router config but not yet checked by an explicit
     /// verifying federation request from this daemon generation.
     Unverified,
-    /// A verifying poke confirmed the link's TLS handshake validates.
+    /// A verifying poke confirmed the managed router's outbound link is established.
     Verified,
     /// The upstream was applied but the last verifying poke failed with this
     /// human-readable reason, so federation is not actually in effect.
@@ -92,6 +97,23 @@ pub struct FederationStatus {
     #[serde(flatten)]
     pub link: PlatformLink,
     pub pinned: bool,
+    /// Whether the running daemon observed `PEPPY_API_KEY` in its own service
+    /// environment. The token is never exposed. Omitted on the wire when false
+    /// so old standalone/debug status fixtures remain compact.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pat_active: bool,
+    /// Latest non-secret certificate maintenance failure while an older valid
+    /// generation may still be serving. Cleared by successful maintenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_error: Option<String>,
+    /// True only while the daemon is applying/probing an unverified
+    /// certificate generation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub certificate_renewing: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The daemon's one-line JSON reply to a control-socket request.
@@ -208,7 +230,18 @@ impl From<TransportFailure> for QueryStatusOutcome {
 /// a missing/refused socket maps to [`PokeOutcome::DaemonNotRunning`] and any
 /// other I/O error to a definite outcome rather than an `Err`.
 pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
-    match request(socket_path, read_timeout, REFEDERATE_VERB) {
+    poke(socket_path, read_timeout, REFEDERATE_VERB)
+}
+
+/// Forces the running managed router standalone, without re-resolving current
+/// credentials. This is required when auth is intentionally retained after a
+/// failed identity bind: an ordinary refederate could reuse the prior identity.
+pub fn poke_defederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
+    poke(socket_path, read_timeout, DEFEDERATE_VERB)
+}
+
+fn poke(socket_path: &Path, read_timeout: Duration, verb: &str) -> PokeOutcome {
+    match request(socket_path, read_timeout, verb) {
         Ok(ControlResponse::Ok(link)) => PokeOutcome::Applied(link),
         Ok(ControlResponse::Pinned) => PokeOutcome::Pinned,
         Ok(ControlResponse::Error { message }) => PokeOutcome::DaemonError(message),
@@ -216,7 +249,7 @@ pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcom
             PokeOutcome::Restarting { target_namespace }
         }
         Ok(ControlResponse::FederationStatus(_)) => {
-            PokeOutcome::DaemonError("daemon returned status state to a refederate request".into())
+            PokeOutcome::DaemonError("daemon returned status state to a federation request".into())
         }
         Err(e) => TransportFailure::classify(&e).into(),
     }
@@ -310,6 +343,31 @@ mod tests {
     }
 
     #[test]
+    fn forced_standalone_sends_the_distinct_defederate_verb() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_req, stream| {
+            stream
+                .write_all(
+                    b"{\"status\":\"ok\",\"endpoint\":null,\"link_state\":\"not_configured\"}\n",
+                )
+                .unwrap();
+        });
+
+        let outcome = poke_defederate(&path, Duration::from_secs(5));
+        let request = handle.join().unwrap();
+
+        assert_eq!(request, DEFEDERATE_VERB);
+        assert_eq!(
+            outcome,
+            PokeOutcome::Applied(PlatformLink {
+                endpoint: None,
+                link_state: LinkState::NotConfigured,
+            })
+        );
+    }
+
+    #[test]
     fn poke_parses_defederated_pinned_error_and_link_error() {
         for (reply, expected) in [
             (
@@ -388,6 +446,9 @@ mod tests {
                 link_state: LinkState::Verified,
             },
             pinned: false,
+            pat_active: false,
+            certificate_error: None,
+            certificate_renewing: false,
         });
         assert_eq!(
             serde_json::to_string(&status).unwrap(),
@@ -435,6 +496,9 @@ mod tests {
                     link_state,
                 },
                 pinned,
+                pat_active: false,
+                certificate_error: None,
+                certificate_renewing: false,
             }
         }
         for (reply, expected) in [

@@ -39,14 +39,6 @@ pub(crate) const EXTERNAL_ROUTER_NOTE: &str = "Note: this daemon dials an operat
      (`zenoh.external`); federation belongs to the operator and was left untouched. Restart the \
      daemon to apply the new sign-in state to its sessions.";
 
-/// Shown after a logout while `PEPPY_API_KEY` is still set: the environment
-/// PAT is valid platform authentication on its own, so signing the OAuth
-/// session out does not end authentication (or federation) until the variable
-/// is removed from every environment that carries it (this shell and the
-/// daemon's service environment).
-pub(crate) const PAT_STILL_ACTIVE_NOTE: &str = "Note: PEPPY_API_KEY is set, so platform \
-     authentication and federation remain active until the environment variable is removed.";
-
 /// Re-poke cadence and overall deadline while waiting for the daemon to restart
 /// under the new namespace. The deadline covers zenohd's readiness ceiling (30s)
 /// plus the federation connect timeout and slack.
@@ -66,6 +58,9 @@ const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 pub(crate) enum FederationPokeAction {
     Login,
     Logout,
+    /// A login changed durable auth but failed before binding completed. Force
+    /// standalone without re-resolving the intentionally retained credential.
+    FailClosed,
 }
 
 /// The managed-federation connect timeout (seconds) a login/logout should honor:
@@ -127,6 +122,7 @@ pub(crate) fn confirm_restart(
     let verb = match action {
         FederationPokeAction::Login => "Logging in",
         FederationPokeAction::Logout => "Logging out",
+        FederationPokeAction::FailClosed => "Changing platform authentication",
     };
     eprintln!(
         "{verb} changes this machine's namespace, which restarts the messaging daemon and wipes \
@@ -244,9 +240,14 @@ pub(crate) fn poke_federation_and_report(
         FederationPokeAction::Login => {
             crate::terminal::spinner("Waiting for federation link to establish")
         }
-        FederationPokeAction::Logout => None,
+        FederationPokeAction::Logout | FederationPokeAction::FailClosed => None,
     };
-    let outcome = daemon_control::poke_refederate(&socket, read_timeout);
+    let outcome = match action {
+        FederationPokeAction::Login | FederationPokeAction::Logout => {
+            daemon_control::poke_refederate(&socket, read_timeout)
+        }
+        FederationPokeAction::FailClosed => daemon_control::poke_defederate(&socket, read_timeout),
+    };
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -259,7 +260,7 @@ pub(crate) fn poke_federation_and_report(
     }
     match action {
         FederationPokeAction::Login => report_login(outcome),
-        FederationPokeAction::Logout => {
+        FederationPokeAction::Logout | FederationPokeAction::FailClosed => {
             report_logout(outcome);
             Ok(())
         }
@@ -284,6 +285,7 @@ fn await_restart(
     let subcommand = match action {
         FederationPokeAction::Login => "login",
         FederationPokeAction::Logout => "logout",
+        FederationPokeAction::FailClosed => "login",
     };
     let spinner =
         crate::terminal::spinner("Waiting for the daemon to restart under the new namespace");
@@ -329,7 +331,7 @@ fn await_restart(
             other => {
                 break match action {
                     FederationPokeAction::Login => report_login(other),
-                    FederationPokeAction::Logout => {
+                    FederationPokeAction::Logout | FederationPokeAction::FailClosed => {
                         report_logout(other);
                         Ok(())
                     }
@@ -564,7 +566,8 @@ mod tests {
             5,
             config::namespace::Namespace::local(),
             timeout,
-        );
+        )
+        .with_service_pat_active(false);
         DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
             .expect("write daemon state");
     }

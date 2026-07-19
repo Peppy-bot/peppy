@@ -31,6 +31,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
 
       # Give this run its own peppy data root so the reused self-hosted runner
       # does not accumulate or collide on /tmp/.peppy across runs. Only the Rust
@@ -42,25 +49,42 @@ jobs:
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
 
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
       - name: Run tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test
+          cargo test --locked
 
       - name: Run container e2e tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test -p core-node --features container_e2e --test container_e2e
+          cargo test --locked -p core-node --features container_e2e --test container_e2e
 
       - name: Run multi-daemon Docker e2e test
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+          cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
       - name: Run documentation integration tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test -p docs-integration-tests
+          cargo test --locked -p docs-integration-tests
+
+      - name: Build documentation site
+        working-directory: docs
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify production federation path
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          ./scripts/check_federation_mtls_release.sh
+
+      - name: Prove CI did not rewrite the shipping lockfile
+        run: git diff --exit-code -- Cargo.lock
 
       - name: Detect scripts/ changes
         id: scripts_changed

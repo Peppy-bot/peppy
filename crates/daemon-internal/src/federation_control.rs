@@ -26,8 +26,10 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::control::{ControlResponse, FederationStatus, REFEDERATE_VERB, STATUS_VERB};
-use crate::router_federation::{FederationOutcome, TriggerSender};
+use crate::control::{
+    ControlResponse, DEFEDERATE_VERB, FederationStatus, REFEDERATE_VERB, STATUS_VERB,
+};
+use crate::router_federation::{FederationOutcome, FederationTrigger, TriggerSender};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// Bound on reading a request line, so a client that connects but never writes
@@ -252,9 +254,14 @@ async fn handle_conn(
         return write_response(&mut write_half, ControlResponse::FederationStatus(status)).await;
     }
 
-    if line.trim() != REFEDERATE_VERB {
-        return write_response(&mut write_half, ControlResponse::error("unknown command")).await;
-    }
+    let force_standalone = match line.trim() {
+        REFEDERATE_VERB => false,
+        DEFEDERATE_VERB => true,
+        _ => {
+            return write_response(&mut write_half, ControlResponse::error("unknown command"))
+                .await;
+        }
+    };
 
     // Forward the poke and await the applied outcome. The queue holds at most
     // one waiting poke (see `router_federation::trigger_channel`), so a second
@@ -263,7 +270,12 @@ async fn handle_conn(
     // connection open.
     let deadline = tokio::time::Instant::now() + connect_timeout + APPLY_ACK_SLACK;
     let (ack_tx, ack_rx) = oneshot::channel();
-    match trigger_tx.try_send(ack_tx) {
+    let trigger = if force_standalone {
+        FederationTrigger::Defederate(ack_tx)
+    } else {
+        FederationTrigger::Refederate(ack_tx)
+    };
+    match trigger_tx.try_send(trigger) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
             return write_response(
@@ -367,11 +379,11 @@ mod tests {
     async fn poke_crosses_the_socket_and_acks() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationTrigger>(8);
 
         // Stand in for the federation loop: ack a canned applied outcome.
         let consumer = tokio::spawn(async move {
-            if let Some(ack) = trigger_rx.recv().await {
+            if let Some(FederationTrigger::Refederate(ack)) = trigger_rx.recv().await {
                 let _ = ack.send(FederationOutcome::Applied(PlatformLink {
                     endpoint: Some("tls/hub:7447".to_string()),
                     link_state: LinkState::Verified,
@@ -420,13 +432,16 @@ mod tests {
     async fn status_crosses_the_socket_without_refederating() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationTrigger>(8);
         let expected = FederationStatus {
             link: PlatformLink {
                 endpoint: Some("tls/hub:7447".to_string()),
                 link_state: LinkState::Error("UnknownIssuer".to_string()),
             },
             pinned: false,
+            pat_active: false,
+            certificate_error: None,
+            certificate_renewing: false,
         };
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
@@ -459,10 +474,10 @@ mod tests {
     #[tokio::test]
     async fn status_is_answered_while_the_poke_queue_is_full() {
         let (server, mut client) = UnixStream::pair().expect("create control socket pair");
-        let (trigger_tx, _trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(1);
+        let (trigger_tx, _trigger_rx) = mpsc::channel::<FederationTrigger>(1);
         let (queued_ack, _queued_rx) = oneshot::channel();
         trigger_tx
-            .try_send(queued_ack)
+            .try_send(FederationTrigger::Refederate(queued_ack))
             .expect("prefill trigger channel");
         let (restart_tx, _restart_rx) = watch::channel(false);
         let expected = FederationStatus {
@@ -471,6 +486,9 @@ mod tests {
                 link_state: LinkState::Unverified,
             },
             pinned: false,
+            pat_active: false,
+            certificate_error: None,
+            certificate_renewing: false,
         };
         let (_status_tx, status_rx) = watch::channel(expected.clone());
         let handler = tokio::spawn(handle_conn(
@@ -501,10 +519,10 @@ mod tests {
     #[tokio::test]
     async fn a_second_concurrent_poke_is_rejected_as_busy() {
         let (server, mut client) = UnixStream::pair().expect("create control socket pair");
-        let (trigger_tx, _trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(1);
+        let (trigger_tx, _trigger_rx) = mpsc::channel::<FederationTrigger>(1);
         let (queued_ack, _queued_rx) = oneshot::channel();
         trigger_tx
-            .try_send(queued_ack)
+            .try_send(FederationTrigger::Refederate(queued_ack))
             .expect("prefill trigger channel");
         let (restart_tx, _restart_rx) = watch::channel(false);
         let (_status_tx, status_rx) = watch::channel(FederationStatus::default());
@@ -536,7 +554,7 @@ mod tests {
     async fn unknown_verb_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationTrigger>(8);
 
         // Bind-before-client, as in `poke_crosses_the_socket_and_acks`.
         let listener = bind_listener(&socket).expect("bind control socket");
@@ -578,7 +596,7 @@ mod tests {
     #[tokio::test]
     async fn restart_is_signaled_when_the_client_disconnects_before_the_ack() {
         let (server, mut client) = UnixStream::pair().expect("create control socket pair");
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(1);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationTrigger>(1);
         let (restart_tx, mut restart_rx) = watch::channel(false);
         let (_status_tx, status_rx) = watch::channel(FederationStatus::default());
 
@@ -595,10 +613,13 @@ mod tests {
             .expect("send refederate request");
         drop(client);
 
-        let ack = tokio::time::timeout(Duration::from_secs(1), trigger_rx.recv())
+        let trigger = tokio::time::timeout(Duration::from_secs(1), trigger_rx.recv())
             .await
             .expect("handler forwards request promptly")
             .expect("request channel remains open");
+        let FederationTrigger::Refederate(ack) = trigger else {
+            panic!("restart test sent an unexpected forced-standalone request")
+        };
         ack.send(FederationOutcome::Restart {
             target_namespace: config::namespace::Namespace::parse(
                 "550e8400-e29b-41d4-a716-446655440000",

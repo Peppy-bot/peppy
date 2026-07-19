@@ -15,17 +15,30 @@ Google/passkey credentials. Those stay in the browser.
 Federation is **platform-only**: an authenticated machine's managed router
 holds exactly one outbound mTLS link, to the platform's shared router (the
 hub). All cross-machine traffic relays through that hub. There are no direct
-daemon-to-daemon links, no inbound federation listener, and no locally issued
-federation certificates.
+daemon-to-daemon links and no inbound federation listener. In a release build,
+each running core node enrolls its own short-lived client certificate; its
+private key is generated and retained locally and is never sent to the
+platform.
+
+:::caution[Breaking credentials and federation cutover]
+Current releases require credentials schema **v3** and a per-core-node client
+certificate. A v2 (or unversioned) `credentials.json5` is deliberately rejected
+with an instruction to run `peppy platform login`; it is not migrated or
+silently treated as logged out. Upgrade every Peppy client before production is
+switched to per-node mTLS. Once the production router requires these
+certificates, an old release with no per-core-node identity cannot federate;
+the router rejects its former one-way-TLS attempt, and there is no compatibility
+flag or fallback.
+:::
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
-| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant (or applies `PEPPY_API_KEY` immediately when set), caches the tokens, and federates a managed router to the platform router. |
+| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Authenticates with OAuth or `PEPPY_API_KEY`, enrolls a certificate for the running core node, and federates a managed router to the platform router. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
-| `peppy platform logout [--yes]` | Revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
-| `peppy platform federations [--json]` | Reports the platform federation link and the core nodes reachable through the hub. |
+| `peppy platform logout [--yes]` | Deletes this core node's certificate, revokes the OAuth access token, clears local identity material, and de-federates a managed router. Refuses to start while `PEPPY_API_KEY` is present. |
+| `peppy platform federations [--json]` | Reports the platform link, local certificate state, and core nodes reachable through the hub. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
 [Workspace federation](#workspace-federation).
@@ -51,30 +64,55 @@ peppy platform login --no-browser
 
 ### How it works
 
-1. The CLI fetches the public `GET {api_url}/cli/config`, which returns the
+1. The CLI fetches the public `GET {api_url}/cli/auth-config`, which returns the
    `issuer`, the `client_id`, and the exact `scopes` to request.
 2. It runs OIDC discovery against the `issuer`
    (`{issuer}/.well-known/openid-configuration`) to find the device and token
-   endpoints.
-3. It starts the device flow, opens the browser, and polls until you approve.
-4. It caches the tokens (and the `issuer`/`client_id`, so refresh works offline)
-   under `~/.peppy/conf/credentials.json5`.
+   endpoints, then starts the device flow and polls until you approve. With a
+   PAT, this step is replaced by validating `PEPPY_API_KEY` against the backend.
+3. A production login reads the immutable `core_node_name` captured by the
+   **running daemon**. It does not derive a second device id or reread an edited
+   config file. Start `peppy service serve` before logging in.
+4. Peppy generates a fresh ECDSA P-256 private key and proof-of-possession CSR
+   locally. Only the CSR is submitted to the authenticated enrollment endpoint.
+5. The backend's managed ECDSA P-256 issuer signs a short-lived certificate
+   with ECDSA/SHA-256, bound to the API origin, authenticated subject,
+   workspace, core-node name, and generated public key. Peppy validates the
+   signing chain plus all of those bindings, usages, and validity before
+   accepting it.
+6. The new key and certificate chain are written to an immutable generation and
+   activated atomically. OAuth tokens (when used) and non-secret certificate
+   metadata are recorded in credentials schema v3.
+7. Under `zenoh.managed`, the daemon reloads its router with the generation's
+   certificate and key, verifies a real mTLS connection to the platform router,
+   and only then commits the generation. A failed apply or probe rolls back to
+   the previous generation while that certificate remains valid.
 
 When `PEPPY_API_KEY` is set, `login` skips the device flow entirely: the key is
-verified against the backend and federation is applied immediately. Nothing is
-written to disk in that case; a PAT is environment-scoped (see
-[CI and automation](#ci-and-automation)).
+verified against the backend and federation is applied immediately. The PAT
+itself is environment-only and is never written to disk, but the enrolled
+core-node key, certificate chain, and non-secret metadata **are** persisted so
+the router can use them. See [CI and automation](#ci-and-automation) for the
+daemon environment requirement.
 
 ## Workspace federation
 
 Logging in does more than cache a token: it stamps this machine with your
 **workspace namespace** (the platform's stable workspace id). Under
 `zenoh.managed`, it also federates the peppy daemon's local messaging router to
-the platform router. Robots signed in to the same workspace then interoperate
-through the hub, while different workspaces stay routing-isolated. Logged out,
-the machine falls back to the `local` namespace, which never reaches the
-platform router; two logged-out machines on the same LAN still discover each
-other, but nothing leaves the local network.
+the platform router. Robots using the same workspace namespace can then
+interoperate through the hub. Logged out, the machine falls back to the `local`
+namespace, which never reaches the platform router; two logged-out machines on
+the same LAN still discover each other, but nothing leaves the local network.
+
+:::caution[Authentication is not workspace authorization]
+The client certificate gives the router a server-controlled core-node identity,
+but the production router does not yet enforce per-workspace Zenoh ACLs. A
+namespace scopes routing keys; it is **not** a tenant security boundary. Until
+router-side authorization lands, operate a production federation as a trusted,
+single-tenant environment and do not rely on namespace separation to protect
+one workspace from another.
+:::
 
 While authenticated, every session a managed daemon opens (its own and every
 spawned node's) runs in client mode with gossip off, so all traffic relays
@@ -98,18 +136,48 @@ stdin is not a terminal (so scripts and CI are never blocked), when no daemon is
 running, or when the stack holds no user nodes; in each case the restart wipes
 nothing.
 
-Under `zenoh.managed`, `login` is **strict** about federation: after your
-credentials are saved it waits for the daemon to establish and verify the
-federation link and exits non-zero if it cannot (no daemon running, the
-platform router is unreachable or untrusted, or it times out). You stay
-authenticated in that case (only the command fails), so re-run it once the
-daemon is reachable. `logout` is best-effort and never fails on the
-de-federation step. How long the daemon waits to resolve the platform router is
-bounded by
+Under `zenoh.managed`, `login` is **strict** about federation: after
+authentication and enrollment it waits for the daemon to establish and verify
+the mTLS link and exits non-zero if it cannot. Authentication may already have
+succeeded, so follow the error and rerun `login` after correcting it. How long
+the daemon waits to resolve the platform router is bounded by
 [`zenoh.managed.federation.connect_timeout_secs`](/advanced_guides/daemon_config/#zenohmanagedfederation-platform-federation).
 
 With `zenoh.external`, login and logout skip federation and print a note instead;
 the daemon applies the new namespace to its sessions on its next manual restart.
+
+### Production trust and fail-closed behavior
+
+Release builds validate the platform router's DNS name against the operating
+system WebPKI root store and present the active per-core-node certificate and
+private key. Production cannot enable the embedded development identity. A
+missing key or chain, malformed PEM, key/certificate mismatch, wrong API
+origin, account, workspace, or `core_node_name`, a not-yet-valid or expired
+certificate, an untrusted router certificate, or a DNS-name mismatch prevents
+the upstream from being configured. The daemon remains standalone, records an
+actionable federation error, and never falls back to unauthenticated or
+one-way TLS.
+
+Debug builds use an isolated embedded development CA and shared development
+client identity for zero-configuration local testing. That path is compiled
+only into debug builds. The production router must never trust the development
+CA, so a debug client cannot authenticate to production even if pointed at its
+address.
+
+### Automatic renewal and key rotation
+
+Production certificates are short-lived (initially about 24 hours). The daemon
+renews at the backend-provided `renew_after` time, normally around 12 hours with
+jitter, and generates a new private key for every renewal. Each rotation uses a
+new generation path, which forces the managed router to reload even when its
+endpoint is unchanged. Peppy probes the real mTLS link before making the
+generation final.
+
+If enrollment or the probe fails, the daemon retries with bounded backoff and
+keeps the previous generation active while it is still valid. It never extends
+the old certificate's validity. When no valid identity remains, the router is
+de-federated and the daemon stays standalone until renewal succeeds or you run
+`peppy platform login` again.
 
 ## Inspecting federation
 
@@ -118,7 +186,7 @@ peppy platform federations
 peppy platform federations --json
 ```
 
-The report has two sections. **Platform federation** shows the hub link:
+The report's **Platform federation** section shows the hub link:
 
 - `federated`: the daemon holds a verified mTLS link to the platform router.
   An endpoint on its own never produces this status; only a daemon-verified
@@ -133,6 +201,17 @@ The report has two sections. **Platform federation** shows the hub link:
 - `operator_managed`: an operator-run router owns federation (`zenoh.external`
   or an operator-pinned `ZENOH_CONFIG`); peppy neither manages nor infers it.
 
+The same section reports `core_node_certificate` with its bound
+`core_node_name`, RFC 3339 `not_after`, the latest non-secret renewal `error`
+(`null` when healthy), and one of these states:
+
+- `valid`: usable and before its renewal time.
+- `renewing`: a newly enrolled or renewed generation is being applied and
+  probed by the managed router.
+- `expiring`: renewal is due but no apply is currently in progress.
+- `expired`: metadata exists, but its certificate is no longer usable.
+- `missing`: no identity is available for the running core-node name.
+
 **Federated core nodes** lists the live core nodes visible in this machine's
 workspace namespace, one row per name, with `CORE NODE`, `VIA`, and `PATH`
 columns. The paths are **logically inferred** from the enforced architecture:
@@ -145,6 +224,12 @@ link-by-link. The JSON contract:
   "platform_federation": {
     "endpoint": "tls/router.example:7447",
     "status": "federated"
+  },
+  "core_node_certificate": {
+    "status": "valid",
+    "core_node_name": "daemon-a",
+    "not_after": "2026-07-20T16:00:00Z",
+    "error": null
   },
   "daemon_running": true,
   "federated_core_nodes": [
@@ -186,21 +271,57 @@ rotate it. A PAT principal shows up as `kind: "machine"` under
 
 `peppy platform login` with an active PAT verifies the key and applies
 federation immediately instead of starting the OAuth flow. Because the daemon
-resolves credentials from its **own** environment, PAT-driven federation
-requires `PEPPY_API_KEY` in the daemon's service environment too, not just the
-shell running the CLI.
+performs unattended certificate renewal and config pulls from its **own**
+environment, PAT-driven federation requires `PEPPY_API_KEY` in the daemon's
+service environment too, not just the shell running the CLI. Configure the
+variable in the systemd unit, container, or other service manager and restart
+the daemon before logging in. Login fails instead of reporting a healthy
+federation when the shell can authenticate but the daemon cannot.
 
-`peppy platform logout` cannot clear an environment variable: it revokes and
-removes the stored OAuth session, then reports that authentication and
-federation remain active until `PEPPY_API_KEY` is removed.
+`peppy platform logout` cannot clear an environment variable safely. If
+`PEPPY_API_KEY` is present in the command's environment, logout **refuses before
+remote revocation, local deletion, daemon restart, or any other cleanup**.
+Remove the PAT from both the shell and the daemon service environment, restart
+the service without it, and then run logout again.
 
 ## Credential storage
 
-Tokens live at `~/.peppy/conf/credentials.json5`, written owner-only (`0600`).
-The root honours `PEPPY_HOME`.
+The default root is `~/.peppy`; `PEPPY_HOME` replaces that root. Production
+identity state is laid out as follows:
+
+```text
+<PEPPY_HOME>/conf/
+├── credentials.json5
+├── .platform-core-node.lock
+├── .platform-core-node-rotation.lock
+├── .platform-auth-operation.lock
+└── platform-core-node/
+    ├── identity.json5
+    └── generations/
+        └── <generation-id>/
+            ├── client-key.pem
+            └── client-chain.pem
+```
+
+`credentials.json5` uses schema v3. It contains the cached OAuth session when
+OAuth is used, cached router data, and a non-secret `core_node_identity`
+metadata record. It never contains a PAT, private key, or certificate PEM.
+`identity.json5` is the atomic pointer to the active immutable generation. The
+identity lock protects short metadata and generation updates, the rotation
+lease remains held across staging plus router apply/probe, and the auth-operation
+lock prevents overlapping CLI login/logout commands. Their global order is auth
+operation → rotation lease → identity lock → credentials lock. Generation paths
+change on every key rotation so the router cannot accidentally keep using stale
+material.
+
+Protected directories are owner-only (`0700`) and the identity, key,
+certificate, and credentials files are `0600`. Peppy writes and activates them
+atomically. Do not copy an identity directory to another daemon: the
+certificate is bound to the originating API, account, workspace, and exact
+`core_node_name`.
 
 Tokens are never printed and `Authorization` headers are redacted in verbose
-output.
+output. Private keys and PEM bodies are likewise never logged.
 
 ## Logging out
 
@@ -208,17 +329,33 @@ output.
 peppy platform logout
 ```
 
-This calls `POST {api_url}/logout`, which denylists the presented access token
-across all backend replicas (sub-second), then deletes the local credentials.
-The effect is near-immediate for the logged-out token. It revokes only the
-token you presented; a session on another device keeps working.
+With no active PAT, logout first asks the platform to delete the certificate
+for this exact core-node name, then calls `POST {api_url}/logout` for a stored
+OAuth session. Token revocation affects only the token presented; a session on
+another device keeps working. If the backend is unavailable, Peppy reports the
+remote cleanup failure but still removes the local certificate generations,
+credentials/router cache, and desired federation state. With neither OAuth nor
+a PAT, logout is still allowed as orphan cleanup.
+
+Certificate deletion is control-plane revocation: it blocks discovery and
+future renewal, while local cleanup removes the normal client's key and link.
+The current Zenoh router does not consult that database state or a dynamic CRL,
+so a copied still-valid key/certificate can remain usable until the short leaf
+expires, and an already-established hostile connection may survive that long.
+If immediate compromised-key revocation is required, deploy a verified
+CRL/status-aware mTLS gateway in front of the router; do not treat the database
+`revoked_at` field as data-plane enforcement.
 
 Logout also returns this machine to the `local` namespace. Under `zenoh.managed`,
 it de-federates the router, restarts the daemon, and wipes the running node stack,
 with the same confirmation prompt and `--yes` bypass (see
 [Workspace federation](#workspace-federation)). Under `zenoh.external`,
 the operator's federation is left untouched and the namespace changes on the
-next manual daemon restart.
+next manual daemon restart. An external-router operator must separately remove
+any client identity installed in that router.
+
+If `PEPPY_API_KEY` is still present, none of the preceding actions happen:
+logout exits with instructions to remove it first.
 
 ## Environment variables
 

@@ -6,6 +6,10 @@
 //! ```json
 //! {
 //!   "platform_federation": { "endpoint": "tls/router.example:7447", "status": "federated" },
+//!   "core_node_certificate": {
+//!     "status": "valid", "core_node_name": "daemon-a",
+//!     "not_after": "2026-07-20T16:00:00Z", "error": null
+//!   },
 //!   "daemon_running": true,
 //!   "federated_core_nodes": [
 //!     { "core_node": "daemon-b", "via": "platform-backend",
@@ -59,11 +63,24 @@ struct FederatedCoreNode {
     path: Vec<String>,
 }
 
+/// Non-secret state of the production client certificate selected for this
+/// daemon. `not_after` is RFC 3339 UTC and is `null` when no identity exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CoreNodeCertificateStatus {
+    status: &'static str,
+    core_node_name: Option<String>,
+    not_after: Option<String>,
+    /// Latest non-secret enrollment/renewal failure retained by the daemon
+    /// while a previous valid generation remains in service.
+    error: Option<String>,
+}
+
 /// The whole report document. Every field always serializes (an absent
 /// endpoint is an explicit `null`), so the JSON contract is byte-stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct FederationsDocument {
     platform_federation: PlatformFederation,
+    core_node_certificate: CoreNodeCertificateStatus,
     daemon_running: bool,
     federated_core_nodes: Vec<FederatedCoreNode>,
 }
@@ -111,6 +128,9 @@ struct AuthState {
     /// states where the daemon could not report an applied endpoint. Never
     /// sufficient for a `federated` status on its own.
     cached_endpoint: Option<String>,
+    /// Enrolled production identity metadata. PEM/key bytes are never loaded by
+    /// this status command.
+    core_node_identity: Option<auth::identity::CoreNodeIdentity>,
 }
 
 impl AuthState {
@@ -188,12 +208,14 @@ impl Command for FederationsCommand {
             Ok(credentials) => AuthState {
                 authenticated: self.pat.is_some() || credentials.session.is_some(),
                 cached_endpoint: credentials.router.map(|router| router.endpoint),
+                core_node_identity: credentials.core_node_identity,
             },
             Err(error) => {
                 eprintln!("Warning: could not read stored credentials ({error}).");
                 AuthState {
                     authenticated: self.pat.is_some(),
                     cached_endpoint: None,
+                    core_node_identity: None,
                 }
             }
         };
@@ -340,16 +362,85 @@ fn build_report(
     } else {
         Vec::new()
     };
+    // Published before the daemon starts applying/probing a newly activated
+    // generation, so `renewing` remains observable while the poll is in flight.
+    let certificate_is_being_applied = matches!(
+        &view,
+        PlatformView::Status(daemon_status) if daemon_status.certificate_renewing
+    );
+    let certificate_error = match &view {
+        PlatformView::Status(daemon_status) => daemon_status.certificate_error.as_deref(),
+        _ => None,
+    };
+    let core_node_certificate = certificate_status(
+        auth_state.core_node_identity.as_ref(),
+        auth::storage::now_unix(),
+        local_core_node,
+        certificate_is_being_applied,
+        certificate_error,
+    );
 
     FederationsReport {
         document: FederationsDocument {
             platform_federation: PlatformFederation { endpoint, status },
+            core_node_certificate,
             daemon_running: view.daemon_running(),
             federated_core_nodes,
         },
         view,
         presence_unavailable,
     }
+}
+
+/// Classify the active generation without reading private material. A
+/// certificate bound to a different live core-node name is `missing` for this
+/// daemon: the resolver will refuse to use it and stay standalone.
+fn certificate_status(
+    identity: Option<&auth::identity::CoreNodeIdentity>,
+    now: i64,
+    live_core_node_name: Option<&str>,
+    applying: bool,
+    error: Option<&str>,
+) -> CoreNodeCertificateStatus {
+    let Some(identity) = identity
+        .filter(|identity| live_core_node_name.is_none_or(|live| live == identity.core_node_name))
+    else {
+        return CoreNodeCertificateStatus {
+            status: "missing",
+            core_node_name: None,
+            not_after: None,
+            error: error.map(str::to_string),
+        };
+    };
+
+    let status = if !identity.is_valid_at(now) {
+        "expired"
+    } else if applying {
+        // Activation publishes the replacement generation before zenohd reloads
+        // and probes it. Its new `renew_after` is necessarily in the future, so
+        // requiring the active metadata itself to be renewal-due would make the
+        // real rotation window impossible to observe as `renewing`.
+        "renewing"
+    } else if identity.renewal_due(now) {
+        "expiring"
+    } else {
+        "valid"
+    };
+    CoreNodeCertificateStatus {
+        status,
+        core_node_name: Some(identity.core_node_name.clone()),
+        not_after: format_rfc3339(identity.not_after),
+        error: error.map(str::to_string),
+    }
+}
+
+fn format_rfc3339(unix_seconds: i64) -> Option<String> {
+    use time::format_description::well_known::Rfc3339;
+
+    time::OffsetDateTime::from_unix_timestamp(unix_seconds)
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
 }
 
 /// Groups live presence into deterministic hub rows: one row per core-node
@@ -397,8 +488,16 @@ fn format_human(report: &FederationsReport) -> String {
         "status  : {}",
         report.document.platform_federation.status
     );
+    let certificate = &report.document.core_node_certificate;
+    let _ = writeln!(platform, "cert    : {}", certificate.status);
+    if let Some(not_after) = &certificate.not_after {
+        let _ = writeln!(platform, "expires : {not_after}");
+    }
     if let Some(reason) = report.link_error() {
         let _ = writeln!(platform, "reason  : {reason}");
+    }
+    if let Some(error) = &certificate.error {
+        let _ = writeln!(platform, "cert err: {error}");
     }
     if report.pinned() {
         let _ = writeln!(platform, "{PINNED_HUMAN_NOTE}");
@@ -460,6 +559,7 @@ mod tests {
 
     const HUB: &str = "tls/router.example:7447";
     const CACHED: &str = "tls/cached.example:7447";
+    const CERT_NOT_AFTER: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
 
     fn status(
         endpoint: Option<&str>,
@@ -472,6 +572,9 @@ mod tests {
                 link_state,
             },
             pinned,
+            pat_active: false,
+            certificate_error: None,
+            certificate_renewing: false,
         }
     }
 
@@ -479,6 +582,7 @@ mod tests {
         AuthState {
             authenticated: true,
             cached_endpoint: Some(CACHED.to_string()),
+            core_node_identity: Some(certificate_identity("daemon-a", 0, 4_000_000_000)),
         }
     }
 
@@ -486,6 +590,29 @@ mod tests {
         AuthState {
             authenticated: false,
             cached_endpoint: None,
+            core_node_identity: None,
+        }
+    }
+
+    fn certificate_identity(
+        core_node_name: &str,
+        not_before: i64,
+        renew_after: i64,
+    ) -> auth::identity::CoreNodeIdentity {
+        auth::identity::CoreNodeIdentity {
+            api_origin: "https://api.peppy.bot".into(),
+            subject: "subject-a".into(),
+            workspace_id: config::namespace::Namespace::parse(
+                "550e8400-e29b-41d4-a716-446655440000",
+            )
+            .unwrap(),
+            core_node_name: core_node_name.into(),
+            active_generation: "generation-1".into(),
+            serial_number: "01".into(),
+            spki_sha256: "00".repeat(32),
+            not_before,
+            not_after: CERT_NOT_AFTER,
+            renew_after,
         }
     }
 
@@ -519,6 +646,12 @@ mod tests {
             serde_json::to_value(&report.document).unwrap(),
             serde_json::json!({
                 "platform_federation": { "endpoint": HUB, "status": "federated" },
+                "core_node_certificate": {
+                    "status": "valid",
+                    "core_node_name": "daemon-a",
+                    "not_after": "2100-01-01T00:00:00Z",
+                    "error": null
+                },
                 "daemon_running": true,
                 "federated_core_nodes": [
                     {
@@ -545,6 +678,26 @@ mod tests {
             report.document.platform_federation.endpoint.as_deref(),
             Some(HUB)
         );
+        assert_eq!(
+            report.document.core_node_certificate.status, "valid",
+            "an ordinary unverified link is not necessarily a certificate rotation"
+        );
+    }
+
+    #[test]
+    fn daemon_rotation_flag_reports_an_observable_renewing_state() {
+        let mut daemon_status = status(Some(HUB), LinkState::Verified, false);
+        daemon_status.certificate_renewing = true;
+        let report = build_report(
+            PlatformView::Status(daemon_status),
+            &authed_with_cache(),
+            Some("daemon-a"),
+            &[],
+            false,
+        );
+
+        assert_eq!(report.document.platform_federation.status, "federated");
+        assert_eq!(report.document.core_node_certificate.status, "renewing");
     }
 
     #[test]
@@ -565,6 +718,27 @@ mod tests {
         let json = serde_json::to_value(&report.document).unwrap();
         assert!(json["platform_federation"].get("reason").is_none());
         assert!(format_human(&report).contains("UnknownCA"));
+    }
+
+    #[test]
+    fn renewal_failure_is_reported_while_the_prior_link_stays_verified() {
+        let mut daemon_status = status(Some(HUB), LinkState::Verified, false);
+        daemon_status.certificate_error =
+            Some("managed certificate issuer is temporarily unavailable".to_string());
+        let report = build_report(
+            PlatformView::Status(daemon_status),
+            &authed_with_cache(),
+            Some("daemon-a"),
+            &[],
+            false,
+        );
+
+        assert_eq!(report.document.platform_federation.status, "federated");
+        assert_eq!(
+            report.document.core_node_certificate.error.as_deref(),
+            Some("managed certificate issuer is temporarily unavailable")
+        );
+        assert!(format_human(&report).contains("cert err: managed certificate issuer"));
     }
 
     #[test]
@@ -722,6 +896,46 @@ mod tests {
     }
 
     #[test]
+    fn certificate_state_covers_missing_valid_expiring_renewing_and_expired() {
+        // Leave more than the maximum five-minute generation jitter between
+        // the ordinary-valid sample and renew_after so this status fixture is
+        // deterministic for every generation hash.
+        let identity = certificate_identity("daemon-a", 100, 500);
+        assert_eq!(
+            certificate_status(None, 150, Some("daemon-a"), false, None).status,
+            "missing"
+        );
+        assert_eq!(
+            certificate_status(Some(&identity), 150, Some("daemon-a"), false, None).status,
+            "valid"
+        );
+        assert_eq!(
+            certificate_status(Some(&identity), 500, Some("daemon-a"), false, None).status,
+            "expiring"
+        );
+        assert_eq!(
+            certificate_status(Some(&identity), 500, Some("daemon-a"), true, None).status,
+            "renewing"
+        );
+        assert_eq!(
+            certificate_status(
+                Some(&identity),
+                CERT_NOT_AFTER,
+                Some("daemon-a"),
+                false,
+                None,
+            )
+            .status,
+            "expired"
+        );
+        assert_eq!(
+            certificate_status(Some(&identity), 150, Some("renamed-daemon"), false, None,).status,
+            "missing",
+            "a certificate for a different core-node name is unusable by this daemon"
+        );
+    }
+
+    #[test]
     fn rows_collapse_instances_exclude_the_local_core_node_and_sort_deterministically() {
         let rows = federated_core_nodes(Some("daemon-a"), &two_remote_presences());
         assert_eq!(
@@ -778,6 +992,12 @@ mod tests {
             serde_json::to_value(&report.document).unwrap(),
             serde_json::json!({
                 "platform_federation": { "endpoint": HUB, "status": "federated" },
+                "core_node_certificate": {
+                    "status": "valid",
+                    "core_node_name": "daemon-a",
+                    "not_after": "2100-01-01T00:00:00Z",
+                    "error": null
+                },
                 "daemon_running": true,
                 "federated_core_nodes": [
                     {
@@ -808,6 +1028,8 @@ mod tests {
         assert!(rendered.contains("Platform federation"));
         assert!(rendered.contains("endpoint: tls/router.example:7447"));
         assert!(rendered.contains("status  : federated"));
+        assert!(rendered.contains("cert    : valid"));
+        assert!(rendered.contains("expires : 2100-01-01T00:00:00Z"));
         assert!(rendered.contains("Federated core nodes"));
         assert!(rendered.contains("CORE NODE"));
         assert!(rendered.contains("VIA"));

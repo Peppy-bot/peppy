@@ -49,10 +49,16 @@ pub struct DaemonState {
     /// (a control socket exists and login/logout pokes apply within this bound,
     /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
     /// `None` when it runs an operator-run external router (or no router), so
-    /// there is no federation control socket to poke and no restart to warn
-    /// about. `peppy platform login`/`logout` read this so they follow the
+    /// there is no federation control socket to poke and no router restart to
+    /// request. `peppy platform login`/`logout` read this so they follow the
     /// RUNNING daemon's mode, not a config edited on disk after it started.
     pub federation_connect_timeout_secs: Option<u64>,
+    /// Whether this daemon generation started with `PEPPY_API_KEY` in its
+    /// service environment. `None` is reserved for state written by an older
+    /// daemon that did not publish this fact, so clients never mistake an
+    /// absent legacy field for authoritative PAT absence.
+    #[serde(default)]
+    pub service_pat_active: Option<bool>,
 }
 
 fn default_messaging_port() -> u16 {
@@ -86,7 +92,17 @@ impl DaemonState {
             shutdown_grace_secs,
             namespace,
             federation_connect_timeout_secs,
+            service_pat_active: None,
         }
+    }
+
+    /// Records the daemon process's own startup view of PEPPY_API_KEY. Kept as
+    /// an explicit finalizer so generic/test state construction remains
+    /// backward-compatible (`None` means unknown), while the real builder
+    /// always publishes an authoritative `Some` value.
+    pub fn with_service_pat_active(mut self, active: bool) -> Self {
+        self.service_pat_active = Some(active);
+        self
     }
 
     /// Returns the path where the daemon state file is stored: the data
@@ -175,6 +191,7 @@ mod tests {
             shutdown_grace_secs: 5,
             namespace: config::namespace::Namespace::local(),
             federation_connect_timeout_secs: Some(30),
+            service_pat_active: Some(false),
         };
         DaemonState::write_to(&path, &original).expect("write");
 
@@ -187,6 +204,7 @@ mod tests {
         assert_eq!(read.shutdown_grace_secs, 5);
         assert_eq!(read.namespace, config::namespace::Namespace::local());
         assert_eq!(read.federation_connect_timeout_secs, Some(30));
+        assert_eq!(read.service_pat_active, Some(false));
     }
 
     #[test]
@@ -209,6 +227,7 @@ mod tests {
         assert_eq!(read.daemon_pid, None);
         assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
         assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);
+        assert_eq!(read.service_pat_active, None);
     }
 
     /// The namespace is parsed once at the read boundary: an invalid value

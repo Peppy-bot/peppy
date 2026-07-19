@@ -24,6 +24,9 @@ const WATCHDOG_MAX_FAILURES: u32 = 2;
 /// Pause after a restart to let the (reconnecting) sessions re-establish
 /// before re-probing.
 const WATCHDOG_RESTART_GRACE: Duration = Duration::from_secs(3);
+/// Bound for the retained daemon session to observe the managed-router
+/// disconnect/reconnect boundary during a watchdog respawn.
+const WATCHDOG_SESSION_RECONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Extra backoff after a restart attempt so a persistently-failing router does
 /// not spin in a tight restart loop.
 const WATCHDOG_POST_RESTART_BACKOFF: Duration = Duration::from_secs(10);
@@ -235,12 +238,9 @@ async fn run_router_watchdog(messenger: &Arc<Mutex<Messenger>>, checker: &Router
             // then respawn it.
             warn_messaging_restarting(consecutive_failures);
 
-            // stop_router is best-effort: the old process may already be
-            // unresponsive, but we still need its listening port freed.
-            if let Err(e) = lifecycle.stop_router().await {
-                warn!("Watchdog: stop_router returned an error (continuing to restart): {e}");
-            }
-            let restart = lifecycle.start_router().await;
+            let restart = lifecycle
+                .restart_router_and_wait_for_session(WATCHDOG_SESSION_RECONNECT_TIMEOUT)
+                .await;
             drop(lifecycle);
 
             match restart {

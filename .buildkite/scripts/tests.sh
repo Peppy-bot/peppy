@@ -19,17 +19,32 @@ isolated() {
   PEPPY_HOME="${PEPPY_RUN_HOME}" TMPDIR="${PEPPY_RUN_HOME}/tmpdir" "$@"
 }
 
+echo "--- :rust: cargo fmt"
+cargo fmt --all -- --check
+
 echo "--- :rust: cargo test"
-isolated cargo test
+isolated cargo test --locked
 
 echo "--- :rust: container e2e tests"
-isolated cargo test -p core-node --features container_e2e --test container_e2e
+isolated cargo test --locked -p core-node --features container_e2e --test container_e2e
 
 echo "--- :rust: multi-daemon Docker e2e tests"
-isolated cargo test -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+isolated cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
 echo "--- :rust: documentation integration tests"
-isolated cargo test -p docs-integration-tests
+isolated cargo test --locked -p docs-integration-tests
+
+echo "--- :book: documentation site build"
+(
+  cd docs
+  npm ci
+  npm run build
+)
+
+echo "--- :lock: production federation release gate"
+PEPPY_HOME="${PEPPY_RUN_HOME}" TMPDIR="${PEPPY_RUN_HOME}/tmpdir" \
+  ./scripts/check_federation_mtls_release.sh
+git diff --exit-code -- Cargo.lock
 
 # Release scripts tests run for every PR into main, and otherwise only when
 # scripts/ changed (was dorny/paths-filter). For PR builds, diff against the

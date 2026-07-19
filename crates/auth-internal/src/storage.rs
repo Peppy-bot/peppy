@@ -11,6 +11,8 @@
 //! than adding a second entry. `issuer`/`client_id` are cached alongside the
 //! tokens so a refresh does not need to re-hit `/cli/auth-config`.
 
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
@@ -20,7 +22,7 @@ use crate::error::{Error, Result};
 
 /// On-disk schema version of `credentials.json5`. Bumped on any shape change;
 /// [`load`] accepts only the current version.
-pub const CREDENTIALS_VERSION: u32 = 2;
+pub const CREDENTIALS_VERSION: u32 = 3;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
 /// session, and the cached shared-router connection, or empty (just the
@@ -39,6 +41,11 @@ pub struct Credentials {
     /// it can never outlive its identity.
     #[serde(default)]
     pub router: Option<RouterSession>,
+    /// Non-secret metadata for the active production core-node certificate.
+    /// Private key and certificate PEM bytes live only in the protected
+    /// generation directory named by this record.
+    #[serde(default)]
+    pub core_node_identity: Option<crate::identity::CoreNodeIdentity>,
 }
 
 impl Default for Credentials {
@@ -49,6 +56,7 @@ impl Default for Credentials {
             version: CREDENTIALS_VERSION,
             session: None,
             router: None,
+            core_node_identity: None,
         }
     }
 }
@@ -87,6 +95,10 @@ pub struct RouterSession {
     /// cache goes stale. Required for the same clean-break reason as
     /// `namespace`.
     pub core_node_name: String,
+    /// Immutable identity generation used when this router config was pulled.
+    /// A certificate rotation changes this value (and its PEM paths), forcing
+    /// the managed router to reload even when the endpoint is unchanged.
+    pub certificate_generation: String,
 }
 
 impl RouterSession {
@@ -200,7 +212,7 @@ pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
 /// Loads the credentials document, returning an empty one when the file does
 /// not exist yet (first login).
 pub fn load(path: &Path) -> Result<Credentials> {
-    match std::fs::read_to_string(path) {
+    match read_private_credentials(path) {
         Ok(content) => {
             let creds: Credentials = serde_json5::from_str(&content)
                 .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
@@ -220,13 +232,264 @@ pub fn load(path: &Path) -> Result<Credentials> {
     }
 }
 
-/// Atomically writes the credentials document, setting `conf/` to `0700` and the
-/// file to `0600` so the secrets are owner-only.
+#[cfg(unix)]
+fn read_private_credentials(path: &Path) -> std::io::Result<String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if let Some(parent) = path.parent()
+        && parent.exists()
+    {
+        restrict_dir(parent)?;
+    }
+    let path_metadata = std::fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing symlink credentials path {}", path.display()),
+        ));
+    }
+    if !path_metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing non-regular credentials path {}", path.display()),
+        ));
+    }
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "credentials file {} is not owned by the current user",
+                path.display()
+            ),
+        ));
+    }
+    if metadata.permissions().mode() & 0o7777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+#[cfg(not(unix))]
+fn read_private_credentials(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+/// Atomically writes a complete credentials document under the same stable
+/// cross-process lock used by [`update`]. Production read/modify/write callers
+/// should prefer `update`, so a stale snapshot cannot restore a session,
+/// identity pointer, or router cache cleared by another process.
 pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
+    let _lock = CredentialsLock::acquire(path)?;
+    save_locked(path, creds)
+}
+
+/// Serializes a credentials read/modify/write transaction across CLI and
+/// daemon processes. The callback sees the latest atomically-published v3
+/// document and its targeted edits are published before the lock is released.
+pub fn update<T>(path: &Path, mutate: impl FnOnce(&mut Credentials) -> Result<T>) -> Result<T> {
+    update_inner(path, false, mutate)
+}
+
+/// Variant used only by login/logout healing paths: a malformed or legacy
+/// credentials document is replaced with a clean v3 document while holding
+/// the transaction lock. Ordinary callers must keep using [`update`] so a
+/// format error is never silently treated as a logged-out state.
+pub fn update_or_default<T>(
+    path: &Path,
+    mutate: impl FnOnce(&mut Credentials) -> Result<T>,
+) -> Result<T> {
+    update_inner(path, true, mutate)
+}
+
+fn update_inner<T>(
+    path: &Path,
+    heal_invalid: bool,
+    mutate: impl FnOnce(&mut Credentials) -> Result<T>,
+) -> Result<T> {
+    let _lock = CredentialsLock::acquire(path)?;
+    let mut creds = match load(path) {
+        Ok(creds) => creds,
+        Err(Error::Auth(_)) if heal_invalid => Credentials::default(),
+        Err(error) => return Err(error),
+    };
+    let result = mutate(&mut creds)?;
+    save_locked(path, &creds)?;
+    Ok(result)
+}
+
+fn save_locked(path: &Path, creds: &Credentials) -> Result<()> {
     let content = json5_pretty::to_string_pretty(creds)
         .map_err(|e| Error::Auth(format!("failed to serialize credentials: {e}")))?;
-    daemon_config::atomic_write::publish_atomic_private(path, content.as_bytes())?;
+    let parent = path.parent().ok_or_else(|| {
+        Error::Auth(format!(
+            "credentials path {} has no parent directory",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+    restrict_dir(parent)?;
+    daemon_config::atomic_write::publish_atomic(path, |temporary| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(temporary)?;
+        file.write_all(content.as_bytes())?;
+        restrict_file(temporary)?;
+        file.sync_all()
+    })?;
+    #[cfg(test)]
+    FAIL_AFTER_CREDENTIALS_RENAME.with(|fail| {
+        if fail.replace(false) {
+            return Err(Error::Io(std::io::Error::other(
+                "injected failure after credentials rename",
+            )));
+        }
+        Ok(())
+    })?;
+    // The file fsync makes its contents durable; the parent fsync makes the
+    // atomic rename durable. A reported-success logout therefore cannot
+    // resurrect the prior refresh/session document after power loss.
+    File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_AFTER_CREDENTIALS_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_credentials_parent_sync_after_rename() {
+    FAIL_AFTER_CREDENTIALS_RENAME.with(|fail| fail.set(true));
+}
+
+/// A separate stable inode is required because publishing credentials uses an
+/// atomic rename. Locking `credentials.json5` itself would leave concurrent
+/// writers holding locks on different inodes after the first rename.
+struct CredentialsLock {
+    _file: File,
+}
+
+impl CredentialsLock {
+    fn acquire(credentials_path: &Path) -> Result<Self> {
+        let parent = credentials_path.parent().ok_or_else(|| {
+            Error::Auth(format!(
+                "credentials path {} has no parent directory",
+                credentials_path.display()
+            ))
+        })?;
+        let parent_existed = parent.exists();
+        std::fs::create_dir_all(parent)?;
+        restrict_dir(parent)?;
+        if !parent_existed && let Some(grandparent) = parent.parent() {
+            File::open(grandparent)?.sync_all()?;
+        }
+        let file_name = credentials_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("credentials");
+        let lock_path = parent.join(format!(".{file_name}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        restrict_file(&lock_path)?;
+        file.lock()?;
+        Ok(Self { _file: file })
+    }
+}
+
+#[cfg(unix)]
+fn restrict_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = validate_owned_non_symlink(path)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-directory protected auth path {}",
+                path.display()
+            ),
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn restrict_dir(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-directory protected auth path {}",
+                path.display()
+            ),
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn restrict_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = validate_owned_non_symlink(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-regular protected auth path {}",
+                path.display()
+            ),
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(unix)]
+fn validate_owned_non_symlink(path: &Path) -> std::io::Result<std::fs::Metadata> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing symlink protected auth path {}", path.display()),
+        ));
+    }
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "protected auth path {} is not owned by the current user",
+                path.display()
+            ),
+        ));
+    }
+    Ok(metadata)
+}
+
+#[cfg(not(unix))]
+fn restrict_file(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-regular protected auth path {}",
+                path.display()
+            ),
+        ))
+    }
 }
 
 /// Current time as unix seconds (0 if the clock predates the epoch).
@@ -279,6 +542,59 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_targeted_updates_preserve_session_and_identity_fields() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = Arc::new(dir.path().join("conf").join("credentials.json5"));
+        save(&path, &Credentials::default()).expect("seed");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let session_path = Arc::clone(&path);
+        let session_barrier = Arc::clone(&barrier);
+        let session = std::thread::spawn(move || {
+            session_barrier.wait();
+            update(&session_path, |credentials| {
+                credentials.session = Some(sample());
+                Ok(())
+            })
+            .expect("session update");
+        });
+
+        let identity_path = Arc::clone(&path);
+        let identity_barrier = Arc::clone(&barrier);
+        let identity = std::thread::spawn(move || {
+            identity_barrier.wait();
+            update(&identity_path, |credentials| {
+                credentials.core_node_identity = Some(crate::identity::CoreNodeIdentity {
+                    api_origin: "https://api.peppy.bot".into(),
+                    subject: "sub".into(),
+                    workspace_id: config::namespace::Namespace::parse(
+                        "550e8400-e29b-41d4-a716-446655440000",
+                    )
+                    .unwrap(),
+                    core_node_name: "core-node-test".into(),
+                    active_generation: "a".repeat(64),
+                    serial_number: "01".into(),
+                    spki_sha256: "a".repeat(64),
+                    not_before: 1,
+                    not_after: 3,
+                    renew_after: 2,
+                });
+                Ok(())
+            })
+            .expect("identity update");
+        });
+
+        barrier.wait();
+        session.join().unwrap();
+        identity.join().unwrap();
+        let final_state = load(&path).expect("final credentials");
+        assert!(final_state.session.is_some());
+        assert!(final_state.core_node_identity.is_some());
+    }
+
+    #[test]
     fn round_trips_a_cached_router_session() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
@@ -294,6 +610,7 @@ mod tests {
                 .expect("valid test namespace"),
                 subject: "auth0|alice".into(),
                 core_node_name: "core-node-alice-1".into(),
+                certificate_generation: "debug-shared-v1".into(),
             }),
             ..Default::default()
         };
@@ -310,6 +627,7 @@ mod tests {
         );
         assert_eq!(rs.subject, "auth0|alice");
         assert_eq!(rs.core_node_name, "core-node-alice-1");
+        assert_eq!(rs.certificate_generation, "debug-shared-v1");
     }
 
     /// A cached router session must carry the core-node name it was pulled for.
@@ -366,6 +684,7 @@ mod tests {
                 .expect("valid test namespace"),
             subject: "auth0|alice".into(),
             core_node_name: "core-node-alice-1".into(),
+            certificate_generation: "debug-shared-v1".into(),
         };
         assert!(!rs.is_stale(900, 30));
         assert!(rs.is_stale(980, 30)); // 980 + 30 >= 1000
@@ -381,6 +700,11 @@ mod tests {
         save(&path, &Credentials::default()).expect("save");
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "credentials must be owner-only");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        load(&path).expect("an owned credentials file is safely re-restricted on load");
+        let repaired = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(repaired & 0o777, 0o600);
     }
 
     #[test]
@@ -388,6 +712,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let creds = load(&dir.path().join("nope.json5")).expect("load missing");
         assert!(creds.session.is_none());
+    }
+
+    #[test]
+    fn credentials_loader_rejects_a_non_regular_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("credentials.json5");
+        std::fs::create_dir(&path).unwrap();
+
+        let error = load(&path).expect_err("a directory must never be read as protected JSON");
+        assert!(error.to_string().contains("non-regular"), "{error}");
     }
 
     #[test]

@@ -494,6 +494,7 @@ fn daemon_state_for_messenger(
         namespace,
         federation_connect_timeout_secs,
     )
+    .with_service_pat_active(auth::resolver::pat_from_env().is_some())
 }
 
 /// Extracts the messaging port from the environment variable, falling back to the default port.

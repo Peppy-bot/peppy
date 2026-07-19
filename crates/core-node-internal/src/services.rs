@@ -392,6 +392,22 @@ impl CoreNode {
         .await;
     }
 
+    /// Withdraw this generation's core-node presence while its messaging
+    /// session and managed router are still alive.
+    ///
+    /// The serve teardown path calls this before allowing the messaging task
+    /// to close the session/kill zenohd. Relying only on `CoreNode::drop` races
+    /// that shutdown: the retained Zenoh token can otherwise be dropped after
+    /// its session is gone, leaving an upstream router with a stale routed
+    /// liveliness declaration. Idempotent for startup failures and repeated
+    /// teardown attempts.
+    pub fn release_presence(&self) {
+        self.presence_token
+            .lock()
+            .expect("presence token lock never poisoned: teardown cannot panic")
+            .take();
+    }
+
     pub fn node_config(&self) -> &NodeConfig {
         &self.node_config
     }

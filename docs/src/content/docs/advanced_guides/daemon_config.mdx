@@ -9,6 +9,12 @@ By default, the peppy daemon reads one global configuration file, `~/.peppy/conf
 
 :::note
 The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each CLI platform command, so an edit there takes effect on the next `peppy platform login` without a daemon restart.
+
+In production, that startup value is also the daemon's certificate identity.
+`peppy platform login` and automatic renewal use the exact immutable
+`core_node_name` recorded by the running daemon, not a freshly reread config
+value. Changing the name therefore creates a new identity: restart first, then
+log in again to enroll a certificate for the new name.
 :::
 
 ## How the file is managed
@@ -49,6 +55,8 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
   // daemons reachable over the same router/federation: a daemon whose name is
   // already in use refuses to boot. At most 63 characters from
   // "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-".
+  // In production this exact startup value is the per-core-node mTLS identity;
+  // changing it requires a daemon restart and a new platform login/enrollment.
   // `peppy service serve --core-node-name` overrides this for one run.
   core_node_name: null,
 
@@ -87,9 +95,10 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
         high_throughput_buffer_size: 1024,
       },
 
-      // Managed zenoh-router federation with the platform backend. An
-      // authenticated daemon holds exactly one outbound mTLS upstream to the
-      // platform router; logged out it stays standalone.
+      // Managed zenoh-router federation with the platform backend. A release
+      // daemon holds exactly one outbound mTLS upstream using its automatically
+      // enrolled, short-lived per-core-node certificate; logged out, missing,
+      // mismatched, or expired identity leaves it standalone (never one-way TLS).
       federation: {
         // Seconds the daemon spends resolving the platform router before giving
         // up for this attempt (it retries in the background). Bounds the
@@ -127,9 +136,18 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
 
 `core_node_name` fixes the name of this daemon's [core node](/reference/concepts/#the-core-node). Leave it `null` (the default) and the daemon derives a stable, machine-specific name of the form `cn-{adjective}-{surname}`; set a string to pin an explicit one.
 
+A release daemon captures the resolved name in its startup state, and that
+exact value is the identity authorized by its platform client certificate.
+Enrollment never guesses the name in a separate CLI process. Consequently,
+production `peppy platform login` requires a live daemon state. Editing
+`core_node_name` while the daemon is running does not rename it, and an existing
+certificate for the old name is rejected for the new daemon. To rename a
+federated daemon, restart it with the new value and run `peppy platform login`
+again.
+
 Core-node names must be **unique across every daemon reachable over the same router or federation**. Each daemon advertises an ephemeral presence token; on boot it refuses to start if that name is already live, and while running it logs a rate-limited collision alarm if another daemon later claims the same name. If two daemons end up sharing a name, give one of them a unique `core_node_name` (or pass `peppy service serve --core-node-name <name>` for a single run) and restart it. This most commonly matters when logging in federates several machines together, or when cloning a disk image reuses another machine's derived name.
 
-The value must be non-empty, at most **63 characters**, and use only the node-name character set (start with a letter; letters, digits, `_`, `-`). An invalid value stops the daemon at startup with an error instead of failing later when the core node boots. `peppy service serve --core-node-name <name>` overrides the config for one run (the flag wins over the file); both absent falls back to the derived default.
+The value must be non-empty, at most **63 characters**, and contain only ASCII letters, digits, `_`, or `-`. An invalid value stops the daemon at startup with an error instead of failing later when the core node boots. `peppy service serve --core-node-name <name>` overrides the config for one run (the flag wins over the file); both absent falls back to the derived default.
 
 ## `zenoh`: managed or external router
 
@@ -190,11 +208,63 @@ Both values must be greater than `0`; the daemon rejects a zero buffer size at s
 
 ## `zenoh.managed.federation`: platform federation
 
-This block configures the managed router's single federation path: the outbound mTLS upstream to the platform router, established by authentication. See [Platform](/advanced_guides/platform/) for the login flow, the report command, and namespace semantics.
+This block configures the managed router's single federation path: the outbound
+mTLS upstream to the platform router, established by authentication. See
+[Platform](/advanced_guides/platform/) for enrollment, storage, status, logout,
+and namespace semantics.
 
 - **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the platform router. Resolution happens at startup and whenever `peppy platform login`/`logout` asks the daemon to reapply its desired link. Router apply and TLS verification have separate bounded budgets. A failed attempt does not block daemon startup; the daemon reports the failure and retries in the background.
 
-Federation is unavailable under `zenoh.external`; in that mode, the router operator owns its listeners, certificates, and links.
+There are no certificate paths or CA switches in `peppy_config.json5`.
+Production identity is automatic: login generates a local ECDSA P-256 key,
+enrolls a short-lived certificate bound to the running `core_node_name`, and
+stores it under
+`<PEPPY_HOME>/conf/platform-core-node/generations/<generation-id>/`. The daemon
+renews at the certificate's server-provided `renew_after` time (initially around
+12 hours into a roughly 24-hour lifetime, with jitter), rotating the private key
+each time. New generation paths force the managed router to reload. Peppy keeps
+the previous valid generation until a real mTLS probe succeeds, and rolls back
+to it if the new generation cannot connect.
+
+Renewal and platform config pulls use the daemon process's authentication
+environment. For PAT-based operation, put `PEPPY_API_KEY` in the daemon's
+systemd/container/service environment, not only in the interactive shell that
+runs `peppy platform login`. The PAT itself remains environment-only; the
+enrolled key and certificate are persisted. Remove the PAT from both
+environments before running `peppy platform logout`, which otherwise refuses
+before changing any state.
+
+Release builds fail closed. They use the operating system WebPKI roots and DNS
+hostname verification for the platform router, and require a complete, valid
+certificate/key pair for the exact API origin, account, workspace, and running
+core-node name. Missing, unreadable, malformed, mismatched, not-yet-valid, or
+expired material leaves the router standalone with an actionable error. There
+is no unauthenticated or one-way-TLS fallback. A failed renewal retries with
+backoff while the old certificate remains valid; once it expires, Peppy
+de-federates until it can obtain and verify a replacement.
+
+Debug builds instead retain the embedded shared development CA and client
+identity for zero-configuration local testing. This path is compile-time
+debug-only and cannot be enabled in a release build. Production must never
+trust the development CA.
+
+:::caution[The namespace is not an ACL]
+mTLS authenticates a server-issued core-node identity, but the router does not
+yet enforce per-workspace Zenoh permissions. The workspace namespace is routing
+context, not a tenant security boundary; use production federation only between
+mutually trusted nodes until server-side ACLs are implemented.
+:::
+
+The per-node mTLS rollout is an intentional breaking cutover. Current Peppy
+uses credentials schema v3 and rejects v2 or unversioned credentials with an
+instruction to log in again. Old release builds have no per-core-node client
+identity and their former one-way-TLS federation attempt is rejected once the
+production router requires per-core-node certificates; no daemon setting
+restores compatibility.
+
+Federation application is unavailable under `zenoh.external`; in that mode,
+the router operator owns its listeners, certificates, trust roots, links, and
+rotation procedure.
 
 ## `zenoh.external`: use an operator-run router
 
@@ -220,7 +290,17 @@ zenohd -l tcp/0.0.0.0:7448
 
 At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the platform router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
 
-`peppy platform login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
+`peppy platform login` and `logout` leave external federation untouched and
+print a note instead of poking the daemon. In a production build, login still
+uses the live daemon's fixed name and manages Peppy's local enrolled identity,
+but it does not install that identity into an external router or verify the
+router's federation link. The operator must configure mutually authenticated
+TLS, trust, renewal/reload, and fail-closed behavior for that router. Logout
+does not remove identity material that the operator copied outside
+`PEPPY_HOME`. The commands do not restart the daemon; a sign-in change reaches
+its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT`
+configures the listener for peppy's managed router, while external mode uses
+the port written in `zenoh.external.endpoint`.
 
 ## `lifecycle`: grace periods
 
