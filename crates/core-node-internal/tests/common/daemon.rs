@@ -193,7 +193,7 @@ pub async fn start_core_node_with_real_messenger_in_topology(
         None,
         topology.gossip(),
         pmi::SubscriberBufferSizes::default(),
-        // The core node stamps the `local` org namespace onto every node it
+        // The core node stamps the `local` workspace namespace onto every node it
         // spawns (see `namespace` below); its own session must open
         // under the same namespace or it cannot reach a spawned node's
         // node_ready/health services. Mirrors the daemon's

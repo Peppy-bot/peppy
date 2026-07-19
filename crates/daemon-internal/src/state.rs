@@ -41,10 +41,7 @@ pub struct DaemonState {
     /// when logged out, else the workspace id). A CLI control session reads it
     /// so it opens its session under exactly the daemon's namespace; it is
     /// written before the control socket binds, so a reader never sees a
-    /// half-set generation. Defaulted to `"local"` on read so a state file
-    /// written by another generation shape still parses (the daemon rewrites
-    /// the file on every start).
-    #[serde(default = "default_namespace")]
+    /// half-set generation.
     pub namespace: String,
     /// `Some(secs)` when this daemon generation armed managed-router federation
     /// (a control socket exists and login/logout pokes apply within this bound,
@@ -54,10 +51,6 @@ pub struct DaemonState {
     /// about. `peppy platform login`/`logout` read this so they follow the
     /// RUNNING daemon's mode, not a config edited on disk after it started.
     pub federation_connect_timeout_secs: Option<u64>,
-}
-
-fn default_namespace() -> String {
-    config::namespace::LOCAL_NAMESPACE.to_string()
 }
 
 fn default_messaging_port() -> u16 {
@@ -200,12 +193,17 @@ mod tests {
         let path = dir.path().join("daemon_state.json5");
         std::fs::write(
             &path,
-            r#"{ "core_node_name": "old", "daemon_pid": null, "written_at_ms": 1234 }"#,
+            r#"{
+                "core_node_name": "core",
+                "daemon_pid": null,
+                "namespace": "local",
+                "written_at_ms": 1234
+            }"#,
         )
         .expect("write file with unknown field");
 
         let read = DaemonState::read_from(&path).expect("read");
-        assert_eq!(read.core_node_name, "old");
+        assert_eq!(read.core_node_name, "core");
         assert_eq!(read.daemon_pid, None);
         assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
         assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);

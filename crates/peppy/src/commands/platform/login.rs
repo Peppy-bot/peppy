@@ -53,7 +53,7 @@ impl Command for LoginCommand {
         let http = HttpClient::new();
 
         // With a managed router, warn (before authentication begins) that a login
-        // changing the organization namespace restarts the daemon and wipes the
+        // changing the workspace namespace restarts the daemon and wipes the
         // running node stack. Bypassed by `--yes`, and skipped when no daemon is
         // running or its node stack holds no user nodes (so the restart wipes
         // nothing). External mode never pokes or restarts the daemon.
@@ -102,9 +102,8 @@ impl Command for LoginCommand {
         )?;
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
-        // Load-resilient: a malformed / pre-v2 / version-mismatched
-        // file fails to parse with `Error::Auth`; start fresh rather than wedge
-        // login on it (the stale file self-heals on this save).
+        // Load-resilient: a malformed credentials file fails to parse with
+        // `Error::Auth`; start fresh rather than wedge login on it.
         let mut creds = match storage::load(&creds_path) {
             Ok(creds) => creds,
             Err(auth::AuthError::Auth(_)) => storage::Credentials::default(),

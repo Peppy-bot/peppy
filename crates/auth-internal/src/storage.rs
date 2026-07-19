@@ -19,10 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::{Error, Result};
 
 /// On-disk schema version of `credentials.json5`. Bumped on any shape change;
-/// there is intentionally **no reader for an older version**. A clean break:
-/// v1 files (whose router cache spoke `organization_id`) and unversioned files
-/// (which deserialize to `0`) are rejected by [`load`], so users simply re-run
-/// `peppy platform login` (acceptable pre-GA).
+/// [`load`] accepts only the current version.
 pub const CREDENTIALS_VERSION: u32 = 2;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
@@ -73,10 +70,7 @@ pub struct RouterSession {
     pub repull_after: i64,
     /// The namespace this config was pulled for (the backend's `workspace_id`,
     /// already validated at the HTTP boundary). Drives the daemon's session
-    /// namespace, so it is cached alongside the endpoint. Required with no
-    /// legacy alias: a v1 file carrying `organization_id` fails the version
-    /// gate, the intended clean break (the load-resilient `platform
-    /// login`/`logout` then start fresh).
+    /// namespace, so it is cached alongside the endpoint.
     pub namespace: config::namespace::Namespace,
     /// The OAuth subject the config was pulled for, tagging the cache to one
     /// identity. On reuse the daemon re-pulls when this no longer matches the
@@ -208,32 +202,17 @@ pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
 pub fn load(path: &Path) -> Result<Credentials> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            // Gate on the schema version BEFORE the strict field parse: an old
-            // document must fail with the actionable re-login hint, not with
-            // whichever renamed field its old shape happens to trip over first.
-            // The probe tolerates unknown fields, so any parseable JSON5
-            // document yields its version (absent reads as 0).
-            #[derive(Deserialize)]
-            struct VersionProbe {
-                #[serde(default)]
-                version: u32,
-            }
-            let probe: VersionProbe = serde_json5::from_str(&content)
+            let creds: Credentials = serde_json5::from_str(&content)
                 .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
-            // No back-compat reader: any other version (including the
-            // unversioned old format, which reads as 0) is rejected outright so
-            // a stale-shaped file is never half-interpreted.
-            if probe.version != CREDENTIALS_VERSION {
+            if creds.version != CREDENTIALS_VERSION {
                 return Err(Error::Auth(format!(
                     "credentials file {} is an unsupported format (v{}, expected v{}); \
                      run `peppy platform login` again",
                     path.display(),
-                    probe.version,
+                    creds.version,
                     CREDENTIALS_VERSION
                 )));
             }
-            let creds: Credentials = serde_json5::from_str(&content)
-                .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
             Ok(creds)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
@@ -333,9 +312,7 @@ mod tests {
         assert_eq!(rs.core_node_name, "core-node-alice-1");
     }
 
-    /// A cached router session missing the `core_node_name` tag is rejected
-    /// outright (no back-compat default), the same clean break as `namespace`:
-    /// `platform login`/`logout` start fresh.
+    /// A cached router session must carry the core-node name it was pulled for.
     #[test]
     fn rejects_a_router_session_missing_the_core_node_name() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -359,75 +336,19 @@ mod tests {
         );
     }
 
-    /// A v2 file whose router cache still speaks the removed `organization_id`
-    /// field is rejected (no serde alias): `namespace` is simply missing.
-    #[test]
-    fn rejects_a_router_session_with_the_legacy_organization_id_field() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("conf").join("credentials.json5");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(
-            &path,
-            format!(
-                r#"{{ version: {CREDENTIALS_VERSION}, router: {{
-                    endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
-                    organization_id: "550e8400-e29b-41d4-a716-446655440000",
-                    subject: "auth0|alice", core_node_name: "core-node-a" }} }}"#
-            ),
-        )
-        .expect("write legacy-field file");
-
-        let err = load(&path).expect_err("the legacy field must be rejected");
-        assert!(
-            err.to_string().contains("failed to parse"),
-            "rejection should surface as a parse error: {err}"
-        );
-    }
-
-    /// A v1 document (the last `organization_id`-speaking schema) is rejected by
-    /// the version gate with the re-login hint.
-    #[test]
-    fn rejects_a_version_1_credentials_file() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("conf").join("credentials.json5");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(
-            &path,
-            r#"{ version: 1, router: {
-                endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
-                organization_id: "550e8400-e29b-41d4-a716-446655440000",
-                subject: "auth0|alice", core_node_name: "core-node-a" } }"#,
-        )
-        .expect("write v1 file");
-
-        let err = load(&path).expect_err("a v1 file must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unsupported format") && msg.contains("peppy platform login"),
-            "rejection should be actionable: {msg}"
-        );
-    }
-
     #[test]
     fn default_document_carries_the_current_version() {
         assert_eq!(Credentials::default().version, CREDENTIALS_VERSION);
     }
 
     #[test]
-    fn rejects_an_unversioned_old_format_file() {
+    fn rejects_a_mismatched_credentials_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        // A pre-Phase-F document: no `version` field (reads as 0).
-        std::fs::write(
-            &path,
-            r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
-                access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
-                scope: "openid" } }"#,
-        )
-        .expect("write old file");
+        std::fs::write(&path, r#"{ version: 99 }"#).expect("write mismatched file");
 
-        let err = load(&path).expect_err("old format must be rejected");
+        let err = load(&path).expect_err("mismatched version must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("unsupported format") && msg.contains("peppy platform login"),

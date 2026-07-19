@@ -1,6 +1,6 @@
 //! `peppy platform logout`: kill the access token on the backend
 //! (cross-replica) and delete the local session credentials. Does not revoke
-//! the refresh token at Zitadel (out of scope for v1); a backend that's
+//! the refresh token at Zitadel; a backend that's
 //! unreachable or returns 401/503 still results in the local credentials being
 //! cleared. An environment `PEPPY_API_KEY` cannot be cleared from here: the
 //! command reports that authentication and federation remain active until the
@@ -43,8 +43,8 @@ impl Command for LogoutCommand {
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
 
-        // Load-resilient: a malformed / pre-v2 file fails to parse
-        // with `Error::Auth`; treat it as "already effectively logged out" rather
+        // Load-resilient: a malformed credentials file fails to parse with
+        // `Error::Auth`; treat it as "already effectively logged out" rather
         // than wedging logout. A default has no session, so the early return below
         // would otherwise leave the bad file on disk; overwrite it with a clean
         // default here so logout actually heals it.

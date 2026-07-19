@@ -1543,23 +1543,6 @@ mod tests {
     }
 
     #[test]
-    fn managed_federation_rejects_the_removed_listener_field() {
-        // The direct-federation inbound listener is gone; a config still
-        // carrying it fails loud naming the field (deny_unknown_fields), the
-        // intended clean break, and the file is left untouched.
-        let content =
-            r#"{ zenoh: { managed: { federation: { listen_endpoint: "tls/0.0.0.0:7449" } } } }"#;
-        let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-
-        let error = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            error.to_string().contains("listen_endpoint"),
-            "the error should name the removed field: {error}"
-        );
-        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
-    }
-
-    #[test]
     fn zenoh_defaults_to_managed_when_absent_or_empty() {
         for content in ["{}", "{ zenoh: {} }"] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);

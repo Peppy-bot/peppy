@@ -220,22 +220,6 @@ with the same confirmation prompt and `--yes` bypass (see
 the operator's federation is left untouched and the namespace changes on the
 next manual daemon restart.
 
-## Upgrading from direct federation
-
-Older releases supported direct daemon-to-daemon federation (`peppy federation
-federate`, a fleet CA, and an inbound listener on port 7449). That system is
-gone; federation now goes only through the platform. After upgrading:
-
-1. Remove `zenoh.managed.federation.listen_endpoint`, `cert_path`, `key_path`,
-   and `ca_path` from `~/.peppy/conf/peppy_config.json5` if present; the daemon
-   otherwise fails startup naming the unknown field.
-2. Delete `~/.peppy/conf/federations.json5` and `~/.peppy/conf/federation/`
-   (the old peer registry and fleet PKI). Nothing reads them anymore.
-3. `credentials.json5` files written by older releases are rejected; run
-   `peppy platform login` again (login writes a fresh file).
-4. Restart every daemon after upgrading: the daemon state schema, the control
-   protocol, and the authenticated session mode all changed.
-
 ## Environment variables
 
 | Variable | Purpose |

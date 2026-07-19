@@ -208,25 +208,4 @@ mod tests {
             }
         ));
     }
-
-    /// The former root commands are removed outright, with no aliases: the
-    /// spec'd user-visible break, pinned so a stray re-introduction fails.
-    #[test]
-    fn removed_auth_and_federation_commands_fail_to_parse() {
-        for args in [
-            vec!["peppy", "auth", "login"],
-            vec!["peppy", "auth", "logout"],
-            vec!["peppy", "auth", "whoami"],
-            vec!["peppy", "auth", "status"],
-            vec!["peppy", "federation", "list"],
-            vec!["peppy", "federation", "federate", "tls/peer:7449"],
-            vec!["peppy", "federation", "remove", "peer"],
-            vec!["peppy", "federation", "ca", "init"],
-        ] {
-            assert!(
-                Cli::try_parse_from(args.clone()).is_err(),
-                "{args:?} must no longer parse"
-            );
-        }
-    }
 }

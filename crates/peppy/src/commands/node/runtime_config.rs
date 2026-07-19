@@ -120,7 +120,7 @@ async fn print_runtime_config_async(
     )
     .map_err(Error::PeppyConfig)?;
 
-    // Reflect the daemon's organization namespace, exactly as `apply_daemon_defaults`
+    // Reflect the daemon's workspace namespace, exactly as `apply_daemon_defaults`
     // stamps it onto a launched node, so this inspection output matches the session
     // namespace a real node would open under. Reuse the namespace captured when the
     // connection was established (above) rather than reading the state again, which

@@ -245,7 +245,7 @@ fn pull_and_cache(
     let mut cred = resolver::resolve(creds_path, http, pat)?;
     // The identity this pull is actually authenticated as drives the cache tag
     // below. A PAT is not the on-disk session, so it must not be tagged with the
-    // session subject; doing so would let the session reuse the PAT's org once the
+    // session subject; doing so would let the session reuse the PAT's workspace once the
     // PAT is gone (a cross-identity leak).
     let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
     let cfg = client::establish_federation(http, api_url, &mut cred, core_node_name)?;

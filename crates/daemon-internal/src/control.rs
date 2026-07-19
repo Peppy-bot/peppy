@@ -49,11 +49,6 @@ pub const STATUS_VERB: &str = "status";
 /// than a client-side timeout. (The `ack_budget_*` test guards this ordering.)
 pub const POKE_READ_SLACK: Duration = Duration::from_secs(11);
 
-/// The message a control client shows when the daemon speaks a different
-/// control-protocol version (a still-running pre-upgrade daemon).
-const INCOMPATIBLE_PROTOCOL: &str =
-    "daemon sent an incompatible control-protocol reply; restart the daemon after upgrading peppy";
-
 /// Where the daemon binds (and the client connects to) the federation control
 /// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
 pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
@@ -144,7 +139,7 @@ pub enum PokeOutcome {
     /// Operator-pinned `ZENOH_CONFIG` owns the router config (not auto-managed).
     Pinned,
     /// The daemon acked an error (e.g. the backend was unreachable in time), or
-    /// replied something this client cannot interpret (protocol skew).
+    /// replied with malformed data.
     DaemonError(String),
     /// No running daemon to poke (no socket, or the connection was refused).
     /// Federation will be applied the next time `serve` starts.
@@ -176,9 +171,7 @@ pub enum QueryStatusOutcome {
 ///
 /// Best effort by design: a poke failure must never fail the calling command, so
 /// a missing/refused socket maps to [`PokeOutcome::DaemonNotRunning`] and any
-/// other I/O error to a definite outcome rather than an `Err`. A reply this
-/// client cannot parse is protocol skew (a pre-upgrade daemon still running),
-/// reported as an explicit [`PokeOutcome::DaemonError`], never as "not running".
+/// other I/O error to a definite outcome rather than an `Err`.
 pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
     match request(socket_path, read_timeout, REFEDERATE_VERB) {
         Ok(ControlResponse::Ok(link)) => PokeOutcome::Applied(link),
@@ -196,9 +189,6 @@ pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcom
             ErrorKind::WouldBlock | ErrorKind::TimedOut => PokeOutcome::TimedOut,
             // No socket file, or nothing listening: no daemon to poke.
             ErrorKind::NotFound | ErrorKind::ConnectionRefused => PokeOutcome::DaemonNotRunning,
-            // The daemon answered something this client cannot parse: version
-            // skew, not absence.
-            ErrorKind::InvalidData => PokeOutcome::DaemonError(INCOMPATIBLE_PROTOCOL.into()),
             _ => PokeOutcome::DaemonError(e.to_string()),
         },
     }
@@ -220,7 +210,6 @@ pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOu
             ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
                 QueryStatusOutcome::DaemonNotRunning
             }
-            ErrorKind::InvalidData => QueryStatusOutcome::DaemonError(INCOMPATIBLE_PROTOCOL.into()),
             _ => QueryStatusOutcome::DaemonError(e.to_string()),
         },
     }
@@ -274,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn poke_sends_refederate_and_parses_the_v2_ack() {
+    fn poke_sends_refederate_and_parses_the_ack() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FEDERATION_CONTROL_SOCK);
         let handle = stub_daemon(path.clone(), |_req, stream| {
@@ -357,34 +346,11 @@ mod tests {
         assert_eq!(outcome, PokeOutcome::TimedOut);
     }
 
-    /// A still-running pre-upgrade daemon replies the old wire shape; that is
-    /// protocol skew and must surface as an explicit daemon error telling the
-    /// user to restart the daemon, never as "daemon not running".
-    #[test]
-    fn poke_reports_an_incompatible_reply_as_a_daemon_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, stream| {
-            stream
-                .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap.example:7443\"}\n")
-                .unwrap();
-        });
-
-        let outcome = poke_refederate(&path, Duration::from_secs(5));
-        handle.join().unwrap();
-
-        assert!(
-            matches!(outcome, PokeOutcome::DaemonError(ref message)
-                if message.contains("restart the daemon")),
-            "protocol skew must be an actionable daemon error, got {outcome:?}"
-        );
-    }
-
-    /// The v2 ack and status wire shapes, pinned exactly: the platform link is
+    /// The ack and status wire shapes, pinned exactly: the platform link is
     /// `endpoint` + typed `link_state`, and the restarting ack carries the
     /// target namespace.
     #[test]
-    fn platform_status_v2_wire_shape_is_stable() {
+    fn platform_status_wire_shape_is_stable() {
         let ack = ControlResponse::Ok(PlatformLink {
             endpoint: Some("tls/hub.example:7447".to_string()),
             link_state: LinkState::Error("UnknownIssuer".to_string()),
@@ -437,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn query_status_sends_status_and_parses_the_v2_platform_state() {
+    fn query_status_sends_status_and_parses_the_platform_state() {
         for (reply, expected) in [
             (
                 "{\"status\":\"federation_status\",\"endpoint\":null,\"link_state\":\"not_configured\",\"pinned\":false}\n",

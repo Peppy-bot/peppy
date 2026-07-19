@@ -72,7 +72,7 @@ struct FederationsDocument {
 /// from the status query plus whether a daemon was reachable at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PlatformView {
-    /// The daemon answered the v2 status query.
+    /// The daemon answered the status query.
     Status(daemon_control::FederationStatus),
     /// The daemon acked that it is mid-restart into a new namespace.
     Restarting,
@@ -187,12 +187,11 @@ impl Command for FederationsCommand {
             }
             Some(QueryStatusOutcome::DaemonNotRunning) => PlatformView::DaemonDown,
             Some(QueryStatusOutcome::DaemonError(message)) => {
-                // Protocol skew (a pre-upgrade daemon) is a hard CLI error with
-                // recovery guidance, never a `"error"` status in the report:
-                // that status is reserved for a failed platform link.
+                // A malformed daemon reply is a hard CLI error, never an
+                // `"error"` status in the report: that status is reserved for
+                // a failed platform link.
                 return Err(Error::ExecutionFailed(format!(
-                    "the daemon could not report federation status: {message}. Restart the \
-                     daemon after upgrading, then re-run `peppy platform federations`"
+                    "the daemon could not report federation status: {message}"
                 )));
             }
         };

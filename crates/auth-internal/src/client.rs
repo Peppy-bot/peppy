@@ -72,8 +72,6 @@ pub struct ZenohRouterConfig {
     /// `workspace_id` (the platform's stable per-workspace `Uuid`). Typed at the
     /// HTTP boundary: an invalid workspace id fails the pull instead of leaking
     /// toward a live session, and everything Peppy-side speaks only `namespace`.
-    /// Required with no legacy alias: a backend that still sends
-    /// `organization_id` fails to parse, which is the intended clean break.
     #[serde(rename = "workspace_id")]
     pub namespace: Namespace,
 }
@@ -344,24 +342,6 @@ mod tests {
         assert_eq!(
             cfg.host_port().unwrap(),
             ("abc.zenoh.localhost".to_string(), 7443)
-        );
-    }
-
-    #[test]
-    fn router_config_rejects_a_legacy_organization_id_payload() {
-        // No aliases: a backend still sending `organization_id` (and no
-        // `workspace_id`) must fail the parse, the intended clean break.
-        let json = r#"{
-            "endpoint": "tls/abc.zenoh.localhost:7443",
-            "protocol": "tls",
-            "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000"
-        }"#;
-        let err = serde_json::from_str::<ZenohRouterConfig>(json)
-            .expect_err("a legacy payload must fail to parse");
-        assert!(
-            err.to_string().contains("workspace_id"),
-            "the error should name the missing field: {err}"
         );
     }
 

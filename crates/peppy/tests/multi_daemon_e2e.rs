@@ -866,7 +866,7 @@ fn expected_rows(local: &str, remotes: &[&str]) -> serde_json::Value {
     )
 }
 
-/// Seeds a host `conf/` dir with v2 OAuth credentials whose access token the
+/// Seeds a host `conf/` dir with current OAuth credentials whose access token the
 /// mock platform accepts, for the seeded-login daemon variant.
 fn seed_oauth_conf_dir(dir: &Path, api_url: &str, access_token: &str) {
     let creds = auth::storage::Credentials {

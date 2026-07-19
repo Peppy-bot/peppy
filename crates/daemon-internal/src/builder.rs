@@ -331,7 +331,7 @@ impl ServeCommandBuilder {
                 );
 
                 // Write the daemon state file with the core node name. The
-                // organization namespace is recorded here, before the control
+                // workspace namespace is recorded here, before the control
                 // socket binds (below), so a CLI control session that reads it
                 // never sees a half-set generation.
                 let core_node_name = core_node.node_name().to_string();

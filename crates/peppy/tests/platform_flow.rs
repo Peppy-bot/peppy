@@ -414,21 +414,14 @@ fn external_logout_does_not_poke_federation_control() {
 
 #[test]
 fn logout_heals_a_malformed_credentials_file() {
-    // A malformed (e.g. unversioned pre-v2) credentials file fails to parse
-    // with `AuthError::Auth`. Logout treats that as "already logged out",
+    // A malformed credentials file fails to parse with `AuthError::Auth`.
+    // Logout treats that as "already logged out",
     // but it must still rewrite the file to a clean default so the bad file does
     // not linger on disk (the early "Not logged in" return used to skip the save).
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir);
     std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir conf");
-    // Unversioned old shape ⇒ rejected by `storage::load` with `AuthError::Auth`.
-    std::fs::write(
-        &path,
-        r#"{ session: { api_url: "http://x", issuer: "http://y", client_id: "c",
-            access_token: "a", refresh_token: "r", expires_at: 1, token_type: "Bearer",
-            scope: "openid" } }"#,
-    )
-    .expect("write malformed creds");
+    std::fs::write(&path, "{ this is not valid JSON5").expect("write malformed creds");
 
     LogoutCommand {
         // Never contacted: the malformed path returns "Not logged in" before any
