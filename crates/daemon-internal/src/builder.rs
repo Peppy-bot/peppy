@@ -645,7 +645,10 @@ mod tests {
         assert!(
             !messenger
                 .refederate(RouterLinks {
-                    upstream: Some("tcp/unused.example:7448".to_string()),
+                    upstream: Some(pmi::UpstreamLink {
+                        endpoint: "tcp/unused.example:7448".to_string(),
+                        tls: pmi::TlsConfig::default(),
+                    }),
                     tls: None,
                 })
                 .expect("external refederation is a no-op"),

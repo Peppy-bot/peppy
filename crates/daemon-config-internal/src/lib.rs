@@ -61,7 +61,7 @@ pub mod peppy_config {
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
         ExternalZenohConfig, FederationConfig, LifecycleConfig, LocalNodesTopology,
         MAX_CORE_NODE_NAME_LEN, ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig,
-        ResourceServers, ZenohConfig, load_or_create, validate_locator_path,
+        ResourceServers, ZenohConfig, load_or_create,
     };
 }
 

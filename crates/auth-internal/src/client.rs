@@ -76,42 +76,6 @@ pub struct ZenohRouterConfig {
     pub namespace: Namespace,
 }
 
-impl ZenohRouterConfig {
-    /// Splits this config's `<scheme>/<host>:<port>` locator into the
-    /// `(host, port)` a TLS client dials. Thin wrapper over [`split_locator`].
-    pub fn host_port(&self) -> Result<(String, u16)> {
-        split_locator(&self.endpoint)
-    }
-}
-
-/// Splits a `<scheme>/<host>:<port>` Zenoh locator into the `(host, port)` a TLS
-/// client dials. The host doubles as the SNI the gateway routes on and the name
-/// the router certificate is validated against. A scheme prefix is optional; a
-/// missing/invalid `host:port` is a hard error. Shared by the live response and
-/// the cached endpoint string.
-pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
-    let after_scheme = endpoint
-        .split_once('/')
-        .map(|(_scheme, rest)| rest)
-        .unwrap_or(endpoint);
-    let (host, port) = after_scheme.rsplit_once(':').ok_or_else(|| {
-        Error::Auth(format!(
-            "malformed router endpoint {endpoint:?}: expected `<scheme>/<host>:<port>`"
-        ))
-    })?;
-    if host.is_empty() {
-        return Err(Error::Auth(format!(
-            "malformed router endpoint {endpoint:?}: empty host"
-        )));
-    }
-    let port: u16 = port.parse().map_err(|_| {
-        Error::Auth(format!(
-            "malformed router endpoint {endpoint:?}: invalid port {port:?}"
-        ))
-    })?;
-    Ok((host.to_string(), port))
-}
-
 /// `POST {api_url}/me/cli/federation`: fetch the shared router's
 /// connection config (the daemon's discovery point), refreshing the access token
 /// once on a 401 for session credentials (the same reactive-refresh contract as
@@ -277,49 +241,6 @@ pub fn creds_from_login(
 mod tests {
     use super::*;
 
-    fn cfg(endpoint: &str) -> ZenohRouterConfig {
-        ZenohRouterConfig {
-            endpoint: endpoint.to_string(),
-            protocol: "tls".to_string(),
-            reconnect_after_secs: 3000,
-            namespace: Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
-                .expect("valid test namespace"),
-        }
-    }
-
-    #[test]
-    fn host_port_splits_a_tls_locator() {
-        let (host, port) = cfg("tls/7f3a.zenoh.localhost:7443")
-            .host_port()
-            .expect("valid locator");
-        assert_eq!(host, "7f3a.zenoh.localhost");
-        assert_eq!(port, 7443);
-    }
-
-    #[test]
-    fn host_port_tolerates_a_missing_scheme() {
-        let (host, port) = cfg("cap.zenoh.localhost:7443")
-            .host_port()
-            .expect("scheme is optional");
-        assert_eq!(host, "cap.zenoh.localhost");
-        assert_eq!(port, 7443);
-    }
-
-    #[test]
-    fn host_port_rejects_a_missing_port() {
-        assert!(cfg("tls/cap.zenoh.localhost").host_port().is_err());
-    }
-
-    #[test]
-    fn host_port_rejects_a_non_numeric_port() {
-        assert!(cfg("tls/cap.zenoh.localhost:https").host_port().is_err());
-    }
-
-    #[test]
-    fn host_port_rejects_an_empty_host() {
-        assert!(cfg("tls/:7443").host_port().is_err());
-    }
-
     #[test]
     fn router_config_parses_tolerantly() {
         // A backend that adds an unknown field still deserializes, and the wire
@@ -333,15 +254,12 @@ mod tests {
             "some_future_field": "ignored"
         }"#;
         let cfg: ZenohRouterConfig = serde_json::from_str(json).expect("tolerant parse");
+        assert_eq!(cfg.endpoint, "tls/abc.zenoh.localhost:7443");
         assert_eq!(cfg.protocol, "tls");
         assert_eq!(cfg.reconnect_after_secs, 3000);
         assert_eq!(
             cfg.namespace.as_str(),
             "550e8400-e29b-41d4-a716-446655440000"
-        );
-        assert_eq!(
-            cfg.host_port().unwrap(),
-            ("abc.zenoh.localhost".to_string(), 7443)
         );
     }
 

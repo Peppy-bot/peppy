@@ -26,7 +26,6 @@ mod daemon_lock;
 mod error;
 mod federation_control;
 mod messaging_router;
-mod platform_locator;
 mod router_federation;
 mod serve;
 mod shutdown_signal;

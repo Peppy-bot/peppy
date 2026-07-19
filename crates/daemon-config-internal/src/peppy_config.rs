@@ -475,20 +475,6 @@ impl ParsedEndpointBuf {
         Ok(Self { text, host, port })
     }
 
-    /// Builds the canonical `<scheme>/<host>:<port>` endpoint from parts that
-    /// were split elsewhere (bracketing an IPv6 host), validating them with the
-    /// same grammar as [`parse`](Self::parse). Lets a caller that already holds
-    /// a host and port obtain a dialable endpoint without formatting a locator
-    /// string only to re-parse it.
-    pub fn from_parts(scheme: &str, host: &str, port: u16) -> std::result::Result<Self, String> {
-        let text = if host.contains(':') {
-            format!("{scheme}/[{host}]:{port}")
-        } else {
-            format!("{scheme}/{host}:{port}")
-        };
-        Self::parse(text, scheme)
-    }
-
     /// The canonical `<scheme>/<host>:<port>` text this was parsed from.
     pub fn as_str(&self) -> &str {
         &self.text
@@ -782,28 +768,6 @@ impl ZenohConfig {
             }
         }
     }
-}
-
-/// Rejects paths that cannot be embedded in a Zenoh locator fragment. The
-/// single source of the reserved-delimiter rule, shared with the federation
-/// identity paths.
-pub fn validate_locator_path(path: &Path) -> std::result::Result<(), String> {
-    let Some(path) = path.to_str() else {
-        return Err("must be valid UTF-8 for use in a Zenoh endpoint fragment".to_string());
-    };
-    if path.is_empty() {
-        return Err("must not be empty".to_string());
-    }
-    if let Some(delimiter) = path
-        .chars()
-        .find(|character| RESERVED_LOCATOR_DELIMITERS.contains(character))
-    {
-        return Err(format!(
-            "must not contain the reserved locator delimiter {delimiter:?}; use a path without \
-             `#`, `;`, or `=`"
-        ));
-    }
-    Ok(())
 }
 
 /// Deserializes the shared [`SubscriberBufferConfig`] through a strict local wire
@@ -1603,22 +1567,6 @@ mod tests {
                 port: 7449,
             }
         );
-    }
-
-    #[test]
-    fn endpoint_from_parts_builds_the_canonical_text_and_validates() {
-        let named = ParsedEndpointBuf::from_parts("tls", "router.example", 7449).unwrap();
-        assert_eq!(named.as_str(), "tls/router.example:7449");
-        assert_eq!((named.host(), named.port()), ("router.example", 7449));
-
-        // An unbracketed IPv6 host (as split from a locator) is re-bracketed.
-        let ipv6 = ParsedEndpointBuf::from_parts("tls", "2001:db8::1", 7449).unwrap();
-        assert_eq!(ipv6.as_str(), "tls/[2001:db8::1]:7449");
-        assert_eq!(ipv6.host(), "2001:db8::1");
-
-        // The parts still go through the full dial grammar.
-        assert!(ParsedEndpointBuf::from_parts("tls", "0.0.0.0", 7449).is_err());
-        assert!(ParsedEndpointBuf::from_parts("tls", "bad_host", 7449).is_err());
     }
 
     #[test]

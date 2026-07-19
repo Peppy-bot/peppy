@@ -26,11 +26,24 @@ use crate::error::{Error, Result};
 /// cached config is treated as stale.
 const REPULL_SKEW_SECS: i64 = 30;
 
-/// The only router transport the CLI dials. The federation connect target is
-/// always built as `tls/<host>:<port>` (see [`resolve_federation_target_at`]), so a
+/// The only router transport the CLI dials: every router endpoint must parse
+/// as a `tls/<host>:<port>` locator (see [`parse_router_endpoint`]), so a
 /// config advertising any other transport is rejected at pull time rather than
 /// cached and then silently dialed over TLS anyway.
 const SUPPORTED_ROUTER_PROTOCOL: &str = "tls";
+
+/// Parses a router endpoint locator with the daemon's strict endpoint grammar
+/// (`tls/<host>:<port>`; wildcard hosts, whitespace, and config/metadata
+/// suffixes rejected; IPv6 hosts come back unbracketed). The one grammar for
+/// the whole locator surface: what the backend advertises is validated here,
+/// at the pull boundary, exactly as the daemon will dial it, so an endpoint
+/// can never be cached and only fail once it is federated to.
+pub fn parse_router_endpoint(
+    endpoint: &str,
+) -> Result<daemon_config::peppy_config::ParsedEndpointBuf> {
+    daemon_config::peppy_config::ParsedEndpointBuf::parse(endpoint, SUPPORTED_ROUTER_PROTOCOL)
+        .map_err(|error| Error::Auth(format!("malformed router endpoint {endpoint:?}: {error}")))
+}
 
 /// The committed dev root CA, embedded into the binary **only** in debug builds
 /// (`#[cfg(debug_assertions)]`) so a release binary never carries it. The CLI
@@ -66,11 +79,10 @@ const EMBEDDED_DEV_CLIENT_KEY: Option<&[u8]> = Some(include_bytes!(concat!(
 #[cfg(not(debug_assertions))]
 const EMBEDDED_DEV_CLIENT_KEY: Option<&[u8]> = None;
 
-/// The dialing parameters for a remote router: the `(host, port)` to connect to
-/// and the client TLS material to present/validate with.
+/// The dialing parameters for a remote router: the parsed `tls` endpoint to
+/// connect to and the client TLS material to present/validate with.
 pub struct RouterEndpoint {
-    pub host: String,
-    pub port: u16,
+    pub endpoint: ParsedEndpointBuf,
     pub tls: pmi::TlsConfig,
     /// The namespace this endpoint was resolved for (the backend's
     /// `workspace_id`, validated at the HTTP boundary), carried out of the
@@ -219,10 +231,8 @@ pub fn resolve_router_endpoint(
         _ => pull_and_cache(creds_path, http, api_url, pat, now, core_node_name)?,
     };
 
-    let (host, port) = client::split_locator(&endpoint)?;
     Ok(RouterEndpoint {
-        host,
-        port,
+        endpoint: parse_router_endpoint(&endpoint)?,
         tls: client_tls(ca_certificate, client_identity),
         namespace,
     })
@@ -253,10 +263,10 @@ fn pull_and_cache(
 
     // Validate the config *before* it is written to `creds.router`: a malformed
     // endpoint or an unsupported transport must not poison the on-disk
-    // `RouterSession`. A poisoned cache would otherwise re-fail `split_locator` on
-    // every reuse until it goes stale (instead of being re-pulled). The connect
-    // target is always `tls/<host>:<port>`, so reject any other advertised
-    // transport here rather than caching it and dialing TLS anyway.
+    // `RouterSession`. A poisoned cache would otherwise re-fail the endpoint
+    // parse on every reuse until it goes stale (instead of being re-pulled).
+    // The connect target is always `tls/<host>:<port>`, so reject any other
+    // advertised transport here rather than caching it and dialing TLS anyway.
     if cfg.protocol != SUPPORTED_ROUTER_PROTOCOL {
         return Err(Error::Auth(format!(
             "router config advertised unsupported transport {:?}; only \
@@ -266,7 +276,7 @@ fn pull_and_cache(
     }
     // Parse the locator now (the same check the connect path does) so an
     // unparseable endpoint is rejected before it is persisted.
-    client::split_locator(&cfg.endpoint)?;
+    parse_router_endpoint(&cfg.endpoint)?;
 
     // Reload before caching so we don't clobber a concurrent refresh's rotation
     // (the same load-before-write discipline the token refresh uses).
@@ -425,22 +435,10 @@ pub fn resolve_federation_target_at(
         // `namespace`, so a config that cannot federate also cannot carry a
         // federating namespace: an unprefixed/`local` session can never reach
         // the shared multi-tenant router.
-        Ok(ep) if !ep.namespace.is_local() => {
-            match ParsedEndpointBuf::from_parts(SUPPORTED_ROUTER_PROTOCOL, &ep.host, ep.port) {
-                Ok(endpoint) => ResolvedFederation {
-                    upstream: Some((endpoint, ep.tls)),
-                    namespace: ep.namespace,
-                },
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "router federation: resolved router endpoint is not dialable; \
-                         local router stays standalone (fail closed)"
-                    );
-                    ResolvedFederation::standalone(ep.namespace)
-                }
-            }
-        }
+        Ok(ep) if !ep.namespace.is_local() => ResolvedFederation {
+            upstream: Some((ep.endpoint, ep.tls)),
+            namespace: ep.namespace,
+        },
         Ok(ep) => {
             tracing::warn!(
                 "router federation: resolved namespace is the local namespace; \
@@ -611,5 +609,40 @@ mod tests {
     fn seconds_clamp_into_i64() {
         assert_eq!(saturating_secs_to_i64(3000), 3000);
         assert_eq!(saturating_secs_to_i64(u64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn router_endpoint_parses_with_the_strict_dial_grammar() {
+        let parsed = parse_router_endpoint("tls/7f3a.zenoh.localhost:7443").expect("valid");
+        assert_eq!(
+            (parsed.host(), parsed.port()),
+            ("7f3a.zenoh.localhost", 7443)
+        );
+        // IPv6 hosts come back unbracketed, ready for a TLS dial/probe.
+        let ipv6 = parse_router_endpoint("tls/[2001:db8::1]:7443").expect("valid ipv6");
+        assert_eq!((ipv6.host(), ipv6.port()), ("2001:db8::1", 7443));
+    }
+
+    #[test]
+    fn router_endpoint_grammar_rejects_what_the_daemon_cannot_dial() {
+        for endpoint in [
+            // One grammar end to end: a schemeless locator is no longer
+            // tolerated at the pull boundary either.
+            "cap.zenoh.localhost:7443",
+            // Wrong transport: the CLI only dials `tls/`.
+            "tcp/cap.zenoh.localhost:7443",
+            "tls/cap.zenoh.localhost",
+            "tls/:7443",
+            "tls/cap.zenoh.localhost:https",
+            // A listen wildcard is not dialable.
+            "tls/0.0.0.0:7443",
+            // Config/metadata suffixes never come from the backend.
+            "tls/cap.zenoh.localhost:7443#enable_mtls=true",
+        ] {
+            assert!(
+                parse_router_endpoint(endpoint).is_err(),
+                "{endpoint:?} must be rejected"
+            );
+        }
     }
 }

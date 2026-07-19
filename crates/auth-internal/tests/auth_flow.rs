@@ -160,10 +160,8 @@ fn establish_federation_parses_the_contract() {
         cfg.namespace.as_str(),
         "550e8400-e29b-41d4-a716-446655440000"
     );
-    assert_eq!(
-        cfg.host_port().expect("parse endpoint"),
-        ("localhost".to_string(), 7447)
-    );
+    let endpoint = router::parse_router_endpoint(&cfg.endpoint).expect("parse endpoint");
+    assert_eq!((endpoint.host(), endpoint.port()), ("localhost", 7447));
     assert!(cfg_mock.calls() >= 1, "the config endpoint should be hit");
 }
 
@@ -238,9 +236,10 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
 
     let cfg = client::establish_federation(&http, &server.base_url(), &mut cred, CORE_NODE)
         .expect("pull after refresh");
+    let endpoint = router::parse_router_endpoint(&cfg.endpoint).expect("parse endpoint");
     assert_eq!(
-        cfg.host_port().unwrap(),
-        ("cap.zenoh.localhost".to_string(), 7443)
+        (endpoint.host(), endpoint.port()),
+        ("cap.zenoh.localhost", 7443)
     );
     assert!(pull_rejected.calls() >= 1, "the seeded token must be tried");
     assert!(token.calls() >= 1, "a refresh must occur on the 401");
@@ -303,8 +302,8 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
         CORE_NODE,
     )
     .expect("resolve from cache");
-    assert_eq!(endpoint.host, "cached.zenoh.localhost");
-    assert_eq!(endpoint.port, 7443);
+    assert_eq!(endpoint.endpoint.host(), "cached.zenoh.localhost");
+    assert_eq!(endpoint.endpoint.port(), 7443);
     assert!(endpoint.tls.verify_name_on_connect);
     assert_eq!(pull.calls(), 0, "a fresh cache must not trigger a pull");
 }
@@ -568,8 +567,8 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
         CORE_NODE,
     )
     .expect("re-pull");
-    assert_eq!(endpoint.host, "fresh.zenoh.localhost");
-    assert_eq!(endpoint.port, 7443);
+    assert_eq!(endpoint.endpoint.host(), "fresh.zenoh.localhost");
+    assert_eq!(endpoint.endpoint.port(), 7443);
     assert_eq!(
         endpoint.tls.root_ca_certificate.as_deref(),
         Some(ca.as_path())
@@ -637,7 +636,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
         CORE_NODE,
     )
     .expect("resolve re-pulls under the new name");
-    assert_eq!(endpoint.host, "cap.zenoh.localhost");
+    assert_eq!(endpoint.endpoint.host(), "cap.zenoh.localhost");
     assert_eq!(
         pull.calls(),
         1,
@@ -698,7 +697,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         CORE_NODE,
     )
     .expect("PAT pull resolves");
-    assert_eq!(ep.host, "pat-workspace.zenoh.localhost");
+    assert_eq!(ep.endpoint.host(), "pat-workspace.zenoh.localhost");
     assert_eq!(pull.calls(), 1, "the PAT pull hit the backend once");
     assert_eq!(
         me.calls(),

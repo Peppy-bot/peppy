@@ -52,12 +52,11 @@
 
 use crate::control::{FederationStatus, LinkState, PlatformLink};
 use crate::error::{Error, Result};
-use crate::platform_locator::platform_connect_locator;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use config::namespace::Namespace;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::ParsedEndpointBuf;
-use pmi::{Messenger, MessengerBackend, RouterLinks};
+use pmi::{Messenger, MessengerBackend, RouterLinks, UpstreamLink};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -90,14 +89,24 @@ const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// queries never enter this queue: they are answered from the status watch.
 const REFEDERATE_QUEUE_CAPACITY: usize = 1;
 
-/// The platform federation target: the durable endpoint stays separate from the
-/// rendered locator (which carries the mTLS material as endpoint fragments), so
-/// status never keys off fragment text.
-#[derive(Debug, Clone)]
+/// The platform federation target: the parsed dial endpoint plus the
+/// connect-side mTLS material for that link. Typed end to end: change
+/// detection compares this pair, and pmi renders the locator (endpoint plus
+/// TLS fragments) at apply time.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DesiredBackend {
     endpoint: ParsedEndpointBuf,
-    locator: String,
     tls: pmi::TlsConfig,
+}
+
+impl DesiredBackend {
+    /// The upstream link pmi applies for this target.
+    fn upstream_link(&self) -> UpstreamLink {
+        UpstreamLink {
+            endpoint: self.endpoint.as_str().to_string(),
+            tls: self.tls.clone(),
+        }
+    }
 }
 
 /// What one poll's resolve produced: the desired platform upstream (`None` is
@@ -162,7 +171,7 @@ type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 /// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned), in place of the
 /// real [`refederate_and_restart`], whose mock backend can only ever report
 /// `Ok(false)` and so cannot exercise the applied/verify path.
-type Federator = Arc<dyn Fn(Option<String>) -> FederateFuture + Send + Sync>;
+type Federator = Arc<dyn Fn(Option<UpstreamLink>) -> FederateFuture + Send + Sync>;
 
 /// The real federator: re-render the owned router's config with the upstream and,
 /// if it changed, bounce zenohd (see [`refederate_and_restart`]).
@@ -295,19 +304,10 @@ impl RouterFederation {
                 connect_timeout,
                 &core_node_name,
             );
-            let upstream = resolved
-                .upstream
-                .map(|(endpoint, tls)| {
-                    let locator = platform_connect_locator(&endpoint, &tls)?;
-                    Ok::<_, String>(DesiredBackend {
-                        endpoint,
-                        locator,
-                        tls,
-                    })
-                })
-                .transpose()?;
             Ok(Resolved {
-                upstream,
+                upstream: resolved
+                    .upstream
+                    .map(|(endpoint, tls)| DesiredBackend { endpoint, tls }),
                 namespace: resolved.namespace,
             })
         });
@@ -379,9 +379,9 @@ fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watc
 
 /// The desired state whose last apply attempt completed (with `Ok(true)` or
 /// `Ok(false)`), so an unchanged desired state replays the cached outcome
-/// instead of bouncing the router again. Keyed on the rendered locator
-/// (endpoint + TLS fragments), so a changed certificate path re-applies even
-/// when the endpoint is unchanged.
+/// instead of bouncing the router again. Keyed on the endpoint plus its TLS
+/// material, so a changed certificate path re-applies even when the endpoint
+/// is unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum SettledDesired {
     /// No apply attempt has settled yet (a pinned start), so the first poll
@@ -390,22 +390,22 @@ enum SettledDesired {
     /// Settled with no upstream: the router is standalone by decision.
     #[default]
     Standalone,
-    /// Settled with this upstream locator.
-    Upstream(String),
+    /// Settled with this upstream target.
+    Upstream(DesiredBackend),
 }
 
 impl SettledDesired {
     /// The settled form of a completed apply attempt for `desired`.
-    fn from_completed(desired: Option<String>) -> Self {
+    fn from_completed(desired: Option<DesiredBackend>) -> Self {
         match desired {
             None => Self::Standalone,
-            Some(locator) => Self::Upstream(locator),
+            Some(backend) => Self::Upstream(backend),
         }
     }
 
     /// Whether `desired` matches what last settled. An unsettled state matches
     /// nothing, so the first poll after a pinned start always applies.
-    fn matches(&self, desired: &Option<String>) -> bool {
+    fn matches(&self, desired: &Option<DesiredBackend>) -> bool {
         match (self, desired) {
             (Self::Standalone, None) => true,
             (Self::Upstream(settled), Some(desired)) => settled == desired,
@@ -689,11 +689,7 @@ impl FederationPoller {
             .upstream
             .as_ref()
             .map(|backend| backend.endpoint.as_str().to_string());
-        let desired_locator = resolved
-            .upstream
-            .as_ref()
-            .map(|backend| backend.locator.clone());
-        let unchanged = applied.last_settled_desired.matches(&desired_locator);
+        let unchanged = applied.last_settled_desired.matches(&resolved.upstream);
 
         // Apply the desired upstream, or replay the cached outcome when the
         // rendered locator (endpoint + TLS material) is unchanged.
@@ -712,9 +708,11 @@ impl FederationPoller {
             // notices the dead router and respawns it with the already-rewritten
             // config, so the router cannot stay down.
             let apply_deadline = tokio::time::Instant::now() + self.apply_timeout;
-            match tokio::time::timeout_at(apply_deadline, (self.federator)(desired_locator.clone()))
-                .await
-            {
+            let desired_link = resolved
+                .upstream
+                .as_ref()
+                .map(DesiredBackend::upstream_link);
+            match tokio::time::timeout_at(apply_deadline, (self.federator)(desired_link)).await {
                 Err(_elapsed) => {
                     warn!(
                         "router federation: applying the upstream change timed out, so federation \
@@ -735,7 +733,7 @@ impl FederationPoller {
                             LinkState::NotConfigured
                         },
                         last_settled_desired: SettledDesired::from_completed(
-                            desired_locator.clone(),
+                            resolved.upstream.clone(),
                         ),
                         pinned: false,
                         needs_reapply: false,
@@ -753,7 +751,7 @@ impl FederationPoller {
                          ZENOH_CONFIG; the desired federation change was not applied"
                     );
                     applied.last_settled_desired =
-                        SettledDesired::from_completed(desired_locator.clone());
+                        SettledDesired::from_completed(resolved.upstream.clone());
                     applied.pinned = true;
                     applied.needs_reapply = false;
                     return FederationOutcome::Pinned;
@@ -814,7 +812,7 @@ impl FederationPoller {
 /// router bounced.
 async fn refederate_and_restart(
     messenger: &Arc<Mutex<Messenger>>,
-    upstream: Option<String>,
+    upstream: Option<UpstreamLink>,
 ) -> Result<bool> {
     let mut messenger = messenger.lock().await;
     let rewrote = messenger
@@ -985,12 +983,11 @@ mod tests {
     fn upstream() -> Option<DesiredBackend> {
         Some(DesiredBackend {
             endpoint: dial(ENDPOINT),
-            locator: ENDPOINT.to_string(),
             tls: pmi::TlsConfig::default(),
         })
     }
 
-    fn recording_federator() -> (Federator, Arc<std::sync::Mutex<Vec<Option<String>>>>) {
+    fn recording_federator() -> (Federator, Arc<std::sync::Mutex<Vec<Option<UpstreamLink>>>>) {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = calls.clone();
         let federator: Federator = Arc::new(move |upstream| {
@@ -1043,7 +1040,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_upstream_apply_renders_the_single_platform_locator() {
+    async fn an_upstream_apply_hands_pmi_the_typed_platform_link() {
         let (resolver, _) = counting_resolver(upstream());
         let (federator, calls) = recording_federator();
         let (prober, probe_calls) = counting_prober(Ok(()));
@@ -1060,7 +1057,14 @@ mod tests {
                 link_state: LinkState::Unverified,
             })
         );
-        assert_eq!(*calls.lock().unwrap(), vec![Some(ENDPOINT.to_string())]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![Some(UpstreamLink {
+                endpoint: ENDPOINT.to_string(),
+                tls: pmi::TlsConfig::default(),
+            })],
+            "the apply carries the endpoint and its TLS material typed; pmi renders the locator"
+        );
         assert_eq!(
             probe_calls.load(Ordering::SeqCst),
             0,
@@ -1097,14 +1101,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_changed_locator_reapplies_the_unchanged_endpoint() {
-        // Same endpoint, refreshed TLS material (a re-issued certificate changes
-        // the fragment paths): the rendered locator differs, so the poll must
-        // re-apply even though the endpoint string is identical.
+    async fn changed_tls_material_reapplies_the_unchanged_endpoint() {
+        // Same endpoint, refreshed TLS material (a re-issued certificate
+        // changes the connect paths): the desired target differs, so the poll
+        // must re-apply even though the endpoint is identical.
+        let generation_2_tls = pmi::TlsConfig {
+            connect_certificate: Some("/certs/generation-2/cert.pem".into()),
+            ..pmi::TlsConfig::default()
+        };
         let refreshed = Some(DesiredBackend {
             endpoint: dial(ENDPOINT),
-            locator: format!("{ENDPOINT}#connect_certificate_file=/certs/generation-2/cert.pem"),
-            tls: pmi::TlsConfig::default(),
+            tls: generation_2_tls.clone(),
         });
         let (resolver, _) = counting_resolver(refreshed.clone());
         let (federator, calls) = recording_federator();
@@ -1112,9 +1119,13 @@ mod tests {
         let mut applied = AppliedState {
             endpoint: Some(ENDPOINT.to_string()),
             link_state: LinkState::Unverified,
-            last_settled_desired: SettledDesired::Upstream(format!(
-                "{ENDPOINT}#connect_certificate_file=/certs/generation-1/cert.pem"
-            )),
+            last_settled_desired: SettledDesired::Upstream(DesiredBackend {
+                endpoint: dial(ENDPOINT),
+                tls: pmi::TlsConfig {
+                    connect_certificate: Some("/certs/generation-1/cert.pem".into()),
+                    ..pmi::TlsConfig::default()
+                },
+            }),
             pinned: false,
             needs_reapply: false,
         };
@@ -1126,8 +1137,11 @@ mod tests {
         assert!(matches!(outcome, FederationOutcome::Applied(_)));
         assert_eq!(
             *calls.lock().unwrap(),
-            vec![refreshed.map(|backend| backend.locator)],
-            "a changed locator must re-render the router config"
+            vec![Some(UpstreamLink {
+                endpoint: ENDPOINT.to_string(),
+                tls: generation_2_tls,
+            })],
+            "changed TLS material must re-render the router config"
         );
     }
 
@@ -1176,7 +1190,10 @@ mod tests {
         assert!(applied.pinned);
         assert_eq!(
             applied.last_settled_desired,
-            SettledDesired::Upstream(ENDPOINT.to_string()),
+            SettledDesired::Upstream(DesiredBackend {
+                endpoint: dial(ENDPOINT),
+                tls: pmi::TlsConfig::default(),
+            }),
             "the rejected target is cached so an identical repeat stays Pinned"
         );
     }
@@ -1189,7 +1206,10 @@ mod tests {
         let mut applied = AppliedState {
             endpoint: Some(ENDPOINT.to_string()),
             link_state: LinkState::Verified,
-            last_settled_desired: SettledDesired::Upstream(ENDPOINT.to_string()),
+            last_settled_desired: SettledDesired::Upstream(DesiredBackend {
+                endpoint: dial(ENDPOINT),
+                tls: pmi::TlsConfig::default(),
+            }),
             pinned: false,
             needs_reapply: false,
         };
@@ -1312,7 +1332,6 @@ mod tests {
         let endpoint = "tls/[2001:db8::1]:7447";
         let (resolver, _) = counting_resolver(Some(DesiredBackend {
             endpoint: dial(endpoint),
-            locator: endpoint.to_string(),
             tls: pmi::TlsConfig::default(),
         }));
         let (federator, _) = recording_federator();

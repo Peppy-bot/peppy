@@ -121,7 +121,8 @@ fn write_standalone_router_pin(path: &Path) {
         MANAGED_ROUTER_PORT,
         true,
         RouterLinks::default(),
-    );
+    )
+    .expect("render pinned zenohd config");
     std::fs::write(path, config).expect("write pinned zenohd config");
 }
 
@@ -556,7 +557,8 @@ async fn start_hub(launch: &DaemonLaunch, suffix: &str, config_dir: &Path) -> Da
                 )
             }),
         },
-    );
+    )
+    .expect("render hub router config");
     let config_path = config_dir.join("hub-router.json5");
     std::fs::write(&config_path, config).expect("write hub router config");
 
