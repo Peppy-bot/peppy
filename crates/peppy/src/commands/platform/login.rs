@@ -78,17 +78,7 @@ impl Command for LoginCommand {
                 principal.display_name(),
                 profile::build_env_name()
             );
-            return match federation {
-                Some(connect_timeout_secs) => super::poke_federation_and_report(
-                    &dirs,
-                    connect_timeout_secs,
-                    super::FederationPokeAction::Login,
-                ),
-                None => {
-                    println!("{}", super::EXTERNAL_ROUTER_NOTE);
-                    Ok(())
-                }
-            };
+            return super::finish_federation(&dirs, federation, super::FederationPokeAction::Login);
         }
 
         let cfg = cli_config::fetch(&http, &api_url)?;
@@ -152,17 +142,7 @@ impl Command for LoginCommand {
         // credentials were already saved above, so the user stays authenticated;
         // only the command fails. External mode leaves federation untouched and
         // tells the operator that sessions change on the next manual restart.
-        match federation {
-            Some(connect_timeout_secs) => super::poke_federation_and_report(
-                &dirs,
-                connect_timeout_secs,
-                super::FederationPokeAction::Login,
-            ),
-            None => {
-                println!("{}", super::EXTERNAL_ROUTER_NOTE);
-                Ok(())
-            }
-        }
+        super::finish_federation(&dirs, federation, super::FederationPokeAction::Login)
     }
 }
 

@@ -93,14 +93,11 @@ impl AppContext {
         &self,
         messaging_host: &str,
         messaging_port: u16,
-        namespace: &str,
+        namespace: config::namespace::Namespace,
     ) -> crate::error::Result<()> {
         // Open the control session under the daemon's namespace so the CLI reaches
-        // the daemon/node services that run under it. The daemon recorded the
-        // namespace in `DaemonState` before binding the control socket, so it is a
-        // valid value; resolve defensively (a bad value falls back to `local`).
-        let namespace = config::namespace::Namespace::parse(namespace)
-            .unwrap_or_else(|_| config::namespace::Namespace::local());
+        // the daemon/node services that run under it. `DaemonState` carries the
+        // namespace already parsed, so an invalid value failed the state read.
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::connect(messaging_host, messaging_port)
@@ -142,7 +139,7 @@ pub(crate) struct DaemonConnection<'a> {
     /// connection used. Callers reuse this instead of reading the state again,
     /// which could race a restart and pair this connection's data with a different
     /// generation's namespace.
-    pub namespace: String,
+    pub namespace: config::namespace::Namespace,
 }
 
 impl AppContext {
@@ -151,7 +148,7 @@ impl AppContext {
         self.connect_with_endpoint(
             &daemon_state.messaging_host,
             daemon_state.messaging_port,
-            &daemon_state.namespace,
+            daemon_state.namespace.clone(),
         )
         .await?;
         let messenger = self
@@ -201,7 +198,7 @@ mod tests {
             0,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
-            "local",
+            config::namespace::Namespace::local(),
             None,
         );
         DaemonState::write_to(&state_path, &state).expect("daemon state should write");

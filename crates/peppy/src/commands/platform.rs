@@ -191,6 +191,27 @@ fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
         .any(|node| node.stage != Some(NodeStage::Root))
 }
 
+/// The federation follow-up every credentials change shares: poke a managed
+/// daemon (via [`poke_federation_and_report`]) so the change applies
+/// immediately, or explain that an operator-run (`zenoh.external`) router was
+/// left untouched. `federation` is the managed connect timeout from
+/// [`federation_poke_timeout_secs`] (`None` is external mode).
+pub(crate) fn finish_federation(
+    dirs: &PeppyDirs,
+    federation: Option<u64>,
+    action: FederationPokeAction,
+) -> Result<()> {
+    match federation {
+        Some(connect_timeout_secs) => {
+            poke_federation_and_report(dirs, connect_timeout_secs, action)
+        }
+        None => {
+            println!("{EXTERNAL_ROUTER_NOTE}");
+            Ok(())
+        }
+    }
+}
+
 /// After credentials change, poke the running daemon over its control socket so
 /// federation is (re)applied *immediately* rather than on the daemon's next poll,
 /// and report the result.
@@ -282,7 +303,7 @@ fn await_restart(
         // Read from the same `dirs` the command resolved, like the socket path.
         let back_under_expected = matches!(
             DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
-            Ok(state) if state.namespace == expected
+            Ok(state) if state.namespace.as_str() == expected
         );
         if !back_under_expected {
             continue;
@@ -535,7 +556,15 @@ mod tests {
     /// Writes a daemon state file under `dirs` whose recorded pid is this test
     /// process (so `is_running` holds) and whose federation field is `timeout`.
     fn write_running_state(dirs: &PeppyDirs, timeout: Option<u64>) {
-        let state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", timeout);
+        let state = DaemonState::new(
+            "cn-test",
+            "127.0.0.1",
+            7447,
+            "test",
+            5,
+            config::namespace::Namespace::local(),
+            timeout,
+        );
         DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
             .expect("write daemon state");
     }
@@ -585,7 +614,15 @@ mod tests {
     fn a_stale_state_file_from_a_dead_daemon_falls_back_to_the_disk_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dirs = PeppyDirs::new(dir.path());
-        let mut state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", None);
+        let mut state = DaemonState::new(
+            "cn-test",
+            "127.0.0.1",
+            7447,
+            "test",
+            5,
+            config::namespace::Namespace::local(),
+            None,
+        );
         // A pid outside the valid range names no live process, so the state is
         // stale and the disk config decides again.
         state.daemon_pid = Some(u32::MAX);

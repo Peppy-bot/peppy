@@ -1,7 +1,7 @@
 use super::core_node::CoreNodeRunner;
 use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
-use super::router_federation::RouterFederation;
+use super::router_federation::{RouterFederation, trigger_channel};
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
 use crate::state::DaemonState;
@@ -175,10 +175,9 @@ impl ServeCommandBuilder {
                 // node, and the federation task. The router itself is never
                 // namespaced (it only forwards), so the namespace rides only on
                 // application sessions.
-                let namespace = auth::router::cached_namespace(&auth::storage::credentials_path(
+                let namespace = auth::router::session_namespace(&auth::storage::credentials_path(
                     &self.peppy_dirs,
-                ))
-                .unwrap_or_else(config::namespace::Namespace::local);
+                ));
                 self.namespace = namespace.clone();
 
                 // The effective gossip bit for this whole generation: the
@@ -266,8 +265,8 @@ impl ServeCommandBuilder {
         // below, the core node delays its boot-time presence check and token
         // declaration until the *initial* federation poll has settled, so it
         // sees the federated mesh rather than the always-standalone just-started
-        // local router (a same-name daemon reachable only through the per-user
-        // cloud router must refuse boot). RouterFederation fires the sender in
+        // local router (a same-name daemon reachable only through the platform
+        // router must refuse boot). RouterFederation fires the sender in
         // lockstep with its startup readiness gate, so the wait is bounded by
         // `federation_connect_timeout` and fail-open (dropped sender ⇒ the core
         // node proceeds standalone).
@@ -342,7 +341,7 @@ impl ServeCommandBuilder {
                         &core_node_name,
                         &self.git_hash,
                         shutdown_grace_secs,
-                        self.namespace.as_str(),
+                        self.namespace.clone(),
                         // `Some` exactly when this generation arms managed-router
                         // federation below (a control socket will exist), so the
                         // auth commands can follow the running daemon's mode.
@@ -371,13 +370,13 @@ impl ServeCommandBuilder {
             }
         }
 
-        // Per-user-router federation manager (zenoh engine only; other engines
+        // Platform-router federation manager (zenoh engine only; other engines
         // never set `federation_api_url`). Applies the initial federation once the
-        // router is up (gating `serve` reporting ready, bounded by the timeout),
-        // keeps the cloud router alive, and (de)federates the local router live on
-        // login/logout: immediately when poked over the control socket, else on
-        // the next poll. It waits on `messaging_ready` before touching the router,
-        // so it can't race MessagingRouter's initial `start_router`.
+        // router is up (gating `serve` reporting ready, bounded by the timeout)
+        // and (de)federates the local router live on login/logout: immediately
+        // when poked over the control socket, else on the next poll. It waits on
+        // `messaging_ready` before touching the router, so it can't race
+        // MessagingRouter's initial `start_router`.
         // In-process restart channel. Armed only for managed zenoh when the
         // federation API URL resolves; external zenoh and the mock engine have no
         // federation control channel and never restart through this path.
@@ -394,45 +393,47 @@ impl ServeCommandBuilder {
             && let Some(core_node_name) = federation_core_node_name
         {
             let connect_timeout = self.federation_connect_timeout;
-            // Poke channel: `auth login`/`logout` reach the federation loop through
-            // the control socket so a login is federated immediately, not on the
-            // next poll. Bounded + tiny: pokes are rare and serviced one at a time.
-            let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(8);
+            // Poke channel: `peppy platform login`/`logout` reach the federation
+            // loop through the control socket so a login is federated immediately,
+            // not on the next poll. Sized by the federation module: one poke can
+            // wait behind an in-progress poll, further ones are rejected as busy.
+            let (trigger_tx, trigger_rx) = trigger_channel();
             // Restart signal: the control handler raises it after flushing the
             // `Restarting` ack; the serve coordinator observes it.
             let (restart_tx, restart_signal_rx) = watch::channel(false);
             restart_rx = Some(restart_signal_rx);
-            self.composite_command =
-                self.composite_command
-                    .add_async_command(Box::new(RouterFederation::new(
-                        messenger,
-                        api_url,
-                        // This generation's core-node name, carried in every
-                        // federation POST so the backend registry knows which
-                        // daemon pulled the config.
-                        core_node_name,
-                        // The data root the loop's per-poll credential reads
-                        // and materialized dev TLS derive from.
-                        self.peppy_dirs.clone(),
-                        messaging_ready,
-                        trigger_rx,
-                        connect_timeout,
-                        // This generation's namespace: the federation loop compares
-                        // the namespace it re-resolves from fresh creds against this
-                        // to decide live re-federate (unchanged) vs restart (changed).
-                        self.namespace.as_str().to_string(),
-                        // The startup poll raises this if it resolves a namespace
-                        // that differs from this generation's (the steady-state
-                        // poke path leaves the restart to the control handler).
-                        restart_tx.clone(),
-                        // Opens the core node's presence-check gate once the initial
-                        // federation poll settles (see above).
-                        federation_settled_tx,
-                        // Router-config ownership captured when the adapter was
-                        // built, so the first status reports pinned correctly.
-                        self.router_pinned,
-                        self.teardown_token.clone(),
-                    )));
+            let (federation, federation_status_rx) = RouterFederation::new(
+                messenger,
+                api_url,
+                // This generation's core-node name, carried in every
+                // federation POST so the backend registry knows which
+                // daemon pulled the config.
+                core_node_name,
+                // The data root the loop's per-poll credential reads
+                // and materialized dev TLS derive from.
+                self.peppy_dirs.clone(),
+                messaging_ready,
+                trigger_rx,
+                connect_timeout,
+                // This generation's namespace: the federation loop compares
+                // the namespace its resolves carry against this to decide
+                // live re-federate (unchanged) vs restart (changed).
+                self.namespace.clone(),
+                // The startup poll raises this if it resolves a namespace
+                // that differs from this generation's (the steady-state
+                // poke path leaves the restart to the control handler).
+                restart_tx.clone(),
+                // Opens the core node's presence-check gate once the initial
+                // federation poll settles (see above).
+                federation_settled_tx,
+                // Router-config ownership captured when the adapter was
+                // built, so the first status reports pinned correctly.
+                self.router_pinned,
+                self.teardown_token.clone(),
+            );
+            self.composite_command = self
+                .composite_command
+                .add_async_command(Box::new(federation));
 
             // Control socket the CLI pokes. Derived from this run's `PeppyDirs`
             // (the same root the CLI resolves by default), so the two agree
@@ -443,6 +444,7 @@ impl ServeCommandBuilder {
                     .add_async_command(Box::new(FederationControl::new(
                         socket_path,
                         trigger_tx,
+                        federation_status_rx,
                         connect_timeout,
                         restart_tx,
                         self.teardown_token.clone(),
@@ -471,7 +473,7 @@ fn daemon_state_for_messenger(
     core_node_name: &str,
     git_hash: &str,
     shutdown_grace_secs: u64,
-    namespace: &str,
+    namespace: config::namespace::Namespace,
     federation_connect_timeout_secs: Option<u64>,
 ) -> DaemonState {
     let (messaging_host, messaging_port) = messenger
@@ -655,7 +657,7 @@ mod tests {
             "regression-core",
             "regression-git-hash",
             42,
-            config::namespace::LOCAL_NAMESPACE,
+            config::namespace::Namespace::local(),
             builder
                 .federation_api_url
                 .as_ref()

@@ -343,7 +343,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
         std::path::PathBuf::from("/etc/peppy/client.pem"),
         std::path::PathBuf::from("/etc/peppy/client-key.pem"),
     );
-    let target = router::resolve_federation_target_at(
+    let resolved = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
         None,
@@ -351,20 +351,30 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
         Some(client_identity),
         SECS_30,
         CORE_NODE,
-    )
-    .expect("logged in ⇒ a federation target");
-    assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
+    );
+    let (endpoint, tls) = resolved.upstream.expect("logged in ⇒ a federation target");
+    assert_eq!(endpoint.as_str(), "tls/cap.zenoh.localhost:7443");
+    assert_eq!(
+        (endpoint.host(), endpoint.port()),
+        ("cap.zenoh.localhost", 7443),
+        "the endpoint is handed over already parsed for dialing"
+    );
     assert!(
-        target.1.verify_name_on_connect,
+        tls.verify_name_on_connect,
         "the upstream link verifies the router's cert name"
     );
     assert!(
-        target.1.enable_mtls,
+        tls.enable_mtls,
         "the daemon presents its client cert for mTLS to the shared router"
     );
     assert!(
-        target.1.connect_certificate.is_some(),
+        tls.connect_certificate.is_some(),
         "the mTLS client certificate is set"
+    );
+    assert_eq!(
+        resolved.namespace.as_str(),
+        "550e8400-e29b-41d4-a716-446655440000",
+        "the namespace rides out of the same resolve"
     );
     assert!(pull.calls() >= 1, "a logged-in resolve pulls the config");
 }
@@ -383,7 +393,7 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = creds_path(&dir); // no creds file written ⇒ no session
-    let target = router::resolve_federation_target_at(
+    let resolved = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
         None,
@@ -392,7 +402,14 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
         SECS_30,
         CORE_NODE,
     );
-    assert!(target.is_none(), "not logged in ⇒ no federation target");
+    assert!(
+        resolved.upstream.is_none(),
+        "not logged in ⇒ no federation target"
+    );
+    assert!(
+        resolved.namespace.is_local(),
+        "not logged in ⇒ the standalone local namespace"
+    );
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
 }
 
@@ -421,7 +438,7 @@ fn resolve_federation_target_fails_closed_on_an_invalid_workspace_namespace() {
     };
     storage::save(&path, &creds).expect("seed creds");
 
-    let target = router::resolve_federation_target_at(
+    let resolved = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
         None,
@@ -431,7 +448,7 @@ fn resolve_federation_target_fails_closed_on_an_invalid_workspace_namespace() {
         CORE_NODE,
     );
     assert!(
-        target.is_none(),
+        resolved.upstream.is_none(),
         "a workspace id that is not a valid namespace must fail closed (no federation)"
     );
     assert!(
@@ -481,7 +498,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         CORE_NODE,
     );
     assert!(
-        too_slow.is_none(),
+        too_slow.upstream.is_none(),
         "a backend slower than the timeout ⇒ no federation target"
     );
 
@@ -496,7 +513,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         CORE_NODE,
     );
     assert!(
-        in_time.is_some(),
+        in_time.upstream.is_some(),
         "a backend within the timeout ⇒ a federation target"
     );
     assert!(

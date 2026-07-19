@@ -1,4 +1,4 @@
-//! Resolving the caller's per-user zenoh-router connection for a remote (`tls/`)
+//! Resolving the caller's platform-router connection for a remote (`tls/`)
 //! session.
 //!
 //! The flow mirrors the OAuth resolver: reuse the cached router config while it
@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use daemon_config::consts::PeppyDirs;
+use daemon_config::peppy_config::ParsedEndpointBuf;
 
 use super::http::HttpClient;
 use super::storage::{self, RouterSession};
@@ -299,19 +300,45 @@ fn pull_and_cache(
     Ok((cfg.endpoint, cfg.namespace))
 }
 
+/// What one federation resolve produced: the desired platform upstream (when
+/// the credentials grant one) and the namespace those credentials resolve to.
+/// Both come out of the same resolve, so the daemon's federation gate and its
+/// namespace-change detection can never disagree within one poll.
+pub struct ResolvedFederation {
+    /// The upstream to federate the local router to: the parsed `tls` dial
+    /// endpoint plus the connect-side mTLS material. `None` means the local
+    /// router stays (or turns) standalone: logged out, no backend reachable,
+    /// or a `local` namespace (fail closed).
+    pub upstream: Option<(ParsedEndpointBuf, pmi::TlsConfig)>,
+    /// The namespace the credentials currently resolve to; `local`, the
+    /// standalone default, when nothing resolved.
+    pub namespace: config::namespace::Namespace,
+}
+
+impl ResolvedFederation {
+    /// A standalone (no-upstream) resolve under `namespace`.
+    fn standalone(namespace: config::namespace::Namespace) -> Self {
+        Self {
+            upstream: None,
+            namespace,
+        }
+    }
+}
+
 /// Best-effort federation target for the daemon's *local* router: the upstream
-/// `tls/<host>:<port>` connect endpoint plus the connect-side mTLS material,
-/// resolved by pulling the shared router's connection config.
+/// `tls` connect endpoint plus the connect-side mTLS material, resolved by
+/// pulling the platform router's connection config, together with the
+/// namespace that resolve produced.
 ///
-/// Returns `None`, and the local router stays standalone (plaintext-only), when
-/// the user is not logged in, no backend is configured/reachable, or the pull
-/// fails, so the daemon always starts. The daemon dials the returned endpoint over
-/// mTLS, presenting the embedded dev client cert (debug builds); there is no
-/// client-side keepalive re-pull.
+/// The upstream is `None`, and the local router stays standalone
+/// (plaintext-only), when the user is not logged in, no backend is
+/// configured/reachable, or the pull fails, so the daemon always starts. The
+/// daemon dials the returned endpoint over mTLS, presenting the embedded dev
+/// client cert (debug builds); there is no client-side keepalive re-pull.
 ///
 /// `connect_timeout` bounds the (blocking) config pull so a slow/unreachable
 /// backend can't stall the caller (federation at startup / on a login-poke)
-/// beyond it; on timeout the pull errors and this returns `None`.
+/// beyond it; on timeout the pull errors and the upstream is `None`.
 ///
 /// `core_node_name` is the daemon's core-node name, sent in every pull's POST
 /// body so the backend registry records which daemon federated (and when it
@@ -327,7 +354,7 @@ pub fn resolve_federation_target(
     api_url: &str,
     connect_timeout: Duration,
     core_node_name: &str,
-) -> Option<(String, pmi::TlsConfig)> {
+) -> ResolvedFederation {
     let cache_dir = peppy_dirs.cache_dir();
     resolve_federation_target_at(
         &storage::credentials_path(peppy_dirs),
@@ -353,7 +380,7 @@ pub fn resolve_federation_target_at(
     client_identity: Option<(PathBuf, PathBuf)>,
     connect_timeout: Duration,
     core_node_name: &str,
-) -> Option<(String, pmi::TlsConfig)> {
+) -> ResolvedFederation {
     // Skip the network entirely when there is plainly no identity to pull for, so
     // an un-provisioned dev box does not log a spurious auth error every poll. Take
     // that fast path only on a *definitive* no-identity (no PAT and a clean load
@@ -362,7 +389,16 @@ pub fn resolve_federation_target_at(
     // logged-out state, so the resolve path below surfaces the underlying error.
     if pat.is_none() {
         match storage::load(creds_path) {
-            Ok(creds) if creds.session.is_none() => return None,
+            Ok(creds) if creds.session.is_none() => {
+                // Logged out: the namespace comes from the same snapshot
+                // (normally absent, since logout clears the router cache).
+                return ResolvedFederation::standalone(
+                    creds
+                        .router
+                        .map(|router| router.namespace)
+                        .unwrap_or_else(config::namespace::Namespace::local),
+                );
+            }
             Ok(_) => {}
             Err(e) => {
                 tracing::warn!(
@@ -390,30 +426,46 @@ pub fn resolve_federation_target_at(
         // federating namespace: an unprefixed/`local` session can never reach
         // the shared multi-tenant router.
         Ok(ep) if !ep.namespace.is_local() => {
-            Some((format!("tls/{}:{}", ep.host, ep.port), ep.tls))
+            match ParsedEndpointBuf::from_parts(SUPPORTED_ROUTER_PROTOCOL, &ep.host, ep.port) {
+                Ok(endpoint) => ResolvedFederation {
+                    upstream: Some((endpoint, ep.tls)),
+                    namespace: ep.namespace,
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "router federation: resolved router endpoint is not dialable; \
+                         local router stays standalone (fail closed)"
+                    );
+                    ResolvedFederation::standalone(ep.namespace)
+                }
+            }
         }
-        Ok(_) => {
+        Ok(ep) => {
             tracing::warn!(
                 "router federation: resolved namespace is the local namespace; \
                  local router stays standalone (fail closed)"
             );
-            None
+            ResolvedFederation::standalone(ep.namespace)
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 "router federation: config pull failed; local router stays standalone"
             );
-            None
+            ResolvedFederation::standalone(session_namespace(creds_path))
         }
     }
 }
 
-/// The cached namespace the daemon opens its session under, or `None` when
-/// there is no router cache (logged out, or not yet pulled). Callers resolve
-/// absent to [`config::namespace::Namespace::local`], the standalone default.
-pub fn cached_namespace(creds_path: &Path) -> Option<config::namespace::Namespace> {
-    storage::load(creds_path).ok()?.router.map(|r| r.namespace)
+/// The namespace the daemon opens its session under: the cached router
+/// config's namespace, or `local` (the standalone default) when there is no
+/// usable cache (logged out, not yet pulled, or unreadable).
+pub fn session_namespace(creds_path: &Path) -> config::namespace::Namespace {
+    storage::load(creds_path)
+        .ok()
+        .and_then(|creds| creds.router.map(|router| router.namespace))
+        .unwrap_or_else(config::namespace::Namespace::local)
 }
 
 /// Client TLS material for dialing the shared router: validate it against the

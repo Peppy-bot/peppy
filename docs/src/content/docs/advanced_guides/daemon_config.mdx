@@ -147,10 +147,6 @@ zenoh: {
     },
     federation: {
       connect_timeout_secs: 30,
-      listen_endpoint: null,
-      cert_path: null,
-      key_path: null,
-      ca_path: null,
     },
   },
 },
@@ -175,7 +171,7 @@ The managed knobs exist only because peppy controls that router process. Under `
 - **`"peer"`** (default): nodes run Zenoh peer sessions with gossip discovery enabled. After discovery, nodes form direct peer-to-peer links and data stops relaying through the central router, which removes a network hop from every message.
 - **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
 
-The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-router-federation), whichever topology you pick.
+The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-platform-federation), whichever topology you pick.
 
 [Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
 
@@ -222,7 +218,7 @@ Start the external router before peppy. Its listener may bind a wildcard even th
 zenohd -l tcp/0.0.0.0:7448
 ```
 
-At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
+At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the platform router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
 
 `peppy platform login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
 
@@ -253,10 +249,6 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
 | `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon allows for resolving desired federation links after the local router is ready. |
-| `zenoh.managed.federation.listen_endpoint` | `null` | `tls/<host>:<port>`; port differs from the messaging port | Optional inbound mTLS listener for user-managed federation. |
-| `zenoh.managed.federation.cert_path` | `null` | Path without `#`, `;`, or `=` | Router certificate chain; `null` selects `<PEPPY_HOME>/conf/federation/cert.pem`. |
-| `zenoh.managed.federation.key_path` | `null` | Path without `#`, `;`, or `=` | Router private key; `null` selects `<PEPPY_HOME>/conf/federation/key.pem`. |
-| `zenoh.managed.federation.ca_path` | `null` | Path without `#`, `;`, or `=` | Fleet CA certificate; `null` selects `<PEPPY_HOME>/conf/federation/ca.pem`. |
 | `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 
 Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.

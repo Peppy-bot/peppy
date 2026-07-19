@@ -50,8 +50,8 @@ pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result
     authed_get_json(http, api_url, "/me", cred)
 }
 
-/// The connection config the backend hands the CLI for the caller's private
-/// per-user zenoh router. Deserialized tolerantly (unknown fields ignored) so a
+/// The connection config the backend hands the CLI for the platform router.
+/// Deserialized tolerantly (unknown fields ignored) so a
 /// backend that adds fields still parses. The CA the router is validated against
 /// is **not** part of this response; it is CLI-side deployment config (the
 /// trust root the gateway's routers present a cert chained to).

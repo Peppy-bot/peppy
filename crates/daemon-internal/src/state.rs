@@ -37,12 +37,14 @@ pub struct DaemonState {
     /// by a daemon predating this field still parses.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
-    /// The namespace this daemon generation resolved at startup (`"local"`
-    /// when logged out, else the workspace id). A CLI control session reads it
-    /// so it opens its session under exactly the daemon's namespace; it is
+    /// The namespace this daemon generation resolved at startup (`local` when
+    /// logged out, else the workspace id). A CLI control session reads it so
+    /// it opens its session under exactly the daemon's namespace; it is
     /// written before the control socket binds, so a reader never sees a
-    /// half-set generation.
-    pub namespace: String,
+    /// half-set generation. Typed, so an invalid value fails once at
+    /// [`read_from`](Self::read_from) instead of each reader re-parsing it
+    /// with its own failure policy.
+    pub namespace: config::namespace::Namespace,
     /// `Some(secs)` when this daemon generation armed managed-router federation
     /// (a control socket exists and login/logout pokes apply within this bound,
     /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
@@ -72,7 +74,7 @@ impl DaemonState {
         messaging_port: u16,
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
-        namespace: impl Into<String>,
+        namespace: config::namespace::Namespace,
         federation_connect_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
@@ -82,7 +84,7 @@ impl DaemonState {
             messaging_port,
             git_hash: git_hash.into(),
             shutdown_grace_secs,
-            namespace: namespace.into(),
+            namespace,
             federation_connect_timeout_secs,
         }
     }
@@ -171,7 +173,7 @@ mod tests {
             messaging_port: 7447,
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
-            namespace: "local".to_string(),
+            namespace: config::namespace::Namespace::local(),
             federation_connect_timeout_secs: Some(30),
         };
         DaemonState::write_to(&path, &original).expect("write");
@@ -183,7 +185,7 @@ mod tests {
         assert_eq!(read.messaging_port, 7447);
         assert_eq!(read.git_hash, "test");
         assert_eq!(read.shutdown_grace_secs, 5);
-        assert_eq!(read.namespace, "local");
+        assert_eq!(read.namespace, config::namespace::Namespace::local());
         assert_eq!(read.federation_connect_timeout_secs, Some(30));
     }
 
@@ -207,6 +209,26 @@ mod tests {
         assert_eq!(read.daemon_pid, None);
         assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
         assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);
+    }
+
+    /// The namespace is parsed once at the read boundary: an invalid value
+    /// fails `read_from` instead of every reader re-parsing it with its own
+    /// failure policy.
+    #[test]
+    fn an_invalid_namespace_fails_the_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon_state.json5");
+        std::fs::write(
+            &path,
+            r#"{
+                "core_node_name": "core",
+                "daemon_pid": null,
+                "namespace": "**"
+            }"#,
+        )
+        .expect("write file with an invalid namespace");
+
+        assert!(DaemonState::read_from(&path).is_err());
     }
 
     #[cfg(unix)]

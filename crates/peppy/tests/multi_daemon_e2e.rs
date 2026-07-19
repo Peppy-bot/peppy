@@ -22,8 +22,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
@@ -257,9 +256,9 @@ struct ManagedRouterMount<'a> {
 #[derive(Default)]
 struct DaemonOptions<'a> {
     managed_router: Option<ManagedRouterMount<'a>>,
-    /// Extra `/etc/hosts` entries: `(hostname, address)`, where the special
-    /// address `"host-gateway"` resolves to the docker bridge gateway.
-    extra_hosts: Vec<(String, String)>,
+    /// Extra `/etc/hosts` entries: `(hostname, host)`, where
+    /// [`Host::HostGateway`] resolves to the docker host gateway.
+    extra_hosts: Vec<(String, Host)>,
     /// Extra environment variables for the daemon process.
     env: Vec<(String, String)>,
     /// A host directory mounted read-write at `/data/conf` (the container's
@@ -451,36 +450,6 @@ impl Daemon {
     }
 }
 
-/// Memoized: the gateway is constant for the host, and shelling out to
-/// `docker network inspect` on every lookup is needless. A failed lookup
-/// panics before anything is cached, so retries recompute.
-fn docker_host_gateway_ipv4() -> Ipv4Addr {
-    static GATEWAY: OnceLock<Ipv4Addr> = OnceLock::new();
-    *GATEWAY.get_or_init(|| {
-        let docker = executable_on_path("docker");
-        let output = Command::new(docker)
-            .args([
-                "network",
-                "inspect",
-                "bridge",
-                "--format",
-                "{{(index .IPAM.Config 0).Gateway}}",
-            ])
-            .output()
-            .expect("inspect Docker's default bridge gateway");
-        assert!(
-            output.status.success(),
-            "inspecting Docker's host gateway failed: {}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .expect("Docker's default bridge gateway must be IPv4")
-    })
-}
-
 async fn start_daemon(
     launch: &DaemonLaunch,
     name: &str,
@@ -509,15 +478,8 @@ async fn start_daemon(
         .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
         .with_env_var(PEPPY_CONFIG_ENV, config)
         .with_cmd([CONTAINER_PEPPY_BINARY, "service", "serve"]);
-    for (hostname, address) in &options.extra_hosts {
-        let host = if address == "host-gateway" {
-            Host::Addr(IpAddr::V4(docker_host_gateway_ipv4()))
-        } else {
-            Host::Addr(address.parse().unwrap_or_else(|error| {
-                panic!("invalid extra-host address {address} for {hostname}: {error}")
-            }))
-        };
-        request = request.with_host(hostname.clone(), host);
+    for (hostname, host) in &options.extra_hosts {
+        request = request.with_host(hostname.clone(), host.clone());
     }
     for (key, value) in &options.env {
         request = request.with_env_var(key.clone(), value.clone());
@@ -809,10 +771,7 @@ async fn start_platform_daemon(
     hostname: &str,
     spec: PlatformDaemonSpec<'_>,
 ) -> Daemon {
-    let hub_ip = spec
-        .hub_ip
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let hub_ip = spec.hub_ip.unwrap_or(Ipv4Addr::LOCALHOST);
     let mut env = vec![(
         "PEPPY_API_URL".to_string(),
         format!("http://{MOCK_BACKEND_HOSTNAME}:{}", spec.api_port),
@@ -831,11 +790,8 @@ async fn start_platform_daemon(
                 config: spec.router_pin,
             }),
             extra_hosts: vec![
-                (HUB_HOSTNAME.to_string(), hub_ip),
-                (
-                    MOCK_BACKEND_HOSTNAME.to_string(),
-                    "host-gateway".to_string(),
-                ),
+                (HUB_HOSTNAME.to_string(), Host::Addr(IpAddr::V4(hub_ip))),
+                (MOCK_BACKEND_HOSTNAME.to_string(), Host::HostGateway),
             ],
             env,
             conf_dir: spec.conf_dir,
@@ -1580,10 +1536,7 @@ async fn external_and_pinned_routers_report_operator_managed() {
         "robo-ext",
         &external_daemon_config("daemon-ext", _router.port),
         DaemonOptions {
-            extra_hosts: vec![(
-                MOCK_BACKEND_HOSTNAME.to_string(),
-                "host-gateway".to_string(),
-            )],
+            extra_hosts: vec![(MOCK_BACKEND_HOSTNAME.to_string(), Host::HostGateway)],
             env: vec![
                 (
                     "PEPPY_API_URL".to_string(),

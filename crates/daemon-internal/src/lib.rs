@@ -33,3 +33,14 @@ mod shutdown_signal;
 
 pub use error::{Error as DaemonError, Result};
 pub use serve::{ClockSource, ServeOptions, serve};
+
+/// Test-only helpers shared by this crate's unit-test modules.
+#[cfg(test)]
+pub(crate) mod test_util {
+    use daemon_config::peppy_config::ParsedEndpointBuf;
+
+    /// Parses a `tls` dial endpoint, panicking on invalid test input.
+    pub(crate) fn dial(endpoint: &str) -> ParsedEndpointBuf {
+        ParsedEndpointBuf::parse(endpoint, "tls").unwrap()
+    }
+}

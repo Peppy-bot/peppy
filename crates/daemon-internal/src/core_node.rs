@@ -171,8 +171,8 @@ impl ServeAsyncCommand for CoreNodeRunner {
             // Wait for the router federation's initial poll to settle before
             // starting (and thus before `start_with_ready` checks and declares
             // this daemon's presence), so the check sees the federated mesh: a
-            // same-name daemon reachable only through the per-user cloud
-            // router must refuse boot, not slip past a check that raced the
+            // same-name daemon reachable only through the platform router
+            // must refuse boot, not slip past a check that raced the
             // federation apply. The gate is fired by the federation task
             // within its `connect_timeout` even when the backend is slow or
             // unreachable, so this cannot stall boot past that bound; a

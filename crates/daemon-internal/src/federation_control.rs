@@ -4,11 +4,13 @@
 //! A [`ServeAsyncCommand`] that binds the per-user Unix-domain socket
 //! ([`crate::control::federation_control_socket_path`]) and, for each
 //! connection, forwards a [`REFEDERATE_VERB`](crate::control::REFEDERATE_VERB)
-//! request to the [`RouterFederation`](super::router_federation) loop as a
-//! [`RefederateRequest`]. It waits for that poll to apply and writes the
-//! resulting [`ControlResponse`] back, so the CLI learns federation is in place
-//! *after* the local zenohd bounce, which is exactly why the channel is a UDS,
-//! independent of the router being restarted.
+//! request to the [`RouterFederation`](super::router_federation) loop. It waits
+//! for that poll to apply and writes the resulting [`ControlResponse`] back, so
+//! the CLI learns federation is in place *after* the local zenohd bounce, which
+//! is exactly why the channel is a UDS, independent of the router being
+//! restarted. [`STATUS_VERB`](crate::control::STATUS_VERB) requests are
+//! answered inline from the federation loop's status watch, so they can never
+//! queue behind an in-flight apply.
 //!
 //! Binding is best-effort: a bind failure is logged and the task idles until
 //! shutdown rather than taking the daemon down; the periodic federation poll
@@ -19,12 +21,13 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::control::{ControlResponse, REFEDERATE_VERB, STATUS_VERB};
-use crate::router_federation::{FederationOutcome, FederationRequest, TriggerSender};
+use crate::control::{ControlResponse, FederationStatus, REFEDERATE_VERB, STATUS_VERB};
+use crate::router_federation::{FederationOutcome, TriggerSender};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// Bound on reading a request line, so a client that connects but never writes
@@ -40,19 +43,15 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// `ack_budget_*` test guards both relationships).
 const APPLY_ACK_SLACK: Duration = Duration::from_secs(10);
 
-/// Cached status requests never resolve or bounce the router, so a short bound
-/// is enough even if a refederation request is immediately ahead in the queue.
-const STATUS_ACK_TIMEOUT: Duration = Duration::from_secs(2);
-
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
         match outcome {
             FederationOutcome::Applied(link) => ControlResponse::Ok(link),
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
-            FederationOutcome::Restart { target_namespace } => {
-                ControlResponse::Restarting { target_namespace }
-            }
+            FederationOutcome::Restart { target_namespace } => ControlResponse::Restarting {
+                target_namespace: target_namespace.as_str().to_string(),
+            },
         }
     }
 }
@@ -61,6 +60,9 @@ impl From<FederationOutcome> for ControlResponse {
 pub(crate) struct FederationControl {
     socket_path: PathBuf,
     trigger_tx: TriggerSender,
+    /// The federation loop's published status, answered inline to
+    /// [`STATUS_VERB`] requests.
+    status_rx: watch::Receiver<FederationStatus>,
     /// Bound on how long to wait for a poked poll to apply before replying with a
     /// timeout (so a wedged apply can't hold a connection open forever).
     connect_timeout: Duration,
@@ -78,6 +80,7 @@ impl FederationControl {
     pub(crate) fn new(
         socket_path: PathBuf,
         trigger_tx: TriggerSender,
+        status_rx: watch::Receiver<FederationStatus>,
         connect_timeout: Duration,
         restart_tx: watch::Sender<bool>,
         teardown_token: CancellationToken,
@@ -85,6 +88,7 @@ impl FederationControl {
         Self {
             socket_path,
             trigger_tx,
+            status_rx,
             connect_timeout,
             restart_tx,
             teardown_token,
@@ -97,6 +101,7 @@ impl ServeAsyncCommand for FederationControl {
         let FederationControl {
             socket_path,
             trigger_tx,
+            status_rx,
             connect_timeout,
             restart_tx,
             teardown_token,
@@ -106,7 +111,7 @@ impl ServeAsyncCommand for FederationControl {
             // restart via the shared token) so the daemon can exit promptly (the
             // loop is otherwise infinite).
             tokio::select! {
-                _ = serve_control(&socket_path, trigger_tx, connect_timeout, restart_tx) => {}
+                _ = serve_control(&socket_path, trigger_tx, status_rx, connect_timeout, restart_tx) => {}
                 _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
             // Best-effort cleanup so a stale socket does not linger (the next start
@@ -125,6 +130,7 @@ impl ServeAsyncCommand for FederationControl {
 async fn serve_control(
     socket_path: &Path,
     trigger_tx: TriggerSender,
+    status_rx: watch::Receiver<FederationStatus>,
     connect_timeout: Duration,
     restart_tx: watch::Sender<bool>,
 ) {
@@ -150,7 +156,7 @@ async fn serve_control(
         path = %socket_path.display(),
         "federation control: listening for login/logout federation pokes"
     );
-    accept_loop(listener, trigger_tx, connect_timeout, restart_tx).await;
+    accept_loop(listener, trigger_tx, status_rx, connect_timeout, restart_tx).await;
 }
 
 /// Accepts poke connections on an already-bound listener until cancelled.
@@ -161,6 +167,7 @@ async fn serve_control(
 async fn accept_loop(
     listener: UnixListener,
     trigger_tx: TriggerSender,
+    status_rx: watch::Receiver<FederationStatus>,
     connect_timeout: Duration,
     restart_tx: watch::Sender<bool>,
 ) {
@@ -177,10 +184,12 @@ async fn accept_loop(
             Ok((stream, _addr)) => {
                 accept_backoff = ACCEPT_BACKOFF_INIT;
                 let trigger_tx = trigger_tx.clone();
+                let status_rx = status_rx.clone();
                 let restart_tx = restart_tx.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_conn(stream, trigger_tx, connect_timeout, restart_tx).await
+                        handle_conn(stream, trigger_tx, status_rx, connect_timeout, restart_tx)
+                            .await
                     {
                         warn!(error = %e, "federation control: error handling a poke");
                     }
@@ -215,11 +224,13 @@ fn bind_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Services one poke connection: read the request, forward a [`RefederateRequest`]
-/// to the federation loop, await the outcome (bounded), and reply.
+/// Services one poke connection: read the request, forward a refederation
+/// request to the federation loop (or answer status from the watch), await the
+/// outcome (bounded), and reply.
 async fn handle_conn(
     stream: UnixStream,
     trigger_tx: TriggerSender,
+    status_rx: watch::Receiver<FederationStatus>,
     connect_timeout: Duration,
     restart_tx: watch::Sender<bool>,
 ) -> std::io::Result<()> {
@@ -235,64 +246,36 @@ async fn handle_conn(
     }
 
     if line.trim() == STATUS_VERB {
-        let deadline = tokio::time::Instant::now() + STATUS_ACK_TIMEOUT;
-        let (ack_tx, ack_rx) = oneshot::channel();
-        match tokio::time::timeout_at(
-            deadline,
-            trigger_tx.send(FederationRequest::Status { ack: ack_tx }),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {
-                return write_response(
-                    &mut write_half,
-                    ControlResponse::error("federation task not running"),
-                )
-                .await;
-            }
-            Err(_) => {
-                return write_response(
-                    &mut write_half,
-                    ControlResponse::error("timed out reading federation status"),
-                )
-                .await;
-            }
-        }
-        let response = match tokio::time::timeout_at(deadline, ack_rx).await {
-            Ok(Ok(status)) => ControlResponse::FederationStatus(status),
-            Ok(Err(_)) => ControlResponse::error("federation task dropped the status request"),
-            Err(_) => ControlResponse::error("timed out reading federation status"),
-        };
-        return write_response(&mut write_half, response).await;
+        // Answered straight from the federation loop's published cache: no
+        // resolve, no router bounce, and no queueing behind an in-flight apply.
+        let status = status_rx.borrow().clone();
+        return write_response(&mut write_half, ControlResponse::FederationStatus(status)).await;
     }
 
     if line.trim() != REFEDERATE_VERB {
         return write_response(&mut write_half, ControlResponse::error("unknown command")).await;
     }
 
-    // Forward the poke and await the applied outcome. Bound the wait so a wedged
-    // apply replies with a timeout rather than holding the connection open.
+    // Forward the poke and await the applied outcome. The queue holds at most
+    // one waiting poke (see `router_federation::trigger_channel`), so a second
+    // concurrent poke is rejected as busy instead of piling up. Bound the ack
+    // wait so a wedged apply replies with a timeout rather than holding the
+    // connection open.
     let deadline = tokio::time::Instant::now() + connect_timeout + APPLY_ACK_SLACK;
     let (ack_tx, ack_rx) = oneshot::channel();
-    match tokio::time::timeout_at(
-        deadline,
-        trigger_tx.send(FederationRequest::Refederate { ack: ack_tx }),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
+    match trigger_tx.try_send(ack_tx) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
             return write_response(
                 &mut write_half,
-                ControlResponse::error("federation task not running"),
+                ControlResponse::error("federation task is busy"),
             )
             .await;
         }
-        Err(_) => {
+        Err(TrySendError::Closed(_)) => {
             return write_response(
                 &mut write_half,
-                ControlResponse::error("timed out applying federation"),
+                ControlResponse::error("federation task not running"),
             )
             .await;
         }
@@ -384,11 +367,11 @@ mod tests {
     async fn poke_crosses_the_socket_and_acks() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(8);
 
         // Stand in for the federation loop: ack a canned applied outcome.
         let consumer = tokio::spawn(async move {
-            if let Some(FederationRequest::Refederate { ack }) = trigger_rx.recv().await {
+            if let Some(ack) = trigger_rx.recv().await {
                 let _ = ack.send(FederationOutcome::Applied(PlatformLink {
                     endpoint: Some("tls/hub:7447".to_string()),
                     link_state: LinkState::Verified,
@@ -404,9 +387,11 @@ mod tests {
         // poll window.)
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
+        let (_status_tx, status_rx) = watch::channel(FederationStatus::default());
         let control = tokio::spawn(accept_loop(
             listener,
             trigger_tx,
+            status_rx,
             Duration::from_secs(5),
             restart_tx,
         ));
@@ -435,29 +420,21 @@ mod tests {
     async fn status_crosses_the_socket_without_refederating() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(8);
         let expected = FederationStatus {
-            endpoint: Some("tls/hub:7447".to_string()),
-            link_state: LinkState::Error("UnknownIssuer".to_string()),
+            link: PlatformLink {
+                endpoint: Some("tls/hub:7447".to_string()),
+                link_state: LinkState::Error("UnknownIssuer".to_string()),
+            },
             pinned: false,
         };
-        let response = expected.clone();
-        let consumer = tokio::spawn(async move {
-            match trigger_rx.recv().await {
-                Some(FederationRequest::Status { ack }) => {
-                    let _ = ack.send(response);
-                }
-                Some(FederationRequest::Refederate { .. }) => {
-                    panic!("status request must not refederate")
-                }
-                None => panic!("control channel closed"),
-            }
-        });
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
+        let (_status_tx, status_rx) = watch::channel(expected.clone());
         let control = tokio::spawn(accept_loop(
             listener,
             trigger_tx,
+            status_rx,
             Duration::from_secs(5),
             restart_tx,
         ));
@@ -470,51 +447,87 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome, QueryStatusOutcome::Status(expected));
+        assert!(
+            trigger_rx.try_recv().is_err(),
+            "a status query must never poke the federation loop"
+        );
         control.abort();
-        consumer.abort();
     }
 
+    /// Status is answered from the watch even while the poke queue is full
+    /// (a refederation in flight), so it can never queue behind an apply.
     #[tokio::test]
-    async fn status_deadline_covers_enqueue_and_ack_waits() {
+    async fn status_is_answered_while_the_poke_queue_is_full() {
         let (server, mut client) = UnixStream::pair().expect("create control socket pair");
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(1);
+        let (trigger_tx, _trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(1);
         let (queued_ack, _queued_rx) = oneshot::channel();
         trigger_tx
-            .send(FederationRequest::Status { ack: queued_ack })
-            .await
+            .try_send(queued_ack)
             .expect("prefill trigger channel");
         let (restart_tx, _restart_rx) = watch::channel(false);
+        let expected = FederationStatus {
+            link: PlatformLink {
+                endpoint: Some("tls/hub:7447".to_string()),
+                link_state: LinkState::Unverified,
+            },
+            pinned: false,
+        };
+        let (_status_tx, status_rx) = watch::channel(expected.clone());
         let handler = tokio::spawn(handle_conn(
             server,
             trigger_tx,
+            status_rx,
             Duration::from_secs(1),
             restart_tx,
         ));
 
-        let test_deadline =
-            tokio::time::Instant::now() + STATUS_ACK_TIMEOUT + Duration::from_millis(500);
         client
             .write_all(format!("{STATUS_VERB}\n").as_bytes())
             .await
             .expect("send status request");
 
-        // Keep the queue full for half the budget. The remaining acknowledgement
-        // wait must use the other half, not start a fresh STATUS_ACK_TIMEOUT.
-        tokio::time::sleep(STATUS_ACK_TIMEOUT / 2).await;
-        drop(
-            trigger_rx
-                .recv()
-                .await
-                .expect("remove the prefilled request"),
-        );
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
+            .await
+            .expect("status must be answered promptly with the queue full")
+            .expect("read status response");
+        assert!(line.contains("tls/hub:7447"), "reply: {line}");
+        handler.await.expect("handler does not panic").unwrap();
+    }
+
+    /// With one poke already queued, a second concurrent poke is rejected as
+    /// busy instead of piling up behind the in-progress apply.
+    #[tokio::test]
+    async fn a_second_concurrent_poke_is_rejected_as_busy() {
+        let (server, mut client) = UnixStream::pair().expect("create control socket pair");
+        let (trigger_tx, _trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(1);
+        let (queued_ack, _queued_rx) = oneshot::channel();
+        trigger_tx
+            .try_send(queued_ack)
+            .expect("prefill trigger channel");
+        let (restart_tx, _restart_rx) = watch::channel(false);
+        let (_status_tx, status_rx) = watch::channel(FederationStatus::default());
+        let handler = tokio::spawn(handle_conn(
+            server,
+            trigger_tx,
+            status_rx,
+            Duration::from_secs(1),
+            restart_tx,
+        ));
+
+        client
+            .write_all(format!("{REFEDERATE_VERB}\n").as_bytes())
+            .await
+            .expect("send refederate request");
 
         let mut reader = BufReader::new(client);
         let mut line = String::new();
-        tokio::time::timeout_at(test_deadline, reader.read_line(&mut line))
+        tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
             .await
-            .expect("enqueue and ack waits share one status deadline")
-            .expect("read timeout response");
-        assert!(line.contains("timed out reading federation status"));
+            .expect("a full queue must be rejected promptly")
+            .expect("read busy response");
+        assert!(line.contains("federation task is busy"), "reply: {line}");
         handler.await.expect("handler does not panic").unwrap();
     }
 
@@ -523,14 +536,16 @@ mod tests {
     async fn unknown_verb_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(8);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(8);
 
         // Bind-before-client, as in `poke_crosses_the_socket_and_acks`.
         let listener = bind_listener(&socket).expect("bind control socket");
         let (restart_tx, _restart_rx) = watch::channel(false);
+        let (_status_tx, status_rx) = watch::channel(FederationStatus::default());
         let control = tokio::spawn(accept_loop(
             listener,
             trigger_tx,
+            status_rx,
             Duration::from_secs(5),
             restart_tx,
         ));
@@ -563,12 +578,14 @@ mod tests {
     #[tokio::test]
     async fn restart_is_signaled_when_the_client_disconnects_before_the_ack() {
         let (server, mut client) = UnixStream::pair().expect("create control socket pair");
-        let (trigger_tx, mut trigger_rx) = mpsc::channel::<FederationRequest>(1);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<oneshot::Sender<FederationOutcome>>(1);
         let (restart_tx, mut restart_rx) = watch::channel(false);
+        let (_status_tx, status_rx) = watch::channel(FederationStatus::default());
 
         let handler = tokio::spawn(handle_conn(
             server,
             trigger_tx,
+            status_rx,
             Duration::from_secs(1),
             restart_tx,
         ));
@@ -578,15 +595,15 @@ mod tests {
             .expect("send refederate request");
         drop(client);
 
-        let request = tokio::time::timeout(Duration::from_secs(1), trigger_rx.recv())
+        let ack = tokio::time::timeout(Duration::from_secs(1), trigger_rx.recv())
             .await
             .expect("handler forwards request promptly")
             .expect("request channel remains open");
-        let FederationRequest::Refederate { ack } = request else {
-            panic!("expected a refederate request");
-        };
         ack.send(FederationOutcome::Restart {
-            target_namespace: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            target_namespace: config::namespace::Namespace::parse(
+                "550e8400-e29b-41d4-a716-446655440000",
+            )
+            .expect("valid test namespace"),
         })
         .expect("handler is awaiting the outcome");
 

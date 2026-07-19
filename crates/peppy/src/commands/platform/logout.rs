@@ -102,16 +102,7 @@ impl Command for LogoutCommand {
         // poll. Best effort: never fails logout (the result is intentionally
         // discarded). External mode leaves federation untouched and tells the
         // operator that sessions change on the next manual restart.
-        match federation {
-            Some(connect_timeout_secs) => {
-                let _ = super::poke_federation_and_report(
-                    &dirs,
-                    connect_timeout_secs,
-                    super::FederationPokeAction::Logout,
-                );
-            }
-            None => println!("{}", super::EXTERNAL_ROUTER_NOTE),
-        }
+        let _ = super::finish_federation(&dirs, federation, super::FederationPokeAction::Logout);
         // The environment PAT survives this command by design: it is valid
         // platform authentication on its own (the daemon re-resolves with it),
         // so the sign-out is not complete until the variable is removed.

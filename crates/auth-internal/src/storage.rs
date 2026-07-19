@@ -34,7 +34,7 @@ pub struct Credentials {
     pub version: u32,
     #[serde(default)]
     pub session: Option<ProfileCreds>,
-    /// Cached per-user zenoh-router connection (from
+    /// Cached platform-router connection (from
     /// `POST /me/cli/federation`), or `None` until first fetched. Bound to `session`: cleared on login/logout so
     /// it can never outlive its identity.
     #[serde(default)]
@@ -53,7 +53,7 @@ impl Default for Credentials {
     }
 }
 
-/// Cached per-user zenoh-router connection. Pulled from the backend after login
+/// Cached platform-router connection. Pulled from the backend after login
 /// and reused until [`is_stale`](Self::is_stale). `Clone` is derivable (no
 /// secrets; the capability lives in the endpoint and the link is end-to-end
 /// TLS), unlike [`ProfileCreds`].

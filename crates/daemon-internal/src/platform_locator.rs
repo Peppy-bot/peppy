@@ -77,11 +77,7 @@ fn push_optional_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon_config::peppy_config::EndpointPurpose;
-
-    fn dial(endpoint: &str) -> ParsedEndpointBuf {
-        ParsedEndpointBuf::parse(endpoint, "tls", EndpointPurpose::Dial).unwrap()
-    }
+    use crate::test_util::dial;
 
     #[test]
     fn platform_defaults_remain_unfragmented() {

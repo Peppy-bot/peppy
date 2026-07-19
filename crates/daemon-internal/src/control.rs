@@ -58,11 +58,12 @@ pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 }
 
 /// Health of the daemon's single platform link as it last saw it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkState {
     /// No upstream resolved (logged out, or nothing pulled yet); the managed
     /// router is standalone.
+    #[default]
     NotConfigured,
     /// Rendered into the router config but not yet checked by an explicit
     /// verifying federation request from this daemon generation.
@@ -76,7 +77,7 @@ pub enum LinkState {
 
 /// The platform link a refederation poke reports: the applied upstream
 /// endpoint (when any) and its verification state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformLink {
     pub endpoint: Option<String>,
     pub link_state: LinkState,
@@ -84,21 +85,13 @@ pub struct PlatformLink {
 
 /// Cached federation state returned by [`query_status`]: the platform link
 /// plus whether an operator-pinned `ZENOH_CONFIG` owns the router config.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The link is flattened on the wire, so the JSON shape is unchanged from
+/// when the fields were spelled out here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationStatus {
-    pub endpoint: Option<String>,
-    pub link_state: LinkState,
+    #[serde(flatten)]
+    pub link: PlatformLink,
     pub pinned: bool,
-}
-
-impl Default for FederationStatus {
-    fn default() -> Self {
-        Self {
-            endpoint: None,
-            link_state: LinkState::NotConfigured,
-            pinned: false,
-        }
-    }
 }
 
 /// The daemon's one-line JSON reply to a control-socket request.
@@ -166,6 +159,48 @@ pub enum QueryStatusOutcome {
     },
 }
 
+/// The transport-level failures every control-socket verb classifies the same
+/// way, mapped into each verb's outcome enum via `From`.
+enum TransportFailure {
+    /// A read/write timeout: surfaces as WouldBlock/TimedOut on a socket with
+    /// a deadline set.
+    TimedOut,
+    /// No socket file, or nothing listening: no daemon to reach.
+    DaemonNotRunning,
+    /// Any other I/O failure, carried as a message.
+    Error(String),
+}
+
+impl TransportFailure {
+    fn classify(error: &std::io::Error) -> Self {
+        match error.kind() {
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => Self::TimedOut,
+            ErrorKind::NotFound | ErrorKind::ConnectionRefused => Self::DaemonNotRunning,
+            _ => Self::Error(error.to_string()),
+        }
+    }
+}
+
+impl From<TransportFailure> for PokeOutcome {
+    fn from(failure: TransportFailure) -> Self {
+        match failure {
+            TransportFailure::TimedOut => Self::TimedOut,
+            TransportFailure::DaemonNotRunning => Self::DaemonNotRunning,
+            TransportFailure::Error(message) => Self::DaemonError(message),
+        }
+    }
+}
+
+impl From<TransportFailure> for QueryStatusOutcome {
+    fn from(failure: TransportFailure) -> Self {
+        match failure {
+            TransportFailure::TimedOut => Self::TimedOut,
+            TransportFailure::DaemonNotRunning => Self::DaemonNotRunning,
+            TransportFailure::Error(message) => Self::DaemonError(message),
+        }
+    }
+}
+
 /// Pokes the running daemon over `socket_path` to re-resolve and (re)apply
 /// federation, blocking until it acks or `read_timeout` elapses.
 ///
@@ -183,14 +218,7 @@ pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcom
         Ok(ControlResponse::FederationStatus(_)) => {
             PokeOutcome::DaemonError("daemon returned status state to a refederate request".into())
         }
-        Err(e) => match e.kind() {
-            // A read/write timeout surfaces as WouldBlock/TimedOut on a socket
-            // with a deadline set.
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => PokeOutcome::TimedOut,
-            // No socket file, or nothing listening: no daemon to poke.
-            ErrorKind::NotFound | ErrorKind::ConnectionRefused => PokeOutcome::DaemonNotRunning,
-            _ => PokeOutcome::DaemonError(e.to_string()),
-        },
+        Err(e) => TransportFailure::classify(&e).into(),
     }
 }
 
@@ -205,13 +233,7 @@ pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOu
         Ok(_) => QueryStatusOutcome::DaemonError(
             "daemon returned a refederation reply to a status request".into(),
         ),
-        Err(e) => match e.kind() {
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => QueryStatusOutcome::TimedOut,
-            ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
-                QueryStatusOutcome::DaemonNotRunning
-            }
-            _ => QueryStatusOutcome::DaemonError(e.to_string()),
-        },
+        Err(e) => TransportFailure::classify(&e).into(),
     }
 }
 
@@ -361,8 +383,10 @@ mod tests {
         );
 
         let status = ControlResponse::FederationStatus(FederationStatus {
-            endpoint: Some("tls/hub.example:7447".to_string()),
-            link_state: LinkState::Verified,
+            link: PlatformLink {
+                endpoint: Some("tls/hub.example:7447".to_string()),
+                link_state: LinkState::Verified,
+            },
             pinned: false,
         });
         assert_eq!(
@@ -404,38 +428,35 @@ mod tests {
 
     #[test]
     fn query_status_sends_status_and_parses_the_platform_state() {
+        fn status(endpoint: Option<&str>, link_state: LinkState, pinned: bool) -> FederationStatus {
+            FederationStatus {
+                link: PlatformLink {
+                    endpoint: endpoint.map(str::to_string),
+                    link_state,
+                },
+                pinned,
+            }
+        }
         for (reply, expected) in [
             (
                 "{\"status\":\"federation_status\",\"endpoint\":null,\"link_state\":\"not_configured\",\"pinned\":false}\n",
-                FederationStatus {
-                    endpoint: None,
-                    link_state: LinkState::NotConfigured,
-                    pinned: false,
-                },
+                status(None, LinkState::NotConfigured, false),
             ),
             (
                 "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"unverified\",\"pinned\":false}\n",
-                FederationStatus {
-                    endpoint: Some("tls/hub.example:7447".to_string()),
-                    link_state: LinkState::Unverified,
-                    pinned: false,
-                },
+                status(Some("tls/hub.example:7447"), LinkState::Unverified, false),
             ),
             (
                 "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"verified\",\"pinned\":true}\n",
-                FederationStatus {
-                    endpoint: Some("tls/hub.example:7447".to_string()),
-                    link_state: LinkState::Verified,
-                    pinned: true,
-                },
+                status(Some("tls/hub.example:7447"), LinkState::Verified, true),
             ),
             (
                 "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":{\"error\":\"UnknownCA\"},\"pinned\":false}\n",
-                FederationStatus {
-                    endpoint: Some("tls/hub.example:7447".to_string()),
-                    link_state: LinkState::Error("UnknownCA".to_string()),
-                    pinned: false,
-                },
+                status(
+                    Some("tls/hub.example:7447"),
+                    LinkState::Error("UnknownCA".to_string()),
+                    false,
+                ),
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();

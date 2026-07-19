@@ -39,9 +39,9 @@ use crate::commands::stack::table::{render_section_panel, render_table};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-/// Client-side budget for a cached daemon status query. Kept strictly larger
-/// than the daemon's `STATUS_ACK_TIMEOUT` so the daemon can always reply a
-/// definite status first.
+/// Client-side budget for a cached daemon status query. The daemon answers
+/// straight from its in-memory status cache, without resolving or touching the
+/// router, so this bounds only the socket round trip to an unhealthy daemon.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The `platform_federation` object of the report.
@@ -89,6 +89,17 @@ impl PlatformView {
     fn daemon_running(&self) -> bool {
         !matches!(self, Self::DaemonDown)
     }
+
+    /// Presence rows are meaningful only while peppy owns the topology: under
+    /// an operator-run or pinned router the hub-path inference would be a lie,
+    /// and mid-restart or daemon-down there is no live session to trust.
+    fn presence_rows_meaningful(&self) -> bool {
+        match self {
+            Self::Status(status) => !status.pinned,
+            Self::Unavailable => true,
+            Self::OperatorManaged | Self::Restarting | Self::DaemonDown => false,
+        }
+    }
 }
 
 /// The report inputs that are not the presence listing: the resolved daemon
@@ -102,20 +113,51 @@ struct AuthState {
     cached_endpoint: Option<String>,
 }
 
-/// The built report plus the human-only annotations the JSON contract
-/// deliberately excludes.
+impl AuthState {
+    /// The cached endpoint as a display hint for states where the daemon could
+    /// not report an applied endpoint, shown only while authenticated (a
+    /// logged-out cache is stale identity data).
+    fn endpoint_hint(&self) -> Option<String> {
+        self.cached_endpoint.clone().filter(|_| self.authenticated)
+    }
+}
+
+/// The built report plus the resolved daemon view it was built from; the
+/// human-only annotations (which the JSON contract deliberately excludes)
+/// derive from that view instead of being tracked as separate flags.
 struct FederationsReport {
     document: FederationsDocument,
-    /// The platform link's failure reason (human output only).
-    link_error: Option<String>,
-    /// The managed router is operator-pinned via `ZENOH_CONFIG`.
-    pinned: bool,
-    /// The daemon acked a mid-restart status query.
-    restarting: bool,
-    /// An operator-run router owns federation (external or pinned).
-    operator_managed: bool,
+    view: PlatformView,
     /// The presence listing could not be read from a running daemon.
     presence_unavailable: bool,
+}
+
+impl FederationsReport {
+    /// The platform link's failure reason (human output only).
+    fn link_error(&self) -> Option<&str> {
+        match &self.view {
+            PlatformView::Status(status) => match &status.link.link_state {
+                LinkState::Error(reason) => Some(reason),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The managed router is operator-pinned via `ZENOH_CONFIG`.
+    fn pinned(&self) -> bool {
+        matches!(&self.view, PlatformView::Status(status) if status.pinned)
+    }
+
+    /// An operator-run router owns federation (external or pinned).
+    fn operator_managed(&self) -> bool {
+        self.pinned() || matches!(self.view, PlatformView::OperatorManaged)
+    }
+
+    /// The daemon acked a mid-restart status query.
+    fn restarting(&self) -> bool {
+        matches!(self.view, PlatformView::Restarting)
+    }
 }
 
 pub struct FederationsCommand {
@@ -170,19 +212,17 @@ impl Command for FederationsCommand {
         let status_query = status_query.map_err(|error| {
             Error::ExecutionFailed(format!("federation status query task failed: {error}"))
         })?;
-        let (presence_daemon_running, local_core_node, presences, presence_unavailable) =
-            presence.unwrap_or((false, None, Vec::new(), false));
 
         let view = match status_query {
             // External mode: an operator-run router owns federation; peppy
             // neither manages nor infers platform topology. Daemon liveness
             // comes from the messaging probe alone.
-            None if presence_daemon_running => PlatformView::OperatorManaged,
+            None if presence.daemon_running => PlatformView::OperatorManaged,
             None => PlatformView::DaemonDown,
             Some(QueryStatusOutcome::Status(status)) => PlatformView::Status(status),
             Some(QueryStatusOutcome::Restarting { .. }) => PlatformView::Restarting,
             Some(QueryStatusOutcome::TimedOut) => PlatformView::Unavailable,
-            Some(QueryStatusOutcome::DaemonNotRunning) if presence_daemon_running => {
+            Some(QueryStatusOutcome::DaemonNotRunning) if presence.daemon_running => {
                 PlatformView::Unavailable
             }
             Some(QueryStatusOutcome::DaemonNotRunning) => PlatformView::DaemonDown,
@@ -197,11 +237,11 @@ impl Command for FederationsCommand {
         };
 
         let report = build_report(
-            &view,
+            view,
             &auth_state,
-            local_core_node.as_deref(),
-            &presences,
-            presence_unavailable,
+            presence.local_core_node.as_deref(),
+            &presence.presences,
+            presence.listing_unavailable,
         );
 
         if self.json {
@@ -220,19 +260,28 @@ impl Command for FederationsCommand {
     }
 }
 
-/// Lists live core-node presence over the daemon's messaging session. Returns
-/// `(daemon reachable over messaging, local core-node name, presences,
-/// presence unavailable)`. A failed connect is "daemon not reachable"; a
-/// connect that succeeds but whose listing fails keeps `daemon_running` true
-/// and flags the listing as unavailable.
-async fn gather_presence(
-    ctx: &Arc<AppContext>,
-) -> Result<(bool, Option<String>, Vec<CoreNodePresence>, bool)> {
-    let conn = match ctx.connect_to_daemon().await {
-        Ok(conn) => conn,
-        Err(_) => return Ok((false, None, Vec::new(), false)),
+/// What the messaging-side probe learned. `Default` is the failed-connect
+/// case: daemon unreachable, no rows.
+#[derive(Default)]
+struct PresenceProbe {
+    /// The daemon was reachable over messaging (a session opened).
+    daemon_running: bool,
+    /// The local daemon's core-node name, when a connection was established.
+    local_core_node: Option<String>,
+    presences: Vec<CoreNodePresence>,
+    /// Connected, but the listing failed: rows are unknown rather than empty.
+    listing_unavailable: bool,
+}
+
+/// Lists live core-node presence over the daemon's messaging session. A failed
+/// connect reads as "daemon not reachable"; a connect that succeeds but whose
+/// listing fails keeps `daemon_running` true and flags the listing as
+/// unavailable.
+async fn gather_presence(ctx: &Arc<AppContext>) -> PresenceProbe {
+    let Ok(conn) = ctx.connect_to_daemon().await else {
+        return PresenceProbe::default();
     };
-    let local = conn.core_node_name.clone();
+    let local_core_node = Some(conn.core_node_name.clone());
     match CoreNodePresenceMessenger::list_live(
         conn.messenger,
         None,
@@ -240,8 +289,18 @@ async fn gather_presence(
     )
     .await
     {
-        Ok(live) => Ok((true, Some(local), live, false)),
-        Err(_) => Ok((true, Some(local), Vec::new(), true)),
+        Ok(live) => PresenceProbe {
+            daemon_running: true,
+            local_core_node,
+            presences: live,
+            listing_unavailable: false,
+        },
+        Err(_) => PresenceProbe {
+            daemon_running: true,
+            local_core_node,
+            presences: Vec::new(),
+            listing_unavailable: true,
+        },
     }
 }
 
@@ -249,75 +308,34 @@ async fn gather_presence(
 /// credentials state, and the presence listing. Every row of the status
 /// decision table is unit-tested against this function.
 fn build_report(
-    view: &PlatformView,
+    view: PlatformView,
     auth_state: &AuthState,
     local_core_node: Option<&str>,
     presences: &[CoreNodePresence],
     presence_unavailable: bool,
 ) -> FederationsReport {
-    let mut link_error = None;
-    let mut pinned = false;
-    let mut operator_managed = false;
-    let mut restarting = false;
-
-    // Presence rows are meaningful only while peppy owns the topology: under an
-    // operator-run or pinned router the hub-path inference would be a lie, and
-    // mid-restart or daemon-down there is no live session to trust.
-    let mut rows_allowed = true;
-
-    let (status, endpoint) = match view {
-        PlatformView::OperatorManaged => {
-            operator_managed = true;
-            rows_allowed = false;
-            ("operator_managed", None)
-        }
-        PlatformView::Status(daemon_status) if daemon_status.pinned => {
-            pinned = true;
-            operator_managed = true;
-            rows_allowed = false;
-            ("operator_managed", None)
-        }
-        PlatformView::Status(daemon_status) => match &daemon_status.link_state {
-            LinkState::Verified => ("federated", daemon_status.endpoint.clone()),
-            LinkState::Unverified => ("connecting", daemon_status.endpoint.clone()),
-            LinkState::Error(reason) => {
-                link_error = Some(reason.clone());
-                ("error", daemon_status.endpoint.clone())
-            }
+    let (status, endpoint) = match &view {
+        PlatformView::OperatorManaged => ("operator_managed", None),
+        PlatformView::Status(daemon_status) if daemon_status.pinned => ("operator_managed", None),
+        PlatformView::Status(daemon_status) => match &daemon_status.link.link_state {
+            LinkState::Verified => ("federated", daemon_status.link.endpoint.clone()),
+            LinkState::Unverified => ("connecting", daemon_status.link.endpoint.clone()),
+            LinkState::Error(_) => ("error", daemon_status.link.endpoint.clone()),
             LinkState::NotConfigured if auth_state.authenticated => {
-                ("connecting", auth_state.cached_endpoint.clone())
+                ("connecting", auth_state.endpoint_hint())
             }
             LinkState::NotConfigured => ("logged_out", None),
         },
-        PlatformView::Restarting => {
-            restarting = true;
-            rows_allowed = false;
-            (
-                "status_unavailable",
-                auth_state
-                    .cached_endpoint
-                    .clone()
-                    .filter(|_| auth_state.authenticated),
-            )
+        PlatformView::Restarting | PlatformView::Unavailable => {
+            ("status_unavailable", auth_state.endpoint_hint())
         }
-        PlatformView::Unavailable => (
-            "status_unavailable",
-            auth_state
-                .cached_endpoint
-                .clone()
-                .filter(|_| auth_state.authenticated),
-        ),
         PlatformView::DaemonDown if auth_state.authenticated => {
-            rows_allowed = false;
-            ("daemon_not_running", auth_state.cached_endpoint.clone())
+            ("daemon_not_running", auth_state.endpoint_hint())
         }
-        PlatformView::DaemonDown => {
-            rows_allowed = false;
-            ("logged_out", None)
-        }
+        PlatformView::DaemonDown => ("logged_out", None),
     };
 
-    let federated_core_nodes = if rows_allowed {
+    let federated_core_nodes = if view.presence_rows_meaningful() {
         federated_core_nodes(local_core_node, presences)
     } else {
         Vec::new()
@@ -329,10 +347,7 @@ fn build_report(
             daemon_running: view.daemon_running(),
             federated_core_nodes,
         },
-        link_error,
-        pinned,
-        restarting,
-        operator_managed,
+        view,
         presence_unavailable,
     }
 }
@@ -382,24 +397,24 @@ fn format_human(report: &FederationsReport) -> String {
         "status  : {}",
         report.document.platform_federation.status
     );
-    if let Some(reason) = &report.link_error {
+    if let Some(reason) = report.link_error() {
         let _ = writeln!(platform, "reason  : {reason}");
     }
-    if report.pinned {
+    if report.pinned() {
         let _ = writeln!(platform, "{PINNED_HUMAN_NOTE}");
-    } else if report.operator_managed {
+    } else if report.operator_managed() {
         let _ = writeln!(platform, "{OPERATOR_MANAGED_NOTE}");
     }
     render_section_panel(&mut out, "Platform federation", &platform);
     let _ = writeln!(out);
 
     let mut nodes = String::new();
-    if report.operator_managed {
+    if report.operator_managed() {
         let _ = writeln!(
             nodes,
             "(not inferred: an operator-run router owns federation)"
         );
-    } else if report.restarting {
+    } else if report.restarting() {
         let _ = writeln!(nodes, "(daemon restarting)");
     } else if !report.document.daemon_running {
         let _ = writeln!(nodes, "(daemon not running)");
@@ -452,8 +467,10 @@ mod tests {
         pinned: bool,
     ) -> daemon_control::FederationStatus {
         daemon_control::FederationStatus {
-            endpoint: endpoint.map(str::to_string),
-            link_state,
+            link: daemon_control::PlatformLink {
+                endpoint: endpoint.map(str::to_string),
+                link_state,
+            },
             pinned,
         }
     }
@@ -492,7 +509,7 @@ mod tests {
     fn a_verified_link_reports_federated_with_the_daemon_applied_endpoint() {
         // The A/B report, pinned exactly against the spec's JSON contract.
         let report = build_report(
-            &PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
+            PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
             &authed_with_cache(),
             Some("daemon-a"),
             &[presence("daemon-a", "gen-1"), presence("daemon-b", "gen-1")],
@@ -517,7 +534,7 @@ mod tests {
     #[test]
     fn an_unverified_link_reports_connecting() {
         let report = build_report(
-            &PlatformView::Status(status(Some(HUB), LinkState::Unverified, false)),
+            PlatformView::Status(status(Some(HUB), LinkState::Unverified, false)),
             &authed_with_cache(),
             Some("daemon-a"),
             &[],
@@ -533,7 +550,7 @@ mod tests {
     #[test]
     fn a_link_error_reports_error_and_the_human_output_carries_the_reason() {
         let report = build_report(
-            &PlatformView::Status(status(
+            PlatformView::Status(status(
                 Some(HUB),
                 LinkState::Error("received fatal alert: UnknownCA".to_string()),
                 false,
@@ -556,7 +573,7 @@ mod tests {
         // federated: NotConfigured reads as connecting, daemon-down as
         // daemon_not_running.
         let not_configured = build_report(
-            &PlatformView::Status(status(None, LinkState::NotConfigured, false)),
+            PlatformView::Status(status(None, LinkState::NotConfigured, false)),
             &authed_with_cache(),
             Some("daemon-a"),
             &[],
@@ -576,7 +593,7 @@ mod tests {
         );
 
         let down = build_report(
-            &PlatformView::DaemonDown,
+            PlatformView::DaemonDown,
             &authed_with_cache(),
             None,
             &[],
@@ -596,7 +613,7 @@ mod tests {
     #[test]
     fn logged_out_reports_logged_out_with_a_null_endpoint() {
         let live = build_report(
-            &PlatformView::Status(status(None, LinkState::NotConfigured, false)),
+            PlatformView::Status(status(None, LinkState::NotConfigured, false)),
             &logged_out(),
             Some("daemon-a"),
             &[],
@@ -606,7 +623,7 @@ mod tests {
         assert_eq!(live.document.platform_federation.endpoint, None);
         assert!(live.document.daemon_running);
 
-        let down = build_report(&PlatformView::DaemonDown, &logged_out(), None, &[], false);
+        let down = build_report(PlatformView::DaemonDown, &logged_out(), None, &[], false);
         assert_eq!(down.document.platform_federation.status, "logged_out");
         assert_eq!(down.document.platform_federation.endpoint, None);
         assert!(!down.document.daemon_running);
@@ -615,7 +632,7 @@ mod tests {
     #[test]
     fn a_pinned_managed_router_reports_operator_managed_and_infers_nothing() {
         let report = build_report(
-            &PlatformView::Status(status(Some(HUB), LinkState::Verified, true)),
+            PlatformView::Status(status(Some(HUB), LinkState::Verified, true)),
             &authed_with_cache(),
             Some("daemon-a"),
             &two_remote_presences(),
@@ -630,13 +647,13 @@ mod tests {
             report.document.federated_core_nodes.is_empty(),
             "an operator-owned topology must not be inferred"
         );
-        assert!(report.pinned);
+        assert!(report.pinned());
     }
 
     #[test]
     fn an_external_router_reports_operator_managed_and_infers_nothing() {
         let report = build_report(
-            &PlatformView::OperatorManaged,
+            PlatformView::OperatorManaged,
             &authed_with_cache(),
             Some("daemon-a"),
             &two_remote_presences(),
@@ -654,7 +671,7 @@ mod tests {
     #[test]
     fn a_restarting_daemon_reports_status_unavailable() {
         let report = build_report(
-            &PlatformView::Restarting,
+            PlatformView::Restarting,
             &authed_with_cache(),
             Some("daemon-a"),
             &two_remote_presences(),
@@ -672,7 +689,7 @@ mod tests {
     #[test]
     fn a_status_timeout_reports_status_unavailable_with_the_cached_endpoint() {
         let report = build_report(
-            &PlatformView::Unavailable,
+            PlatformView::Unavailable,
             &authed_with_cache(),
             Some("daemon-a"),
             &[presence("daemon-a", "gen-1"), presence("daemon-b", "gen-1")],
@@ -736,7 +753,7 @@ mod tests {
     #[test]
     fn presence_failure_after_connect_yields_no_rows_but_daemon_running() {
         let report = build_report(
-            &PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
+            PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
             &authed_with_cache(),
             Some("daemon-a"),
             &[],
@@ -751,7 +768,7 @@ mod tests {
     fn the_json_contract_is_exact_for_a_three_node_federation() {
         // The A/B/C report: two sorted rows, hub paths throughout.
         let report = build_report(
-            &PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
+            PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
             &authed_with_cache(),
             Some("daemon-a"),
             &two_remote_presences(),
@@ -781,7 +798,7 @@ mod tests {
     #[test]
     fn the_human_report_matches_the_fixture() {
         let report = build_report(
-            &PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
+            PlatformView::Status(status(Some(HUB), LinkState::Verified, false)),
             &authed_with_cache(),
             Some("daemon-a"),
             &two_remote_presences(),

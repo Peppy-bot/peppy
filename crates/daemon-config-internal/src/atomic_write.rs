@@ -56,25 +56,25 @@ pub fn publish_atomic_private(final_path: &Path, content: &[u8]) -> std::io::Res
 
 /// Restricts a file to owner-only read/write (`0600`). No-op off Unix.
 #[cfg(unix)]
-pub fn restrict_file(path: &Path) -> std::io::Result<()> {
+fn restrict_file(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 #[cfg(not(unix))]
-pub fn restrict_file(_path: &Path) -> std::io::Result<()> {
+fn restrict_file(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
 /// Restricts a directory to owner-only access (`0700`). No-op off Unix.
 #[cfg(unix)]
-pub fn restrict_dir(path: &Path) -> std::io::Result<()> {
+fn restrict_dir(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
 #[cfg(not(unix))]
-pub fn restrict_dir(_path: &Path) -> std::io::Result<()> {
+fn restrict_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 

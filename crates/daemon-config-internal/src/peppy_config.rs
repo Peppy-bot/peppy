@@ -81,13 +81,13 @@ const _: () = assert!(MIN_DAEMON_GRACE_SECS >= 3 * DAEMON_HEARTBEAT_INTERVAL_SEC
 /// SIGKILL).
 pub const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
 
-/// Default bound, in seconds, on resolving the caller's per-user cloud router
-/// when the daemon federates its local router to it: at startup (where it gates
-/// `serve` reporting ready) and again whenever `auth login`/`logout` pokes the
-/// daemon. A slow or unreachable backend must not stall federation past this, so
-/// the daemon falls back to standalone and retries in the background. 30 mirrors
-/// the historical hardcoded HTTP-client timeout, so behavior is unchanged until
-/// edited.
+/// Default bound, in seconds, on resolving the platform router when the daemon
+/// federates its local router to it: at startup (where it gates `serve`
+/// reporting ready) and again whenever `peppy platform login`/`logout` pokes
+/// the daemon. A slow or unreachable backend must not stall federation past
+/// this, so the daemon falls back to standalone and retries in the background.
+/// 30 mirrors the historical hardcoded HTTP-client timeout, so behavior is
+/// unchanged until edited.
 pub const DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 30;
 /// Minimum accepted federation connect timeout, in seconds. At least 1 so a
 /// hand-edited 0 cannot collapse the bound to "give up immediately" (a 0 would
@@ -385,7 +385,7 @@ impl Default for ResourceServers {
 ///
 /// `#[serde(default)]` fills any field a partial `federation` block omits from
 /// [`FederationConfig::default`], matching the `LifecycleConfig` pattern.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FederationConfig {
     pub connect_timeout_secs: u64,
@@ -399,13 +399,9 @@ impl Default for FederationConfig {
     }
 }
 
-/// Whether an endpoint is opened for outbound dialing or inbound listening.
-/// Listener parsing accepts wildcard hosts; dial parsing rejects them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EndpointPurpose {
-    Dial,
-    Listen,
-}
+/// Characters reserved by the Zenoh locator grammar (config, metadata, and
+/// fragment delimiters), rejected wherever Peppy embeds text into a locator.
+const RESERVED_LOCATOR_DELIMITERS: [char; 3] = ['#', ';', '='];
 
 /// Parsed, syntax-checked `<scheme>/<host>:<port>` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,13 +411,13 @@ pub struct ParsedEndpoint<'a> {
     pub port: u16,
 }
 
-/// Parses the deliberately narrow locator surface Peppy manages. The caller
-/// supplies the required transport scheme and whether wildcard hosts are
-/// meaningful. Hostnames are checked syntactically but never resolved.
+/// Parses the deliberately narrow locator surface Peppy manages: dial
+/// endpoints in the caller-supplied transport scheme. Wildcard hosts are
+/// rejected (they are only valid for listening, which Peppy never configures).
+/// Hostnames are checked syntactically but never resolved.
 pub fn parse_endpoint<'a>(
     endpoint: &'a str,
     expected_scheme: &str,
-    purpose: EndpointPurpose,
 ) -> std::result::Result<ParsedEndpoint<'a>, String> {
     if endpoint.is_empty() {
         return Err("must not be empty".to_string());
@@ -436,12 +432,12 @@ pub fn parse_endpoint<'a>(
             "must use the {expected_scheme}/<host>:<port> locator form"
         ));
     };
-    if address.contains(['?', '#', ';', '=']) {
+    if address.contains('?') || address.contains(RESERVED_LOCATOR_DELIMITERS) {
         return Err("metadata and endpoint configuration are not supported".to_string());
     }
 
     let (host, port, bracketed) = split_endpoint_host_port(address)?;
-    validate_endpoint_host(host, bracketed, purpose)?;
+    validate_endpoint_host(host, bracketed)?;
     if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("port must be an integer from 1 through 65535".to_string());
     }
@@ -471,13 +467,26 @@ impl ParsedEndpointBuf {
     pub fn parse(
         text: impl Into<String>,
         expected_scheme: &str,
-        purpose: EndpointPurpose,
     ) -> std::result::Result<Self, String> {
         let text = text.into();
-        let parsed = parse_endpoint(&text, expected_scheme, purpose)?;
+        let parsed = parse_endpoint(&text, expected_scheme)?;
         let host = parsed.host.to_string();
         let port = parsed.port;
         Ok(Self { text, host, port })
+    }
+
+    /// Builds the canonical `<scheme>/<host>:<port>` endpoint from parts that
+    /// were split elsewhere (bracketing an IPv6 host), validating them with the
+    /// same grammar as [`parse`](Self::parse). Lets a caller that already holds
+    /// a host and port obtain a dialable endpoint without formatting a locator
+    /// string only to re-parse it.
+    pub fn from_parts(scheme: &str, host: &str, port: u16) -> std::result::Result<Self, String> {
+        let text = if host.contains(':') {
+            format!("{scheme}/[{host}]:{port}")
+        } else {
+            format!("{scheme}/{host}:{port}")
+        };
+        Self::parse(text, scheme)
     }
 
     /// The canonical `<scheme>/<host>:<port>` text this was parsed from.
@@ -534,11 +543,7 @@ fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, b
     Ok((host, port, false))
 }
 
-fn validate_endpoint_host(
-    host: &str,
-    bracketed: bool,
-    purpose: EndpointPurpose,
-) -> std::result::Result<(), String> {
+fn validate_endpoint_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
     if host.is_empty() {
         return Err("host must not be empty".to_string());
     }
@@ -547,7 +552,7 @@ fn validate_endpoint_host(
         let address = host
             .parse::<Ipv6Addr>()
             .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
-        return if address.is_unspecified() && purpose == EndpointPurpose::Dial {
+        return if address.is_unspecified() {
             Err(
                 "host must be dialable; the wildcard address [::] is only valid for listening"
                     .to_string(),
@@ -558,7 +563,7 @@ fn validate_endpoint_host(
     }
 
     if let Ok(address) = host.parse::<Ipv4Addr>() {
-        return if address.is_unspecified() && purpose == EndpointPurpose::Dial {
+        return if address.is_unspecified() {
             Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string())
         } else {
             Ok(())
@@ -571,11 +576,7 @@ fn validate_endpoint_host(
         return Err("host is not a valid IPv4 address".to_string());
     }
     if host == "*" {
-        return if purpose == EndpointPurpose::Dial {
-            Err("host must be dialable; * is only valid for listening".to_string())
-        } else {
-            Ok(())
-        };
+        return Err("host must be dialable; * is only valid for listening".to_string());
     }
     let hostname = host.strip_suffix('.').unwrap_or(host);
     if host.len() > 253
@@ -774,11 +775,9 @@ impl ZenohConfig {
                 Ok(())
             }
             Self::External(config) => {
-                parse_endpoint(&config.endpoint, "tcp", EndpointPurpose::Dial).map_err(
-                    |error| {
-                        cannot_parse_config(format!("invalid zenoh.external.endpoint: {error}"))
-                    },
-                )?;
+                parse_endpoint(&config.endpoint, "tcp").map_err(|error| {
+                    cannot_parse_config(format!("invalid zenoh.external.endpoint: {error}"))
+                })?;
                 Ok(())
             }
         }
@@ -797,7 +796,7 @@ pub fn validate_locator_path(path: &Path) -> std::result::Result<(), String> {
     }
     if let Some(delimiter) = path
         .chars()
-        .find(|character| ['#', ';', '='].contains(character))
+        .find(|character| RESERVED_LOCATOR_DELIMITERS.contains(character))
     {
         return Err(format!(
             "must not contain the reserved locator delimiter {delimiter:?}; use a path without \
@@ -1591,19 +1590,35 @@ mod tests {
     #[test]
     fn endpoint_parser_returns_normalized_host_and_port() {
         assert_eq!(
-            parse_endpoint("tls/router.example:7449", "tls", EndpointPurpose::Dial).unwrap(),
+            parse_endpoint("tls/router.example:7449", "tls").unwrap(),
             ParsedEndpoint {
                 host: "router.example",
                 port: 7449,
             }
         );
         assert_eq!(
-            parse_endpoint("tls/[2001:db8::1]:7449", "tls", EndpointPurpose::Dial).unwrap(),
+            parse_endpoint("tls/[2001:db8::1]:7449", "tls").unwrap(),
             ParsedEndpoint {
                 host: "2001:db8::1",
                 port: 7449,
             }
         );
+    }
+
+    #[test]
+    fn endpoint_from_parts_builds_the_canonical_text_and_validates() {
+        let named = ParsedEndpointBuf::from_parts("tls", "router.example", 7449).unwrap();
+        assert_eq!(named.as_str(), "tls/router.example:7449");
+        assert_eq!((named.host(), named.port()), ("router.example", 7449));
+
+        // An unbracketed IPv6 host (as split from a locator) is re-bracketed.
+        let ipv6 = ParsedEndpointBuf::from_parts("tls", "2001:db8::1", 7449).unwrap();
+        assert_eq!(ipv6.as_str(), "tls/[2001:db8::1]:7449");
+        assert_eq!(ipv6.host(), "2001:db8::1");
+
+        // The parts still go through the full dial grammar.
+        assert!(ParsedEndpointBuf::from_parts("tls", "0.0.0.0", 7449).is_err());
+        assert!(ParsedEndpointBuf::from_parts("tls", "bad_host", 7449).is_err());
     }
 
     #[test]
