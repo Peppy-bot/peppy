@@ -7,6 +7,7 @@
 
 use crate::error::{Error, Result};
 use daemon_config::peppy_config::ResourceServers;
+use url::{Host, Url};
 
 /// Resolves the backend base URL in precedence order: the `--api-url` flag,
 /// then `PEPPY_API_URL`, then the build's URL from the `resource_servers`
@@ -29,7 +30,12 @@ pub fn resolve_api_url_from(
         .unwrap_or_else(|| servers.api.clone());
 
     let api_url = api_url.trim_end_matches('/').to_string();
-    check_transport(&api_url)?;
+    let parsed = validate_https_or_local(&api_url, "platform API")?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(Error::Auth(format!(
+            "invalid platform API `{api_url}`: a query string or fragment is not allowed"
+        )));
+    }
     Ok(api_url)
 }
 
@@ -48,34 +54,66 @@ fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-/// Plain `http` is allowed only for loopback / `*.localhost` (local dev);
-/// anything else must be `https` so prod tokens never travel in cleartext.
-fn check_transport(api_url: &str) -> Result<()> {
-    let parsed = url::Url::parse(api_url)
-        .map_err(|e| Error::Auth(format!("invalid backend URL `{api_url}`: {e}")))?;
+/// Validates one server-supplied control-plane URL. Plain `http` is allowed
+/// only for an actual loopback address, `localhost`, or `*.localhost`; anything
+/// else must be `https` so tokens never travel in cleartext.
+///
+/// `what` names the subject ("platform API", "OIDC issuer", "OIDC token
+/// endpoint") so a rejection is attributable to the URL the caller was about to
+/// use. Returning the parsed [`Url`] lets a caller compare schemes and origins
+/// without parsing a security-sensitive value a second, weaker way.
+pub fn validate_https_or_local(raw: &str, what: &str) -> Result<Url> {
+    if raw.is_empty() || raw.trim() != raw {
+        return Err(Error::Auth(format!(
+            "invalid {what}: it must be non-empty and carry no surrounding whitespace"
+        )));
+    }
+    let parsed =
+        Url::parse(raw).map_err(|e| Error::Auth(format!("invalid {what} `{raw}`: {e}")))?;
+    if parsed.cannot_be_a_base() || parsed.host().is_none() {
+        return Err(Error::Auth(format!(
+            "invalid {what} `{raw}`: an absolute URL with a host is required"
+        )));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(Error::Auth(format!(
+            "invalid {what} `{raw}`: embedded credentials are not allowed"
+        )));
+    }
     match parsed.scheme() {
-        "https" => Ok(()),
-        "http" if is_local(parsed.host_str()) => Ok(()),
+        "https" => Ok(parsed),
+        "http" if is_local(&parsed) => Ok(parsed),
         "http" => Err(Error::Auth(format!(
-            "refusing plain http for non-local backend `{api_url}` (use https)"
+            "refusing plain http for non-local {what} `{raw}` (use https)"
         ))),
         other => Err(Error::Auth(format!(
-            "unsupported URL scheme `{other}` in `{api_url}`"
+            "unsupported URL scheme `{other}` in `{raw}`"
         ))),
     }
 }
 
-/// Whether a host is local enough to allow plain http: loopback addresses,
-/// `localhost`, or any `*.localhost` name (Zitadel's dev issuer uses the latter).
-fn is_local(host: Option<&str>) -> bool {
-    match host {
-        Some(h) => {
-            h == "localhost"
-                || h.ends_with(".localhost")
-                || h == "127.0.0.1"
-                || h == "::1"
-                || h.starts_with("127.")
-        }
+/// The canonical scheme, host, and port binding of the platform API. A path,
+/// query, fragment, case difference, or explicit default port cannot spell one
+/// platform origin two ways.
+///
+/// The input is validated here rather than trusted from the caller. Because
+/// [`validate_https_or_local`] has already rejected a `cannot_be_a_base` URL and
+/// a missing host, the origin is always a tuple origin and the serialization can
+/// never be `"null"`.
+pub fn normalize_api_origin(api_url: &str) -> Result<String> {
+    Ok(validate_https_or_local(api_url, "platform API")?
+        .origin()
+        .ascii_serialization())
+}
+
+/// Whether a parsed host is local enough to permit cleartext development
+/// traffic. Matching on [`Host`] avoids the string-prefix pitfall that let a
+/// domain such as `127.example.com` pass for a loopback address.
+fn is_local(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
         None => false,
     }
 }
@@ -154,5 +192,63 @@ mod tests {
             resolve_api_url_from(Some("http://auth.peppy.localhost:8080"), None, &servers).is_ok()
         );
         assert!(resolve_api_url_from(Some("http://127.0.0.1:3000"), None, &servers).is_ok());
+        // The old prefix test accepted these two for the wrong reason: it
+        // matched the literal `127.` and the literal `::1` rather than asking
+        // whether the parsed address is a loopback address.
+        assert!(resolve_api_url_from(Some("http://127.42.7.9:3000"), None, &servers).is_ok());
+        assert!(resolve_api_url_from(Some("http://[::1]:3000"), None, &servers).is_ok());
+    }
+
+    /// The whole point of matching on [`Host`]: `127.example` is a domain name
+    /// that merely starts like a loopback literal, and the old
+    /// `h.starts_with("127.")` check classified it as local and permitted an
+    /// entire device flow in the clear against a remote host.
+    #[test]
+    fn domain_names_that_merely_start_like_loopback_are_not_local() {
+        let servers = servers();
+        for host in ["http://127.example", "http://127.evil.test"] {
+            let err = resolve_api_url_from(Some(host), None, &servers).unwrap_err();
+            assert!(
+                err.to_string().contains("plain http"),
+                "expected {host} to be refused as non-local, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_embedded_credentials_queries_and_fragments_for_the_api_base() {
+        let servers = servers();
+        let err = resolve_api_url_from(Some("https://alice:hunter2@api.peppy.bot"), None, &servers)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("embedded credentials"),
+            "got: {err}"
+        );
+
+        let err = resolve_api_url_from(Some("https://api.peppy.bot?tenant=x"), None, &servers)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("query string or fragment"),
+            "got: {err}"
+        );
+
+        let err =
+            resolve_api_url_from(Some("https://api.peppy.bot#frag"), None, &servers).unwrap_err();
+        assert!(
+            err.to_string().contains("query string or fragment"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn normalizes_platform_origins() {
+        assert_eq!(
+            normalize_api_origin("HTTPS://API.PEPPY.BOT:443/v1").expect("normalize"),
+            "https://api.peppy.bot"
+        );
+        assert_eq!(
+            normalize_api_origin("http://LOCALHOST:3000/api").expect("normalize"),
+            "http://localhost:3000"
+        );
     }
 }

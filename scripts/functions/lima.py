@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from .build import _get_target_dir
 from .cli import ReleaseError, console
 
 LIMA_HOME = Path.home() / ".peppy" / "lima-build"
@@ -14,6 +15,14 @@ LIMA_TEMPLATE = "template:ubuntu-24.04"
 GUEST_RUST_DIR = "/opt/peppy-rust"
 GUEST_RUSTUP_HOME = f"{GUEST_RUST_DIR}/rustup"
 GUEST_CARGO_HOME = f"{GUEST_RUST_DIR}/cargo"
+
+# The Lima release the containers crate downloads and SHA-verifies. This MUST
+# stay in sync with LIMA_VERSION in crates/containers-internal/build.rs (which
+# also keys `lima_archive_sha256` on it); a limactl from one release driving a
+# guest agent from another is a known way to land an instance in DEGRADED
+# state. Nothing enforces the sync, so it is prose across the Rust/Python
+# boundary, exactly like GO_VERSION below.
+LIMA_VERSION = "2.1.3"
 
 # Pinned Go toolchain for the in-VM Linux target builds. The containers crate
 # builds apptainer from source, whose `mconfig` needs a Go newer than Ubuntu's
@@ -48,26 +57,36 @@ SO_BUILD_STATE_MARKER = ".so-build-state"
 
 
 def find_limactl(repo_root: Path) -> Path:
-    """Find the limactl binary from the macOS build output or cache.
+    """Find the limactl binary for the pinned Lima release.
 
-    Checks the cargo build output first (created by the containers crate build.rs),
-    then falls back to the peppy Lima cache directory.
+    Checks the exact SHA-verified cache entry for LIMA_VERSION first, then falls
+    back to the cargo build output created by the containers crate build.rs.
+    There is deliberately no `lima-*` glob: sorting one picked the
+    lexicographically last directory, so an unrelated cache entry such as
+    `lima-99.0.0-Darwin-arm64` would win over the verified download.
     """
-    target_dir = Path(
-        os.environ.get("CARGO_TARGET_DIR", str(repo_root / "target"))
+    cached = (
+        Path.home()
+        / ".peppy"
+        / "tmp"
+        / f"lima-{LIMA_VERSION}-Darwin-arm64"
+        / "bin"
+        / "limactl"
     )
-    build_dir = target_dir / "aarch64-apple-darwin" / "release" / "build"
+    if cached.is_file():
+        return cached
+
+    build_dir = (
+        _get_target_dir(repo_root) / "aarch64-apple-darwin" / "release" / "build"
+    )
     matches = sorted(build_dir.glob("containers-*/out/lima-install/bin/limactl"))
     if matches and matches[0].is_file():
         return matches[0]
 
-    cache_matches = sorted(Path.home().glob(".peppy/tmp/lima-*/bin/limactl"))
-    if cache_matches and cache_matches[-1].is_file():
-        return cache_matches[-1]
-
     raise ReleaseError(
-        "limactl not found. Build the macOS target first so that the "
-        "containers crate downloads Lima, or check ~/.peppy/tmp/lima-*/bin/limactl"
+        f"limactl not found for the pinned Lima {LIMA_VERSION}. Expected "
+        f"{cached}, or build the macOS target first so the containers crate "
+        "downloads and verifies it."
     )
 
 
@@ -286,6 +305,8 @@ def cargo_build_in_lima(
     tag: str,
     target_triple: str,
     repo_root: Path,
+    *,
+    target_dir: Path | None = None,
 ) -> None:
     """Run cargo build inside the Lima VM for a Linux target.
 
@@ -315,6 +336,7 @@ export PEPPY_GIT_TAG={tag}
 export PEPPY_CROSS_ARCH=1
 export RUSTC_WRAPPER=""
 export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
+{f"export CARGO_TARGET_DIR={target_dir}" if target_dir is not None else ""}
 {cross_linker}
 cd {repo_root}
 cargo build -p peppy --release --locked --target {target_triple} -j 8

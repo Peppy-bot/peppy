@@ -10,6 +10,8 @@
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
+use ureq::config::RedirectAuthHeaders;
+use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::error::{Error, Result};
 
@@ -34,6 +36,11 @@ impl HttpResponse {
 
 /// The default global HTTP timeout for the CLI's blocking client.
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Every response this client reads is a small JSON document. Bounding the
+/// fully buffered body keeps a broken or hostile upstream from making the CLI
+/// allocate an arbitrary amount of memory before anything parses it.
+const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// A shared blocking HTTP client wrapping a configured `ureq::Agent`.
 ///
@@ -61,6 +68,26 @@ impl HttpClient {
     pub fn with_timeout(timeout: Duration) -> Self {
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            // Use the host platform's trust policy rather than ureq's static
+            // Mozilla bundle, so enterprise and robot-fleet trust
+            // administration is honored and a test harness can inject a fixture
+            // root through the standard SSL_CERT_FILE mechanism. Full WebPKI
+            // hostname validation is retained.
+            .tls_config(
+                TlsConfig::builder()
+                    .root_certs(RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            // Control-plane redirects are deliberately not followed. It is a
+            // stronger and far easier to audit form of the downgrade guard than
+            // inspecting each hop: https can never be walked down to http by a
+            // Location header, and a bearer can never cross an origin. A caller
+            // receives the 3xx and rejects it as an unexpected status.
+            .max_redirects(0)
+            // Already ureq's default. Pinned so a future default change cannot
+            // quietly re-enable header forwarding across a redirect; this line
+            // changes no behaviour today.
+            .redirect_auth_headers(RedirectAuthHeaders::Never)
             .timeout_global(Some(timeout))
             .build()
             .into();
@@ -140,6 +167,8 @@ fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Re
     let mut resp = resp;
     let body = resp
         .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES)
         .read_to_string()
         .map_err(|e| Error::Http(format!("{method} {} failed reading body: {e}", redact(url))))?;
     Ok(HttpResponse { status, body })
@@ -148,10 +177,43 @@ fn finish(method: &str, url: &str, resp: ureq::http::Response<ureq::Body>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::Method::GET;
+    use httpmock::MockServer;
 
     #[test]
     fn redact_strips_query() {
         assert_eq!(redact("https://h/oauth?code=secret"), "https://h/oauth");
         assert_eq!(redact("https://h/me"), "https://h/me");
+    }
+
+    #[test]
+    fn client_uses_verified_platform_trust_roots() {
+        let client = HttpClient::new();
+        let tls = client.agent.config().tls_config();
+        assert!(matches!(tls.root_certs(), RootCerts::PlatformVerifier));
+        assert!(tls.use_sni());
+        assert!(!tls.disable_verification());
+    }
+
+    #[test]
+    fn redirects_are_returned_without_being_followed() {
+        let server = MockServer::start();
+        let target = server.mock(|when, then| {
+            when.method(GET).path("/target");
+            then.status(200).body("followed");
+        });
+        let redirect = server.mock(|when, then| {
+            when.method(GET).path("/redirect");
+            then.status(302)
+                .header("Location", format!("{}/target", server.base_url()));
+        });
+
+        let response = HttpClient::new()
+            .get(&format!("{}/redirect", server.base_url()), Some("secret"))
+            .expect("the raw redirect response is available to the caller");
+
+        assert_eq!(response.status, 302);
+        redirect.assert_calls(1);
+        target.assert_calls(0);
     }
 }

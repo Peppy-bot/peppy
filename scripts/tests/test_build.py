@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from functions.build import (
+    _get_target_dir,
     build_and_package,
     find_build_dir,
     find_peppy_binary,
@@ -283,7 +284,7 @@ def test_build_and_package_native_calls_cargo_build(
     build_and_package("v0.1.0", "aarch64-unknown-linux-gnu", tmp_path)
 
     mock_cargo.assert_called_once_with(
-        "v0.1.0", "aarch64-unknown-linux-gnu", tmp_path
+        "v0.1.0", "aarch64-unknown-linux-gnu", tmp_path, target_dir=ANY
     )
 
 
@@ -312,5 +313,31 @@ def test_build_and_package_with_lima_calls_lima_build(
     )
 
     mock_lima_build.assert_called_once_with(
-        limactl, "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path
+        limactl, "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, target_dir=ANY
     )
+
+
+def test_get_target_dir_resolves_relative_cargo_target_dir(tmp_path: Path) -> None:
+    """A relative CARGO_TARGET_DIR resolves against repo_root, not the cwd.
+
+    Cargo resolves it against the process working directory. If this module
+    resolved it against nothing, the release script and cargo would look in
+    different places and every discovery glob would come up empty.
+    """
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": "target-release"}):
+        assert _get_target_dir(tmp_path) == tmp_path / "target-release"
+
+    # Pinned at a public entry point too, not just the private helper.
+    triple = "aarch64-apple-darwin"
+    bin_path = tmp_path / "target-release" / triple / "release" / "peppy"
+    bin_path.parent.mkdir(parents=True)
+    bin_path.write_bytes(b"fake binary")
+
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": "target-release"}):
+        assert find_peppy_binary(triple, tmp_path) == bin_path
+
+
+def test_get_target_dir_honours_an_absolute_cargo_target_dir(tmp_path: Path) -> None:
+    absolute = tmp_path / "elsewhere" / "target"
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(absolute)}):
+        assert _get_target_dir(tmp_path / "repo") == absolute

@@ -399,12 +399,26 @@ impl Default for FederationConfig {
     }
 }
 
-/// Validates the deliberately narrow locator surface supported for an external
-/// router. Peppy currently transports its daemon and node sessions over TCP, so
-/// accepting another Zenoh protocol here would create a config the rest of the
-/// stack cannot honor. This is syntax-only: hostnames are not resolved while
-/// loading the config.
-fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String> {
+/// Characters reserved by the Zenoh locator grammar (config, metadata, and
+/// fragment delimiters), rejected wherever Peppy embeds text into a locator.
+const RESERVED_LOCATOR_DELIMITERS: [char; 3] = ['#', ';', '='];
+
+/// Parsed, syntax-checked `<scheme>/<host>:<port>` endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedEndpoint<'a> {
+    /// Host without IPv6 brackets.
+    pub host: &'a str,
+    pub port: u16,
+}
+
+/// Parses the deliberately narrow locator surface supported for a dial
+/// endpoint, in the caller-supplied transport scheme. Wildcard hosts are
+/// rejected because they are only valid for listening, which Peppy never
+/// configures here. This is syntax-only: hostnames are never resolved.
+pub fn parse_endpoint<'a>(
+    endpoint: &'a str,
+    expected_scheme: &str,
+) -> std::result::Result<ParsedEndpoint<'a>, String> {
     if endpoint.is_empty() {
         return Err("must not be empty".to_string());
     }
@@ -412,15 +426,18 @@ fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String>
         return Err("must not contain leading or trailing whitespace".to_string());
     }
 
-    let Some(address) = endpoint.strip_prefix("tcp/") else {
-        return Err("must use the tcp/<host>:<port> locator form".to_string());
+    let expected_prefix = format!("{expected_scheme}/");
+    let Some(address) = endpoint.strip_prefix(&expected_prefix) else {
+        return Err(format!(
+            "must use the {expected_scheme}/<host>:<port> locator form"
+        ));
     };
-    if address.contains(['?', '#']) {
+    if address.contains('?') || address.contains(RESERVED_LOCATOR_DELIMITERS) {
         return Err("metadata and endpoint configuration are not supported".to_string());
     }
 
-    let (host, port, bracketed) = split_tcp_host_port(address)?;
-    validate_dial_host(host, bracketed)?;
+    let (host, port, bracketed) = split_endpoint_host_port(address)?;
+    validate_endpoint_host(host, bracketed)?;
     if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("port must be an integer from 1 through 65535".to_string());
     }
@@ -430,10 +447,64 @@ fn validate_tcp_dial_endpoint(endpoint: &str) -> std::result::Result<(), String>
     if port == 0 {
         return Err("port must be an integer from 1 through 65535".to_string());
     }
-    Ok(())
+    Ok(ParsedEndpoint { host, port })
 }
 
-fn split_tcp_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
+/// Owned form of [`ParsedEndpoint`] that keeps the canonical endpoint text
+/// together with its parsed host and port, so a syntax-checked endpoint can be
+/// stored and passed around without consumers re-parsing (and re-wording
+/// impossible parse failures for) the same string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParsedEndpointBuf {
+    text: String,
+    /// Host without IPv6 brackets.
+    host: String,
+    port: u16,
+}
+
+impl ParsedEndpointBuf {
+    /// Parses and takes ownership of an endpoint via [`parse_endpoint`].
+    pub fn parse(
+        text: impl Into<String>,
+        expected_scheme: &str,
+    ) -> std::result::Result<Self, String> {
+        let text = text.into();
+        let parsed = parse_endpoint(&text, expected_scheme)?;
+        let host = parsed.host.to_string();
+        let port = parsed.port;
+        Ok(Self { text, host, port })
+    }
+
+    /// The canonical `<scheme>/<host>:<port>` text this was parsed from.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl std::fmt::Display for ParsedEndpointBuf {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.text)
+    }
+}
+
+impl Serialize for ParsedEndpointBuf {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
+
+fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
     if let Some(bracketed) = address.strip_prefix('[') {
         let Some(close) = bracketed.find(']') else {
             return Err("IPv6 addresses must be enclosed in matching brackets".to_string());
@@ -458,7 +529,7 @@ fn split_tcp_host_port(address: &str) -> std::result::Result<(&str, &str, bool),
     Ok((host, port, false))
 }
 
-fn validate_dial_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
+fn validate_endpoint_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
     if host.is_empty() {
         return Err("host must not be empty".to_string());
     }
@@ -678,9 +749,10 @@ impl ZenohConfig {
                 Ok(())
             }
             Self::External(config) => {
-                validate_tcp_dial_endpoint(&config.endpoint).map_err(|error| {
+                parse_endpoint(&config.endpoint, "tcp").map_err(|error| {
                     cannot_parse_config(format!("invalid zenoh.external.endpoint: {error}"))
-                })
+                })?;
+                Ok(())
             }
         }
     }
@@ -1483,6 +1555,18 @@ mod tests {
                 "tcp/127.0.0.1:7448?prio=1",
                 "metadata and endpoint configuration are not supported",
             ),
+            (
+                "tcp/127.0.0.1:7448;prio=1",
+                "metadata and endpoint configuration are not supported",
+            ),
+            (
+                "tcp/127.0.0.1:7448#meta",
+                "metadata and endpoint configuration are not supported",
+            ),
+            (
+                "tcp/127.0.0.1:7448=x",
+                "metadata and endpoint configuration are not supported",
+            ),
         ] {
             let content = format!(r#"{{ zenoh: {{ external: {{ endpoint: "{endpoint}" }} }} }}"#);
             let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
@@ -1496,6 +1580,42 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
+    }
+
+    #[test]
+    fn endpoint_parser_returns_normalized_host_and_port() {
+        assert_eq!(
+            parse_endpoint("tls/router.example:7449", "tls").unwrap(),
+            ParsedEndpoint {
+                host: "router.example",
+                port: 7449
+            }
+        );
+        assert_eq!(
+            parse_endpoint("tls/[2001:db8::1]:7449", "tls").unwrap(),
+            ParsedEndpoint {
+                host: "2001:db8::1",
+                port: 7449
+            }
+        );
+    }
+
+    #[test]
+    fn parsed_endpoint_buf_round_trips() {
+        let buf = ParsedEndpointBuf::parse("tls/[2001:db8::1]:7449", "tls").unwrap();
+        assert_eq!(buf.host(), "2001:db8::1");
+        assert_eq!(buf.port(), 7449);
+        assert_eq!(buf.as_str(), "tls/[2001:db8::1]:7449");
+        assert_eq!(buf.to_string(), buf.as_str());
+        assert_eq!(
+            serde_json::to_string(&buf).unwrap(),
+            "\"tls/[2001:db8::1]:7449\""
+        );
+        assert_eq!(
+            ParsedEndpointBuf::parse(buf.to_string(), "tls").unwrap(),
+            buf
+        );
+        assert!(ParsedEndpointBuf::parse("tcp/router.example:7449", "tls").is_err());
     }
 
     #[test]

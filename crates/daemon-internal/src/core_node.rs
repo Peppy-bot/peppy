@@ -257,6 +257,13 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 // session, so the session must still be open here; the router
                 // waits for the `core_node_done` signal below before closing it.
                 core_node.teardown_node_stack().await;
+                // Withdraw this daemon's own presence while the session and the
+                // router are still up, so a managed router can propagate the
+                // undeclare to its upstream. Dropping `CoreNode` would also
+                // release the token, but that happens after the router has
+                // closed the session, leaving an upstream advertising a core
+                // node that has exited.
+                core_node.release_presence();
                 // Release the messaging router to close the session now that the
                 // core node no longer needs it.
                 let _ = core_node_done.send(true);
@@ -268,6 +275,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 // messaging router.
                 shutdown_token.cancel();
                 core_node.teardown_node_stack().await;
+                core_node.release_presence();
                 let _ = core_node_done.send(true);
             }
 

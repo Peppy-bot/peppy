@@ -35,6 +35,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+          # Safe here even though this job opens a PR: the
+          # peter-evans/create-pull-request step below is handed its own
+          # PEPPY_BOT_TOKEN and never relies on the ambient checkout credential.
+          persist-credentials: false
 
       - name: Check docs are up to date
         id: check
