@@ -5,7 +5,7 @@
 //! [`device::TokenResponse`] and its `into_set` are shared with [`device`] so
 //! the token-response parsing and `TokenSet` materialization live in one place.
 
-use super::device::{TokenResponse, TokenSet};
+use super::device::{TokenResponse, TokenSet, safe_oauth_error_code};
 use super::http::HttpClient;
 use super::storage::now_unix;
 use crate::error::{Error, Result};
@@ -28,9 +28,10 @@ pub fn refresh(
     )?;
 
     if !resp.is_success() {
+        let code = safe_oauth_error_code(&resp.body);
         return Err(Error::Auth(format!(
-            "token refresh failed ({}): {}",
-            resp.status, resp.body
+            "token refresh failed ({}; OAuth error {code})",
+            resp.status
         )));
     }
 

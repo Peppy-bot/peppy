@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use super::discovery::OidcEndpoints;
 use super::http::HttpClient;
+use super::profile;
 use super::storage::now_unix;
 use crate::error::{Error, Result};
 
@@ -71,6 +72,29 @@ struct TokenErrorBody {
     error: String,
 }
 
+/// Extracts the OAuth `error` code from a failed token or device-authorization
+/// response, in a shape that is safe to print. A response body is attacker
+/// influenced and arbitrarily long, so only a short, plain code survives:
+/// anything empty, over 64 bytes, or carrying a byte outside the ASCII
+/// alphanumerics plus `_` and `-` collapses to `unknown_error`. Every code
+/// [`classify`] acts on passes this filter unchanged, so polling behaviour is
+/// unaffected.
+pub(crate) fn safe_oauth_error_code(body: &str) -> String {
+    let code = serde_json::from_str::<TokenErrorBody>(body)
+        .map(|body| body.error)
+        .unwrap_or_default();
+    if !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        code
+    } else {
+        "unknown_error".into()
+    }
+}
+
 impl TokenResponse {
     /// Materializes a [`TokenSet`], carrying `prev_refresh` forward when the
     /// response omits a rotated refresh token (refresh grants may not re-issue
@@ -128,12 +152,62 @@ pub fn start(
         None,
     )?;
     if !start.is_success() {
+        let code = safe_oauth_error_code(&start.body);
         return Err(Error::Auth(format!(
-            "device authorization failed ({}): {}",
-            start.status, start.body
+            "device authorization failed ({}; OAuth error {code})",
+            start.status
         )));
     }
-    start.json("device authorization")
+    let mut authorization: DeviceAuthorization = start.json("device authorization")?;
+    canonicalize_verification_urls(endpoints, &mut authorization)?;
+    Ok(authorization)
+}
+
+/// Validates the verification URLs and writes the canonical parsed forms back,
+/// so the caller prints and browser-opens a value that has passed the transport
+/// policy rather than the raw server string.
+///
+/// Both URLs are server supplied, one of them is opened automatically, and a
+/// user typing a code into whatever page appears is exactly the flow a phishing
+/// URL wants. An HTTPS device endpoint therefore cannot hand back a cleartext
+/// verification URL, not even a loopback one.
+///
+/// An absent `verification_uri_complete` is not an error: it is optional in RFC
+/// 8628, so a `None` stays `None` and the flow proceeds on `verification_uri`
+/// alone. `verification_uri` itself is required and is always validated.
+fn canonicalize_verification_urls(
+    endpoints: &OidcEndpoints,
+    authorization: &mut DeviceAuthorization,
+) -> Result<()> {
+    let device_endpoint = profile::validate_https_or_local(
+        &endpoints.device_authorization_endpoint,
+        "OIDC device authorization endpoint",
+    )?;
+    let verification = profile::validate_https_or_local(
+        &authorization.verification_uri,
+        "device verification URI",
+    )?;
+    if device_endpoint.scheme() == "https" && verification.scheme() != "https" {
+        return Err(Error::Auth(
+            "device verification URI attempts an HTTPS to HTTP downgrade".into(),
+        ));
+    }
+    authorization.verification_uri = verification.to_string();
+    authorization.verification_uri_complete = authorization
+        .verification_uri_complete
+        .as_deref()
+        .map(|complete| {
+            let parsed =
+                profile::validate_https_or_local(complete, "complete device verification URI")?;
+            if device_endpoint.scheme() == "https" && parsed.scheme() != "https" {
+                return Err(Error::Auth(
+                    "complete device verification URI attempts an HTTPS to HTTP downgrade".into(),
+                ));
+            }
+            Ok(parsed.to_string())
+        })
+        .transpose()?;
+    Ok(())
 }
 
 /// Polls `token_endpoint` (blocking) until the user approves in the browser,
@@ -163,10 +237,8 @@ pub fn poll(
             break Ok(token.into_set(now_unix(), None));
         }
 
-        let body: TokenErrorBody = serde_json::from_str(&resp.body).unwrap_or(TokenErrorBody {
-            error: String::new(),
-        });
-        match classify(&body.error) {
+        let code = safe_oauth_error_code(&resp.body);
+        match classify(&code) {
             PollOutcome::KeepWaiting => {}
             PollOutcome::SlowDown => interval += 5,
             PollOutcome::Fatal(e) => break Err(e),
@@ -199,6 +271,71 @@ mod tests {
             expires_in,
             interval,
         }
+    }
+
+    #[test]
+    fn device_start_rejects_an_insecure_complete_verification_url() {
+        let server = MockServer::start();
+        let authorization = server.mock(|when, then| {
+            when.method(POST).path("/device");
+            then.status(200).json_body(json!({
+                "device_code": "dev-123",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://issuer.example/device",
+                "verification_uri_complete": "http://phishing.example/device?code=ABCD-EFGH",
+                "expires_in": 300,
+                "interval": 5,
+            }));
+        });
+        let endpoints = OidcEndpoints {
+            device_authorization_endpoint: format!("{}/device", server.base_url()),
+            token_endpoint: format!("{}/token", server.base_url()),
+            revocation_endpoint: None,
+        };
+
+        let error = start(&HttpClient::new(), &endpoints, "client", "openid")
+            .expect_err("a remote cleartext URL must never reach browser-opening code");
+        assert!(error.to_string().contains("plain http"), "{error}");
+        assert_eq!(authorization.calls(), 1);
+    }
+
+    #[test]
+    fn device_start_rejects_an_insecure_primary_verification_url() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/device");
+            then.status(200).json_body(json!({
+                "device_code": "dev-123",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "http://phishing.example/device",
+                "expires_in": 300,
+                "interval": 5,
+            }));
+        });
+        let endpoints = OidcEndpoints {
+            device_authorization_endpoint: format!("{}/device", server.base_url()),
+            token_endpoint: format!("{}/token", server.base_url()),
+            revocation_endpoint: None,
+        };
+
+        let error = start(&HttpClient::new(), &endpoints, "client", "openid")
+            .expect_err("the primary remote cleartext URL must be rejected too");
+        assert!(error.to_string().contains("plain http"), "{error}");
+    }
+
+    #[test]
+    fn https_device_endpoint_rejects_a_loopback_http_verification_downgrade() {
+        let endpoints = OidcEndpoints {
+            device_authorization_endpoint: "https://issuer.example/device".into(),
+            token_endpoint: "https://issuer.example/token".into(),
+            revocation_endpoint: None,
+        };
+        let mut authorization = device_auth(5, 300);
+        authorization.verification_uri = "http://127.0.0.1/device".into();
+
+        let error = canonicalize_verification_urls(&endpoints, &mut authorization)
+            .expect_err("an https issuer flow cannot downgrade even to loopback http");
+        assert!(error.to_string().contains("downgrade"), "{error}");
     }
 
     #[test]
