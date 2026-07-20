@@ -71,7 +71,7 @@ pub struct ZenohRouterConfig {
     /// string). Becomes the daemon's session namespace so robots of the same org
     /// interoperate across the federation while different orgs stay routing-isolated.
     /// Required: a backend that predates this field fails to parse, which is the
-    /// intended clean break (re-run `peppy auth login`).
+    /// intended clean break (re-run `peppy platform login`).
     pub organization_id: String,
 }
 

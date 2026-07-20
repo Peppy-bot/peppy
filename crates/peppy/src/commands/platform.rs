@@ -1,7 +1,11 @@
-//! The `peppy auth` command group: `login`, `logout`, and `whoami`. Each
+//! The `peppy platform` command group: `login`, `logout`, and `whoami`. Each
 //! variant maps to a handler in this module's directory; the OAuth device flow,
 //! token storage, and credential resolution they share live in the separate
-//! `auth` engine crate.
+//! `auth` engine crate. The group is named for the platform account rather than
+//! for auth because signing in does more than obtain a token: it stamps this
+//! machine's organization namespace and pokes the running daemon to refederate
+//! its messaging router, and a login whose federation link cannot be
+//! established fails.
 
 pub mod login;
 pub mod logout;
@@ -274,7 +278,7 @@ fn await_restart(
         if Instant::now() >= deadline {
             break Err(Error::Auth(format!(
                 "the daemon did not come back under namespace `{expected}` within the timeout; \
-                 check the `peppy service serve` logs and re-run `peppy auth {subcommand}`"
+                 check the `peppy service serve` logs and re-run `peppy platform {subcommand}`"
             )));
         }
         std::thread::sleep(RESTART_POLL_INTERVAL);
@@ -283,7 +287,7 @@ fn await_restart(
         // daemon will not come back under what we wrote.
         if current_creds_namespace(dirs) != expected {
             break Err(Error::Auth(format!(
-                "credentials changed during restart; re-run `peppy auth {subcommand}`"
+                "credentials changed during restart; re-run `peppy platform {subcommand}`"
             )));
         }
 
@@ -347,31 +351,31 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
             "logged in, but federation with the platform could not be established: {reason}. \
              The per-user cloud router is unreachable or its certificate is not trusted; in \
              dev, ensure the router cert is signed by the committed dev CA (re-run \
-             gen_dev_certs), then run `peppy auth login` again."
+             gen_dev_certs), then run `peppy platform login` again."
         ))),
         PokeOutcome::DaemonError(msg) => Err(Error::Auth(format!(
             "logged in, but the daemon could not apply federation: {msg}. Check the \
-             `peppy service serve` logs and run `peppy auth login` again."
+             `peppy service serve` logs and run `peppy platform login` again."
         ))),
         PokeOutcome::TimedOut => Err(Error::Auth(
             "logged in, but the daemon did not apply federation within the timeout. Check the \
-             `peppy service serve` logs and run `peppy auth login` again."
+             `peppy service serve` logs and run `peppy platform login` again."
                 .to_string(),
         )),
         PokeOutcome::DaemonNotRunning => Err(Error::Auth(
             "logged in, but no running peppy daemon was found to establish federation. Start it \
-             with `peppy service serve`, then run `peppy auth login` again."
+             with `peppy service serve`, then run `peppy platform login` again."
                 .to_string(),
         )),
         PokeOutcome::Applied(None) => Err(Error::Auth(
             "logged in, but no cloud router resolved to federate to. Confirm the backend is \
-             reachable and your account is provisioned, then run `peppy auth login` again."
+             reachable and your account is provisioned, then run `peppy platform login` again."
                 .to_string(),
         )),
         // `Restarting` is intercepted by `poke_federation_and_report` (it drives
         // the restart poll), so it should not reach here; treat defensively.
         PokeOutcome::Restarting => Err(Error::Auth(
-            "the daemon is restarting to apply the new namespace; re-run `peppy auth login` \
+            "the daemon is restarting to apply the new namespace; re-run `peppy platform login` \
              once it is back."
                 .to_string(),
         )),
@@ -402,7 +406,7 @@ fn report_logout(outcome: PokeOutcome) {
 }
 
 #[derive(Subcommand)]
-pub enum AuthCommands {
+pub enum PlatformCommands {
     /// Log in to Peppy via the browser (OAuth device flow)
     Login {
         /// Override the backend base URL (else the build default / PEPPY_API_URL).
@@ -434,14 +438,14 @@ pub enum AuthCommands {
     },
 }
 
-pub struct AuthCommand {
-    pub command: AuthCommands,
+pub struct PlatformCommand {
+    pub command: PlatformCommands,
 }
 
-impl Command for AuthCommand {
+impl Command for PlatformCommand {
     fn execute(self, app_ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
-            AuthCommands::Login {
+            PlatformCommands::Login {
                 api_url,
                 no_browser,
                 yes,
@@ -452,13 +456,13 @@ impl Command for AuthCommand {
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            AuthCommands::Logout { api_url, yes } => logout::LogoutCommand {
+            PlatformCommands::Logout { api_url, yes } => logout::LogoutCommand {
                 api_url,
                 yes,
                 peppy_dirs: None,
             }
             .execute(app_ctx),
-            AuthCommands::Whoami { api_url, json } => whoami::WhoamiCommand {
+            PlatformCommands::Whoami { api_url, json } => whoami::WhoamiCommand {
                 api_url,
                 json,
                 peppy_dirs: None,

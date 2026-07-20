@@ -54,7 +54,7 @@ pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 /// The backend resource-server URL for this build: the local dev backend in
 /// debug builds, the prod backend in release builds. The single source of truth
 /// for both the seeded `resource_servers` block and the built-in fallback the
-/// `peppy auth login` / `whoami` / `logout` commands resolve when no `--api-url` /
+/// `peppy platform login` / `whoami` / `logout` commands resolve when no `--api-url` /
 /// `PEPPY_API_URL` override is given.
 #[cfg(debug_assertions)]
 pub const DEFAULT_API_URL: &str = "http://127.0.0.1:3000";
@@ -221,7 +221,7 @@ const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_A
 /// CLI auth commands read this URL; the daemon ignores it but seeds and
 /// completes the block like every other knob.
 const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Backend resource-server URL the `peppy auth login` / `whoami` / `logout`
+    r#"  // Backend resource-server URL the `peppy platform login` / `whoami` / `logout`
   // commands talk to. Baked in at compile time (the dev backend in debug
   // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
   resource_servers: {
@@ -235,7 +235,7 @@ const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
 const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
     r#"        // Seconds the daemon spends resolving your per-user cloud router before
         // giving up for this attempt (it retries in the background). Bounds the
-        // federation done at startup and on each `peppy auth login`/`logout`;
+        // federation done at startup and on each `peppy platform login`/`logout`;
         // minimum 1. If the backend is unreachable within this window the daemon
         // stays standalone rather than blocking.
         connect_timeout_secs: "#,

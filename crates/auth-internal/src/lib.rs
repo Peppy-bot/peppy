@@ -1,4 +1,4 @@
-//! Authentication engine for `peppy auth login` / `logout` / `whoami` and the
+//! Authentication engine for `peppy platform login` / `logout` / `whoami` and the
 //! daemon's router federation.
 //!
 //! `peppy` is a public OAuth client of the project's Zitadel instance and a

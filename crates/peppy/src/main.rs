@@ -7,7 +7,7 @@ use tracing::error;
 
 use daemon_config::consts::AppEnv;
 use peppy::{
-    commands::{Command, auth, container, info, node, repo, service, stack},
+    commands::{Command, container, info, node, platform, repo, service, stack},
     context::AppContext,
 };
 
@@ -74,10 +74,10 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Authentication: log in, log out, and show the current identity
-    Auth {
+    /// Platform account: log in, log out, and show the current identity
+    Platform {
         #[command(subcommand)]
-        command: auth::AuthCommands,
+        command: platform::PlatformCommands,
     },
     /// Display peppy version information
     Info {},
@@ -122,7 +122,7 @@ fn main() {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
-        Commands::Auth { command } => auth::AuthCommand { command }.execute(&app_ctx),
+        Commands::Platform { command } => platform::PlatformCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 
@@ -177,5 +177,41 @@ mod tests {
                 "--core-node {bad:?} should be rejected"
             );
         }
+    }
+
+    /// The group is spelled `platform`, and only `platform`. The negative half
+    /// is the point: `auth` is gone outright, with no alias, hidden command, or
+    /// compatibility parser to fall back on, so it must fail to parse.
+    #[test]
+    fn platform_subcommands_parse() {
+        for args in [
+            vec!["peppy", "platform", "login", "--no-browser", "--yes"],
+            vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "logout", "-y"],
+            vec!["peppy", "platform", "logout", "--api-url", "http://x:3000"],
+            vec!["peppy", "platform", "whoami", "--json"],
+            vec!["peppy", "platform", "whoami", "--api-url", "http://x:3000"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "{args:?} should parse"
+            );
+        }
+
+        assert!(Cli::try_parse_from(["peppy", "auth", "whoami"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "auth", "login"]).is_err());
+        assert!(Cli::try_parse_from(["peppy", "auth", "logout"]).is_err());
+    }
+
+    #[test]
+    fn platform_status_is_an_alias_for_whoami() {
+        let cli = Cli::try_parse_from(["peppy", "platform", "status"])
+            .expect("the status alias should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Platform {
+                command: platform::PlatformCommands::Whoami { .. }
+            }
+        ));
     }
 }

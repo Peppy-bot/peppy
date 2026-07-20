@@ -2,7 +2,7 @@
 //! discovery, the Zitadel token endpoint, and the backend `/me` +
 //! `/me/cli/federation`. All auth state is isolated per test via an
 //! explicit credentials path under a tempdir (no `PEPPY_HOME` mutation, so
-//! tests run in parallel). The command-level flows (`peppy auth login` /
+//! tests run in parallel). The command-level flows (`peppy platform login` /
 //! `logout` / `whoami`) are covered by the `peppy` crate's own auth tests.
 
 use std::path::PathBuf;

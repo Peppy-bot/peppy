@@ -1,6 +1,6 @@
 //! Client and wire protocol for the daemon's *federation control socket*.
 //!
-//! `peppy auth login`/`logout` run in a separate, short-lived process from the
+//! `peppy platform login`/`logout` run in a separate, short-lived process from the
 //! `serve` daemon; their only shared state is the on-disk credentials file, which
 //! the daemon would otherwise only re-read on its periodic poll (so federation
 //! would lag a login by up to that interval). To apply it immediately, the

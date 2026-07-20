@@ -7,7 +7,7 @@
 //! The supported surface is intentionally small:
 //! - [`commands`]: the [`commands::Command`] trait plus the per-group command
 //!   and subcommand types that `main.rs` dispatches to. The OAuth engine behind
-//!   the [`commands::auth`] group (device flow, token storage, credential
+//!   the [`commands::platform`] group (device flow, token storage, credential
 //!   resolution, authenticated backend client) lives in the separate `auth`
 //!   workspace crate; this crate keeps only the interactive residue (browser
 //!   open, spinners, prompts).

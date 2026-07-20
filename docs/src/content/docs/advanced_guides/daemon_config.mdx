@@ -5,10 +5,10 @@ sidebar:
   order: 9
 ---
 
-By default, the peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, and defines the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy auth login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
+By default, the peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, and defines the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
 
 :::note
-The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy auth login` without a daemon restart.
+The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy platform login` without a daemon restart.
 :::
 
 ## How the file is managed
@@ -29,7 +29,7 @@ Classification always tries the value as a file first. If the file can be read, 
 
 An override is read-only. Peppy ignores `$PEPPY_HOME/conf/peppy_config.json5` and never creates, completes, or rewrites either that file or the override source. The override must parse, pass validation, and explicitly spell out every setting the running release defines. Missing settings are a startup error that names their paths and explains that override sources are never completed with defaults. This differs from the normal on-disk flow, which appends safe defaults and warns when an unusual source spelling prevents an insertion.
 
-The override applies to `peppy service serve` and to every auth command that reads daemon configuration: `peppy auth login`, `logout`, and `whoami`. `PEPPY_HOME` still controls credentials, repositories, and all other peppy state. Edits to a file-form override take effect on the daemon's next restart, just like edits to the default file.
+The override applies to `peppy service serve` and to every auth command that reads daemon configuration: `peppy platform login`, `logout`, and `whoami`. `PEPPY_HOME` still controls credentials, repositories, and all other peppy state. Edits to a file-form override take effect on the daemon's next restart, just like edits to the default file.
 
 Both examples below use the same complete config file. The second passes its full contents inline, including any leading JSON5 comments:
 
@@ -92,7 +92,7 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
       federation: {
         // Seconds the daemon spends resolving your per-user cloud router before
         // giving up for this attempt (it retries in the background). Bounds the
-        // federation done at startup and on each `peppy auth login`/`logout`;
+        // federation done at startup and on each `peppy platform login`/`logout`;
         // minimum 1. If the backend is unreachable within this window the daemon
         // stays standalone rather than blocking.
         connect_timeout_secs: 30,
@@ -113,7 +113,7 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
     shutdown_grace_secs: 5,
   },
 
-  // Backend resource-server URL the `peppy auth login` / `whoami` / `logout`
+  // Backend resource-server URL the `peppy platform login` / `whoami` / `logout`
   // commands talk to. Baked in at compile time (the dev backend in debug
   // builds, prod in release); --api-url / PEPPY_API_URL override it at runtime.
   resource_servers: {
@@ -189,9 +189,9 @@ Both values must be greater than `0`; the daemon rejects a zero buffer size at s
 
 ## `zenoh.managed.federation`: cloud-router timeout
 
-When you are logged in under `zenoh.managed`, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Authentication](/advanced_guides/authentication/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
+When you are logged in under `zenoh.managed`, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Platform](/advanced_guides/platform/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
 
-- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy auth login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
+- **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy platform login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
 
 ## `zenoh.external`: use an operator-run router
 
@@ -217,7 +217,7 @@ zenohd -l tcp/0.0.0.0:7448
 
 At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
 
-`peppy auth login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
+`peppy platform login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
 
 ## `lifecycle`: grace periods
 
@@ -228,7 +228,7 @@ The `lifecycle` block tunes the two windows peppy uses to guarantee that no node
 
 ## `resource_servers`: backend URL
 
-This block holds the platform-backend base URL the CLI auth commands talk to. The daemon ignores it; the `peppy auth login` / `whoami` / `logout` commands read it. See [Authentication](/advanced_guides/authentication/) for the full login flow.
+This block holds the platform-backend base URL the CLI auth commands talk to. The daemon ignores it; the `peppy platform login` / `whoami` / `logout` commands read it. See [Platform](/advanced_guides/platform/) for the full login flow.
 
 - **`api`** (default `https://api.peppy.bot` in release builds, `http://127.0.0.1:3000` in debug): the backend the auth commands talk to. There is no dev/prod selection at runtime; the file stores exactly the build's backend.
 
