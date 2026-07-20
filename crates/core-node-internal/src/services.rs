@@ -392,6 +392,29 @@ impl CoreNode {
         .await;
     }
 
+    /// Withdraw this core node's liveliness declaration explicitly, while the
+    /// messaging session and the router are still alive.
+    ///
+    /// Dropping the token is what sends the undeclare, and dropping the
+    /// `CoreNode` value would eventually do it. That is too late for a
+    /// federated daemon: the serve runner releases the `CoreNode` only after
+    /// the messaging router has closed the Zenoh session and stopped the
+    /// managed `zenohd`, so the undeclare never leaves the process. An upstream
+    /// router holding a routed copy of the declaration then keeps advertising a
+    /// core node that has already exited, which shows up as a stale entry in
+    /// cross-daemon presence enumeration and as a same-name restart being
+    /// refused for colliding with its own ghost.
+    ///
+    /// Idempotent: taking the `Option` means a core node that never claimed a
+    /// name, and a second call, are both no-ops, and the drop path composes
+    /// with this one by finding `None`.
+    pub fn release_presence(&self) {
+        self.presence_token
+            .lock()
+            .expect("presence token lock never poisoned: teardown cannot panic")
+            .take();
+    }
+
     pub fn node_config(&self) -> &NodeConfig {
         &self.node_config
     }

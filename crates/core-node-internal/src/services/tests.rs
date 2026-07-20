@@ -414,6 +414,35 @@ async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
     winner_task.abort();
 }
 
+/// Generation teardown must be able to withdraw presence *before* the core node
+/// object drops, so a managed router can propagate the undeclare while its
+/// upstream link is still alive. Without this, the serve runner's only way to
+/// release the token is dropping `CoreNode`, which happens after the messaging
+/// router has already closed the session and the undeclare has nowhere to go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_token_can_be_released_before_core_node_drop() {
+    let booted = BootedCoreNode::start("explicitly_released_node").await;
+    let presence_handle = booted.presence_handle.clone();
+
+    assert_eq!(
+        live_claims(&presence_handle, "explicitly_released_node")
+            .await
+            .len(),
+        1
+    );
+
+    booted.core_node.release_presence();
+
+    assert!(
+        live_claims(&presence_handle, "explicitly_released_node")
+            .await
+            .is_empty(),
+        "release_presence must withdraw the declaration without dropping the core node"
+    );
+
+    booted.shut_down().await;
+}
+
 /// Dropping a stopped core node drops its retained token, removing the daemon
 /// generation from presence enumeration without an explicit heartbeat grace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
