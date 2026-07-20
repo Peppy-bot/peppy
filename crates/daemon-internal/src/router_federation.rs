@@ -18,7 +18,7 @@
 //!   so the check sees the federated mesh (a same-name daemon reachable only
 //!   through the cloud router refuses boot) rather than the always-standalone
 //!   just-started local router.
-//! * **Immediate (re)federation on login/logout.** `peppy auth login`/`logout`
+//! * **Immediate (re)federation on login/logout.** `peppy platform login`/`logout`
 //!   poke the daemon over the control socket
 //!   ([`FederationControl`](super::federation_control)); the poke is delivered
 //!   here as a [`RefederateRequest`] that runs a poll *now* (not on the next

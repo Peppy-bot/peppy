@@ -1,4 +1,4 @@
-//! Command-level auth tests (`peppy auth login` / `logout` / `whoami`) with
+//! Command-level platform tests (`peppy platform login` / `logout` / `whoami`) with
 //! every HTTP endpoint mocked (`httpmock`): the public `/cli/auth-config`, OIDC
 //! discovery, the Zitadel device/token endpoints, and the backend `/me` +
 //! `/logout`. All auth state is isolated per test via the `peppy_dirs` seam
@@ -17,9 +17,9 @@ use serde_json::json;
 
 use auth::storage::{self, Credentials, ProfileCreds};
 use peppy::commands::Command;
-use peppy::commands::auth::login::LoginCommand;
-use peppy::commands::auth::logout::LogoutCommand;
-use peppy::commands::auth::whoami::WhoamiCommand;
+use peppy::commands::platform::login::LoginCommand;
+use peppy::commands::platform::logout::LogoutCommand;
+use peppy::commands::platform::whoami::WhoamiCommand;
 use peppy::context::AppContext;
 
 /// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks

@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 /// On-disk schema version of `credentials.json5`. Bumped on any shape change;
 /// there is intentionally **no reader for an older version**. A clean break: a
 /// pre-Phase-F file has no `version`, deserializes to `0`, and is rejected by
-/// [`load`], so dev users simply re-run `peppy auth login` (acceptable pre-GA).
+/// [`load`], so dev users simply re-run `peppy platform login` (acceptable pre-GA).
 pub const CREDENTIALS_VERSION: u32 = 1;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
@@ -214,7 +214,7 @@ pub fn load(path: &Path) -> Result<Credentials> {
             if creds.version != CREDENTIALS_VERSION {
                 return Err(Error::Auth(format!(
                     "credentials file {} is an unsupported format (v{}, expected v{}); \
-                     run `peppy auth login` again",
+                     run `peppy platform login` again",
                     path.display(),
                     creds.version,
                     CREDENTIALS_VERSION
@@ -392,7 +392,7 @@ mod tests {
         let err = load(&path).expect_err("old format must be rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("unsupported format") && msg.contains("peppy auth login"),
+            msg.contains("unsupported format") && msg.contains("peppy platform login"),
             "rejection should be actionable: {msg}"
         );
     }

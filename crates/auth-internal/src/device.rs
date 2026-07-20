@@ -1,7 +1,7 @@
 //! RFC 8628 device-authorization grant, protocol only: [`start`] the flow, then
 //! [`poll`] the token endpoint until the user approves in the browser. The CLI
 //! never sees the user's Google/passkey credentials. Showing/opening the
-//! verification URL and any waiting UX are the caller's job (the `peppy auth
+//! verification URL and any waiting UX are the caller's job (the `peppy platform
 //! login` command).
 
 use std::time::Duration;
@@ -107,7 +107,7 @@ fn classify(error: &str) -> PollOutcome {
             "authorization denied in the browser".to_string(),
         )),
         "expired_token" => PollOutcome::Fatal(Error::Auth(
-            "login timed out, run `peppy auth login` again".to_string(),
+            "login timed out, run `peppy platform login` again".to_string(),
         )),
         other => PollOutcome::Fatal(Error::Auth(format!("device login failed: {other}"))),
     }
@@ -174,7 +174,7 @@ pub fn poll(
 
         if now_unix() >= deadline {
             break Err(Error::Auth(
-                "login timed out, run `peppy auth login` again".to_string(),
+                "login timed out, run `peppy platform login` again".to_string(),
             ));
         }
         std::thread::sleep(Duration::from_secs(interval));

@@ -50,7 +50,7 @@ pub struct DaemonState {
     /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
     /// `None` when it runs an operator-run external router (or no router), so
     /// there is no federation control socket to poke and no restart to warn
-    /// about. `peppy auth login`/`logout` read this so they follow the RUNNING
+    /// about. `peppy platform login`/`logout` read this so they follow the RUNNING
     /// daemon's mode, not a config edited on disk after it started.
     pub federation_connect_timeout_secs: Option<u64>,
 }

@@ -1,4 +1,4 @@
-//! `peppy auth login`: OAuth 2.0 device-authorization login (RFC 8628).
+//! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628).
 //!
 //! Fetches the public `/cli/auth-config`, runs OIDC discovery against the returned
 //! issuer, performs the device flow (opening the browser on a TTY), caches the

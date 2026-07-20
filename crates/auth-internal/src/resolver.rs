@@ -70,7 +70,7 @@ pub fn resolve(creds_path: &Path, http: &HttpClient, pat: Option<String>) -> Res
     // Expired: refresh proactively and persist the rotation.
     let updated = refresh_and_persist(http, creds_path, &pc).map_err(|e| {
         Error::Auth(format!(
-            "{e}\nYour session may have expired, run `peppy auth login`."
+            "{e}\nYour session may have expired, run `peppy platform login`."
         ))
     })?;
     Ok(session_credential(creds_path, &updated))
@@ -87,7 +87,7 @@ pub fn pat_from_env() -> Option<String> {
 }
 
 /// Builds a refreshable session [`Credential`] from the cached `pc`. Public
-/// for the one caller outside the resolver: `peppy auth login`, which builds
+/// for the one caller outside the resolver: `peppy platform login`, which builds
 /// the credential from tokens it minted seconds ago instead of re-resolving.
 pub fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {

@@ -1,4 +1,4 @@
-//! `peppy auth logout`: kill the access token on the backend (cross-replica) and
+//! `peppy platform logout`: kill the access token on the backend (cross-replica) and
 //! delete the local session credentials. Does not revoke the refresh token at
 //! Zitadel (out of scope for v1); a backend that's unreachable or returns
 //! 401/503 still results in the local credentials being cleared.
