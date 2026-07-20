@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
+use uuid::Uuid;
 
 use super::http::HttpClient;
 use super::storage::{self, ProfileCreds};
@@ -31,6 +32,15 @@ impl Credential {
     pub fn is_refreshable(&self) -> bool {
         matches!(self.kind, CredentialKind::Session(_))
     }
+
+    /// Identifies the fresh OAuth login that owns this bearer. PAT credentials
+    /// are ambient and therefore have no session revision.
+    pub fn session_revision(&self) -> Option<Uuid> {
+        match &self.kind {
+            CredentialKind::Pat => None,
+            CredentialKind::Session(context) => Some(context.session_revision),
+        }
+    }
 }
 
 /// Whether the bearer can be refreshed.
@@ -43,6 +53,8 @@ pub enum CredentialKind {
 
 /// Everything needed to refresh a session token and persist the rotation.
 pub struct SessionContext {
+    /// Unique identity of the fresh OAuth login that produced this bearer.
+    pub session_revision: Uuid,
     /// Platform API URL this access token was minted/cached for. Authenticated
     /// resource-server requests enforce this normalized origin before sending
     /// the bearer.
@@ -98,6 +110,7 @@ pub fn session_credential(creds_path: &Path, pc: &ProfileCreds) -> Credential {
     Credential {
         token: storage::secret(pc.access_token.expose_secret().to_string()),
         kind: CredentialKind::Session(SessionContext {
+            session_revision: pc.session_revision,
             api_url: pc.api_url.clone(),
             issuer: pc.issuer.clone(),
             client_id: pc.client_id.clone(),
@@ -119,6 +132,9 @@ pub fn ensure_session_credential_current(credential: &Credential) -> Result<Opti
     let current = storage::load(&ctx.creds_path)?
         .session
         .ok_or(Error::NotAuthenticated)?;
+    if current.session_revision != ctx.session_revision {
+        return Err(Error::StaleSessionRevision);
+    }
     if current.api_url != ctx.api_url
         || current.issuer != ctx.issuer
         || current.client_id != ctx.client_id
@@ -159,6 +175,9 @@ pub(crate) fn refresh_and_persist(
             // resurrect the session from the stale pre-network snapshot.
             return Err(Error::NotAuthenticated);
         };
+        if current.session_revision != pc.session_revision {
+            return Err(Error::StaleSessionRevision);
+        }
         if current.refresh_token.expose_secret() != pc.refresh_token.expose_secret()
             || current.api_url != pc.api_url
             || current.issuer != pc.issuer
@@ -179,6 +198,7 @@ pub(crate) fn refresh_and_persist(
 /// preserving the cached `issuer`/`client_id`/identity fields.
 pub fn apply_tokens(pc: &ProfileCreds, tokens: &super::device::TokenSet) -> ProfileCreds {
     ProfileCreds::with_tokens(
+        pc.session_revision,
         pc.api_url.clone(),
         pc.issuer.clone(),
         pc.client_id.clone(),

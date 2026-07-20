@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::router_process::RouterProcessRecorder;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use pmi::{Messenger, MessengerBackend, RouterHealthChecker};
 use std::sync::Arc;
@@ -61,6 +62,7 @@ pub struct MessagingRouter {
     /// duration: `force_kill_deadline(grace)` (hook grace + event-loop join +
     /// interpreter finalize) plus the reap budget and a small margin.
     teardown_budget: Duration,
+    router_process_recorder: Option<RouterProcessRecorder>,
     /// Shared coordinator token: the task tears down when it is cancelled (an
     /// in-process restart) or on a real OS shutdown signal.
     teardown_token: CancellationToken,
@@ -72,6 +74,7 @@ impl MessagingRouter {
         messaging_ready: watch::Sender<bool>,
         core_node_done: Option<watch::Receiver<bool>>,
         teardown_budget: Duration,
+        router_process_recorder: Option<RouterProcessRecorder>,
         teardown_token: CancellationToken,
     ) -> Self {
         Self {
@@ -79,6 +82,7 @@ impl MessagingRouter {
             messaging_ready,
             core_node_done,
             teardown_budget,
+            router_process_recorder,
             teardown_token,
         }
     }
@@ -91,6 +95,7 @@ impl ServeAsyncCommand for MessagingRouter {
         let messaging_ready = self.messaging_ready;
         let core_node_done = self.core_node_done;
         let teardown_budget = self.teardown_budget;
+        let router_process_recorder = self.router_process_recorder;
         let teardown_token = self.teardown_token;
 
         let future = Box::pin(async move {
@@ -101,6 +106,12 @@ impl ServeAsyncCommand for MessagingRouter {
                     .start_router()
                     .await
                     .map_err(Error::PeppyMessagingInterface)?;
+                if let Some(recorder) = router_process_recorder.as_ref()
+                    && let Err(error) = recorder.capture_current()
+                {
+                    let _ = messenger.stop_router().await;
+                    return Err(error);
+                }
                 messenger
                     .start_session()
                     .await
@@ -122,7 +133,7 @@ impl ServeAsyncCommand for MessagingRouter {
                         // The watchdog loops for the daemon's lifetime; in
                         // practice only shutdown (a real signal or an in-process
                         // restart via the shared token) resolves this select.
-                        _ = run_router_watchdog(&messenger, &checker) => {}
+                        _ = run_router_watchdog(&messenger, &checker, router_process_recorder.clone()) => {}
                         _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
                     }
                 }
@@ -202,7 +213,11 @@ async fn await_core_node_teardown(
 /// Periodically probes the Zenoh router. A managed zenohd is respawned if it
 /// stops responding; an adopted router is reported loudly and left to its
 /// operator. Loops for the daemon's lifetime.
-async fn run_router_watchdog(messenger: &Arc<Mutex<Messenger>>, checker: &RouterHealthChecker) {
+async fn run_router_watchdog(
+    messenger: &Arc<Mutex<Messenger>>,
+    checker: &RouterHealthChecker,
+    router_process_recorder: Option<RouterProcessRecorder>,
+) {
     let mut consecutive_failures: u32 = 0;
     loop {
         tokio::time::sleep(WATCHDOG_PROBE_INTERVAL).await;
@@ -240,7 +255,18 @@ async fn run_router_watchdog(messenger: &Arc<Mutex<Messenger>>, checker: &Router
 
             let restart = lifecycle
                 .restart_router_and_wait_for_session(WATCHDOG_SESSION_RECONNECT_TIMEOUT)
-                .await;
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    router_process_recorder.as_ref().map_or(Ok(()), |recorder| {
+                        recorder
+                            .capture_current()
+                            .map_err(|error| error.to_string())
+                    })
+                });
+            if restart.is_err() && router_process_recorder.is_some() {
+                let _ = lifecycle.stop_router().await;
+            }
             drop(lifecycle);
 
             match restart {

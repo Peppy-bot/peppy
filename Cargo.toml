@@ -23,21 +23,21 @@ parking_lot = "0.12"
 rstest = "0.26"
 
 # Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
-# `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
-# path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
-# crate follows the repo's default branch (`main`); the resolved revision is
-# recorded in Cargo.lock and moved forward with `cargo update`. `config` and
+# `peppy-shared` virtual workspace) as exact-revision git dependencies, so `peppy`
+# holds no path references outside its own tree and a clean checkout cannot drift
+# to an incompatible public API. Move the revision deliberately as one coordinated
+# dependency update. `config` and
 # `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
 # and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
 # directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
 # `git_fixtures`) are added at each use site with `{ workspace = true, features = [...] }`.
-config = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppy-config-model" }
-peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppylib-rs" }
-pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+config = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16", package = "peppy-config-model" }
+peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16", package = "peppylib-rs" }
+pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16" }
+core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16" }
+json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16" }
+config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16" }
+build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a
@@ -49,14 +49,19 @@ core-node = { path = "crates/core-node-internal" }
 daemon = { path = "crates/daemon-internal" }
 daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
+federation-identity = { path = "crates/federation-identity-internal" }
 generator = { path = "crates/generator-internal" }
 latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 
-# NOTE: there is intentionally no [patch] here. These git deps are the source of truth
-# for everyone: standalone clones and CI build the pinned revision with no edits, and
-# Cargo.lock stays git-resolved. For LOCAL co-development of public-peppy-libs, the
+# The shared revision also carries Peppy's Zenoh TLS verifier patch. Dependency-local
+# patches are ignored by Cargo, so the application workspace repeats that patch here.
+[patch.crates-io]
+zenoh-link-tls = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "eaafdd408f299be46dd14c7711d887c3fe68bb16" }
+
+# These git sources are authoritative for standalone clones and CI. For LOCAL
+# co-development of public-peppy-libs, the
 # superproject can opt in to redirecting them to the in-tree checkout via
 # `<superproject-root>/scripts/local-libs.sh on` (a gitignored [patch] in the
 # superproject's .cargo/config.toml, one level above this repo); off by default.

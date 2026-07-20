@@ -2,10 +2,52 @@ use std::path::{Path, PathBuf};
 
 use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
-use std::fs::{self};
-use std::io;
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 
 const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";
+
+/// Ownership of the router process/config used by this daemon generation.
+/// This is explicit because identity-control availability no longer implies
+/// Peppy can rewrite the router: external routers run the same controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterOwnership {
+    PeppyManaged,
+    OperatorManaged,
+    Unmanaged,
+}
+
+/// Exact identity of a Peppy-spawned router process captured immediately
+/// before the durable logout commit point. Startup recovery uses every field
+/// to distinguish the orphan from PID reuse or an unrelated same-user
+/// `zenohd`; the config argument alone is never sufficient authority to kill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedRouterProcess {
+    pub pid: u32,
+    /// Process birth time in Unix seconds as reported by the operating system.
+    pub start_time_unix: u64,
+    pub effective_uid: u32,
+    pub executable: PathBuf,
+    pub config_path: PathBuf,
+}
+
+/// Identity of the daemon generation that is about to spawn a managed router.
+/// Written before the child can exist, so even a kill during PMI's readiness
+/// wait can be recovered without trusting a reusable config path alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedRouterLaunch {
+    pub daemon_pid: u32,
+    pub daemon_start_time_unix: u64,
+    pub effective_uid: u32,
+    pub process_group_id: u32,
+    pub session_id: u32,
+    pub config_path: PathBuf,
+}
 
 /// Persistent state for the peppy daemon.
 ///
@@ -20,22 +62,16 @@ pub struct DaemonState {
     pub core_node_name: String,
     pub daemon_pid: Option<u32>,
     /// The dial host the daemon, CLI, and spawned nodes use for the messaging
-    /// router. Older state files predate this field and therefore resolve to the
-    /// historical loopback host.
-    #[serde(default = "default_messaging_host")]
+    /// router.
     pub messaging_host: String,
     /// The dial port the messaging router is serving.
-    #[serde(default = "default_messaging_port")]
     pub messaging_port: u16,
     /// The git hash of the peppy binary at compile time.
-    #[serde(default)]
     pub git_hash: String,
     /// Cooperative-shutdown grace period the daemon resolved from
     /// `peppy_config.lifecycle.shutdown_grace_secs`. Surfaced here so a client
     /// command (`peppy node stop`) can size its request timeout to exceed the
-    /// daemon's grace + reap window. Defaulted on read so a state file written
-    /// by a daemon predating this field still parses.
-    #[serde(default = "default_shutdown_grace_secs")]
+    /// daemon's grace + reap window.
     pub shutdown_grace_secs: u64,
     /// The namespace this daemon generation resolved at startup (`local` when
     /// logged out, else the workspace id). A CLI control session reads it so
@@ -45,35 +81,32 @@ pub struct DaemonState {
     /// [`read_from`](Self::read_from) instead of each reader re-parsing it
     /// with its own failure policy.
     pub namespace: config::namespace::Namespace,
-    /// `Some(secs)` when this daemon generation armed managed-router federation
-    /// (a control socket exists and login/logout pokes apply within this bound,
-    /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
-    /// `None` when it runs an operator-run external router (or no router), so
-    /// there is no federation control socket to poke and no router restart to
-    /// request. `peppy platform login`/`logout` read this so they follow the
-    /// RUNNING daemon's mode, not a config edited on disk after it started.
+    pub router_ownership: RouterOwnership,
+    /// `Some(secs)` when this daemon generation exposes identity control
+    /// (managed and external Zenoh modes). Router ownership is reported by the
+    /// separate typed field above and must never be inferred from this timeout.
     pub federation_connect_timeout_secs: Option<u64>,
     /// Whether this daemon generation started with `PEPPY_API_KEY` in its
-    /// service environment. `None` is reserved for state written by an older
-    /// daemon that did not publish this fact, so clients never mistake an
-    /// absent legacy field for authoritative PAT absence.
+    /// service environment.
+    pub service_pat_active: bool,
+    /// Whether this generation adopted a `zenoh.external` router. Pinned
+    /// managed routers are also operator-managed, so ownership alone cannot
+    /// select the correct CLI instructions.
+    pub router_external: bool,
+    /// Populated immediately before a normal managed-router logout writes its
+    /// durable intent. It is deliberately absent for external/unmanaged
+    /// routers and before the first logout transaction.
     #[serde(default)]
-    pub service_pat_active: Option<bool>,
-}
-
-fn default_messaging_port() -> u16 {
-    config::consts::DEFAULT_MESSAGING_PORT
-}
-
-fn default_messaging_host() -> String {
-    config::consts::DEFAULT_MESSAGING_HOST.to_string()
-}
-
-fn default_shutdown_grace_secs() -> u64 {
-    config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+    pub managed_router_process: Option<ManagedRouterProcess>,
+    /// Pre-spawn generation fence. Unlike `managed_router_process`, this is
+    /// present before `Command::spawn` and remains usable if an apply future is
+    /// cancelled during PMI's readiness wait.
+    #[serde(default)]
+    pub managed_router_launch: Option<ManagedRouterLaunch>,
 }
 
 impl DaemonState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         core_node_name: impl Into<String>,
         messaging_host: impl Into<String>,
@@ -81,6 +114,7 @@ impl DaemonState {
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
         namespace: config::namespace::Namespace,
+        router_ownership: RouterOwnership,
         federation_connect_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
@@ -91,17 +125,33 @@ impl DaemonState {
             git_hash: git_hash.into(),
             shutdown_grace_secs,
             namespace,
+            router_ownership,
             federation_connect_timeout_secs,
-            service_pat_active: None,
+            service_pat_active: false,
+            router_external: false,
+            managed_router_process: None,
+            managed_router_launch: None,
         }
     }
 
-    /// Records the daemon process's own startup view of PEPPY_API_KEY. Kept as
-    /// an explicit finalizer so generic/test state construction remains
-    /// backward-compatible (`None` means unknown), while the real builder
-    /// always publishes an authoritative `Some` value.
+    /// Records the daemon process's own startup view of PEPPY_API_KEY.
     pub fn with_service_pat_active(mut self, active: bool) -> Self {
-        self.service_pat_active = Some(active);
+        self.service_pat_active = active;
+        self
+    }
+
+    pub fn with_router_external(mut self, external: bool) -> Self {
+        self.router_external = external;
+        self
+    }
+
+    pub(crate) fn with_managed_router_process(mut self, process: ManagedRouterProcess) -> Self {
+        self.managed_router_process = Some(process);
+        self
+    }
+
+    pub(crate) fn with_managed_router_launch(mut self, launch: ManagedRouterLaunch) -> Self {
+        self.managed_router_launch = Some(launch);
         self
     }
 
@@ -117,12 +167,24 @@ impl DaemonState {
     }
 
     pub fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let content =
             json5_pretty::to_string_pretty(state).map_err(|e| io::Error::other(e.to_string()))?;
-        fs::write(path, content)
+        daemon_config::atomic_write::publish_atomic(path, |temporary| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(temporary)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()
+        })?;
+        // The process/launch fence must survive a host crash before a later
+        // durable logout intent can rely on it. Syncing the renamed file alone
+        // does not make its parent-directory entry durable.
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(())
     }
 
     /// Reads the daemon state from the data root's `daemon_state.json5`. The
@@ -190,8 +252,12 @@ mod tests {
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
             namespace: config::namespace::Namespace::local(),
+            router_ownership: RouterOwnership::PeppyManaged,
             federation_connect_timeout_secs: Some(30),
-            service_pat_active: Some(false),
+            service_pat_active: false,
+            router_external: false,
+            managed_router_process: None,
+            managed_router_launch: None,
         };
         DaemonState::write_to(&path, &original).expect("write");
 
@@ -203,8 +269,9 @@ mod tests {
         assert_eq!(read.git_hash, "test");
         assert_eq!(read.shutdown_grace_secs, 5);
         assert_eq!(read.namespace, config::namespace::Namespace::local());
+        assert_eq!(read.router_ownership, RouterOwnership::PeppyManaged);
         assert_eq!(read.federation_connect_timeout_secs, Some(30));
-        assert_eq!(read.service_pat_active, Some(false));
+        assert!(!read.service_pat_active);
     }
 
     #[test]
@@ -216,7 +283,17 @@ mod tests {
             r#"{
                 "core_node_name": "core",
                 "daemon_pid": null,
+                "messaging_host": "127.0.0.1",
+                "messaging_port": 7447,
+                "git_hash": "test",
+                "shutdown_grace_secs": 5,
                 "namespace": "local",
+                "router_ownership": "unmanaged",
+                "federation_connect_timeout_secs": null,
+                "service_pat_active": false,
+                "router_external": false,
+                "managed_router_process": null,
+                "managed_router_launch": null,
                 "written_at_ms": 1234
             }"#,
         )
@@ -225,9 +302,9 @@ mod tests {
         let read = DaemonState::read_from(&path).expect("read");
         assert_eq!(read.core_node_name, "core");
         assert_eq!(read.daemon_pid, None);
-        assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
-        assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);
-        assert_eq!(read.service_pat_active, None);
+        assert_eq!(read.messaging_host, "127.0.0.1");
+        assert_eq!(read.messaging_port, 7447);
+        assert!(!read.service_pat_active);
     }
 
     /// The namespace is parsed once at the read boundary: an invalid value
@@ -242,7 +319,17 @@ mod tests {
             r#"{
                 "core_node_name": "core",
                 "daemon_pid": null,
-                "namespace": "**"
+                "messaging_host": "127.0.0.1",
+                "messaging_port": 7447,
+                "git_hash": "test",
+                "shutdown_grace_secs": 5,
+                "namespace": "**",
+                "router_ownership": "unmanaged",
+                "federation_connect_timeout_secs": null,
+                "service_pat_active": false,
+                "router_external": false,
+                "managed_router_process": null,
+                "managed_router_launch": null
             }"#,
         )
         .expect("write file with an invalid namespace");

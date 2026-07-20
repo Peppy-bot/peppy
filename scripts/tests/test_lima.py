@@ -14,6 +14,7 @@ from functions.lima import (
     GUEST_RUSTUP_HOME,
     LIMA_INSTANCE,
     LIMA_TEMPLATE,
+    LIMA_VERSION,
     RELEASE_PLATFORM_SO,
     SO_BUILD_STATE_MARKER,
     cargo_build_in_lima,
@@ -50,21 +51,40 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
     limactl.parent.mkdir(parents=True)
     limactl.write_bytes(b"fake limactl")
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
+         patch("functions.lima.Path.home", return_value=tmp_path / "empty-home"):
         result = find_limactl(tmp_path)
     assert result == limactl
 
 
 def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
-    # No build output, but cache exists
-    cache_dir = tmp_path / ".peppy" / "tmp" / "lima-2.1.3-Darwin-arm64" / "bin"
+    # No build output, but the exact pinned cache exists. A lexicographically
+    # newer unrelated cache must never win release-tool selection.
+    cache_dir = (
+        tmp_path / ".peppy" / "tmp" / f"lima-{LIMA_VERSION}-Darwin-arm64" / "bin"
+    )
     cache_dir.mkdir(parents=True)
     limactl = cache_dir / "limactl"
     limactl.write_bytes(b"cached limactl")
+    distractor = tmp_path / ".peppy" / "tmp" / "lima-99.0.0-Darwin-arm64" / "bin"
+    distractor.mkdir(parents=True)
+    (distractor / "limactl").write_bytes(b"wrong limactl")
+    stale_target = (
+        tmp_path
+        / "target"
+        / "aarch64-apple-darwin"
+        / "release"
+        / "build"
+        / "containers-old"
+        / "out"
+        / "lima-install"
+        / "bin"
+    )
+    stale_target.mkdir(parents=True)
+    (stale_target / "limactl").write_bytes(b"stale limactl")
 
     with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
          patch("functions.lima.Path.home", return_value=tmp_path):
-        (tmp_path / "target").mkdir()
         result = find_limactl(tmp_path)
     assert result == limactl
 

@@ -50,6 +50,7 @@ indicatif = "0.18"
 # Keep OAuth tokens out of `Debug`/log output; the on-disk struct serializes
 # them through explicit expose helpers (the one place we intentionally expose).
 secrecy = "0.10"
+uuid = "1"
 tempfile = { version = "3.8", optional = true }
 # Docker Engine API driver for the multi-daemon e2e test (container lifecycle,
 # exec, logs) instead of shelling out to the docker CLI. Optional rather than a
@@ -81,7 +82,7 @@ serde_json5 = "0.2"
 # discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.8"
 # Release-mode platform-flow fixtures sign the CLI's dynamically generated CSR
-# so the integration tests exercise the real v3 enrollment validator.
+# so the integration tests exercise the real production enrollment validator.
 rcgen = { version = "0.14", features = ["x509-parser"] }
 # Self-reference so `cargo test` builds this crate with the test-only helpers
 # enabled, without making `test-support` a default feature of the shipped CLI.

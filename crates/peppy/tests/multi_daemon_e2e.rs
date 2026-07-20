@@ -829,6 +829,9 @@ fn expected_rows(local: &str, remotes: &[&str]) -> serde_json::Value {
 fn seed_oauth_conf_dir(dir: &Path, api_url: &str, access_token: &str) {
     let creds = auth::storage::Credentials {
         session: Some(auth::storage::ProfileCreds::with_tokens(
+            "11111111-1111-4111-8111-111111111111"
+                .parse()
+                .expect("valid test session revision"),
             api_url.to_string(),
             api_url.to_string(),
             "e2e-client".to_string(),

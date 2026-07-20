@@ -51,6 +51,26 @@ pub enum Error {
     )]
     CoreNodeKeyAlreadyUsed(String),
 
+    /// The command was accepted for one OAuth login, but another fresh login
+    /// replaced it before the operation could safely commit its result.
+    #[error("the platform session changed while this operation was in flight")]
+    StaleSessionRevision,
+
+    #[error(
+        "the daemon has no configured PEPPY_API_KEY and no OAuth session revision was supplied; retry `peppy platform login` or configure PEPPY_API_KEY"
+    )]
+    PatNotConfigured,
+
+    #[error(
+        "the daemon service PEPPY_API_KEY is active, so it cannot enroll an OAuth session; remove the service key and restart the daemon before retrying OAuth login"
+    )]
+    PatActive,
+
+    #[error(
+        "the daemon service PEPPY_API_KEY belongs to a different platform principal than this shell's key"
+    )]
+    PatPrincipalMismatch,
+
     // -- no usable credential and not on an interactive terminal
     #[error("Not authenticated. Run `peppy platform login` or set PEPPY_API_KEY.")]
     NotAuthenticated,

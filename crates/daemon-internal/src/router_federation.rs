@@ -51,13 +51,21 @@
 //!   re-rendered and the router restarted, so the change takes effect without a
 //!   full daemon restart.
 
-use crate::control::{FederationStatus, LinkState, PlatformLink};
-use crate::error::{Error, Result};
+use crate::control::{
+    AuthenticationState, CertificateState, FederationStatus, LinkState, PlatformLink,
+    RouterApplyState,
+};
+use crate::error::Result;
+use crate::identity_applicator::{
+    IdentityApplicator, ManagedIdentityApplicator, OperatorManagedIdentityApplicator,
+    RouterApplyDisposition,
+};
+use crate::router_process::RouterProcessRecorder;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use config::namespace::Namespace;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::ParsedEndpointBuf;
-use pmi::{Messenger, RouterLinks, UpstreamLink};
+use pmi::{Messenger, UpstreamLink};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -65,6 +73,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 /// How long a *verifying* login/logout poke waits for the managed router's
 /// federation link to establish. Deliberately small and decoupled from
@@ -79,12 +88,6 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Post-resolve budget for rewriting the managed router and waiting for zenohd
 /// to accept connections again. Kept separate from the backend resolve timeout.
 pub(crate) const APPLY_TIMEOUT: Duration = Duration::from_secs(4);
-
-/// Within one bounded router apply, wait for the daemon's retained Zenoh
-/// session to observe the reload and replay its declarations. This prevents a
-/// logout immediately after certificate rotation from dropping a presence
-/// token that has not yet rebound to the replacement router.
-const SESSION_RECONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Failed resolves or rewrites are retried independently of scheduled router
 /// and certificate maintenance. Zenohd still owns link reconnection.
@@ -130,11 +133,190 @@ struct Resolved {
     certificate_expires_after: Option<Duration>,
     renewal_error: Option<String>,
     resolve_error: Option<String>,
+    force_standalone: bool,
     pat_active: bool,
+    identity_snapshot: IdentitySnapshot,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct IdentitySnapshot {
+    authentication: AuthenticationState,
+    metadata: Option<auth::identity::CoreNodeIdentity>,
+    binding_incomplete: bool,
+    offline_recovery_required: bool,
+}
+
+fn read_identity_snapshot(dirs: &PeppyDirs, pat_active: bool) -> IdentitySnapshot {
+    let mut snapshot = IdentitySnapshot {
+        authentication: if pat_active {
+            AuthenticationState::Pat
+        } else {
+            AuthenticationState::Missing
+        },
+        ..IdentitySnapshot::default()
+    };
+    match auth::storage::load(&auth::storage::credentials_path(dirs)) {
+        Ok(credentials) => {
+            if !pat_active && credentials.session.is_some() {
+                snapshot.authentication = AuthenticationState::Oauth;
+            }
+            snapshot.metadata = credentials.core_node_identity;
+        }
+        Err(_) => snapshot.offline_recovery_required = true,
+    }
+    match auth::identity::load_identity_metadata(dirs) {
+        Ok(metadata) => snapshot.metadata = metadata.or(snapshot.metadata),
+        Err(_) => snapshot.offline_recovery_required = true,
+    }
+    if let Some(metadata) = snapshot.metadata.as_ref()
+        && auth::identity::validate_identity_material(dirs, metadata).is_err()
+    {
+        snapshot.offline_recovery_required = true;
+    }
+    match auth::identity::binding_incomplete(dirs) {
+        Ok(incomplete) => snapshot.binding_incomplete = incomplete,
+        Err(_) => snapshot.offline_recovery_required = true,
+    }
+    snapshot
+}
+
+fn certificate_state_for(
+    snapshot: &IdentitySnapshot,
+    renewing: bool,
+    certificate_error: Option<&str>,
+) -> CertificateState {
+    if snapshot.offline_recovery_required {
+        return CertificateState::Error;
+    }
+    if snapshot.binding_incomplete {
+        return CertificateState::Enrolling;
+    }
+    let Some(identity) = snapshot.metadata.as_ref() else {
+        return if renewing {
+            CertificateState::Enrolling
+        } else if certificate_error.is_some() || snapshot.offline_recovery_required {
+            CertificateState::Error
+        } else {
+            CertificateState::Missing
+        };
+    };
+    let now = auth::storage::now_unix();
+    if identity.not_before > now {
+        CertificateState::Error
+    } else if identity.not_after <= now {
+        CertificateState::Expired
+    } else if renewing {
+        CertificateState::Renewing
+    } else if identity.renew_after <= now {
+        CertificateState::Expiring
+    } else {
+        CertificateState::Valid
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EnrollmentRequest {
+    expected_session_revision: Option<Uuid>,
+    expected_pat_subject: Option<String>,
 }
 
 /// Resolves the desired platform upstream and namespace from the credentials.
-type Resolver = Arc<dyn Fn() -> std::result::Result<Resolved, String> + Send + Sync>;
+/// `None` is scheduled reconciliation; `Some` is an explicit PAT/OAuth
+/// enrollment carrying only its non-secret principal/revision fence. The PAT
+/// API-origin fence is validated by the controller before this resolver runs.
+type Resolver = Arc<
+    dyn Fn(Option<EnrollmentRequest>) -> std::result::Result<Resolved, IdentityFailure>
+        + Send
+        + Sync,
+>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityFailureCode {
+    StaleSessionRevision,
+    NotAuthenticated,
+    PatNotConfigured,
+    PatActive,
+    PatPrincipalMismatch,
+    PatOriginMismatch,
+    DeadlineExceeded,
+    OperationFailed,
+}
+
+#[derive(Debug, Clone)]
+struct IdentityFailure {
+    code: IdentityFailureCode,
+    message: String,
+}
+
+impl IdentityFailure {
+    fn from_auth(error: auth::AuthError) -> Self {
+        let code = match error {
+            auth::AuthError::StaleSessionRevision => IdentityFailureCode::StaleSessionRevision,
+            auth::AuthError::NotAuthenticated => IdentityFailureCode::NotAuthenticated,
+            auth::AuthError::PatNotConfigured => IdentityFailureCode::PatNotConfigured,
+            auth::AuthError::PatActive => IdentityFailureCode::PatActive,
+            auth::AuthError::PatPrincipalMismatch => IdentityFailureCode::PatPrincipalMismatch,
+            _ => IdentityFailureCode::OperationFailed,
+        };
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn operation(message: impl Into<String>) -> Self {
+        Self {
+            code: IdentityFailureCode::OperationFailed,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for IdentityFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+fn cleanup_attempt_label(attempt: &auth::logout::CleanupAttempt) -> &'static str {
+    match attempt {
+        auth::logout::CleanupAttempt::NotNeeded => "not_needed",
+        auth::logout::CleanupAttempt::Succeeded => "succeeded",
+        auth::logout::CleanupAttempt::Failed(_) => "failed",
+    }
+}
+
+fn federation_outcome_label(outcome: &FederationOutcome) -> &'static str {
+    match outcome {
+        FederationOutcome::Applied(_) => "applied",
+        FederationOutcome::OperatorManaged => "operator_managed",
+        FederationOutcome::LoggedOut(_) => "logged_out",
+        FederationOutcome::Failed(_) => "failed",
+        FederationOutcome::Rejected { .. } => "rejected",
+        FederationOutcome::Restart { .. } => "restart",
+    }
+}
+
+fn outcome_requires_namespace_restart(outcome: &FederationOutcome) -> bool {
+    matches!(outcome, FederationOutcome::Restart { .. })
+        || matches!(
+            outcome,
+            FederationOutcome::LoggedOut(LogoutOperationOutcome {
+                target_namespace: Some(_),
+                ..
+            })
+        )
+}
+
+fn outcome_establishes_controller_readiness(outcome: &FederationOutcome) -> bool {
+    matches!(
+        outcome,
+        FederationOutcome::Applied(_)
+            | FederationOutcome::OperatorManaged
+            | FederationOutcome::LoggedOut(_)
+    )
+}
 
 /// Owns a blocking resolver after its caller-facing deadline. A late successful
 /// resolve may already have atomically published a certificate generation, so
@@ -142,7 +324,7 @@ type Resolver = Arc<dyn Fn() -> std::result::Result<Resolved, String> + Send + S
 /// task. If this future itself is cancelled during runtime shutdown, dropping
 /// the eventual `Resolved` still invokes `IdentityRotation`'s armed guard.
 async fn cleanup_late_resolve(
-    resolve_task: tokio::task::JoinHandle<std::result::Result<Resolved, String>>,
+    resolve_task: tokio::task::JoinHandle<std::result::Result<Resolved, IdentityFailure>>,
 ) {
     match resolve_task.await {
         Ok(Ok(mut late)) => {
@@ -184,29 +366,21 @@ type Prober = Arc<dyn Fn(String, u16, pmi::TlsConfig, Duration) -> ProbeFuture +
 /// configured outbound link established. This observes the same TLS stack and
 /// client identity used by the data plane instead of approximating it with a
 /// separate raw TLS client.
-fn real_prober(messenger: Arc<Mutex<Messenger>>) -> Prober {
+fn applicator_prober(applicator: Arc<dyn IdentityApplicator>) -> Prober {
     Arc::new(move |host, port, _tls, timeout| -> ProbeFuture {
-        let messenger = messenger.clone();
+        let applicator = Arc::clone(&applicator);
         Box::pin(async move {
-            let probe = {
-                let messenger = messenger.lock().await;
-                messenger.router_links_probe()
-            }
-            .ok_or_else(|| {
-                format!(
-                    "managed zenohd exposes no configured link to {host}:{port}; federation cannot be verified"
-                )
-            })?;
-
-            if probe.wait_established(timeout).await {
-                Ok(())
-            } else {
-                Err(format!(
-                    "managed zenohd did not establish its configured link to {host}:{port} within {timeout:?}"
-                ))
-            }
+            applicator
+                .verify(host, port, _tls, timeout)
+                .await
+                .map(|_| ())
         })
     })
+}
+
+#[cfg(test)]
+fn real_prober(messenger: Arc<Mutex<Messenger>>) -> Prober {
+    applicator_prober(Arc::new(ManagedIdentityApplicator::new(messenger, None)))
 }
 
 async fn probe_with_bound(
@@ -239,17 +413,60 @@ type FederateFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
 /// Applies a desired upstream to the local router (re-render + bounce). A boxed
 /// async closure so tests can inject a deterministic federation result:
 /// `Ok(true)` (a real rewrite) or `Ok(false)` (operator-pinned), in place of the
-/// real [`refederate_and_restart`], whose mock backend can only ever report
-/// `Ok(false)` and so cannot exercise the applied/verify path.
+/// real [`ManagedIdentityApplicator`], whose mock backend can only ever report
+/// operator-managed and so cannot exercise the applied/verify path.
 type Federator = Arc<dyn Fn(Option<UpstreamLink>) -> FederateFuture + Send + Sync>;
 
-/// The real federator: re-render the owned router's config with the upstream and,
-/// if it changed, bounce zenohd (see [`refederate_and_restart`]).
-fn real_federator(messenger: Arc<Mutex<Messenger>>) -> Federator {
+/// Adapter from the injected poller seam to the explicit router applicator.
+fn applicator_federator(applicator: Arc<dyn IdentityApplicator>) -> Federator {
     Arc::new(move |upstream| -> FederateFuture {
-        let messenger = messenger.clone();
-        Box::pin(async move { refederate_and_restart(&messenger, upstream).await })
+        let applicator = Arc::clone(&applicator);
+        Box::pin(async move {
+            let disposition = match upstream {
+                Some(upstream) => applicator.apply(Some(upstream)).await,
+                None => applicator.apply_standalone().await,
+            }?;
+            Ok(matches!(disposition, RouterApplyDisposition::Applied))
+        })
     })
+}
+
+type StopFuture = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
+type Stopper = Arc<dyn Fn() -> StopFuture + Send + Sync>;
+
+fn applicator_stopper(applicator: Arc<dyn IdentityApplicator>) -> Stopper {
+    Arc::new(move || -> StopFuture {
+        let applicator = Arc::clone(&applicator);
+        Box::pin(async move {
+            applicator
+                .stop()
+                .await
+                .map(|disposition| matches!(disposition, RouterApplyDisposition::Applied))
+        })
+    })
+}
+
+type LogoutWorker = Arc<
+    dyn Fn(Option<Uuid>) -> std::result::Result<auth::logout::PreparedLogout, IdentityFailure>
+        + Send
+        + Sync,
+>;
+type LogoutRouterFence = Arc<dyn Fn() -> std::result::Result<(), IdentityFailure> + Send + Sync>;
+type PatPreflight =
+    Arc<dyn Fn(&str, &str) -> std::result::Result<(), IdentityFailure> + Send + Sync>;
+type RevisionChecker =
+    Arc<dyn Fn(Option<Uuid>) -> std::result::Result<(), IdentityFailure> + Send + Sync>;
+type TransitionArmer = Arc<
+    dyn Fn(Option<Uuid>) -> std::result::Result<IdentitySnapshot, IdentityFailure> + Send + Sync,
+>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransitionArm {
+    /// Publish or supersede the durable transition with this exact owner.
+    Arm(Option<Uuid>),
+    /// Keep the transition established by the preceding OAuth Prepare. This
+    /// prevents an older enrollment from overwriting a newer Prepare owner.
+    Preserve,
 }
 
 /// Outcome of one federation poll, reported back to a control-socket poke so the
@@ -262,10 +479,21 @@ pub(crate) enum FederationOutcome {
     /// [`LinkState::Error`] means the config was applied but the TLS link to the
     /// platform router does not actually validate.
     Applied(PlatformLink),
-    /// The managed router uses a pinned `ZENOH_CONFIG`, so nothing changed.
-    Pinned,
+    /// The router is external or uses an operator-pinned configuration, so
+    /// Peppy changed only its own identity state and makes no claim about the
+    /// router's installed configuration.
+    OperatorManaged,
+    /// Logout completed its fail-closed local transaction. Remote cleanup is
+    /// best effort and each outcome is preserved separately for presentation.
+    LoggedOut(LogoutOperationOutcome),
     /// The resolve or apply failed; the loop keeps retrying.
     Failed(String),
+    /// A command-specific, machine-readable rejection. The detailed message is
+    /// retained for daemon logs; the wire adapter emits a bounded public error.
+    Rejected {
+        code: IdentityFailureCode,
+        message: String,
+    },
     /// The credentials changed the daemon's *namespace*. A session's namespace
     /// is immutable after open and the core node holds long-lived declarations,
     /// so the change cannot be applied to the live session by a zenohd bounce;
@@ -277,14 +505,77 @@ pub(crate) enum FederationOutcome {
     Restart { target_namespace: Namespace },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LogoutRouterState {
+    Standalone,
+    OperatorManaged,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LogoutOperationOutcome {
+    pub(crate) certificate_revocation: auth::logout::CleanupAttempt,
+    pub(crate) oauth_revocation: auth::logout::CleanupAttempt,
+    pub(crate) local_cleanup: auth::logout::CleanupAttempt,
+    pub(crate) router: LogoutRouterState,
+    pub(crate) operator_action_required: bool,
+    pub(crate) target_namespace: Option<Namespace>,
+}
+
 /// One control request delivered to the federation loop. Ordinary login/logout
 /// asks for a full re-resolve (including namespace-change detection). Only the
 /// fail-closed recovery path asks for unconditional standalone, so retained
 /// credentials or an older same-subject certificate cannot be reused.
-pub(crate) enum FederationTrigger {
-    Refederate(oneshot::Sender<FederationOutcome>),
-    Defederate(oneshot::Sender<FederationOutcome>),
+pub(crate) enum IdentityCommand {
+    EnrollCurrentCredential {
+        expected_session_revision: Option<Uuid>,
+        expected_pat_subject: Option<String>,
+        expected_api_origin: Option<String>,
+        not_after: tokio::time::Instant,
+        reply: oneshot::Sender<FederationOutcome>,
+    },
+    Logout {
+        expected_session_revision: Option<Uuid>,
+        not_after: tokio::time::Instant,
+        reply: oneshot::Sender<FederationOutcome>,
+    },
+    PrepareOauthLogin {
+        expected_session_revision: Uuid,
+        not_after: tokio::time::Instant,
+        reply: oneshot::Sender<FederationOutcome>,
+    },
 }
+
+impl IdentityCommand {
+    fn cancelled_before_start(&self) -> bool {
+        let (not_after, reply_closed) = match self {
+            Self::EnrollCurrentCredential {
+                not_after, reply, ..
+            }
+            | Self::Logout {
+                not_after, reply, ..
+            }
+            | Self::PrepareOauthLogin {
+                not_after, reply, ..
+            } => (*not_after, reply.is_closed()),
+        };
+        reply_closed || tokio::time::Instant::now() >= not_after
+    }
+
+    fn acknowledge_start_deadline(self) {
+        let reply = match self {
+            Self::EnrollCurrentCredential { reply, .. }
+            | Self::Logout { reply, .. }
+            | Self::PrepareOauthLogin { reply, .. } => reply,
+        };
+        let _ = reply.send(FederationOutcome::Rejected {
+            code: IdentityFailureCode::DeadlineExceeded,
+            message: "identity operation could not start before its admission deadline".into(),
+        });
+    }
+}
+
+pub(crate) type FederationTrigger = IdentityCommand;
 
 /// Sends federation control requests (each carrying its ack) to the loop held
 /// by [`FederationControl`](super::federation_control).
@@ -301,11 +592,23 @@ pub(crate) fn trigger_channel() -> (TriggerSender, TriggerReceiver) {
 
 /// The inputs one federation poll needs: the injected effect seams plus the
 /// bounds and namespace context shared by every poll. Split from
-/// [`RouterFederation`] so the poll engine carries no channel plumbing.
+/// [`IdentityController`] so the poll engine carries no channel plumbing.
 struct FederationPoller {
     federator: Federator,
     resolver: Resolver,
     prober: Prober,
+    stopper: Stopper,
+    logout_worker: Option<LogoutWorker>,
+    /// Captures the exact Peppy-spawned zenohd identity before auth writes the
+    /// durable logout intent. External routers and pure unit-test pollers have
+    /// no process fence.
+    logout_router_fence: Option<LogoutRouterFence>,
+    pat_preflight: PatPreflight,
+    revision_checker: RevisionChecker,
+    transition_armer: TransitionArmer,
+    /// An adopted external router is never configured, verified, or stopped by
+    /// Peppy. This is distinct from a managed router whose config is pinned.
+    operator_managed: bool,
     /// Bound on backend resolution after the local router is ready.
     connect_timeout: Duration,
     /// Bound on the router apply (config re-render + zenohd bounce),
@@ -330,7 +633,7 @@ struct FederationPoller {
 
 /// Background task (a [`ServeAsyncCommand`]) that federates the local router to
 /// the platform router and keeps it federated. See the module docs.
-pub(crate) struct RouterFederation {
+pub(crate) struct IdentityController {
     poller: FederationPoller,
     /// Goes `true` once the router process is up (MessagingRouter ran
     /// `start_router` + `start_session`). The task waits on this before touching
@@ -363,9 +666,13 @@ pub(crate) struct RouterFederation {
     /// Captured before the first poll so a resolver timeout/error cannot
     /// overwrite a true service-environment PAT status with `false`.
     initial_pat_active: bool,
+    /// Whether the running Zenoh process was adopted from an operator and is
+    /// therefore outside Peppy's router lifecycle.
+    initial_operator_managed: bool,
+    initial_identity_snapshot: IdentitySnapshot,
 }
 
-impl RouterFederation {
+impl IdentityController {
     /// Builds the federation task and hands back the receiving half of its
     /// status watch, seeded with the pre-poll state (standalone, with the
     /// operator-pinned bit already correct), for the control socket to answer
@@ -383,6 +690,8 @@ impl RouterFederation {
         restart_tx: watch::Sender<bool>,
         presence_gate_tx: Option<watch::Sender<bool>>,
         initial_pinned: bool,
+        operator_managed: bool,
+        router_process_recorder: Option<RouterProcessRecorder>,
         teardown_token: CancellationToken,
     ) -> (Self, watch::Receiver<FederationStatus>) {
         // The loop's one ambient input, re-read on every poll, derives from the
@@ -390,13 +699,46 @@ impl RouterFederation {
         // file and the materialized dev TLS under it, and carries the namespace
         // out of the same read.
         let resolver_dirs = peppy_dirs.clone();
-        let resolver: Resolver = Arc::new(move || {
-            let resolved = auth::router::resolve_federation_target(
-                &resolver_dirs,
-                &api_url,
-                connect_timeout,
-                &core_node_name,
-            );
+        let pat_preflight_api_url = api_url.clone();
+        let resolver: Resolver = Arc::new(move |enrollment| {
+            if let Some(enrollment) = enrollment.as_ref() {
+                let http = auth::http::HttpClient::with_timeout(connect_timeout);
+                let rotation = auth::identity::enroll_current_credential(
+                    &resolver_dirs,
+                    &http,
+                    &api_url,
+                    auth::resolver::pat_from_env(),
+                    &core_node_name,
+                    enrollment.expected_session_revision,
+                    enrollment.expected_pat_subject.clone(),
+                )
+                .map_err(IdentityFailure::from_auth)?;
+                // The poll below immediately recovers this durable receipt and
+                // owns apply/probe/commit. Release only the in-process receipt
+                // owner; the binding transition must remain armed until that
+                // recovered rotation commits after the real link probe.
+                rotation
+                    .handoff_to_resolver()
+                    .map_err(IdentityFailure::from_auth)?;
+            }
+            let resolved = if let Some(enrollment) = enrollment.as_ref() {
+                auth::router::resolve_federation_target_for_enrollment(
+                    &resolver_dirs,
+                    &api_url,
+                    connect_timeout,
+                    &core_node_name,
+                    enrollment.expected_session_revision,
+                )
+                .map_err(IdentityFailure::from_auth)?
+            } else {
+                auth::router::resolve_federation_target(
+                    &resolver_dirs,
+                    &api_url,
+                    connect_timeout,
+                    &core_node_name,
+                )
+            };
+            let identity_snapshot = read_identity_snapshot(&resolver_dirs, resolved.pat_active);
             Ok(Resolved {
                 upstream: resolved
                     .upstream
@@ -407,22 +749,135 @@ impl RouterFederation {
                 certificate_expires_after: resolved.certificate_expires_after,
                 renewal_error: resolved.renewal_error,
                 resolve_error: resolved.resolve_error,
+                force_standalone: resolved.force_standalone,
                 pat_active: resolved.pat_active,
+                identity_snapshot,
             })
         });
         let initial_pat_active = auth::resolver::pat_from_env().is_some();
+        let initial_identity_snapshot = read_identity_snapshot(&peppy_dirs, initial_pat_active);
+        let applicator: Arc<dyn IdentityApplicator> = if operator_managed {
+            Arc::new(OperatorManagedIdentityApplicator)
+        } else {
+            Arc::new(ManagedIdentityApplicator::new(
+                messenger,
+                router_process_recorder.clone(),
+            ))
+        };
+        let logout_dirs = peppy_dirs.clone();
+        let logout_worker: LogoutWorker = Arc::new(move |expected_session_revision| {
+            if auth::resolver::pat_from_env().is_some() {
+                return Err(IdentityFailure {
+                    code: IdentityFailureCode::PatActive,
+                    message: "logout is disabled while the daemon service PAT is active".into(),
+                });
+            }
+            let http = auth::http::HttpClient::with_timeout(connect_timeout);
+            auth::logout::prepare_logout_current_credential(
+                &logout_dirs,
+                &http,
+                expected_session_revision,
+            )
+            .map_err(IdentityFailure::from_auth)
+        });
+        let logout_router_fence: Option<LogoutRouterFence> =
+            router_process_recorder.map(|recorder| {
+                Arc::new(move || {
+                    recorder.capture_current().map_err(|error| IdentityFailure {
+                        code: IdentityFailureCode::OperationFailed,
+                        message: error.to_string(),
+                    })
+                }) as LogoutRouterFence
+            });
+        let pat_preflight_dirs = peppy_dirs.clone();
+        let pat_preflight: PatPreflight = Arc::new(move |expected_subject, expected_api_origin| {
+            let daemon_api_origin = auth::identity::normalize_api_origin(&pat_preflight_api_url)
+                .map_err(IdentityFailure::from_auth)?;
+            if daemon_api_origin != expected_api_origin {
+                return Err(IdentityFailure {
+                    code: IdentityFailureCode::PatOriginMismatch,
+                    message: "the CLI and daemon selected different platform API origins".into(),
+                });
+            }
+            let pat = auth::resolver::pat_from_env().ok_or_else(|| IdentityFailure {
+                code: IdentityFailureCode::PatNotConfigured,
+                message: "the daemon service PEPPY_API_KEY is not configured".into(),
+            })?;
+            let http = auth::http::HttpClient::with_timeout(connect_timeout);
+            let credentials_path = auth::storage::credentials_path(&pat_preflight_dirs);
+            let mut credential = auth::resolver::resolve(&credentials_path, &http, Some(pat))
+                .map_err(IdentityFailure::from_auth)?;
+            let principal = auth::client::get_me(&http, &pat_preflight_api_url, &mut credential)
+                .map_err(IdentityFailure::from_auth)?;
+            if principal.sub != expected_subject {
+                return Err(IdentityFailure {
+                    code: IdentityFailureCode::PatPrincipalMismatch,
+                    message:
+                        "the CLI and daemon PEPPY_API_KEY values belong to different principals"
+                            .into(),
+                });
+            }
+            Ok(())
+        });
+        let revision_dirs = peppy_dirs.clone();
+        let revision_checker: RevisionChecker = Arc::new(move |expected| {
+            auth::identity::ensure_session_revision_current(&revision_dirs, expected)
+                .map_err(IdentityFailure::from_auth)
+        });
+        let transition_dirs = peppy_dirs.clone();
+        let transition_armer: TransitionArmer = Arc::new(move |expected_session_revision| {
+            auth::identity::arm_binding_incomplete_for_session(
+                &transition_dirs,
+                expected_session_revision,
+            )
+            .map_err(IdentityFailure::from_auth)?;
+            Ok(read_identity_snapshot(
+                &transition_dirs,
+                auth::resolver::pat_from_env().is_some(),
+            ))
+        });
         let (status_tx, status_rx) = watch::channel(FederationStatus {
+            controller_settled: false,
             link: PlatformLink::default(),
             pinned: initial_pinned,
             pat_active: initial_pat_active,
             certificate_error: None,
             certificate_renewing: false,
+            operator_managed,
+            router_apply_state: if operator_managed || initial_pinned {
+                RouterApplyState::OperatorManaged
+            } else {
+                RouterApplyState::Standalone
+            },
+            authentication: initial_identity_snapshot.authentication,
+            certificate: certificate_state_for(&initial_identity_snapshot, false, None),
+            bound_core_node_name: initial_identity_snapshot
+                .metadata
+                .as_ref()
+                .map(|identity| identity.core_node_name.clone()),
+            certificate_expiry_unix: initial_identity_snapshot
+                .metadata
+                .as_ref()
+                .map(|identity| identity.not_after),
+            generation: initial_identity_snapshot
+                .metadata
+                .as_ref()
+                .map(|identity| identity.active_generation.clone()),
+            offline_recovery_required: initial_identity_snapshot.offline_recovery_required,
+            ..FederationStatus::default()
         });
         let federation = Self {
             poller: FederationPoller {
-                federator: real_federator(messenger.clone()),
+                federator: applicator_federator(Arc::clone(&applicator)),
                 resolver,
-                prober: real_prober(messenger),
+                prober: applicator_prober(Arc::clone(&applicator)),
+                stopper: applicator_stopper(applicator),
+                logout_worker: Some(logout_worker),
+                logout_router_fence,
+                pat_preflight,
+                revision_checker,
+                transition_armer,
+                operator_managed,
                 connect_timeout,
                 apply_timeout: APPLY_TIMEOUT,
                 startup_namespace,
@@ -439,12 +894,14 @@ impl RouterFederation {
             teardown_token,
             initial_pinned,
             initial_pat_active,
+            initial_operator_managed: operator_managed,
+            initial_identity_snapshot,
         };
         (federation, status_rx)
     }
 }
 
-impl ServeAsyncCommand for RouterFederation {
+impl ServeAsyncCommand for IdentityController {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
         let this = *self;
         let teardown_token = this.teardown_token.clone();
@@ -527,6 +984,10 @@ impl SettledDesired {
 /// cheap and pinned routers honest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct AppliedState {
+    /// Whether this daemon generation completed its initial reconciliation.
+    /// This distinguishes authoritative status from the optimistic cache seed
+    /// published while the controller is still starting.
+    controller_settled: bool,
     /// The platform endpoint now in effect (`None` is standalone).
     endpoint: Option<String>,
     /// The link's verification state as of the last poll that touched it.
@@ -537,6 +998,9 @@ struct AppliedState {
     /// Whether the managed router uses a pinned `ZENOH_CONFIG`, even though its
     /// desired upstream may differ from what is actually in effect.
     pinned: bool,
+    /// The daemon adopted an external router and therefore never claims
+    /// application, verification, or shutdown of that router.
+    operator_managed: bool,
     /// The last verifying poke found a TLS failure. A later verifying poke must
     /// bounce the router even when the upstream is unchanged, because the user
     /// may have replaced local certificate files before re-running the command.
@@ -561,6 +1025,7 @@ struct AppliedState {
     /// Latest safe renewal/rebinding failure exposed through daemon status.
     certificate_error: Option<String>,
     certificate_renewing: bool,
+    identity_snapshot: IdentitySnapshot,
 }
 
 impl AppliedState {
@@ -632,9 +1097,54 @@ impl AppliedState {
         self.certificate_expires_at
             .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
     }
+
+    fn federation_status(&self, retry_pending: bool) -> FederationStatus {
+        let router_apply_state = if self.operator_managed || self.pinned {
+            RouterApplyState::OperatorManaged
+        } else {
+            match &self.link_state {
+                LinkState::Error(_) => RouterApplyState::Error,
+                _ if self.endpoint.is_some() => RouterApplyState::Applied,
+                _ => RouterApplyState::Standalone,
+            }
+        };
+        FederationStatus {
+            controller_settled: self.controller_settled,
+            authentication: self.identity_snapshot.authentication,
+            certificate: certificate_state_for(
+                &self.identity_snapshot,
+                self.certificate_renewing,
+                self.certificate_error.as_deref(),
+            ),
+            bound_core_node_name: self
+                .identity_snapshot
+                .metadata
+                .as_ref()
+                .map(|identity| identity.core_node_name.clone()),
+            certificate_expiry_unix: self
+                .identity_snapshot
+                .metadata
+                .as_ref()
+                .map(|identity| identity.not_after),
+            generation: self
+                .identity_snapshot
+                .metadata
+                .as_ref()
+                .map(|identity| identity.active_generation.clone()),
+            next_retry_after_secs: self.timer_after(retry_pending).map(|delay| delay.as_secs()),
+            router_apply_state,
+            operator_managed: self.operator_managed || self.pinned,
+            offline_recovery_required: self.identity_snapshot.offline_recovery_required,
+            link: self.platform_link(),
+            pinned: self.pinned,
+            pat_active: self.pat_active,
+            certificate_error: self.certificate_error.clone(),
+            certificate_renewing: self.certificate_renewing,
+        }
+    }
 }
 
-impl RouterFederation {
+impl IdentityController {
     /// Waits for the router to come up, runs the initial federation (firing the
     /// startup gate when it completes or the timeout elapses), then services
     /// immediate login/logout pokes and scheduled certificate/config
@@ -642,7 +1152,7 @@ impl RouterFederation {
     /// shutdown signal). This is not a periodic keepalive: the wakeup follows
     /// server deadlines and zenoh owns ordinary reconnects.
     async fn manage(self, ready_tx: oneshot::Sender<()>) {
-        let RouterFederation {
+        let IdentityController {
             poller,
             messaging_ready,
             trigger_rx,
@@ -652,6 +1162,8 @@ impl RouterFederation {
             teardown_token: _,
             initial_pinned,
             initial_pat_active,
+            initial_operator_managed,
+            initial_identity_snapshot,
         } = self;
         let lifecycle = FederationLoop {
             poller,
@@ -664,7 +1176,7 @@ impl RouterFederation {
         // state IS the settled desired state (no upstream), so a logged-out
         // first poll never bounces it; a pinned router settled nothing (the
         // rendered config was not consumed), so the first poll always attempts
-        // an apply and caches the Pinned rejection.
+        // an apply and caches the operator-managed rejection.
         let initial = AppliedState {
             last_settled_desired: if initial_pinned {
                 SettledDesired::Unsettled
@@ -673,6 +1185,8 @@ impl RouterFederation {
             },
             pinned: initial_pinned,
             pat_active: initial_pat_active,
+            operator_managed: initial_operator_managed,
+            identity_snapshot: initial_identity_snapshot,
             ..AppliedState::default()
         };
         lifecycle.run(messaging_ready, trigger_rx, initial).await;
@@ -680,7 +1194,7 @@ impl RouterFederation {
 }
 
 /// The federation lifecycle after setup: the poll engine plus the channels its
-/// phases share. Split from [`RouterFederation::manage`] so the phases can
+/// phases share. Split from [`IdentityController::manage`] so the phases can
 /// early-return while the dispatcher abort stays with the caller.
 struct FederationLoop {
     poller: FederationPoller,
@@ -736,7 +1250,9 @@ impl FederationLoop {
         // initial poll does not verify (`verify = false`): startup must not block on
         // outbound-link establishment, and the verifying check belongs to the login poke.
         let initial_outcome = self.poller.poll_and_apply(&mut applied, false).await;
-        self.publish_status(&applied);
+        let mut retry_pending = matches!(&initial_outcome, FederationOutcome::Failed(_));
+        applied.controller_settled = outcome_establishes_controller_readiness(&initial_outcome);
+        self.publish_status(&applied, retry_pending);
         fire_gate(&mut self.ready_tx, &self.presence_gate_tx);
 
         // The initial poll re-pulled the federation config, so the credentials now
@@ -767,7 +1283,6 @@ impl FederationLoop {
             Poke(FederationTrigger),
             Timer,
         }
-        let mut retry_pending = matches!(&initial_outcome, FederationOutcome::Failed(_));
         loop {
             let timer = applied.timer_after(retry_pending);
             let work = if let Some(delay) = timer {
@@ -785,23 +1300,83 @@ impl FederationLoop {
                 Work::Poke(ack)
             };
             let timer_work = matches!(&work, Work::Timer);
+            if matches!(&work, Work::Poke(trigger) if trigger.cancelled_before_start()) {
+                warn!(
+                    event = "identity_command_cancelled_before_start",
+                    "identity controller: discarded a queued command after its client deadline"
+                );
+                if let Work::Poke(trigger) = work {
+                    trigger.acknowledge_start_deadline();
+                }
+                continue;
+            }
             let (outcome, ack) = match work {
-                Work::Poke(FederationTrigger::Refederate(ack)) => (
-                    self.poller.poll_and_apply(&mut applied, true).await,
+                Work::Poke(FederationTrigger::EnrollCurrentCredential {
+                    expected_session_revision,
+                    expected_pat_subject,
+                    expected_api_origin,
+                    not_after: _,
+                    reply: ack,
+                }) => (
+                    self.poller
+                        .enroll_and_apply(
+                            &mut applied,
+                            expected_session_revision,
+                            expected_pat_subject,
+                            expected_api_origin,
+                        )
+                        .await,
                     Some(ack),
                 ),
-                Work::Poke(FederationTrigger::Defederate(ack)) => {
-                    (self.poller.force_standalone(&mut applied).await, Some(ack))
-                }
+                Work::Poke(FederationTrigger::PrepareOauthLogin {
+                    expected_session_revision,
+                    not_after: _,
+                    reply: ack,
+                }) => (
+                    self.poller
+                        .prepare_oauth_login(&mut applied, expected_session_revision)
+                        .await,
+                    Some(ack),
+                ),
+                Work::Poke(FederationTrigger::Logout {
+                    expected_session_revision,
+                    not_after: _,
+                    reply: ack,
+                }) => (
+                    self.poller
+                        .logout(&mut applied, expected_session_revision)
+                        .await,
+                    Some(ack),
+                ),
                 Work::Timer => (self.poller.poll_and_apply(&mut applied, false).await, None),
             };
-            self.publish_status(&applied);
-            retry_pending = matches!(&outcome, FederationOutcome::Failed(_));
+            retry_pending = match &outcome {
+                FederationOutcome::Failed(_) => true,
+                FederationOutcome::LoggedOut(LogoutOperationOutcome {
+                    router: LogoutRouterState::Uncertain,
+                    ..
+                }) => true,
+                FederationOutcome::Applied(_)
+                | FederationOutcome::OperatorManaged
+                | FederationOutcome::LoggedOut(_) => false,
+                FederationOutcome::Rejected { .. } => {
+                    retry_pending || applied.identity_snapshot.binding_incomplete
+                }
+                FederationOutcome::Restart { .. } => retry_pending,
+            };
+            applied.controller_settled |= outcome_establishes_controller_readiness(&outcome);
+            self.publish_status(&applied, retry_pending);
             if let Some(ack) = ack {
-                // The CLI may have already given up (read timeout); ignore. On
-                // a namespace change the control handler raises the restart
-                // after attempting to flush `Restarting`.
-                let _ = ack.send(outcome);
+                // Ordinarily the control handler owns restart ordering so it
+                // can flush the structured response first. If its deadline
+                // already elapsed, the dropped receiver must not suppress a
+                // namespace-safety restart that the completed operation now
+                // requires.
+                let restart_if_unreceived = outcome_requires_namespace_restart(&outcome);
+                if ack.send(outcome).is_err() && restart_if_unreceived {
+                    let _ = self.restart_tx.send(true);
+                    return;
+                }
             } else if timer_work && matches!(&outcome, FederationOutcome::Restart { .. }) {
                 let _ = self.restart_tx.send(true);
                 return;
@@ -811,24 +1386,277 @@ impl FederationLoop {
 
     /// Publishes the cached status the control socket answers status queries
     /// from: the platform link now in effect plus router-config ownership.
-    fn publish_status(&self, applied: &AppliedState) {
-        self.status_tx.send_replace(FederationStatus {
-            link: applied.platform_link(),
-            pinned: applied.pinned,
-            pat_active: applied.pat_active,
-            certificate_error: applied.certificate_error.clone(),
-            certificate_renewing: applied.certificate_renewing,
-        });
+    fn publish_status(&self, applied: &AppliedState, retry_pending: bool) {
+        self.status_tx
+            .send_replace(applied.federation_status(retry_pending));
     }
 }
 
 impl FederationPoller {
+    /// Atomically fences the OAuth handoff against the daemon's immutable
+    /// service-authentication mode. A daemon restarted with a PAT while the
+    /// browser flow was pending rejects before arming the binding marker or
+    /// touching a healthy PAT-backed router.
+    async fn prepare_oauth_login(
+        &self,
+        applied: &mut AppliedState,
+        expected_session_revision: Uuid,
+    ) -> FederationOutcome {
+        if applied.pat_active {
+            return FederationOutcome::Rejected {
+                code: IdentityFailureCode::PatActive,
+                message: "OAuth login is disabled while the daemon service PAT is active".into(),
+            };
+        }
+        self.force_standalone_with_transition(
+            applied,
+            TransitionArm::Arm(Some(expected_session_revision)),
+        )
+        .await
+    }
+
+    /// Owns the complete normal logout transaction: best-effort remote
+    /// revocation while auth is present, managed-router de-federation (or
+    /// last-resort stop), then fail-closed local deletion under the same
+    /// maintenance lease.
+    async fn logout(
+        &self,
+        applied: &mut AppliedState,
+        expected_session_revision: Option<Uuid>,
+    ) -> FederationOutcome {
+        if applied.pat_active {
+            return FederationOutcome::Rejected {
+                code: IdentityFailureCode::PatActive,
+                message: "logout is disabled while a daemon service PAT is active".into(),
+            };
+        }
+
+        let Some(logout_worker) = self.logout_worker.clone() else {
+            return FederationOutcome::Failed(
+                "identity controller has no logout implementation".into(),
+            );
+        };
+        info!(
+            event = "identity_logout_attempt",
+            "identity controller: starting logout"
+        );
+        if let Some(router_fence) = self.logout_router_fence.clone() {
+            match tokio::task::spawn_blocking(move || router_fence()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(failure)) => {
+                    return FederationOutcome::Rejected {
+                        code: failure.code,
+                        message: failure.message,
+                    };
+                }
+                Err(error) => {
+                    warn!(error = %error, "identity controller: router process-fence task panicked");
+                    return FederationOutcome::Failed(
+                        "managed-router logout process fence task panicked".into(),
+                    );
+                }
+            }
+        }
+        // Backend requests carry their own bounded HTTP timeouts. Do not abandon
+        // the transaction at the shorter control-connection deadline: the
+        // caller may time out, but the serialized controller must still take
+        // the router standalone and complete fail-closed local deletion.
+        let prepared =
+            match tokio::task::spawn_blocking(move || logout_worker(expected_session_revision))
+                .await
+            {
+                Ok(Ok(prepared)) => prepared,
+                Ok(Err(failure)) => {
+                    if failure.code == IdentityFailureCode::StaleSessionRevision {
+                        warn!(
+                            event = "identity_stale_session_revision",
+                            "identity controller: rejected stale logout revision"
+                        );
+                    }
+                    return FederationOutcome::Rejected {
+                        code: failure.code,
+                        message: failure.message,
+                    };
+                }
+                Err(error) => {
+                    warn!(error = %error, "identity controller: logout preparation task panicked");
+                    return FederationOutcome::Failed("logout preparation task panicked".into());
+                }
+            };
+        info!(
+            event = "identity_logout_remote_cleanup",
+            certificate_revocation = cleanup_attempt_label(prepared.certificate_revocation()),
+            oauth_revocation = cleanup_attempt_label(prepared.oauth_revocation()),
+            "identity controller: remote logout cleanup settled"
+        );
+
+        let was_pinned = applied.pinned;
+        let router = if self.operator_managed {
+            LogoutRouterState::OperatorManaged
+        } else {
+            let standalone = tokio::time::timeout(self.apply_timeout, (self.federator)(None)).await;
+            match standalone {
+                Ok(Ok(true)) => LogoutRouterState::Standalone,
+                Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+                    warn!(
+                        event = "identity_logout_router_stop_attempt",
+                        "identity controller: standalone apply did not settle; attempting to stop the managed router"
+                    );
+                    match tokio::time::timeout(self.apply_timeout, (self.stopper)()).await {
+                        Ok(Ok(true)) => LogoutRouterState::Standalone,
+                        Ok(Ok(false)) | Ok(Err(_)) | Err(_) => LogoutRouterState::Uncertain,
+                    }
+                }
+            }
+        };
+        let operator_action_required =
+            self.operator_managed || was_pinned || router == LogoutRouterState::Uncertain;
+        Self::record_logout_router_state(applied, router);
+
+        // Local deletion remains blocking durable filesystem work. Keep the
+        // controller serialized until it finishes; the control connection has
+        // its own total deadline and a late completion cannot race a new
+        // command through this loop.
+        let local_task = tokio::task::spawn_blocking(move || prepared.finish_local_cleanup());
+        let local = match local_task.await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(error)) => {
+                let failure = IdentityFailure::from_auth(error);
+                if failure.code != IdentityFailureCode::StaleSessionRevision {
+                    self.mark_logout_cleanup_debt(applied).await;
+                }
+                return FederationOutcome::Rejected {
+                    code: failure.code,
+                    message: failure.message,
+                };
+            }
+            Err(error) => {
+                warn!(error = %error, "identity controller: local logout cleanup task panicked");
+                self.mark_logout_cleanup_debt(applied).await;
+                return FederationOutcome::Failed("local logout cleanup task panicked".into());
+            }
+        };
+
+        let local_succeeded =
+            matches!(local.local_cleanup, auth::logout::CleanupAttempt::Succeeded);
+        let target_namespace =
+            (local_succeeded && !self.startup_namespace.is_local()).then(Namespace::local);
+        if local_succeeded {
+            applied.identity_snapshot = IdentitySnapshot::default();
+            applied.certificate_expires_at = None;
+            applied.certificate_error = None;
+            applied.renewal_failures = 0;
+            applied.pat_active = false;
+        } else {
+            self.mark_logout_cleanup_debt(applied).await;
+        }
+        info!(
+            event = "identity_logout_outcome",
+            local_cleanup = cleanup_attempt_label(&local.local_cleanup),
+            router_state = ?router,
+            "identity controller: logout settled"
+        );
+        FederationOutcome::LoggedOut(LogoutOperationOutcome {
+            certificate_revocation: local.certificate_revocation,
+            oauth_revocation: local.oauth_revocation,
+            local_cleanup: local.local_cleanup,
+            router,
+            operator_action_required,
+            target_namespace,
+        })
+    }
+
+    fn record_logout_router_state(applied: &mut AppliedState, router: LogoutRouterState) {
+        applied.next_maintenance = None;
+        applied.certificate_renewing = false;
+        applied.expiry_defederation_pending = false;
+        applied.pinned = false;
+        match router {
+            LogoutRouterState::Standalone => {
+                applied.endpoint = None;
+                applied.link_state = LinkState::NotConfigured;
+                applied.last_settled_desired = SettledDesired::Standalone;
+                applied.needs_reapply = false;
+            }
+            LogoutRouterState::OperatorManaged => {
+                applied.endpoint = None;
+                applied.link_state = LinkState::Unverified;
+                applied.last_settled_desired = SettledDesired::Unsettled;
+                applied.operator_managed = true;
+                applied.needs_reapply = false;
+            }
+            LogoutRouterState::Uncertain => {
+                applied.link_state =
+                    LinkState::Error("managed router shutdown is uncertain after logout".into());
+                applied.last_settled_desired = SettledDesired::Unsettled;
+                applied.needs_reapply = true;
+            }
+        }
+    }
+
+    async fn mark_logout_cleanup_debt(&self, applied: &mut AppliedState) {
+        let transition_armer = Arc::clone(&self.transition_armer);
+        match tokio::task::spawn_blocking(move || transition_armer(None)).await {
+            Ok(Ok(snapshot)) => applied.identity_snapshot = snapshot,
+            Ok(Err(error)) => warn!(
+                error = %error,
+                "identity controller: could not durably arm failed-logout recovery"
+            ),
+            Err(error) => warn!(
+                error = %error,
+                "identity controller: failed-logout recovery task panicked"
+            ),
+        }
+        applied.identity_snapshot.offline_recovery_required = true;
+        applied.certificate_error =
+            Some("local logout cleanup did not complete; offline recovery is required".into());
+    }
+
     /// Applies intentional standalone without consulting credentials or the
     /// identity resolver. This is distinct from a normal refederation poke:
     /// post-login failure deliberately retains OAuth/PAT state for retry, and
     /// re-resolving it could otherwise reuse a same-subject prior certificate.
-    async fn force_standalone(&self, applied: &mut AppliedState) -> FederationOutcome {
-        match tokio::time::timeout(self.apply_timeout, (self.federator)(None)).await {
+    async fn force_standalone_with_transition(
+        &self,
+        applied: &mut AppliedState,
+        transition: TransitionArm,
+    ) -> FederationOutcome {
+        let transition_failure = match transition {
+            TransitionArm::Arm(expected_session_revision) => {
+                let transition_armer = Arc::clone(&self.transition_armer);
+                match tokio::task::spawn_blocking(move || {
+                    transition_armer(expected_session_revision)
+                })
+                .await
+                {
+                    Ok(Ok(snapshot)) => {
+                        applied.identity_snapshot = snapshot;
+                        info!(
+                            event = "identity_binding_transition_armed",
+                            "identity controller: durable fail-closed login transition armed"
+                        );
+                        None
+                    }
+                    Ok(Err(failure)) => Some(failure),
+                    Err(error) => Some(IdentityFailure {
+                        code: IdentityFailureCode::OperationFailed,
+                        message: format!("fail-closed login transition task panicked: {error}"),
+                    }),
+                }
+            }
+            TransitionArm::Preserve => None,
+        };
+        if transition_failure.is_none()
+            && matches!(applied.last_settled_desired, SettledDesired::Standalone)
+            && !applied.needs_reapply
+            && !applied.pinned
+            && !self.operator_managed
+        {
+            return FederationOutcome::Applied(applied.platform_link());
+        }
+        let apply_outcome = match tokio::time::timeout(self.apply_timeout, (self.federator)(None))
+            .await
+        {
             Ok(Ok(true)) => {
                 applied.endpoint = None;
                 applied.link_state = LinkState::NotConfigured;
@@ -845,9 +1673,10 @@ impl FederationPoller {
             }
             Ok(Ok(false)) => {
                 applied.last_settled_desired = SettledDesired::Unsettled;
-                applied.pinned = true;
+                applied.pinned = !self.operator_managed;
+                applied.operator_managed = self.operator_managed;
                 applied.needs_reapply = true;
-                FederationOutcome::Pinned
+                FederationOutcome::OperatorManaged
             }
             Ok(Err(error)) => {
                 applied.last_settled_desired = SettledDesired::Unsettled;
@@ -859,7 +1688,34 @@ impl FederationPoller {
                 applied.needs_reapply = true;
                 FederationOutcome::Failed("forced standalone router apply timed out".into())
             }
+        };
+        if let Some(mut failure) = transition_failure {
+            applied.identity_snapshot.offline_recovery_required = true;
+            applied.certificate_error = Some(failure.message.clone());
+            match &apply_outcome {
+                FederationOutcome::Applied(_) => {
+                    failure
+                        .message
+                        .push_str("; the managed router was nevertheless forced standalone");
+                }
+                FederationOutcome::OperatorManaged => {
+                    failure.message.push_str(
+                        "; router configuration is operator-managed and could not be changed",
+                    );
+                }
+                FederationOutcome::Failed(error) => {
+                    failure
+                        .message
+                        .push_str(&format!("; emergency standalone also failed: {error}"));
+                }
+                _ => {}
+            }
+            return FederationOutcome::Rejected {
+                code: failure.code,
+                message: failure.message,
+            };
         }
+        apply_outcome
     }
 
     /// One poll: resolve the desired upstream and, if it changed, (re)federate the
@@ -871,6 +1727,127 @@ impl FederationPoller {
     /// its configured outbound link established. A failed wait is reported (and
     /// logged loudly) as a [`LinkState::Error`] instead of a false verified success.
     async fn poll_and_apply(&self, applied: &mut AppliedState, verify: bool) -> FederationOutcome {
+        self.poll_and_apply_inner(applied, verify, None).await
+    }
+
+    async fn enroll_and_apply(
+        &self,
+        applied: &mut AppliedState,
+        expected_session_revision: Option<Uuid>,
+        expected_pat_subject: Option<String>,
+        expected_api_origin: Option<String>,
+    ) -> FederationOutcome {
+        let authentication = if expected_session_revision.is_some() {
+            "oauth"
+        } else {
+            "pat"
+        };
+        info!(
+            event = "identity_enrollment_attempt",
+            authentication, "identity controller: explicit enrollment started"
+        );
+        if expected_session_revision.is_some() && applied.pat_active {
+            return FederationOutcome::Rejected {
+                code: IdentityFailureCode::PatActive,
+                message: "OAuth enrollment is disabled while the daemon service PAT is active"
+                    .into(),
+            };
+        }
+        if expected_session_revision.is_none() {
+            let Some(expected_subject) = expected_pat_subject.as_deref() else {
+                return FederationOutcome::Rejected {
+                    code: IdentityFailureCode::OperationFailed,
+                    message: "PAT enrollment is missing its validated CLI principal".into(),
+                };
+            };
+            let Some(expected_api_origin) = expected_api_origin.as_deref() else {
+                return FederationOutcome::Rejected {
+                    code: IdentityFailureCode::OperationFailed,
+                    message: "PAT enrollment is missing its validated CLI API origin".into(),
+                };
+            };
+            let preflight = Arc::clone(&self.pat_preflight);
+            let expected_subject = expected_subject.to_owned();
+            let expected_api_origin = expected_api_origin.to_owned();
+            match tokio::task::spawn_blocking(move || {
+                preflight(&expected_subject, &expected_api_origin)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(failure)) => {
+                    return FederationOutcome::Rejected {
+                        code: failure.code,
+                        message: failure.message,
+                    };
+                }
+                Err(error) => {
+                    return FederationOutcome::Failed(format!(
+                        "daemon PAT preflight task panicked: {error}"
+                    ));
+                }
+            }
+        }
+        if let Some(expected) = expected_session_revision
+            && let Err(failure) = (self.revision_checker)(Some(expected))
+        {
+            warn!(
+                event = "identity_stale_session_revision",
+                "identity controller: rejected stale enrollment before changing router state"
+            );
+            let outcome = FederationOutcome::Rejected {
+                code: failure.code,
+                message: failure.message,
+            };
+            info!(
+                event = "identity_enrollment_outcome",
+                authentication,
+                outcome = federation_outcome_label(&outcome),
+                "identity controller: explicit enrollment settled"
+            );
+            return outcome;
+        }
+        // Enforce the durable fail-closed transition in the controller too,
+        // even if a local client skipped the normal pre-publication handshake.
+        // This makes resolver errors, panics, timeouts, and late completion all
+        // start from standalone rather than preserving a prior login's link.
+        let transition = if expected_session_revision.is_some() {
+            TransitionArm::Preserve
+        } else {
+            TransitionArm::Arm(None)
+        };
+        let outcome = match self
+            .force_standalone_with_transition(applied, transition)
+            .await
+        {
+            FederationOutcome::Applied(_) | FederationOutcome::OperatorManaged => {
+                self.poll_and_apply_inner(
+                    applied,
+                    true,
+                    Some(EnrollmentRequest {
+                        expected_session_revision,
+                        expected_pat_subject,
+                    }),
+                )
+                .await
+            }
+            failure => failure,
+        };
+        info!(
+            event = "identity_enrollment_outcome",
+            authentication,
+            outcome = federation_outcome_label(&outcome),
+            "identity controller: explicit enrollment settled"
+        );
+        outcome
+    }
+
+    async fn poll_and_apply_inner(
+        &self,
+        applied: &mut AppliedState,
+        verify: bool,
+        enrollment: Option<EnrollmentRequest>,
+    ) -> FederationOutcome {
         let cleanup_task = {
             let mut cleanup = self.late_resolve_cleanup.lock().await;
             if cleanup.as_ref().is_some_and(|task| !task.is_finished()) {
@@ -916,13 +1893,25 @@ impl FederationPoller {
         // unverified identity it eventually returns. The rotation's armed Drop
         // guard remains a final fallback if runtime shutdown aborts that cleanup.
         let resolver = self.resolver.clone();
-        let mut resolve_task = tokio::task::spawn_blocking(move || resolver());
+        let explicit_enrollment = enrollment.is_some();
+        let mut resolve_task = tokio::task::spawn_blocking(move || resolver(enrollment));
         let mut resolved = match tokio::time::timeout_at(resolve_deadline, &mut resolve_task).await
         {
             Ok(Ok(Ok(t))) => t,
-            Ok(Ok(Err(message))) => {
-                warn!(error = %message, "router federation: desired-state resolve failed; will retry");
-                return self.fail_resolve_or_expire(applied, message).await;
+            Ok(Ok(Err(failure))) => {
+                warn!(error = %failure, "identity controller: desired-state resolve failed; will retry");
+                if explicit_enrollment {
+                    // Authentication changed but its new binding could not be
+                    // established. Never leave the previous link in effect.
+                    let _ = self
+                        .force_standalone_with_transition(applied, TransitionArm::Preserve)
+                        .await;
+                    return FederationOutcome::Rejected {
+                        code: failure.code,
+                        message: failure.message,
+                    };
+                }
+                return self.fail_resolve_or_expire(applied, failure.message).await;
             }
             Ok(Err(e)) => {
                 warn!(error = %e, "router federation: resolve task panicked; will retry");
@@ -949,6 +1938,8 @@ impl FederationPoller {
             applied.renewal_failures = applied.renewal_failures.saturating_add(1);
             applied.certificate_error = Some(error.clone());
             warn!(
+                event = "identity_renewal_outcome",
+                outcome = "failed",
                 error = %error,
                 retry_after = ?applied.renewal_retry_delay(),
                 "router federation: certificate maintenance failed; a still-valid generation remains active while renewal backs off"
@@ -958,7 +1949,23 @@ impl FederationPoller {
             applied.certificate_error = None;
         }
         let mut rotation = resolved.rotation.take();
+        let mut resolved_identity_snapshot = resolved.identity_snapshot.clone();
         applied.pat_active = resolved.pat_active;
+        if resolved.force_standalone {
+            let fail_closed_reason = resolved.resolve_error.take();
+            let standalone = self
+                .force_standalone_with_transition(applied, TransitionArm::Preserve)
+                .await;
+            return match (standalone, fail_closed_reason) {
+                (FederationOutcome::Applied(_), Some(reason))
+                | (FederationOutcome::OperatorManaged, Some(reason)) => {
+                    FederationOutcome::Failed(reason)
+                }
+                (settled @ FederationOutcome::Applied(_), None)
+                | (settled @ FederationOutcome::OperatorManaged, None) => settled,
+                (failure, _) => failure,
+            };
+        }
         if resolved.upstream.is_some()
             && resolved_certificate_deadline
                 .is_some_and(|deadline| deadline <= tokio::time::Instant::now())
@@ -988,6 +1995,15 @@ impl FederationPoller {
         if rotation.is_some() {
             applied.certificate_renewing = true;
             self.publish_progress(applied);
+            info!(
+                event = "identity_rotation_attempt",
+                operation = if explicit_enrollment {
+                    "enrollment"
+                } else {
+                    "renewal"
+                },
+                "identity controller: staged a fresh certificate generation"
+            );
         }
         if let Some(error) = resolved.resolve_error.take() {
             // A transient control-plane failure is not a desired standalone
@@ -995,6 +2011,18 @@ impl FederationPoller {
             // startup the applied state is already standalone, so this remains
             // fail closed without needlessly tearing down a healthy old link.
             return self.fail_resolve_or_expire(applied, error).await;
+        }
+
+        // Fence the exact session before either a router apply or a durable
+        // namespace-restart handoff. The latter must not retain a receipt for a
+        // login that was replaced after issuance.
+        if let Some(active_rotation) = rotation.as_ref()
+            && let Err(failure) =
+                (self.revision_checker)(active_rotation.activated().session_revision)
+        {
+            return self
+                .reject_stale_session_rotation(rotation.take(), applied, failure)
+                .await;
         }
 
         // Namespace-change gate. The resolve above re-pulled (and re-cached) the
@@ -1018,6 +2046,9 @@ impl FederationPoller {
                         "could not hand off the unverified identity across the namespace restart: {error}"
                     ));
                 }
+                // `retain_for_restart` also clears the transition by comparing
+                // its activated session revision. A newer concurrent Prepare
+                // therefore survives this older namespace handoff.
             }
             applied.certificate_renewing = false;
             info!(
@@ -1042,13 +2073,18 @@ impl FederationPoller {
         // rendered locator (endpoint + TLS material) is unchanged.
         let should_apply = !unchanged || (verify && applied.needs_reapply);
         if !should_apply {
+            applied.identity_snapshot = resolved_identity_snapshot.clone();
+            applied.certificate_expires_at = resolved_certificate_deadline;
+            if self.operator_managed {
+                applied.operator_managed = true;
+                return FederationOutcome::OperatorManaged;
+            }
             if applied.pinned {
-                return FederationOutcome::Pinned;
+                return FederationOutcome::OperatorManaged;
             }
             // Equality includes the immutable generation-specific TLS paths,
             // so only an actually unchanged applied generation may refresh its
             // validated absolute-expiry projection.
-            applied.certificate_expires_at = resolved_certificate_deadline;
         } else {
             // Give the apply (config re-render + zenohd bounce) its own bound after
             // resolution: it awaits the messenger lock and stops/starts the router, so a
@@ -1063,9 +2099,16 @@ impl FederationPoller {
                 .upstream
                 .as_ref()
                 .map(DesiredBackend::upstream_link);
-            match tokio::time::timeout_at(apply_deadline, (self.federator)(desired_link)).await {
+            let apply_started = std::time::Instant::now();
+            let apply_result =
+                tokio::time::timeout_at(apply_deadline, (self.federator)(desired_link)).await;
+            let apply_latency_ms = apply_started.elapsed().as_millis() as u64;
+            match apply_result {
                 Err(_elapsed) => {
                     warn!(
+                        event = "identity_router_apply",
+                        outcome = "timed_out",
+                        latency_ms = apply_latency_ms,
                         "router federation: applying the upstream change timed out, so federation \
                          with the platform router is NOT in effect; will retry"
                     );
@@ -1080,10 +2123,14 @@ impl FederationPoller {
                 }
                 Ok(Ok(true)) => {
                     info!(
+                        event = "identity_router_apply",
+                        outcome = "applied",
+                        latency_ms = apply_latency_ms,
                         endpoint = ?desired_endpoint,
                         "router federation: applied the desired platform upstream"
                     );
                     *applied = AppliedState {
+                        controller_settled: applied.controller_settled,
                         endpoint: desired_endpoint.clone(),
                         link_state: if desired_endpoint.is_some() {
                             LinkState::Unverified
@@ -1094,6 +2141,7 @@ impl FederationPoller {
                             resolved.upstream.clone(),
                         ),
                         pinned: false,
+                        operator_managed: applied.operator_managed,
                         needs_reapply: false,
                         next_maintenance: applied.next_maintenance,
                         certificate_expires_at: resolved_certificate_deadline,
@@ -1102,6 +2150,7 @@ impl FederationPoller {
                         pat_active: applied.pat_active,
                         certificate_error: applied.certificate_error.clone(),
                         certificate_renewing: applied.certificate_renewing,
+                        identity_snapshot: resolved_identity_snapshot.clone(),
                     };
                     if resolved_certificate_deadline
                         .is_some_and(|deadline| deadline <= tokio::time::Instant::now())
@@ -1117,36 +2166,113 @@ impl FederationPoller {
                     }
                 }
                 Ok(Ok(false)) => {
-                    // A managed router with a pinned `ZENOH_CONFIG` cannot be changed
-                    // here. Preserve the endpoint known to be in effect: the desired
-                    // upstream was not applied and must not leak into status as if
-                    // it were. Remember the pinned bit so an unchanged desired target
-                    // is still reported as pinned; warn so the operator knows
-                    // federation is not being auto-managed.
+                    info!(
+                        event = "identity_router_apply",
+                        outcome = "operator_managed",
+                        latency_ms = apply_latency_ms,
+                        "identity controller: router application remains operator-managed"
+                    );
+                    if self.operator_managed {
+                        // Peppy owns the certificate store but not this router.
+                        // Complete the local rotation without pruning any old
+                        // immutable generation: the operator may still have an
+                        // older path installed and only the operator can tell
+                        // when it is safe to remove.
+                        if let Some(active_rotation) = rotation.as_ref()
+                            && let Err(failure) = (self.revision_checker)(
+                                active_rotation.activated().session_revision,
+                            )
+                        {
+                            return self
+                                .reject_stale_session_rotation(rotation.take(), applied, failure)
+                                .await;
+                        }
+                        if let Some(rotation) = rotation.take() {
+                            if let Err(error) = rotation.commit_for_operator_managed_router() {
+                                applied.certificate_renewing = false;
+                                return FederationOutcome::Failed(format!(
+                                    "could not finalize the operator-managed identity: {error}"
+                                ));
+                            }
+                            resolved_identity_snapshot.binding_incomplete = false;
+                            info!(
+                                event = "identity_rotation_outcome",
+                                outcome = "operator_managed",
+                                validity_remaining_secs = ?resolved_certificate_deadline.map(
+                                    |deadline| deadline
+                                        .saturating_duration_since(tokio::time::Instant::now())
+                                        .as_secs()
+                                ),
+                                "identity controller: local certificate rotation committed for an operator-managed router"
+                            );
+                        }
+                        applied.endpoint = None;
+                        applied.link_state = if resolved.upstream.is_some() {
+                            LinkState::Unverified
+                        } else {
+                            LinkState::NotConfigured
+                        };
+                        applied.last_settled_desired =
+                            SettledDesired::from_completed(resolved.upstream.clone());
+                        applied.pinned = false;
+                        applied.operator_managed = true;
+                        applied.needs_reapply = false;
+                        applied.certificate_expires_at = resolved_certificate_deadline;
+                        applied.certificate_renewing = false;
+                        applied.identity_snapshot = resolved_identity_snapshot.clone();
+                        info!(
+                            "identity controller: local identity is ready; the external router remains operator-managed"
+                        );
+                        return FederationOutcome::OperatorManaged;
+                    }
+                    // A managed router with a pinned `ZENOH_CONFIG` cannot be
+                    // rewritten. Commit Peppy's local generation without
+                    // pruning older immutable paths, exactly as for an
+                    // external router; the operator decides when/how to load
+                    // the new generation and when old paths are unused.
                     warn!(
                         "router federation: the managed router uses an operator-pinned \
                          ZENOH_CONFIG; the desired federation change was not applied"
                     );
-                    if rotation.is_some() {
+                    if let Some(active_rotation) = rotation.as_ref()
+                        && let Err(failure) =
+                            (self.revision_checker)(active_rotation.activated().session_revision)
+                    {
                         return self
-                            .reject_rotation_and_restore(
-                                rotation.take(),
-                                applied,
-                                &prior_applied,
-                                "the managed router is pinned and could not load the renewed certificate"
-                                    .to_string(),
-                            )
+                            .reject_stale_session_rotation(rotation.take(), applied, failure)
                             .await;
                     }
+                    if let Some(rotation) = rotation.take() {
+                        if let Err(error) = rotation.commit_for_operator_managed_router() {
+                            applied.certificate_renewing = false;
+                            return FederationOutcome::Failed(format!(
+                                "could not finalize the pinned-router identity: {error}"
+                            ));
+                        }
+                        resolved_identity_snapshot.binding_incomplete = false;
+                    }
+                    applied.endpoint = None;
+                    applied.link_state = if resolved.upstream.is_some() {
+                        LinkState::Unverified
+                    } else {
+                        LinkState::NotConfigured
+                    };
                     applied.last_settled_desired =
                         SettledDesired::from_completed(resolved.upstream.clone());
                     applied.pinned = true;
+                    applied.operator_managed = false;
                     applied.needs_reapply = false;
-                    return FederationOutcome::Pinned;
+                    applied.certificate_expires_at = resolved_certificate_deadline;
+                    applied.certificate_renewing = false;
+                    applied.identity_snapshot = resolved_identity_snapshot.clone();
+                    return FederationOutcome::OperatorManaged;
                 }
                 Ok(Err(e)) => {
                     // Leave `applied` unchanged so the next poll retries the apply.
                     warn!(
+                        event = "identity_router_apply",
+                        outcome = "failed",
+                        latency_ms = apply_latency_ms,
                         error = %e,
                         "router federation: failed to apply the upstream change, so federation \
                          with the platform router is NOT in effect; will retry"
@@ -1168,6 +2294,7 @@ impl FederationPoller {
         // poke (the user may replace certificate files between attempts).
         let verify = verify || rotation.is_some();
         if verify && let Some(backend) = &resolved.upstream {
+            let verification_started = std::time::Instant::now();
             let result = probe_with_bound(
                 self.prober.clone(),
                 backend.endpoint.host().to_string(),
@@ -1176,8 +2303,15 @@ impl FederationPoller {
                 PROBE_TIMEOUT,
             )
             .await;
+            let verification_latency_ms = verification_started.elapsed().as_millis() as u64;
             match result {
                 Ok(()) => {
+                    info!(
+                        event = "identity_router_verification",
+                        outcome = "verified",
+                        latency_ms = verification_latency_ms,
+                        "identity controller: managed-router link verified"
+                    );
                     if resolved_certificate_deadline
                         .is_some_and(|deadline| deadline <= tokio::time::Instant::now())
                     {
@@ -1195,6 +2329,9 @@ impl FederationPoller {
                 }
                 Err(reason) => {
                     warn!(
+                        event = "identity_router_verification",
+                        outcome = "failed",
+                        latency_ms = verification_latency_ms,
                         reason = %reason,
                         "router federation: the platform link did not validate"
                     );
@@ -1231,6 +2368,15 @@ impl FederationPoller {
                 .await;
         }
 
+        if let Some(active_rotation) = rotation.as_ref()
+            && let Err(failure) =
+                (self.revision_checker)(active_rotation.activated().session_revision)
+        {
+            return self
+                .reject_stale_session_rotation(rotation.take(), applied, failure)
+                .await;
+        }
+
         #[cfg(test)]
         if !self.finalization_delay.is_zero() {
             // The real commit below performs blocking protected-file reads,
@@ -1241,16 +2387,30 @@ impl FederationPoller {
         }
         if let Some(rotation) = rotation.take() {
             if let Err(error) = rotation.commit_after_probe() {
-                // The new link is already verified. Failure to prune old files
-                // is recoverable cleanup debt, not a reason to tear down a good
-                // federation link or restore the old certificate.
                 warn!(
+                    event = "identity_rotation_outcome",
+                    outcome = "finalization_failed",
                     error = %error,
-                    "router federation: renewed certificate verified, but superseded generation cleanup failed"
+                    "router federation: verified certificate could not be durably finalized; forcing standalone"
                 );
+                let emergency = self
+                    .force_standalone_with_transition(applied, TransitionArm::Preserve)
+                    .await;
+                return FederationOutcome::Failed(format!(
+                    "verified core-node identity could not be durably finalized; emergency standalone outcome: {}",
+                    federation_outcome_label(&emergency)
+                ));
             }
+            resolved_identity_snapshot.binding_incomplete = false;
             applied.renewal_failures = 0;
             applied.certificate_error = None;
+            info!(
+                event = "identity_rotation_outcome",
+                outcome = "committed",
+                validity_remaining_secs = ?resolved_certificate_deadline
+                    .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()).as_secs()),
+                "identity controller: certificate rotation committed after router verification"
+            );
         }
         // `commit_after_probe` is blocking durable I/O and can cross the exact
         // monotonic deadline even when the pre-commit check passed. At this
@@ -1270,6 +2430,7 @@ impl FederationPoller {
                 .await;
         }
         applied.certificate_renewing = false;
+        applied.identity_snapshot = resolved_identity_snapshot;
 
         FederationOutcome::Applied(applied.platform_link())
     }
@@ -1295,6 +2456,64 @@ impl FederationPoller {
         self.fail_resolve_or_expire(applied, reason).await
     }
 
+    async fn reject_stale_session_rotation(
+        &self,
+        rotation: Option<auth::IdentityRotation>,
+        applied: &mut AppliedState,
+        failure: IdentityFailure,
+    ) -> FederationOutcome {
+        warn!(
+            event = "identity_stale_session_revision",
+            "identity controller: session changed while enrollment was in flight"
+        );
+        if let Some(rotation) = rotation {
+            match rotation.rollback_for_router_restore() {
+                Ok(rejected) => {
+                    let standalone =
+                        tokio::time::timeout(self.apply_timeout, (self.federator)(None)).await;
+                    if matches!(standalone, Ok(Ok(true))) {
+                        applied.endpoint = None;
+                        applied.link_state = LinkState::NotConfigured;
+                        applied.last_settled_desired = SettledDesired::Standalone;
+                        applied.needs_reapply = false;
+                        applied.certificate_expires_at = None;
+                        if let Err(error) = rejected.cleanup_after_router_restore() {
+                            warn!(
+                                error = %error,
+                                "identity controller: stale generation rollback left cleanup debt"
+                            );
+                        }
+                    } else {
+                        applied.last_settled_desired = SettledDesired::Unsettled;
+                        applied.needs_reapply = true;
+                        applied.link_state = LinkState::Error(
+                            "router state is uncertain after rejecting a stale login".into(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    applied.needs_reapply = true;
+                    applied.link_state = LinkState::Error(
+                        "identity rollback failed after rejecting a stale login".into(),
+                    );
+                    warn!(error = %error, "identity controller: stale generation rollback failed");
+                    let emergency = self
+                        .force_standalone_with_transition(applied, TransitionArm::Preserve)
+                        .await;
+                    warn!(
+                        outcome = federation_outcome_label(&emergency),
+                        "identity controller: attempted emergency standalone after rollback failure"
+                    );
+                }
+            }
+        }
+        applied.certificate_renewing = false;
+        FederationOutcome::Rejected {
+            code: failure.code,
+            message: failure.message,
+        }
+    }
+
     /// A transient control-plane failure may preserve an already-applied link
     /// only while its client certificate remains valid. At the independent
     /// hard deadline, explicitly render/apply standalone even though the
@@ -1310,6 +2529,11 @@ impl FederationPoller {
 
         let mut failure = format!(
             "{reason}; active core-node certificate reached its hard expiry, de-federating fail closed"
+        );
+        warn!(
+            event = "identity_expiry_defederation",
+            outcome = "attempting",
+            "identity controller: certificate reached hard expiry"
         );
         applied.certificate_renewing = false;
         applied.certificate_error = Some(failure.clone());
@@ -1330,10 +2554,18 @@ impl FederationPoller {
             }
             Ok(Ok(false)) => {
                 applied.last_settled_desired = SettledDesired::Unsettled;
-                applied.pinned = true;
+                applied.pinned = !self.operator_managed;
+                applied.operator_managed = self.operator_managed;
                 applied.needs_reapply = true;
-                failure
-                    .push_str("; ZENOH_CONFIG is pinned, so automatic de-federation was refused");
+                if self.operator_managed {
+                    failure.push_str(
+                        "; the router is operator-managed, so the operator must remove its expired identity",
+                    );
+                } else {
+                    failure.push_str(
+                        "; ZENOH_CONFIG is pinned, so automatic de-federation was refused",
+                    );
+                }
                 false
             }
             Ok(Err(error)) => {
@@ -1356,11 +2588,21 @@ impl FederationPoller {
             applied.next_maintenance = None;
             applied.renewal_failures = 0;
             applied.certificate_error = None;
-            warn!(error = %failure, "router federation: certificate expired during resolver failure");
+            warn!(
+                event = "identity_expiry_defederation",
+                outcome = "standalone",
+                error = %failure,
+                "router federation: certificate expired during resolver failure"
+            );
             return FederationOutcome::Failed(failure);
         }
         applied.certificate_error = Some(failure.clone());
-        warn!(error = %failure, "router federation: certificate expired during resolver failure");
+        warn!(
+            event = "identity_expiry_defederation",
+            outcome = "uncertain",
+            error = %failure,
+            "router federation: certificate expired during resolver failure"
+        );
         FederationOutcome::Failed(failure)
     }
 
@@ -1386,8 +2628,12 @@ impl FederationPoller {
             Err(error) => {
                 Self::mark_restore_uncertain(applied, prior, next_maintenance, failures);
                 applied.certificate_error = Some(reason.clone());
+                let emergency = self
+                    .force_standalone_with_transition(applied, TransitionArm::Preserve)
+                    .await;
                 return FederationOutcome::Failed(format!(
-                    "{reason}; core-node certificate rollback also failed: {error}"
+                    "{reason}; core-node certificate rollback also failed: {error}; emergency standalone outcome: {}",
+                    federation_outcome_label(&emergency)
                 ));
             }
         };
@@ -1475,6 +2721,12 @@ impl FederationPoller {
             ));
         }
         warn!(
+            event = "identity_rotation_rollback",
+            outcome = if prior_router_confirmed {
+                "restored"
+            } else {
+                "uncertain"
+            },
             error = %reason,
             retry_after = ?applied.renewal_retry_delay(),
             "router federation: rejected renewed certificate generation and attempted immediate prior-generation restore"
@@ -1498,54 +2750,15 @@ impl FederationPoller {
 
     fn publish_progress(&self, applied: &AppliedState) {
         if let Some(status_tx) = &self.status_tx {
-            status_tx.send_replace(FederationStatus {
-                link: applied.platform_link(),
-                pinned: applied.pinned,
-                pat_active: applied.pat_active,
-                certificate_error: applied.certificate_error.clone(),
-                certificate_renewing: applied.certificate_renewing,
-            });
+            status_tx.send_replace(applied.federation_status(false));
         }
     }
-}
-
-/// Re-renders the local router's config with the (possibly absent) upstream and,
-/// if the config actually changed, restarts zenohd so it takes effect. Holds the
-/// messenger lock across the whole stop/start so it cannot interleave with the
-/// watchdog's own restart.
-///
-/// Returns whether zenohd was restarted: `false` when [`Messenger::refederate`]
-/// was a no-op because the managed router uses a pinned `ZENOH_CONFIG`, so a
-/// pointless bounce is skipped; `true` when the config was rewritten and the
-/// router bounced.
-async fn refederate_and_restart(
-    messenger: &Arc<Mutex<Messenger>>,
-    upstream: Option<UpstreamLink>,
-) -> Result<bool> {
-    let mut messenger = messenger.lock().await;
-    let rewrote = messenger
-        .refederate(RouterLinks {
-            upstream,
-            tls: None,
-        })
-        .map_err(Error::PeppyMessagingInterface)?;
-    if !rewrote {
-        // The managed router uses a pinned `ZENOH_CONFIG`, so bouncing zenohd
-        // would not apply the requested change. Skip the restart and report it.
-        return Ok(false);
-    }
-    // Apply the new config by bouncing zenohd. The daemon's reconnecting session
-    // and the nodes re-establish automatically (same path as a watchdog restart).
-    messenger
-        .restart_router_and_wait_for_session(SESSION_RECONNECT_TIMEOUT)
-        .await
-        .map_err(Error::PeppyMessagingInterface)?;
-    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use crate::test_util::dial;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -1568,7 +2781,9 @@ mod tests {
             certificate_expires_after: None,
             renewal_error: None,
             resolve_error: None,
+            force_standalone: false,
             pat_active: false,
+            identity_snapshot: IdentitySnapshot::default(),
         }
     }
 
@@ -1583,6 +2798,18 @@ mod tests {
             federator,
             resolver,
             prober,
+            stopper: Arc::new(|| Box::pin(async { Ok(true) })),
+            logout_worker: None,
+            logout_router_fence: None,
+            pat_preflight: Arc::new(|_, _| Ok(())),
+            revision_checker: Arc::new(|_| Ok(())),
+            transition_armer: Arc::new(|_| {
+                Ok(IdentitySnapshot {
+                    binding_incomplete: true,
+                    ..IdentitySnapshot::default()
+                })
+            }),
+            operator_managed: false,
             connect_timeout: Duration::from_secs(1),
             apply_timeout: APPLY_TIMEOUT,
             startup_namespace: Namespace::local(),
@@ -1592,7 +2819,7 @@ mod tests {
         }
     }
 
-    /// A `RouterFederation` with injected seams and test defaults, plus the
+    /// An `IdentityController` with injected seams and test defaults, plus the
     /// receiving half of its status watch. Tests override fields (gates,
     /// restart signal, poller bounds) before calling `manage`.
     fn federation_under_test(
@@ -1601,9 +2828,9 @@ mod tests {
         prober: Prober,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
-    ) -> (RouterFederation, watch::Receiver<FederationStatus>) {
+    ) -> (IdentityController, watch::Receiver<FederationStatus>) {
         let (status_tx, status_rx) = watch::channel(FederationStatus::default());
-        let federation = RouterFederation {
+        let federation = IdentityController {
             poller: poller_under_test(federator, resolver, prober),
             messaging_ready,
             trigger_rx,
@@ -1613,6 +2840,8 @@ mod tests {
             teardown_token: CancellationToken::new(),
             initial_pinned: false,
             initial_pat_active: false,
+            initial_operator_managed: false,
+            initial_identity_snapshot: IdentitySnapshot::default(),
         };
         (federation, status_rx)
     }
@@ -1627,7 +2856,7 @@ mod tests {
     }
 
     /// A federator simulating an operator-pinned config and recording attempts:
-    /// `refederate` reports no rewrite (`Ok(false)`), so the poll is `Pinned`.
+    /// `refederate` reports no rewrite (`Ok(false)`), so the poll is operator-managed.
     fn counting_pinned_federator() -> (Federator, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
@@ -1658,7 +2887,7 @@ mod tests {
     ) -> (Resolver, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
-        let resolver: Resolver = Arc::new(move || {
+        let resolver: Resolver = Arc::new(move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
             Ok(Resolved {
                 upstream: upstream.clone(),
@@ -1668,7 +2897,9 @@ mod tests {
                 certificate_expires_after: None,
                 renewal_error: None,
                 resolve_error: None,
+                force_standalone: false,
                 pat_active: false,
+                identity_snapshot: IdentitySnapshot::default(),
             })
         });
         (resolver, calls)
@@ -1708,6 +2939,43 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_or_missing_identity_material_is_fail_closed_in_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(temp.path());
+        let now = auth::storage::now_unix();
+        let generation = "a".repeat(64);
+        let metadata = auth::identity::CoreNodeIdentity {
+            api_origin: "https://api.peppy.bot".into(),
+            subject: "subject".into(),
+            session_revision: None,
+            workspace_id: workspace_namespace(),
+            core_node_name: "core-node-test".into(),
+            active_generation: generation.clone(),
+            serial_number: "01".into(),
+            spki_sha256: generation,
+            not_before: now - 60,
+            renew_after: now + 60,
+            not_after: now + 120,
+        };
+        auth::storage::save(
+            &auth::storage::credentials_path(&dirs),
+            &auth::Credentials {
+                core_node_identity: Some(metadata),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let snapshot = read_identity_snapshot(&dirs, true);
+
+        assert!(snapshot.offline_recovery_required);
+        assert_eq!(
+            certificate_state_for(&snapshot, false, None),
+            CertificateState::Error
+        );
+    }
+
+    #[test]
     fn renewal_backoff_becomes_urgent_before_the_hard_deadline() {
         let applied = AppliedState {
             renewal_failures: 1,
@@ -1738,7 +3006,7 @@ mod tests {
     async fn scheduled_maintenance_wakes_without_a_cli_poke() {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let resolver: Resolver = Arc::new(move || {
+        let resolver: Resolver = Arc::new(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(Resolved {
                 upstream: None,
@@ -1748,7 +3016,9 @@ mod tests {
                 certificate_expires_after: None,
                 renewal_error: None,
                 resolve_error: None,
+                force_standalone: false,
                 pat_active: false,
+                identity_snapshot: IdentitySnapshot::default(),
             })
         });
         let (prober, _) = counting_prober(Ok(()));
@@ -1777,6 +3047,56 @@ mod tests {
             .expect("federation loop exits when control closes");
     }
 
+    #[tokio::test]
+    async fn expired_queued_enrollment_is_discarded_before_resolve_or_mutation() {
+        let (resolver, resolve_calls) = counting_resolver(None);
+        let (prober, _) = counting_prober(Ok(()));
+        let (_messaging_tx, messaging_rx) = watch::channel(true);
+        let (trigger_tx, trigger_rx) = trigger_channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (federation, _status) = federation_under_test(
+            applying_federator(),
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+        );
+        let task = tokio::spawn(federation.manage(ready_tx));
+        ready_rx.await.expect("initial reconcile completes");
+        assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+
+        let (reply, outcome) = oneshot::channel();
+        trigger_tx
+            .send(IdentityCommand::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: None,
+                expected_api_origin: None,
+                not_after: tokio::time::Instant::now(),
+                reply,
+            })
+            .await
+            .expect("expired command can reach the bounded queue");
+        let outcome = tokio::time::timeout(Duration::from_secs(1), outcome)
+            .await
+            .expect("expired command is acknowledged")
+            .expect("controller sends an explicit deadline outcome");
+        assert!(matches!(
+            outcome,
+            FederationOutcome::Rejected {
+                code: IdentityFailureCode::DeadlineExceeded,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            resolve_calls.load(Ordering::SeqCst),
+            1,
+            "the expired queued command must not invoke the identity resolver"
+        );
+        drop(trigger_tx);
+        task.await.expect("controller exits after channel close");
+    }
+
     fn recording_federator() -> (Federator, Arc<std::sync::Mutex<Vec<Option<UpstreamLink>>>>) {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = calls.clone();
@@ -1797,7 +3117,7 @@ mod tests {
         rest: Namespace,
     ) -> Resolver {
         let calls = AtomicUsize::new(0);
-        Arc::new(move || {
+        Arc::new(move |_| {
             let namespace = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 first.clone()
             } else {
@@ -1811,7 +3131,9 @@ mod tests {
                 certificate_expires_after: None,
                 renewal_error: None,
                 resolve_error: None,
+                force_standalone: false,
                 pat_active: false,
+                identity_snapshot: IdentitySnapshot::default(),
             })
         })
     }
@@ -1934,6 +3256,7 @@ mod tests {
         let (federator, calls) = recording_federator();
         let (prober, _) = counting_prober(Ok(()));
         let mut applied = AppliedState {
+            controller_settled: false,
             endpoint: Some(ENDPOINT.to_string()),
             link_state: LinkState::Unverified,
             last_settled_desired: SettledDesired::Upstream(DesiredBackend {
@@ -1952,6 +3275,8 @@ mod tests {
             pat_active: false,
             certificate_error: None,
             certificate_renewing: false,
+            operator_managed: false,
+            identity_snapshot: IdentitySnapshot::default(),
         };
 
         let outcome = poller_under_test(federator, resolver, prober)
@@ -1980,10 +3305,10 @@ mod tests {
         let first = poller.poll_and_apply(&mut applied, false).await;
         let second = poller.poll_and_apply(&mut applied, false).await;
 
-        assert_eq!(first, FederationOutcome::Pinned);
+        assert_eq!(first, FederationOutcome::OperatorManaged);
         assert_eq!(
             second,
-            FederationOutcome::Pinned,
+            FederationOutcome::OperatorManaged,
             "an identical desired state must replay the cached pinned outcome"
         );
         assert_eq!(
@@ -2005,12 +3330,12 @@ mod tests {
             .poll_and_apply(&mut applied, false)
             .await;
 
-        assert_eq!(outcome, FederationOutcome::Pinned);
+        assert_eq!(outcome, FederationOutcome::OperatorManaged);
         assert_eq!(
             applied.endpoint, None,
             "the rejected desired endpoint must not leak into applied state"
         );
-        assert_eq!(applied.link_state, LinkState::NotConfigured);
+        assert_eq!(applied.link_state, LinkState::Unverified);
         assert!(applied.pinned);
         assert_eq!(
             applied.last_settled_desired,
@@ -2018,16 +3343,18 @@ mod tests {
                 endpoint: dial(ENDPOINT),
                 tls: pmi::TlsConfig::default(),
             }),
-            "the rejected target is cached so an identical repeat stays Pinned"
+            "the rejected target is cached so an identical repeat stays operator-managed"
         );
     }
 
     #[tokio::test]
     async fn a_resolver_error_is_failed_and_preserves_applied_state() {
-        let resolver: Resolver = Arc::new(|| Err("credentials file unreadable".to_string()));
+        let resolver: Resolver =
+            Arc::new(|_| Err(IdentityFailure::operation("credentials file unreadable")));
         let (federator, calls) = recording_federator();
         let (prober, _) = counting_prober(Ok(()));
         let mut applied = AppliedState {
+            controller_settled: false,
             endpoint: Some(ENDPOINT.to_string()),
             link_state: LinkState::Verified,
             last_settled_desired: SettledDesired::Upstream(DesiredBackend {
@@ -2043,6 +3370,8 @@ mod tests {
             pat_active: false,
             certificate_error: None,
             certificate_renewing: false,
+            operator_managed: false,
+            identity_snapshot: IdentitySnapshot::default(),
         };
         let before = applied.clone();
 
@@ -2059,8 +3388,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unrecoverable_receipt_error_forces_standalone_instead_of_preserving_live_link() {
+        let resolver: Resolver = Arc::new(|_| {
+            Ok(Resolved {
+                upstream: None,
+                namespace: Namespace::local(),
+                rotation: None,
+                maintenance_after: None,
+                certificate_expires_after: None,
+                renewal_error: None,
+                resolve_error: Some(
+                    "unverified rotation receipt cannot be bound to an authenticated owner".into(),
+                ),
+                force_standalone: true,
+                pat_active: false,
+                identity_snapshot: IdentitySnapshot {
+                    offline_recovery_required: true,
+                    ..IdentitySnapshot::default()
+                },
+            })
+        });
+        let (federator, calls) = recording_federator();
+        let (prober, _) = counting_prober(Ok(()));
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.to_string()),
+            link_state: LinkState::Verified,
+            last_settled_desired: SettledDesired::Upstream(upstream().unwrap()),
+            certificate_expires_at: Some(tokio::time::Instant::now() + Duration::from_secs(3600)),
+            ..AppliedState::default()
+        };
+
+        let outcome = poller_under_test(federator, resolver, prober)
+            .poll_and_apply(&mut applied, false)
+            .await;
+
+        assert!(
+            matches!(outcome, FederationOutcome::Failed(ref reason) if reason.contains("cannot be bound"))
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![None]);
+        assert!(applied.endpoint.is_none());
+        assert_eq!(applied.link_state, LinkState::NotConfigured);
+        assert_eq!(applied.last_settled_desired, SettledDesired::Standalone);
+    }
+
+    #[tokio::test]
     async fn transient_resolve_failure_defederates_an_expired_applied_generation() {
-        let resolver: Resolver = Arc::new(|| Err("issuer unavailable".to_string()));
+        let resolver: Resolver =
+            Arc::new(|_| Err(IdentityFailure::operation("issuer unavailable")));
         let (federator, calls) = recording_federator();
         let (prober, _) = counting_prober(Ok(()));
         let backend = upstream().unwrap();
@@ -2097,7 +3471,7 @@ mod tests {
 
     #[tokio::test]
     async fn forced_standalone_does_not_resolve_retained_auth() {
-        let resolver: Resolver = Arc::new(|| panic!("forced standalone must not resolve auth"));
+        let resolver: Resolver = Arc::new(|_| panic!("forced standalone must not resolve auth"));
         let (federator, calls) = recording_federator();
         let (prober, _) = counting_prober(Ok(()));
         let mut applied = AppliedState {
@@ -2109,7 +3483,7 @@ mod tests {
         };
 
         let outcome = poller_under_test(federator, resolver, prober)
-            .force_standalone(&mut applied)
+            .force_standalone_with_transition(&mut applied, TransitionArm::Arm(None))
             .await;
 
         assert_eq!(
@@ -2124,11 +3498,274 @@ mod tests {
         assert_eq!(applied.last_settled_desired, SettledDesired::Standalone);
     }
 
+    #[tokio::test]
+    async fn oauth_preparation_rejects_daemon_pat_before_any_mutation() {
+        let resolver: Resolver = Arc::new(|_| panic!("PAT rejection must not resolve auth"));
+        let (federator, router_calls) = recording_federator();
+        let (prober, _) = counting_prober(Ok(()));
+        let arm_calls = Arc::new(AtomicUsize::new(0));
+        let counted_arms = Arc::clone(&arm_calls);
+        let mut poller = poller_under_test(federator, resolver, prober);
+        poller.transition_armer = Arc::new(move |_| {
+            counted_arms.fetch_add(1, Ordering::SeqCst);
+            Ok(IdentitySnapshot::default())
+        });
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.to_string()),
+            link_state: LinkState::Verified,
+            last_settled_desired: SettledDesired::Upstream(upstream().unwrap()),
+            pat_active: true,
+            ..AppliedState::default()
+        };
+        let before = applied.clone();
+
+        let outcome = poller
+            .prepare_oauth_login(&mut applied, Uuid::new_v4())
+            .await;
+
+        assert!(matches!(
+            outcome,
+            FederationOutcome::Rejected {
+                code: IdentityFailureCode::PatActive,
+                ..
+            }
+        ));
+        assert_eq!(applied, before);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
+        assert!(router_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pat_principal_mismatch_is_rejected_before_router_or_store_mutation() {
+        let (federator, router_calls) = recording_federator();
+        let (resolver, resolver_calls) = counting_resolver(upstream());
+        let (prober, _) = counting_prober(Ok(()));
+        let arm_calls = Arc::new(AtomicUsize::new(0));
+        let counted_arms = Arc::clone(&arm_calls);
+        let mut poller = poller_under_test(federator, resolver, prober);
+        poller.pat_preflight = Arc::new(|_, _| {
+            Err(IdentityFailure {
+                code: IdentityFailureCode::PatPrincipalMismatch,
+                message: "different PAT principals".into(),
+            })
+        });
+        poller.transition_armer = Arc::new(move |_| {
+            counted_arms.fetch_add(1, Ordering::SeqCst);
+            Ok(IdentitySnapshot::default())
+        });
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.to_string()),
+            link_state: LinkState::Verified,
+            last_settled_desired: SettledDesired::Upstream(upstream().unwrap()),
+            pat_active: true,
+            ..AppliedState::default()
+        };
+        let before = applied.clone();
+
+        let outcome = poller
+            .enroll_and_apply(
+                &mut applied,
+                None,
+                Some("cli-subject".into()),
+                Some("https://api.peppy.bot".into()),
+            )
+            .await;
+
+        assert!(matches!(
+            outcome,
+            FederationOutcome::Rejected {
+                code: IdentityFailureCode::PatPrincipalMismatch,
+                ..
+            }
+        ));
+        assert_eq!(applied, before);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
+        assert!(router_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_enrollment_is_rejected_before_arming_or_changing_router_state() {
+        let (federator, router_calls) = recording_federator();
+        let (resolver, resolver_calls) = counting_resolver(upstream());
+        let (prober, _) = counting_prober(Ok(()));
+        let arm_calls = Arc::new(AtomicUsize::new(0));
+        let counted_arms = Arc::clone(&arm_calls);
+        let mut poller = poller_under_test(federator, resolver, prober);
+        poller.transition_armer = Arc::new(move |_| {
+            counted_arms.fetch_add(1, Ordering::SeqCst);
+            Ok(IdentitySnapshot::default())
+        });
+        poller.revision_checker = Arc::new(|_| {
+            Err(IdentityFailure {
+                code: IdentityFailureCode::StaleSessionRevision,
+                message: "stale session".into(),
+            })
+        });
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.into()),
+            link_state: LinkState::Verified,
+            ..AppliedState::default()
+        };
+
+        let outcome = poller
+            .enroll_and_apply(&mut applied, Some(Uuid::new_v4()), None, None)
+            .await;
+
+        assert!(matches!(
+            outcome,
+            FederationOutcome::Rejected {
+                code: IdentityFailureCode::StaleSessionRevision,
+                ..
+            }
+        ));
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
+        assert!(router_calls.lock().unwrap().is_empty());
+        assert_eq!(applied.endpoint.as_deref(), Some(ENDPOINT));
+        assert_eq!(applied.link_state, LinkState::Verified);
+    }
+
+    #[tokio::test]
+    async fn pinned_logout_reports_operator_cleanup_even_after_stopper_succeeds() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(temporary.path());
+        let worker_dirs = dirs.clone();
+        let (federator, apply_calls) = counting_pinned_federator();
+        let (resolver, _) = counting_resolver(None);
+        let (prober, _) = counting_prober(Ok(()));
+        let mut poller = poller_under_test(federator, resolver, prober);
+        poller.logout_worker = Some(Arc::new(move |expected| {
+            auth::logout::prepare_logout_current_credential(
+                &worker_dirs,
+                &auth::http::HttpClient::with_timeout(Duration::from_millis(25)),
+                expected,
+            )
+            .map_err(IdentityFailure::from_auth)
+        }));
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        let counted_stops = Arc::clone(&stop_calls);
+        poller.stopper = Arc::new(move || {
+            counted_stops.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(true) })
+        });
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.into()),
+            link_state: LinkState::Verified,
+            pinned: true,
+            last_settled_desired: SettledDesired::from_completed(upstream()),
+            ..AppliedState::default()
+        };
+
+        let outcome = poller.logout(&mut applied, None).await;
+
+        assert!(matches!(
+            outcome,
+            FederationOutcome::LoggedOut(LogoutOperationOutcome {
+                router: LogoutRouterState::Standalone,
+                operator_action_required: true,
+                local_cleanup: auth::logout::CleanupAttempt::Succeeded,
+                ..
+            })
+        ));
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
+        assert!(applied.endpoint.is_none());
+        assert_eq!(applied.link_state, LinkState::NotConfigured);
+    }
+
+    #[tokio::test]
+    async fn slow_remote_logout_still_completes_fail_closed_local_cleanup() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(temporary.path());
+        let worker_dirs = dirs.clone();
+        let (federator, _) = recording_federator();
+        let (resolver, _) = counting_resolver(None);
+        let (prober, _) = counting_prober(Ok(()));
+        let mut poller = poller_under_test(federator, resolver, prober);
+        poller.connect_timeout = Duration::from_millis(1);
+        poller.logout_worker = Some(Arc::new(move |expected| {
+            std::thread::sleep(Duration::from_millis(20));
+            auth::logout::prepare_logout_current_credential(
+                &worker_dirs,
+                &auth::http::HttpClient::with_timeout(Duration::from_millis(1)),
+                expected,
+            )
+            .map_err(IdentityFailure::from_auth)
+        }));
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.into()),
+            link_state: LinkState::Verified,
+            last_settled_desired: SettledDesired::from_completed(upstream()),
+            ..AppliedState::default()
+        };
+
+        let outcome = poller.logout(&mut applied, None).await;
+
+        assert!(matches!(
+            outcome,
+            FederationOutcome::LoggedOut(LogoutOperationOutcome {
+                local_cleanup: auth::logout::CleanupAttempt::Succeeded,
+                router: LogoutRouterState::Standalone,
+                ..
+            })
+        ));
+        assert!(applied.endpoint.is_none());
+        assert_eq!(applied.link_state, LinkState::NotConfigured);
+    }
+
+    #[tokio::test]
+    async fn logout_cleanup_error_keeps_router_status_fail_closed_and_marks_recovery() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(temporary.path());
+        let credentials_path = auth::storage::credentials_path(&dirs);
+        let worker_dirs = dirs.clone();
+        let (resolver, _) = counting_resolver(None);
+        let (prober, _) = counting_prober(Ok(()));
+        let federator: Federator = Arc::new(move |_| {
+            std::fs::create_dir_all(&credentials_path).unwrap();
+            Box::pin(async { Ok(true) })
+        });
+        let mut poller = poller_under_test(federator, resolver, prober);
+        poller.logout_worker = Some(Arc::new(move |expected| {
+            auth::logout::prepare_logout_current_credential(
+                &worker_dirs,
+                &auth::http::HttpClient::with_timeout(Duration::from_millis(25)),
+                expected,
+            )
+            .map_err(IdentityFailure::from_auth)
+        }));
+        let mut applied = AppliedState {
+            endpoint: Some(ENDPOINT.into()),
+            link_state: LinkState::Verified,
+            last_settled_desired: SettledDesired::from_completed(upstream()),
+            ..AppliedState::default()
+        };
+
+        let outcome = poller.logout(&mut applied, None).await;
+
+        assert!(matches!(
+            outcome,
+            FederationOutcome::LoggedOut(LogoutOperationOutcome {
+                local_cleanup: auth::logout::CleanupAttempt::Failed(_),
+                router: LogoutRouterState::Standalone,
+                ..
+            })
+        ));
+        assert!(applied.endpoint.is_none());
+        assert_eq!(applied.link_state, LinkState::NotConfigured);
+        assert_eq!(applied.last_settled_desired, SettledDesired::Standalone);
+        assert!(applied.identity_snapshot.binding_incomplete);
+        assert!(applied.identity_snapshot.offline_recovery_required);
+        assert!(applied.next_maintenance.is_none());
+    }
+
     async fn assert_failed_expiry_defederation_uses_backoff(
         federator: Federator,
         apply_timeout: Duration,
     ) {
-        let resolver: Resolver = Arc::new(|| Err("issuer unavailable".to_string()));
+        let resolver: Resolver =
+            Arc::new(|_| Err(IdentityFailure::operation("issuer unavailable")));
         let (prober, _) = counting_prober(Ok(()));
         let mut applied = AppliedState {
             endpoint: Some(ENDPOINT.to_string()),
@@ -2178,7 +3815,7 @@ mod tests {
 
     #[tokio::test]
     async fn successfully_resolved_but_already_expired_identity_is_never_applied() {
-        let resolver: Resolver = Arc::new(|| {
+        let resolver: Resolver = Arc::new(|_| {
             let mut value = resolved(upstream());
             value.certificate_expires_after = Some(Duration::ZERO);
             Ok(value)
@@ -2202,7 +3839,7 @@ mod tests {
 
     #[tokio::test]
     async fn identity_expiring_during_router_apply_is_never_reported_applied() {
-        let resolver: Resolver = Arc::new(|| {
+        let resolver: Resolver = Arc::new(|_| {
             let mut value = resolved(upstream());
             value.certificate_expires_after = Some(Duration::from_millis(50));
             Ok(value)
@@ -2239,7 +3876,7 @@ mod tests {
 
     #[tokio::test]
     async fn identity_expiring_during_link_verification_is_never_verified_or_committed() {
-        let resolver: Resolver = Arc::new(|| {
+        let resolver: Resolver = Arc::new(|_| {
             let mut value = resolved(upstream());
             value.certificate_expires_after = Some(Duration::from_millis(200));
             Ok(value)
@@ -2271,7 +3908,7 @@ mod tests {
 
     #[tokio::test]
     async fn identity_expiring_during_durable_finalization_is_never_reported_applied() {
-        let resolver: Resolver = Arc::new(|| {
+        let resolver: Resolver = Arc::new(|_| {
             let mut value = resolved(upstream());
             value.certificate_expires_after = Some(Duration::from_millis(200));
             Ok(value)
@@ -2328,7 +3965,8 @@ mod tests {
 
     #[tokio::test]
     async fn initial_resolve_error_cannot_clear_captured_pat_status() {
-        let resolver: Resolver = Arc::new(|| Err("backend unavailable".to_string()));
+        let resolver: Resolver =
+            Arc::new(|_| Err(IdentityFailure::operation("backend unavailable")));
         let (prober, _) = counting_prober(Ok(()));
         let (_messaging_tx, messaging_rx) = watch::channel(true);
         let (trigger_tx, trigger_rx) = trigger_channel();
@@ -2425,7 +4063,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_receives_a_fresh_budget_after_a_slow_resolve() {
-        let resolver: Resolver = Arc::new(|| {
+        let resolver: Resolver = Arc::new(|_| {
             std::thread::sleep(Duration::from_millis(160));
             Ok(resolved(upstream()))
         });
@@ -2518,7 +4156,13 @@ mod tests {
         // Poke: must run a second resolve immediately, probe the link, and ack.
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(FederationTrigger::Refederate(ack_tx))
+            .send(FederationTrigger::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: Some("cli-subject".into()),
+                expected_api_origin: Some("https://api.peppy.bot".into()),
+                not_after: tokio::time::Instant::now() + Duration::from_secs(60),
+                reply: ack_tx,
+            })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -2578,7 +4222,13 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(FederationTrigger::Refederate(ack_tx))
+            .send(FederationTrigger::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: Some("cli-subject".into()),
+                expected_api_origin: Some("https://api.peppy.bot".into()),
+                not_after: tokio::time::Instant::now() + Duration::from_secs(60),
+                reply: ack_tx,
+            })
             .await
             .expect("trigger accepted");
         tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -2625,7 +4275,13 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(FederationTrigger::Refederate(ack_tx))
+            .send(FederationTrigger::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: Some("cli-subject".into()),
+                expected_api_origin: Some("https://api.peppy.bot".into()),
+                not_after: tokio::time::Instant::now() + Duration::from_secs(60),
+                reply: ack_tx,
+            })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -2658,7 +4314,7 @@ mod tests {
     }
 
     /// An operator-pinned config (`refederate` reports no rewrite) must keep
-    /// reporting `Pinned` on a repeat and must not publish the desired endpoint
+    /// reporting operator-managed on a repeat and must not publish the desired endpoint
     /// as applied or probe it.
     #[tokio::test]
     async fn poke_on_pinned_config_stays_pinned_and_does_not_probe() {
@@ -2682,12 +4338,18 @@ mod tests {
 
         let status = status_rx.borrow().clone();
         assert!(status.link.endpoint.is_none());
-        assert_eq!(status.link.link_state, LinkState::NotConfigured);
+        assert_eq!(status.link.link_state, LinkState::Unverified);
         assert!(status.pinned);
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(FederationTrigger::Refederate(ack_tx))
+            .send(FederationTrigger::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: Some("cli-subject".into()),
+                expected_api_origin: Some("https://api.peppy.bot".into()),
+                not_after: tokio::time::Instant::now() + Duration::from_secs(60),
+                reply: ack_tx,
+            })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -2697,8 +4359,8 @@ mod tests {
 
         assert_eq!(
             outcome,
-            FederationOutcome::Pinned,
-            "an identical repeat of a pinned target must stay Pinned, not Applied"
+            FederationOutcome::OperatorManaged,
+            "an identical repeat of a pinned target must stay operator-managed, not Applied"
         );
         assert_eq!(
             probe_calls.load(Ordering::SeqCst),
@@ -2707,8 +4369,8 @@ mod tests {
         );
         assert_eq!(
             apply_calls.load(Ordering::SeqCst),
-            1,
-            "the startup rejection must cache the desired state for an identical poke"
+            3,
+            "startup applies once, then explicit enrollment must attempt fail-closed standalone before retrying the pinned target"
         );
 
         drop(messaging_tx);
@@ -2720,7 +4382,7 @@ mod tests {
     /// federation loop then keeps retrying.
     #[tokio::test]
     async fn startup_gate_fires_within_timeout_when_resolve_is_slow() {
-        let resolver: Resolver = Arc::new(|| {
+        let resolver: Resolver = Arc::new(|_| {
             std::thread::sleep(Duration::from_secs(5));
             Ok(resolved(None))
         });
@@ -2770,7 +4432,7 @@ mod tests {
     async fn a_retry_cannot_race_a_timed_out_resolve_cleanup() {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let resolver: Resolver = Arc::new(move || {
+        let resolver: Resolver = Arc::new(move |_| {
             let call = counted.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 std::thread::sleep(Duration::from_millis(80));
@@ -2930,7 +4592,13 @@ mod tests {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         trigger_tx
-            .send(FederationTrigger::Refederate(ack_tx))
+            .send(FederationTrigger::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: Some("cli-subject".into()),
+                expected_api_origin: Some("https://api.peppy.bot".into()),
+                not_after: tokio::time::Instant::now() + Duration::from_secs(60),
+                reply: ack_tx,
+            })
             .await
             .expect("trigger accepted");
         let outcome = tokio::time::timeout(Duration::from_secs(1), ack_rx)
@@ -2953,6 +4621,89 @@ mod tests {
 
         drop(messaging_tx);
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn dropped_namespace_change_ack_still_requests_restart() {
+        let calls = AtomicUsize::new(0);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let desired = upstream();
+        let resolver: Resolver = Arc::new(move |_| {
+            let namespace = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Namespace::local()
+            } else {
+                started_tx.send(()).expect("announce active resolve");
+                release_rx
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .expect("release active resolve");
+                workspace_namespace()
+            };
+            Ok(Resolved {
+                upstream: desired.clone(),
+                namespace,
+                rotation: None,
+                maintenance_after: None,
+                certificate_expires_after: None,
+                renewal_error: None,
+                resolve_error: None,
+                force_standalone: false,
+                pat_active: false,
+                identity_snapshot: IdentitySnapshot::default(),
+            })
+        });
+        let (prober, _) = counting_prober(Ok(()));
+        let (_messaging_tx, messaging_rx) = watch::channel(true);
+        let (trigger_tx, trigger_rx) = mpsc::channel(8);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (restart_tx, mut restart_rx) = watch::channel(false);
+
+        let (mut federation, _status_rx) = federation_under_test(
+            applying_federator(),
+            resolver,
+            prober,
+            messaging_rx,
+            trigger_rx,
+        );
+        federation.restart_tx = restart_tx;
+        let task = tokio::spawn(federation.manage(ready_tx));
+        ready_rx.await.expect("startup gate");
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        trigger_tx
+            .send(FederationTrigger::EnrollCurrentCredential {
+                expected_session_revision: None,
+                expected_pat_subject: Some("cli-subject".into()),
+                expected_api_origin: Some("https://api.peppy.bot".into()),
+                not_after: tokio::time::Instant::now() + Duration::from_secs(60),
+                reply: ack_tx,
+            })
+            .await
+            .expect("trigger accepted");
+        tokio::task::spawn_blocking(move || {
+            started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("controller begins the namespace-changing resolve")
+        })
+        .await
+        .expect("start waiter does not panic");
+        drop(ack_rx);
+        release_tx.send(()).expect("finish active resolve");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            restart_rx.wait_for(|restart| *restart),
+        )
+        .await
+        .expect("late completed operation requests restart")
+        .expect("restart sender remains live");
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("controller exits after requesting restart")
+            .expect("controller task does not panic");
     }
 
     /// The *startup* federation poll, on resolving a namespace that differs from

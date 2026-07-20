@@ -36,6 +36,7 @@ pub mod discovery;
 mod error;
 pub mod http;
 pub mod identity;
+pub mod logout;
 pub mod profile;
 pub mod refresh;
 pub mod resolver;

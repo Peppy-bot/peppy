@@ -199,6 +199,7 @@ mod tests {
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
+            daemon::state::RouterOwnership::Unmanaged,
             None,
         );
         DaemonState::write_to(&state_path, &state).expect("daemon state should write");

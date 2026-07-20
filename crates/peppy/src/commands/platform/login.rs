@@ -1,15 +1,10 @@
-//! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628),
-//! or an immediate PAT-authenticated federation when `PEPPY_API_KEY` is set.
-//!
-//! OAuth path: fetches the public `/cli/auth-config`, runs OIDC discovery
-//! against the returned issuer, performs the device flow (opening the browser
-//! on a TTY), caches the tokens as the single session, and prints the resolved
-//! identity. PAT path: verifies the key against `/me`, never persists the PAT
-//! itself, enrolls the production core-node certificate, and goes straight to
-//! the federation poke.
+//! `peppy platform login`: establish OAuth credentials and delegate certificate
+//! enrollment/application to the running daemon. The CLI never writes identity
+//! files or performs certificate rotation in the normal path.
 
 use std::sync::Arc;
 
+use daemon::control as daemon_control;
 use daemon_config::consts::PeppyDirs;
 use secrecy::ExposeSecret;
 
@@ -18,133 +13,111 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use auth::device::{self, TokenSet};
 use auth::discovery::OidcEndpoints;
-use auth::{cli_config, client, discovery, http::HttpClient, identity, profile, resolver, storage};
+use auth::{cli_config, client, discovery, http::HttpClient, profile, resolver, storage};
 
 pub struct LoginCommand {
-    /// Override the backend base URL (else the build's `resource_servers.api` /
-    /// `PEPPY_API_URL`).
     pub api_url: Option<String>,
-    /// Suppress the automatic browser launch.
     pub no_browser: bool,
-    /// Skip the daemon-restart confirmation prompt.
     pub yes: bool,
-    /// Test seam: override the peppy data dirs (defaults to the global root).
-    /// Both the credentials file and `peppy_config.json5` derive from it, so a
-    /// test isolates all auth state under one tempdir without touching
-    /// `PEPPY_HOME`.
     pub peppy_dirs: Option<PeppyDirs>,
-    /// The `PEPPY_API_KEY` PAT, injected by the dispatcher (never read from
-    /// the environment here). `Some` skips the OAuth device flow entirely.
+    /// Presence of the CLI process's `PEPPY_API_KEY`. The value is never sent
+    /// over the control protocol; PAT login delegates validation to the daemon.
     pub pat: Option<String>,
 }
 
 impl Command for LoginCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let dirs = self.peppy_dirs.unwrap_or_default();
-        // Loads (and seeds/completes) peppy_config.json5 with the same strict,
-        // fail-loud semantics the daemon uses; resource_servers supplies the
-        // per-profile URL fallback.
+
+        // This must remain the first external action. In particular,
+        // `load_or_create` may complete config on disk, and neither OAuth nor
+        // PAT validation may begin until client and daemon agree on protocol v1.
+        super::require_daemon_hello(&dirs, false)?;
+
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        // Managed vs external follows the RUNNING daemon's mode (from its state
-        // file), not the disk config, which may have been edited since it
-        // started; only with no daemon running does the disk config decide.
-        let federation = super::federation_poke_timeout_secs(&dirs, &config);
-        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
-        let creds_path = storage::credentials_path(&dirs);
-        let http = HttpClient::new();
-
-        // With a managed router, warn (before authentication begins) that a login
-        // changing the workspace namespace restarts the daemon and wipes the
-        // running node stack. Bypassed by `--yes`, and skipped when no daemon is
-        // running or its node stack holds no user nodes (so the restart wipes
-        // nothing). External mode never pokes or restarts the daemon.
-        if federation.is_some()
-            && !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)?
-        {
+        let socket = daemon_control::federation_control_socket_path(&dirs);
+        let daemon_status =
+            daemon_control::status(&socket, super::CONTROL_HELLO_TIMEOUT).map_err(|error| {
+                super::control_error("inspect the daemon authentication mode", error, false)
+            })?;
+        if self.pat.is_none() && daemon_status.pat_active {
+            return Err(Error::Auth(
+                "the daemon service PEPPY_API_KEY is active; remove it and restart the daemon before starting OAuth login"
+                    .into(),
+            ));
+        }
+        if self.pat.is_some() && !daemon_status.pat_active {
+            return Err(Error::Auth(
+                "this shell has PEPPY_API_KEY, but the running daemon service does not; configure the key for the daemon and restart it before PAT login"
+                    .into(),
+            ));
+        }
+        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)? {
             println!("Login aborted.");
             return Ok(());
         }
 
-        // PAT fast path: `PEPPY_API_KEY` is valid platform authentication on
-        // its own and takes precedence over stored OAuth credentials, so login
-        // skips the device flow entirely and applies federation immediately.
-        // The PAT itself is never persisted (it is environment-scoped and
-        // `platform logout` cannot clear it). Production still persists the
-        // non-secret certificate metadata and protected key/chain generation.
-        // Strict: a rejected key or unreachable backend fails before any poke.
+        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
+        let creds_path = storage::credentials_path(&dirs);
+        let http = HttpClient::new();
+
+        // A PAT never enters credentials.json5 or the control request. The
+        // CLI first validates its own ambient value, then the daemon independently
+        // validates the PAT captured from its service environment. This avoids
+        // treating one process's successful check as proof about the other.
         if let Some(pat) = self.pat {
-            let _auth_operation = identity::acquire_platform_auth_operation(&dirs)?;
-            let identity_maintenance = identity::acquire_identity_maintenance(&dirs)?;
-            let mut cred = resolver::resolve(&creds_path, &http, Some(pat))?;
-            let principal = client::get_me(&http, &api_url, &mut cred)?;
-            let mut durable_auth_changed = false;
-            let result = (|| -> Result<()> {
-                let rotation = if identity::production_identity_required() {
-                    // Only after the PAT is proven valid, replace any stale stored
-                    // OAuth mode without writing the PAT. Normalizing here heals
-                    // v2/corrupt credentials before certificate publication. The
-                    // debug shared-certificate path retains its historical
-                    // environment-only/no-file PAT behavior. Arm fail-closed
-                    // cleanup before the durable transaction so even an uncertain
-                    // post-publication I/O error cannot leave an old link applied.
-                    identity::arm_binding_incomplete(&dirs)?;
-                    durable_auth_changed = true;
-                    identity_maintenance.prepare_pat_login()?;
-                    let core_node_name = running_core_node_name(&dirs)?;
-                    Some(identity_maintenance.enroll_and_activate(
-                        &http,
-                        &api_url,
-                        &mut cred,
-                        &principal.sub,
-                        &core_node_name,
-                    )?)
-                } else {
-                    drop(identity_maintenance);
-                    None
-                };
-                let had_rotation = rotation.is_some();
-                if let Some(rotation) = rotation {
-                    // Transfer apply/probe ownership to the daemon through the
-                    // durable unverified marker before issuing the control poke.
-                    // The CLI must not hold a second armed receipt that could race
-                    // a daemon operation continuing after a client-side timeout.
-                    rotation.retain_for_restart()?;
-                }
-                // The activated identity and its durable receipt are now owned
-                // by the daemon handoff. Only now may resolution consider the
-                // new PAT binding before the immediate login poke.
-                if durable_auth_changed {
-                    identity::clear_binding_incomplete(&dirs)?;
-                }
-                println!(
-                    "Authenticated via PEPPY_API_KEY as {} ({}).",
-                    principal.display_name(),
-                    profile::build_env_name()
-                );
-                let result =
-                    super::finish_federation(&dirs, federation, super::FederationPokeAction::Login);
-                match result {
-                    Ok(()) => Ok(()),
-                    Err(error) => {
-                        let rollback = rollback_if_no_daemon_owns_rotation(&dirs, had_rotation);
-                        Err(Error::ExecutionFailed(format!(
-                            "{error}{}\nPEPPY_API_KEY must also be present in the running daemon's service environment before it can renew or pull federation configuration.",
-                            rollback
-                                .err()
-                                .map(|rollback| format!(
-                                    "; core-node certificate rollback also failed: {rollback}"
-                                ))
-                                .unwrap_or_default()
-                        )))
-                    }
-                }
-            })();
-            return if durable_auth_changed {
-                fail_closed_after_auth_change(&dirs, federation, result)
-            } else {
-                result
-            };
+            let mut credential = resolver::resolve(&creds_path, &http, Some(pat))?;
+            let principal = client::get_me(&http, &api_url, &mut credential).map_err(|error| {
+                Error::ExecutionFailed(format!(
+                    "the CLI PEPPY_API_KEY could not be validated: {error}; no credentials or \
+                     certificate material were changed"
+                ))
+            })?;
+            // The shell validation may take network time. Re-read the live
+            // generation immediately before mutation so its authoritative PAT
+            // mode and timeout budgets—not a pre-validation snapshot—govern
+            // this request and any restart wait.
+            super::require_daemon_hello(&dirs, false)?;
+            let mutation_status = daemon_control::status(&socket, super::CONTROL_HELLO_TIMEOUT)
+                .map_err(|error| {
+                    super::control_error("refresh the daemon authentication mode", error, false)
+                })?;
+            if !mutation_status.pat_active {
+                return Err(Error::Auth(
+                    "the daemon service PEPPY_API_KEY changed while PAT login was being validated; retry against the current daemon"
+                        .into(),
+                ));
+            }
+            let control_settings = super::identity_control_settings(&dirs, &config);
+            let control_timeout = super::identity_control_timeout(control_settings.timeout_secs);
+            let restart_timeout = super::identity_restart_timeout(control_settings);
+            let external = mutation_status.operator_managed && !mutation_status.pinned;
+            let expected_api_origin = auth::identity::normalize_api_origin(&api_url)?;
+            let result = daemon_control::enroll_current_credential(
+                &socket,
+                control_timeout,
+                None,
+                Some(principal.sub.clone()),
+                Some(expected_api_origin),
+            )
+            .map_err(|error| {
+                super::control_error("log in with the daemon PEPPY_API_KEY", error, false)
+            })?;
+            println!(
+                "Authenticated via PEPPY_API_KEY as {} ({}).",
+                principal.display_name(),
+                profile::build_env_name()
+            );
+            return super::complete_login(
+                &dirs,
+                &socket,
+                restart_timeout,
+                result,
+                external,
+                daemon_control::AuthenticationState::Pat,
+                None,
+            );
         }
 
         let cfg = cli_config::fetch(&http, &api_url)?;
@@ -156,205 +129,125 @@ impl Command for LoginCommand {
             &cfg.scopes,
             self.no_browser,
         )?;
-
-        // Serialize the durable session change through enrollment/publication
-        // and the final daemon poke. The nested rotation guard is acquired
-        // before the first credentials write, so daemon maintenance cannot race
-        // this login's account binding.
-        let _auth_operation = identity::acquire_platform_auth_operation(&dirs)?;
-        let identity_maintenance = identity::acquire_identity_maintenance(&dirs)?;
-
-        // Persist immediately so a transient `/me` failure can't lose a good
-        // login. The transaction heals malformed legacy state and changes only
-        // session/router, preserving a concurrent identity mirror.
+        // Allocate the opaque login revision before Prepare, but do not publish
+        // the session yet. The daemon durably binds its fail-closed transition
+        // to this exact revision, so a later concurrent Prepare supersedes it.
         let pc = client::creds_from_login(&cfg, &api_url, &tokens);
-        identity::arm_binding_incomplete(&dirs)?;
 
-        // From this marker publication onward, every error must also make a
-        // best-effort daemon pass that drops any previously applied binding.
-        // Keep the new OAuth session intact so the user can retry enrollment.
-        let result = (|| -> Result<()> {
-            storage::update_or_default(&creds_path, |creds| {
-                creds.session = Some(pc.clone());
-                // Drop any cached router config: it is identity-bound, and this
-                // login may be a different user/backend. The next connect re-pulls.
-                creds.router = None;
-                Ok(())
+        // The daemon durably enters fail-closed state before the new session
+        // becomes observable. Errors or a process crash after this point leave
+        // that gate armed; only the exact enrollment commit clears it.
+        // Device authorization is intentionally unbounded by daemon control
+        // settings. Refresh the live generation now, immediately before the
+        // first mutation, in case it restarted or its configuration changed
+        // while the user was in the browser.
+        super::require_daemon_hello(&dirs, false)?;
+        let prepare_status = daemon_control::status(&socket, super::CONTROL_HELLO_TIMEOUT)
+            .map_err(|error| {
+                super::control_error("refresh the daemon authentication mode", error, false)
             })?;
+        if prepare_status.pat_active {
+            return Err(Error::Auth(
+                "the daemon service PEPPY_API_KEY became active during OAuth authorization; remove it, restart the daemon, and retry"
+                    .into(),
+            ));
+        }
+        let prepare_settings = super::identity_control_settings(&dirs, &config);
+        super::prepare_login_transition(
+            &dirs,
+            super::identity_control_timeout(prepare_settings.timeout_secs),
+            pc.session_revision,
+        )?;
 
-            // Fetch identity using the in-memory credential (the token was minted
-            // seconds ago, so there's no need to reload from disk or proactively
-            // refresh via the resolver).
-            let mut cred = resolver::session_credential(&creds_path, &pc);
-            let principal = client::get_me(&http, &api_url, &mut cred).map_err(|error| {
-                Error::ExecutionFailed(format!(
-                    "OAuth tokens were saved, but the authenticated platform identity could not be resolved: {error}. Re-run `peppy platform login` to finish certificate enrollment."
-                ))
-            })?;
-            // `/me` can reactively refresh and persist the token pair. Capture its
-            // exact post-request session context, then CAS the display update so a
-            // concurrent same-origin login cannot receive this principal's subject
-            // or have its bearer used for enrollment below.
-            let exact_session = resolver::ensure_session_credential_current(&cred)?
-                .ok_or(auth::AuthError::NotAuthenticated)?;
-            let updated_session = storage::update(&creds_path, |creds| {
-                let Some(session) = creds.session.as_mut() else {
-                    return Err(auth::AuthError::NotAuthenticated);
-                };
-                if session.api_url != exact_session.api_url
-                    || session.issuer != exact_session.issuer
-                    || session.client_id != exact_session.client_id
-                    || session.subject != exact_session.subject
-                    || session.access_token.expose_secret()
-                        != exact_session.access_token.expose_secret()
-                    || session.refresh_token.expose_secret()
-                        != exact_session.refresh_token.expose_secret()
-                {
-                    return Err(auth::AuthError::NotAuthenticated);
-                }
-                session.subject = principal.sub.clone();
-                session.username = principal.display_name().to_string();
-                Ok(session.clone())
-            })?;
-            cred = resolver::session_credential(&creds_path, &updated_session);
-            println!(
-                "Logged in as {} ({})",
-                principal.display_name(),
-                profile::build_env_name()
-            );
+        // Fresh login creates a new opaque session revision. Only OAuth state
+        // is published here; identity material remains daemon-owned.
+        auth::identity::publish_oauth_session(&dirs, pc.clone())?;
 
-            // In production, the running daemon's captured name is authoritative.
-            // Enroll only after `/me` resolved; any enrollment failure leaves the
-            // valid OAuth session stored for an explicit retry.
-            let rotation = if identity::production_identity_required() {
-                let core_node_name = running_core_node_name(&dirs)?;
-                match identity_maintenance.enroll_and_activate(
-                    &http,
-                    &api_url,
-                    &mut cred,
-                    &principal.sub,
-                    &core_node_name,
-                ) {
-                    Ok(rotation) => Some(rotation),
-                    Err(error) => {
-                        return Err(Error::ExecutionFailed(format!(
-                            "OAuth login succeeded, but core-node certificate enrollment failed: {error}. The session was retained; re-run `peppy platform login`."
-                        )));
-                    }
-                }
-            } else {
-                drop(identity_maintenance);
-                None
+        let mut credential = resolver::session_credential(&creds_path, &pc);
+        let principal = client::get_me(&http, &api_url, &mut credential).map_err(|error| {
+            Error::ExecutionFailed(format!(
+                "OAuth tokens were saved, but the authenticated platform identity could not be \
+                 resolved: {error}. Re-run `peppy platform login`."
+            ))
+        })?;
+
+        // `/me` may reactively refresh. Capture its exact post-request snapshot
+        // and CAS the display fields without allowing a concurrent fresh login
+        // to receive this response.
+        let exact_session = resolver::ensure_session_credential_current(&credential)?
+            .ok_or(auth::AuthError::NotAuthenticated)?;
+        let updated = storage::update(&creds_path, |creds| {
+            let Some(session) = creds.session.as_mut() else {
+                return Err(auth::AuthError::NotAuthenticated);
             };
-            let had_rotation = rotation.is_some();
-            if let Some(rotation) = rotation {
-                rotation.retain_for_restart()?;
+            if session.session_revision != exact_session.session_revision {
+                return Err(auth::AuthError::StaleSessionRevision);
             }
-            // Production handed the activated receipt to the daemon; debug has
-            // completed its shared-certificate session binding. Clear the
-            // crash-durable gate immediately before the login refederation.
-            identity::clear_binding_incomplete(&dirs)?;
-
-            // Managed-router federation lives in the running daemon, which would
-            // otherwise only see this login on its next poll. Poke it so it
-            // re-resolves the now-saved credentials and federates immediately.
-            // Strict: if federation cannot be established (no daemon,
-            // unreachable/untrusted router, apply timeout, or no upstream), this
-            // returns an actionable error and the command exits non-zero. The
-            // credentials were already saved above, so the user stays authenticated;
-            // only the command fails. External mode leaves federation untouched and
-            // tells the operator that sessions change on the next manual restart.
-            let result =
-                super::finish_federation(&dirs, federation, super::FederationPokeAction::Login);
-            match result {
-                Ok(()) => Ok(()),
-                Err(error) if had_rotation => {
-                    let rollback = rollback_if_no_daemon_owns_rotation(&dirs, true);
-                    Err(Error::ExecutionFailed(format!(
-                        "{error}{}",
-                        rollback
-                            .err()
-                            .map(|rollback| format!(
-                                "; core-node certificate rollback also failed: {rollback}"
-                            ))
-                            .unwrap_or_default()
-                    )))
-                }
-                Err(error) => Err(error),
+            if session.api_url != exact_session.api_url
+                || session.issuer != exact_session.issuer
+                || session.client_id != exact_session.client_id
+                || session.subject != exact_session.subject
+                || session.access_token.expose_secret()
+                    != exact_session.access_token.expose_secret()
+                || session.refresh_token.expose_secret()
+                    != exact_session.refresh_token.expose_secret()
+            {
+                return Err(auth::AuthError::NotAuthenticated);
             }
-        })();
-        fail_closed_after_auth_change(&dirs, federation, result)
+            session.subject = principal.sub.clone();
+            session.username = principal.display_name().to_string();
+            Ok(session.clone())
+        })?;
+
+        println!(
+            "Logged in as {} ({}).",
+            principal.display_name(),
+            profile::build_env_name()
+        );
+
+        // The revision is the only login identity sent over the local protocol.
+        // Bearers, refresh tokens, private keys and certificate bodies never
+        // cross the socket.
+        // `/me` and credential publication are another observable interval.
+        // Refresh once more so enrollment and a possible restart use budgets
+        // from the daemon generation that is about to acknowledge them.
+        super::require_daemon_hello(&dirs, false)?;
+        let enrollment_status = daemon_control::status(&socket, super::CONTROL_HELLO_TIMEOUT)
+            .map_err(|error| {
+                super::control_error("refresh the daemon authentication mode", error, false)
+            })?;
+        if enrollment_status.pat_active {
+            return Err(Error::Auth(
+                "the daemon service PEPPY_API_KEY became active before OAuth enrollment; the saved session was retained, but identity remains fail-closed"
+                    .into(),
+            ));
+        }
+        let enrollment_settings = super::identity_control_settings(&dirs, &config);
+        let control_timeout = super::identity_control_timeout(enrollment_settings.timeout_secs);
+        let restart_timeout = super::identity_restart_timeout(enrollment_settings);
+        let external = enrollment_status.operator_managed && !enrollment_status.pinned;
+        let result = daemon_control::enroll_current_credential(
+            &socket,
+            control_timeout,
+            Some(updated.session_revision),
+            None,
+            None,
+        )
+        .map_err(|error| {
+            super::control_error("enroll the current platform credential", error, false)
+        })?;
+        super::complete_login(
+            &dirs,
+            &socket,
+            restart_timeout,
+            result,
+            external,
+            daemon_control::AuthenticationState::Oauth,
+            Some(updated.session_revision),
+        )
     }
 }
 
-/// A durable login-mode change invalidates whatever account/workspace binding
-/// the running daemon may still have applied. Preserve the newly stored auth
-/// state for retry, but on every later error ask the daemon to resolve it in
-/// logout/fail-closed mode so a stale prior link is not left active.
-fn fail_closed_after_auth_change<T>(
-    dirs: &PeppyDirs,
-    federation: Option<u64>,
-    result: Result<T>,
-) -> Result<T> {
-    if result.is_err() {
-        // A login poke itself can fail after the normal pre-poke clear. Re-arm
-        // before the best-effort cleanup poke so the daemon is forced
-        // standalone rather than reusing a same-subject prior identity.
-        let _ = identity::arm_binding_incomplete(dirs);
-        let _ = super::finish_federation(dirs, federation, super::FederationPokeAction::FailClosed);
-    }
-    result
-}
-
-/// Once the rotation receipt is handed to the daemon, a control timeout does
-/// not authorize the CLI to delete files the daemon may still be applying. If
-/// no daemon is alive, however, nobody can own the marker and rollback is safe
-/// and immediate. A live daemon handles commit/rollback (including prior-path
-/// reapply) inside its federation poll.
-fn rollback_if_no_daemon_owns_rotation(dirs: &PeppyDirs, had_rotation: bool) -> auth::Result<()> {
-    if !had_rotation {
-        return Ok(());
-    }
-    let running = daemon::state::DaemonState::read_from(
-        &daemon::state::DaemonState::state_file_in(dirs.root()),
-    )
-    .is_ok_and(|state| state.is_running());
-    if !running {
-        identity::rollback_unverified_rotation(dirs)?;
-    }
-    Ok(())
-}
-
-/// Reads the exact immutable name captured by the live `service serve`
-/// generation. Production enrollment never re-resolves config or generates a
-/// name independently in the CLI.
-fn running_core_node_name(dirs: &PeppyDirs) -> Result<String> {
-    let path = daemon::state::DaemonState::state_file_in(dirs.root());
-    let state = daemon::state::DaemonState::read_from(&path).map_err(|error| {
-        Error::ExecutionFailed(format!(
-            "cannot enroll a core-node certificate without a running daemon state at {}: {error}. Start `peppy service serve`, then retry login.",
-            path.display()
-        ))
-    })?;
-    if !state.is_running() {
-        return Err(Error::ExecutionFailed(
-            "cannot enroll a core-node certificate because the recorded daemon is not running; start `peppy service serve`, then retry login"
-                .into(),
-        ));
-    }
-    if state.core_node_name.is_empty() {
-        return Err(Error::ExecutionFailed(
-            "the running daemon state has no core_node_name; restart the daemon before login"
-                .into(),
-        ));
-    }
-    Ok(state.core_node_name)
-}
-
-/// The interactive shell around the engine's device-flow protocol: print the
-/// verification URL and user code, open the browser on a TTY (best-effort,
-/// suppressed by `no_browser` for headless/SSH use), and show a spinner while
-/// polling the token endpoint for the user's approval.
 fn run_device_flow(
     http: &HttpClient,
     endpoints: &OidcEndpoints,
@@ -364,27 +257,22 @@ fn run_device_flow(
 ) -> Result<TokenSet> {
     use std::io::IsTerminal;
 
-    let da = device::start(http, endpoints, client_id, scopes)?;
-
-    let complete = da
+    let authorization = device::start(http, endpoints, client_id, scopes)?;
+    let complete = authorization
         .verification_uri_complete
         .clone()
-        .unwrap_or_else(|| da.verification_uri.clone());
+        .unwrap_or_else(|| authorization.verification_uri.clone());
 
-    println!("To sign in, open:\n    {}", da.verification_uri);
-    println!("and enter the code: {}", da.user_code);
-
-    if !no_browser && std::io::stdout().is_terminal() {
-        // Best-effort: a headless box without a browser just keeps the printed URL.
-        if open::that(&complete).is_ok() {
-            println!("(opened your browser…)");
-        }
+    println!("To sign in, open:\n    {}", authorization.verification_uri);
+    println!("and enter the code: {}", authorization.user_code);
+    if !no_browser && std::io::stdout().is_terminal() && open::that(&complete).is_ok() {
+        println!("(opened your browser…)");
     }
 
     let spinner = crate::terminal::spinner("Waiting for you to approve in the browser…");
-    let result = device::poll(http, &endpoints.token_endpoint, client_id, &da);
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
+    let result = device::poll(http, &endpoints.token_endpoint, client_id, &authorization);
+    if let Some(progress) = spinner {
+        progress.finish_and_clear();
     }
     Ok(result?)
 }

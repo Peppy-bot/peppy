@@ -276,6 +276,9 @@ fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<Htt
     let resp = http.get(url, Some(cred.token.expose_secret()))?;
     if resp.status == 401 && cred.is_refreshable() {
         refresh_in_place(http, cred)?;
+        // Refresh persistence is a concurrency boundary: a fresh login may
+        // replace this session after the CAS succeeds but before the retry.
+        ensure_credential_origin(url, cred)?;
         return http.get(url, Some(cred.token.expose_secret()));
     }
     Ok(resp)
@@ -293,6 +296,7 @@ fn authed_post(
     let resp = http.post_json(url, body, Some(cred.token.expose_secret()))?;
     if resp.status == 401 && cred.is_refreshable() {
         refresh_in_place(http, cred)?;
+        ensure_credential_origin(url, cred)?;
         return http.post_json(url, body, Some(cred.token.expose_secret()));
     }
     Ok(resp)
@@ -305,6 +309,7 @@ fn authed_delete(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<
     let response = http.delete_empty(url, Some(cred.token.expose_secret()))?;
     if response.status == 401 && cred.is_refreshable() {
         refresh_in_place(http, cred)?;
+        ensure_credential_origin(url, cred)?;
         return http.delete_empty(url, Some(cred.token.expose_secret()));
     }
     Ok(response)
@@ -392,6 +397,7 @@ fn refresh_in_place(http: &HttpClient, cred: &mut Credential) -> Result<()> {
 
     cred.token = storage::secret(updated.access_token.expose_secret().to_string());
     cred.kind = CredentialKind::Session(super::resolver::SessionContext {
+        session_revision: updated.session_revision,
         api_url: updated.api_url.clone(),
         issuer: updated.issuer.clone(),
         client_id: updated.client_id.clone(),
@@ -419,6 +425,7 @@ pub fn creds_from_login(
     tokens: &super::device::TokenSet,
 ) -> ProfileCreds {
     ProfileCreds::with_tokens(
+        uuid::Uuid::new_v4(),
         api_url.trim_end_matches('/').to_string(),
         cfg.issuer.clone(),
         cfg.client_id.clone(),
@@ -431,6 +438,29 @@ pub fn creds_from_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_fresh_login_gets_a_distinct_opaque_session_revision() {
+        let cfg = super::super::cli_config::CliConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "cli-client".into(),
+            scopes: "openid offline_access".into(),
+        };
+        let tokens = super::super::device::TokenSet {
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: 1_000,
+            token_type: "Bearer".into(),
+            scope: "openid".into(),
+        };
+
+        let first = creds_from_login(&cfg, "https://api.example/", &tokens);
+        let second = creds_from_login(&cfg, "https://api.example/", &tokens);
+
+        assert_ne!(first.session_revision, second.session_revision);
+        assert!(!first.session_revision.is_nil());
+        assert_eq!(first.api_url, "https://api.example");
+    }
 
     #[test]
     fn router_config_parses_tolerantly() {

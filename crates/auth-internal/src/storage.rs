@@ -17,17 +17,19 @@ use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
 
 /// On-disk schema version of `credentials.json5`. Bumped on any shape change;
 /// [`load`] accepts only the current version.
-pub const CREDENTIALS_VERSION: u32 = 3;
+pub const CREDENTIALS_VERSION: u32 = 1;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
 /// session, and the cached shared-router connection, or empty (just the
 /// current version) when not logged in.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Credentials {
     /// Schema version (see [`CREDENTIALS_VERSION`]). Defaults to `0` when absent
     /// so an old/unversioned file is detected and rejected rather than
@@ -66,6 +68,7 @@ impl Default for Credentials {
 /// secrets; the capability lives in the endpoint and the link is end-to-end
 /// TLS), unlike [`ProfileCreds`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RouterSession {
     /// The `<scheme>/<host>:<port>` locator the CLI dials.
     pub endpoint: String,
@@ -117,7 +120,13 @@ impl RouterSession {
 /// than derived, so the struct does not depend on `SecretString: Clone`, which
 /// varies across `secrecy` releases.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileCreds {
+    /// Opaque identifier for this particular OAuth login. A fresh device login
+    /// creates a new revision even when it resolves to the same subject; token
+    /// refreshes preserve it. Delayed work from an earlier login is rejected
+    /// when this revision no longer matches.
+    pub session_revision: Uuid,
     pub api_url: String,
     pub issuer: String,
     pub client_id: String,
@@ -129,9 +138,7 @@ pub struct ProfileCreds {
     pub expires_at: i64,
     pub token_type: String,
     pub scope: String,
-    #[serde(default)]
     pub subject: String,
-    #[serde(default)]
     pub username: String,
 }
 
@@ -146,6 +153,7 @@ impl ProfileCreds {
     /// [`TokenSet`], centralizing the token-field mapping so `creds_from_login`
     /// and `apply_tokens` cannot drift.
     pub fn with_tokens(
+        session_revision: Uuid,
         api_url: String,
         issuer: String,
         client_id: String,
@@ -154,6 +162,7 @@ impl ProfileCreds {
         tokens: &super::device::TokenSet,
     ) -> Self {
         Self {
+            session_revision,
             api_url,
             issuer,
             client_id,
@@ -171,6 +180,7 @@ impl ProfileCreds {
 impl Clone for ProfileCreds {
     fn clone(&self) -> Self {
         Self {
+            session_revision: self.session_revision,
             api_url: self.api_url.clone(),
             issuer: self.issuer.clone(),
             client_id: self.client_id.clone(),
@@ -213,23 +223,90 @@ pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
 /// not exist yet (first login).
 pub fn load(path: &Path) -> Result<Credentials> {
     match read_private_credentials(path) {
-        Ok(content) => {
-            let creds: Credentials = serde_json5::from_str(&content)
-                .map_err(|e| Error::Auth(format!("failed to parse {}: {e}", path.display())))?;
-            if creds.version != CREDENTIALS_VERSION {
-                return Err(Error::Auth(format!(
-                    "credentials file {} is an unsupported format (v{}, expected v{}); \
-                     run `peppy platform login` again",
-                    path.display(),
-                    creds.version,
-                    CREDENTIALS_VERSION
-                )));
-            }
-            Ok(creds)
-        }
+        Ok(content) => parse_credentials(path, &content),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
         Err(e) => Err(Error::Io(e)),
     }
+}
+
+/// Loads credentials for presentation without chmod-based repair. Unsafe
+/// ownership, file type, or permissions are reported and left untouched.
+pub fn load_read_only(path: &Path) -> Result<Credentials> {
+    match read_private_credentials_read_only(path) {
+        Ok(content) => parse_credentials(path, &content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+fn parse_credentials(path: &Path, content: &str) -> Result<Credentials> {
+    #[derive(Deserialize)]
+    struct VersionHeader {
+        #[serde(default)]
+        version: u32,
+    }
+
+    let header: VersionHeader = serde_json5::from_str(content)
+        .map_err(|error| Error::Auth(format!("failed to parse {}: {error}", path.display())))?;
+    if header.version != CREDENTIALS_VERSION {
+        return Err(Error::Auth(format!(
+            "credentials file {} is an unsupported format (v{}, expected v{}); refusing to modify it",
+            path.display(),
+            header.version,
+            CREDENTIALS_VERSION
+        )));
+    }
+    serde_json5::from_str(content)
+        .map_err(|error| Error::Auth(format!("failed to parse {}: {error}", path.display())))
+}
+
+#[cfg(unix)]
+fn read_private_credentials_read_only(path: &Path) -> std::io::Result<String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if let Some(parent) = path.parent()
+        && parent.exists()
+    {
+        validate_private_dir_read_only(parent)?;
+    }
+    let path_metadata = std::fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing symlink credentials path {}", path.display()),
+        ));
+    }
+    if !path_metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing non-regular credentials path {}", path.display()),
+        ));
+    }
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "credentials file {} is not owned by the current user",
+                path.display()
+            ),
+        ));
+    }
+    if metadata.permissions().mode() & 0o7777 != 0o600 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("credentials file {} is not mode 0600", path.display()),
+        ));
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+#[cfg(not(unix))]
+fn read_private_credentials_read_only(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
 }
 
 #[cfg(unix)]
@@ -288,40 +365,45 @@ pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
 }
 
 /// Serializes a credentials read/modify/write transaction across CLI and
-/// daemon processes. The callback sees the latest atomically-published v3
+/// daemon processes. The callback sees the latest atomically-published v1
 /// document and its targeted edits are published before the lock is released.
 pub fn update<T>(path: &Path, mutate: impl FnOnce(&mut Credentials) -> Result<T>) -> Result<T> {
-    update_inner(path, false, mutate)
-}
-
-/// Variant used only by login/logout healing paths: a malformed or legacy
-/// credentials document is replaced with a clean v3 document while holding
-/// the transaction lock. Ordinary callers must keep using [`update`] so a
-/// format error is never silently treated as a logged-out state.
-pub fn update_or_default<T>(
-    path: &Path,
-    mutate: impl FnOnce(&mut Credentials) -> Result<T>,
-) -> Result<T> {
-    update_inner(path, true, mutate)
-}
-
-fn update_inner<T>(
-    path: &Path,
-    heal_invalid: bool,
-    mutate: impl FnOnce(&mut Credentials) -> Result<T>,
-) -> Result<T> {
     let _lock = CredentialsLock::acquire(path)?;
-    let mut creds = match load(path) {
-        Ok(creds) => creds,
-        Err(Error::Auth(_)) if heal_invalid => Credentials::default(),
-        Err(error) => return Err(error),
-    };
+    let mut creds = load(path)?;
     let result = mutate(&mut creds)?;
     save_locked(path, &creds)?;
     Ok(result)
 }
 
+/// Runs a read-only credentials check while holding the same stable lock as
+/// every writer. Identity finalization uses this to make the session-revision
+/// fence atomic with receipt commit: a fresh login cannot publish between the
+/// final comparison and the durable identity decision.
+pub(crate) fn inspect_locked<T>(
+    path: &Path,
+    inspect: impl FnOnce(&Credentials) -> Result<T>,
+) -> Result<T> {
+    let _lock = CredentialsLock::acquire(path)?;
+    let creds = load(path)?;
+    inspect(&creds)
+}
+
+/// Explicit destructive reset used only by `platform logout --offline` after
+/// it has proven the daemon is stopped and acquired the lifetime identity-owner
+/// lock. Unlike normal writers, this is allowed to replace a malformed or
+/// unsupported document so orphaned renewable state can be removed.
+pub fn reset_for_offline_recovery(path: &Path) -> Result<()> {
+    let _lock = CredentialsLock::acquire(path)?;
+    save_locked(path, &Credentials::default())
+}
+
 fn save_locked(path: &Path, creds: &Credentials) -> Result<()> {
+    if creds.version != CREDENTIALS_VERSION {
+        return Err(Error::Auth(format!(
+            "refusing to write credentials format v{} (expected v{})",
+            creds.version, CREDENTIALS_VERSION
+        )));
+    }
     let content = json5_pretty::to_string_pretty(creds)
         .map_err(|e| Error::Auth(format!("failed to serialize credentials: {e}")))?;
     let parent = path.parent().ok_or_else(|| {
@@ -402,6 +484,48 @@ impl CredentialsLock {
         restrict_file(&lock_path)?;
         file.lock()?;
         Ok(Self { _file: file })
+    }
+}
+
+#[cfg(unix)]
+fn validate_private_dir_read_only(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = validate_owned_non_symlink(path)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-directory protected auth path {}",
+                path.display()
+            ),
+        ));
+    }
+    if metadata.permissions().mode() & 0o7777 != 0o700 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "protected auth directory {} is not mode 0700",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_private_dir_read_only(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-directory protected auth path {}",
+                path.display()
+            ),
+        ))
     }
 }
 
@@ -511,6 +635,8 @@ mod tests {
 
     fn sample() -> ProfileCreds {
         ProfileCreds {
+            session_revision: Uuid::parse_str("11111111-1111-4111-8111-111111111111")
+                .expect("valid session revision"),
             api_url: "http://127.0.0.1:3000".into(),
             issuer: "http://127.0.0.1:8080".into(),
             client_id: "cid".into(),
@@ -539,6 +665,7 @@ mod tests {
         assert_eq!(pc.access_token.expose_secret(), ACCESS);
         assert_eq!(pc.refresh_token.expose_secret(), REFRESH);
         assert_eq!(pc.username, "alice");
+        assert_eq!(pc.session_revision, sample().session_revision);
     }
 
     #[test]
@@ -569,6 +696,7 @@ mod tests {
                 credentials.core_node_identity = Some(crate::identity::CoreNodeIdentity {
                     api_origin: "https://api.peppy.bot".into(),
                     subject: "sub".into(),
+                    session_revision: None,
                     workspace_id: config::namespace::Namespace::parse(
                         "550e8400-e29b-41d4-a716-446655440000",
                     )
@@ -657,21 +785,115 @@ mod tests {
     #[test]
     fn default_document_carries_the_current_version() {
         assert_eq!(Credentials::default().version, CREDENTIALS_VERSION);
+        assert!(Credentials::default().session.is_none());
     }
 
     #[test]
-    fn rejects_a_mismatched_credentials_version() {
+    fn rejects_old_and_future_credentials_versions_without_overwriting_them() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(&path, r#"{ version: 99 }"#).expect("write mismatched file");
+        for version in [0, CREDENTIALS_VERSION + 1, 3, 99] {
+            let original = format!(r#"{{ version: {version}, marker: "preserve-me" }}"#);
+            std::fs::write(&path, &original).expect("write mismatched file");
 
-        let err = load(&path).expect_err("mismatched version must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unsupported format") && msg.contains("peppy platform login"),
-            "rejection should be actionable: {msg}"
-        );
+            let err = load(&path).expect_err("mismatched version must be rejected");
+            assert!(err.to_string().contains("unsupported format"), "{err}");
+            update(&path, |_| Ok(())).expect_err("a writer must not heal an unsupported version");
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read preserved file"),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_credentials_fail_closed_without_being_overwritten() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        let original = "{ this is not valid JSON5";
+        std::fs::write(&path, original).expect("write malformed file");
+
+        update(&path, |_| Ok(())).expect_err("malformed input must be rejected");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn explicit_offline_recovery_can_reset_malformed_credentials() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, "{ malformed").expect("write malformed file");
+
+        reset_for_offline_recovery(&path).expect("explicit recovery reset");
+
+        let reset = load(&path).unwrap();
+        assert_eq!(reset.version, CREDENTIALS_VERSION);
+        assert!(reset.session.is_none());
+        assert!(reset.router.is_none());
+        assert!(reset.core_node_identity.is_none());
+    }
+
+    #[test]
+    fn version_one_session_without_a_revision_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        let original = r#"{
+            version: 1,
+            session: {
+                api_url: "https://api.example",
+                issuer: "https://issuer.example",
+                client_id: "cli-client",
+                access_token: "access",
+                refresh_token: "refresh",
+                expires_at: 1000,
+                token_type: "Bearer",
+                scope: "openid"
+            }
+        }"#;
+        std::fs::write(&path, original).expect("write revision-less session");
+
+        load(&path).expect_err("a session revision is mandatory in the v1 schema");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn version_one_session_without_display_identity_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        let mut value = serde_json::to_value(Credentials {
+            session: Some(sample()),
+            ..Default::default()
+        })
+        .expect("serialize credentials");
+        value["session"].as_object_mut().unwrap().remove("subject");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).expect("write credentials");
+
+        load(&path).expect_err("the v1 session shape must not accept legacy display fields");
+    }
+
+    #[test]
+    fn version_one_rejects_unknown_top_level_and_nested_fields() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("conf").join("credentials.json5");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+
+        std::fs::write(&path, r#"{ version: 1, legacy_field: true }"#)
+            .expect("write unknown top-level field");
+        load(&path).expect_err("unknown top-level fields must fail closed");
+
+        let mut value = serde_json::to_value(Credentials {
+            session: Some(sample()),
+            ..Default::default()
+        })
+        .expect("serialize credentials");
+        value["session"]["legacy_field"] = serde_json::json!(true);
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap())
+            .expect("write unknown nested field");
+        load(&path).expect_err("unknown nested fields must fail closed");
     }
 
     #[test]

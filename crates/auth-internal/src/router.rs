@@ -164,6 +164,18 @@ pub fn resolve_router_client_identity(
     api_url: &str,
     core_node_name: &str,
 ) -> Result<RouterClientIdentity> {
+    resolve_enrolled_router_client_identity(peppy_dirs, api_url, core_node_name)
+}
+
+/// Loads the daemon-enrolled immutable identity even in a debug build. Normal
+/// debug reconciliation deliberately uses the committed shared development
+/// identity, but an explicit enrollment receipt must be applied and probed
+/// with the exact generation it would commit.
+fn resolve_enrolled_router_client_identity(
+    peppy_dirs: &PeppyDirs,
+    api_url: &str,
+    core_node_name: &str,
+) -> Result<RouterClientIdentity> {
     let creds = storage::load(&storage::credentials_path(peppy_dirs))?;
     let subject = creds
         .session
@@ -439,6 +451,9 @@ fn pull_and_cache(
                     "platform session changed identity while router discovery was in flight".into(),
                 ));
             }
+            if session.session_revision != expected.session_revision {
+                return Err(Error::StaleSessionRevision);
+            }
             if session.api_url != expected.api_url
                 || session.issuer != expected.issuer
                 || session.client_id != expected.client_id
@@ -498,6 +513,12 @@ pub struct ResolvedFederation {
     /// standalone states (logout, missing/expired identity, local namespace),
     /// the daemon must preserve an already-applied still-valid link and retry.
     pub resolve_error: Option<String>,
+    /// This failure is itself evidence that no existing authenticated link may
+    /// remain live (for example an ownerless unverified rotation receipt).
+    /// The daemon must attempt a real standalone apply before reporting it;
+    /// unlike an ordinary control-plane error, preserving the old link is not
+    /// safe even while its certificate has time remaining.
+    pub force_standalone: bool,
     /// Whether this daemon resolve observed a non-empty environment PAT. The
     /// token itself never leaves the resolver; only this boolean reaches the
     /// control/status surface so logout can refuse honestly.
@@ -518,6 +539,7 @@ impl ResolvedFederation {
             certificate_expires_after: None,
             renewal_error: None,
             resolve_error: None,
+            force_standalone: false,
             pat_active: false,
             workspace_mismatch: None,
         }
@@ -556,40 +578,151 @@ pub fn resolve_federation_target(
     connect_timeout: Duration,
     core_node_name: &str,
 ) -> ResolvedFederation {
+    resolve_federation_target_inner(peppy_dirs, api_url, connect_timeout, core_node_name)
+}
+
+/// Resolves the target for the exact explicit enrollment transaction that
+/// currently owns the durable binding-incomplete marker. The marker remains
+/// armed through router apply and link verification; only rotation commit
+/// clears it. Ordinary reconciliation always uses [`resolve_federation_target`]
+/// and therefore continues to fail closed while the marker exists.
+pub fn resolve_federation_target_for_enrollment(
+    peppy_dirs: &PeppyDirs,
+    api_url: &str,
+    connect_timeout: Duration,
+    core_node_name: &str,
+    expected_session_revision: Option<uuid::Uuid>,
+) -> Result<ResolvedFederation> {
+    crate::identity::ensure_session_revision_current(peppy_dirs, expected_session_revision)?;
+    if !crate::identity::binding_incomplete(peppy_dirs)? {
+        return Err(Error::Auth(
+            "explicit enrollment lost its durable binding transition".into(),
+        ));
+    }
+    Ok(resolve_federation_target_inner(
+        peppy_dirs,
+        api_url,
+        connect_timeout,
+        core_node_name,
+    ))
+}
+
+fn incomplete_binding_failure(
+    peppy_dirs: &PeppyDirs,
+    pat_active: bool,
+    message: impl Into<String>,
+) -> ResolvedFederation {
+    let message = message.into();
+    tracing::warn!(
+        error = %message,
+        "router federation: incomplete login remains fail-closed; local router stays standalone"
+    );
+    let credentials_path = storage::credentials_path(peppy_dirs);
+    let mut resolved = ResolvedFederation::standalone(config::namespace::Namespace::local());
+    resolved.resolve_error = Some(message);
+    resolved.force_standalone = true;
+    resolved.maintenance_after = next_maintenance_after(&credentials_path, true, true);
+    resolved.pat_active = pat_active;
+    resolved
+}
+
+fn incomplete_binding_standalone(
+    pat_active: bool,
+    message: impl std::fmt::Display,
+) -> ResolvedFederation {
+    tracing::warn!(
+        reason = %message,
+        "router federation: login transition is intentionally incomplete; local router stays standalone until login is retried"
+    );
+    let mut resolved = ResolvedFederation::standalone(config::namespace::Namespace::local());
+    resolved.pat_active = pat_active;
+    resolved.force_standalone = true;
+    resolved
+}
+
+fn resolve_federation_target_inner(
+    peppy_dirs: &PeppyDirs,
+    api_url: &str,
+    connect_timeout: Duration,
+    core_node_name: &str,
+) -> ResolvedFederation {
     let cache_dir = peppy_dirs.cache_dir();
     let pat = resolver::pat_from_env();
     let pat_active = pat.is_some();
+    let mut interrupted_rotation = None;
 
     // A login publishes this marker before changing OAuth/PAT mode and removes
     // it only after the exact-name identity is ready for daemon apply. This is
     // an intentional standalone state, not a transient resolve error: never
     // maintain or reuse a same-subject prior identity while the binding is
     // incomplete. Unsafe/unreadable marker state also fails closed.
-    match crate::identity::binding_incomplete(peppy_dirs) {
-        Ok(false) => {}
-        Ok(true) => {
-            tracing::warn!(
-                "router federation: platform login binding is incomplete; local router stays standalone"
-            );
-            let mut resolved =
-                ResolvedFederation::standalone(config::namespace::Namespace::local());
-            resolved.pat_active = pat_active;
-            return resolved;
-        }
+    let binding_incomplete = match crate::identity::binding_incomplete(peppy_dirs) {
+        Ok(binding_incomplete) => binding_incomplete,
         Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "router federation: binding-transition marker is unsafe or unreadable; local router stays standalone"
+            return incomplete_binding_failure(
+                peppy_dirs,
+                pat_active,
+                format!("binding-transition marker is unsafe or unreadable: {error}"),
             );
-            let mut resolved =
-                ResolvedFederation::standalone(config::namespace::Namespace::local());
-            resolved.pat_active = pat_active;
-            return resolved;
+        }
+    };
+    if binding_incomplete {
+        match crate::identity::recover_incomplete_binding_rotation(
+            peppy_dirs,
+            api_url,
+            pat_active,
+            core_node_name,
+        ) {
+            Ok(Some(rotation)) => {
+                tracing::info!(
+                    "router federation: recovering the exact durable enrollment receipt from an interrupted login handoff"
+                );
+                interrupted_rotation = Some(rotation);
+            }
+            Ok(None) => {
+                return incomplete_binding_standalone(
+                    pat_active,
+                    "platform login binding is incomplete and has no recoverable enrollment receipt",
+                );
+            }
+            Err(error) => {
+                return incomplete_binding_failure(
+                    peppy_dirs,
+                    pat_active,
+                    format!("could not recover the interrupted platform login binding: {error}"),
+                );
+            }
+        }
+    }
+    // Debug reconciliation normally uses the committed shared development
+    // certificate. A namespace-changing explicit login clears the marker only
+    // after retaining its production receipt for the replacement generation,
+    // so recover that receipt before choosing TLS material. This also avoids a
+    // second recovery attempt after the first guard already owns the lease.
+    #[cfg(debug_assertions)]
+    if !binding_incomplete {
+        match crate::identity::recover_incomplete_binding_rotation(
+            peppy_dirs,
+            api_url,
+            pat_active,
+            core_node_name,
+        ) {
+            Ok(Some(rotation)) => interrupted_rotation = Some(rotation),
+            Ok(None) => {}
+            Err(error) => {
+                return incomplete_binding_failure(
+                    peppy_dirs,
+                    pat_active,
+                    format!("could not recover the retained enrollment receipt: {error}"),
+                );
+            }
         }
     }
 
     #[cfg(not(debug_assertions))]
-    let (mut rotation, mut renewal_error) = {
+    let (mut rotation, mut renewal_error) = if let Some(rotation) = interrupted_rotation {
+        (Some(rotation), None)
+    } else {
         let http = HttpClient::with_timeout(connect_timeout);
         match crate::identity::maintain_identity(
             peppy_dirs,
@@ -612,14 +745,39 @@ pub fn resolve_federation_target(
     let (mut rotation, mut renewal_error): (
         Option<crate::identity::IdentityRotation>,
         Option<String>,
-    ) = (None, None);
+    ) = (interrupted_rotation, None);
 
+    if rotation.is_none() {
+        match crate::identity::unverified_rotation_pending(peppy_dirs) {
+            Ok(false) => {}
+            Ok(true) => {
+                return incomplete_binding_failure(
+                    peppy_dirs,
+                    pat_active,
+                    "an unverified certificate rotation has no live transaction owner; staying standalone until deterministic recovery succeeds",
+                );
+            }
+            Err(error) => {
+                return incomplete_binding_failure(
+                    peppy_dirs,
+                    pat_active,
+                    format!("could not inspect unverified certificate state: {error}"),
+                );
+            }
+        }
+    }
+
+    let client_identity = if rotation.is_some() {
+        resolve_enrolled_router_client_identity(peppy_dirs, api_url, core_node_name)
+    } else {
+        resolve_router_client_identity(peppy_dirs, api_url, core_node_name)
+    };
     let mut resolved = resolve_federation_target_at(
         &storage::credentials_path(peppy_dirs),
         api_url,
         pat.clone(),
         resolve_router_ca(&cache_dir),
-        match resolve_router_client_identity(peppy_dirs, api_url, core_node_name) {
+        match client_identity {
             Ok(identity) => Some(identity),
             Err(error) => {
                 tracing::warn!(
@@ -809,6 +967,7 @@ pub fn resolve_federation_target_at(
                 .map(|not_after| conservative_certificate_validity(not_after, storage::now_unix())),
             renewal_error: None,
             resolve_error: None,
+            force_standalone: false,
             pat_active,
             workspace_mismatch: None,
         },

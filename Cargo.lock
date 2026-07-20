@@ -311,6 +311,7 @@ name = "auth"
 version = "0.0.1"
 dependencies = [
  "daemon-config",
+ "federation-identity",
  "httpmock",
  "json5-pretty",
  "pem",
@@ -324,7 +325,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json5",
- "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -582,6 +582,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "sha2",
 ]
@@ -782,6 +783,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "askama",
  "git2",
@@ -925,6 +927,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -1082,11 +1085,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json5",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1262,7 +1267,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1410,7 +1415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1474,6 +1479,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "federation-identity"
+version = "0.0.1"
+dependencies = [
+ "json5-pretty",
+ "pem",
+ "peppy-config-model",
+ "rcgen",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "sha2",
+ "tempfile",
+ "time",
+ "url",
+ "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -2584,6 +2609,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "serde",
  "serde_json",
@@ -2971,7 +2997,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3353,11 +3379,13 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "url",
+ "uuid",
 ]
 
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "capnp",
  "clap",
@@ -3380,6 +3408,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3574,6 +3603,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3790,7 +3820,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4040,7 +4070,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.0",
+ "rustls-platform-verifier 0.6.2",
  "serde",
  "serde_json",
  "sync_wrapper",
@@ -4226,7 +4256,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4294,7 +4324,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4315,7 +4345,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4691,7 +4721,7 @@ version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 4.0.0",
 ]
 
 [[package]]
@@ -4995,7 +5025,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5660,6 +5690,7 @@ checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
@@ -5888,7 +5919,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6522,14 +6553,14 @@ dependencies = [
 [[package]]
 name = "zenoh-link-tls"
 version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6f6b308ae2599f9c1344fbcd3418b2c3a3a9fe287ec39501ba834168493ba37"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs?rev=eaafdd408f299be46dd14c7711d887c3fe68bb16#eaafdd408f299be46dd14c7711d887c3fe68bb16"
 dependencies = [
  "async-trait",
  "base64",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
+ "rustls-platform-verifier 0.7.0",
  "rustls-webpki",
  "secrecy 0.8.0",
  "socket2 0.5.10",
@@ -6539,7 +6570,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tracing",
- "webpki-roots",
  "x509-parser",
  "zenoh-config",
  "zenoh-core",

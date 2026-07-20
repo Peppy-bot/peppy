@@ -14,6 +14,11 @@ from pathlib import Path
 
 from .cli import RELEASE_TRIPLES, ReleaseError, console
 
+ZENOHD_TLS_POLICY_MARKER = (
+    b"PEPPY_ZENOHD_TLS_POLICY=custom-roots-exclusive;"
+    b"system-roots=platform-verifier;mtls=tls13;v=1"
+)
+
 
 @dataclass(frozen=True)
 class BuildArtifact:
@@ -24,7 +29,13 @@ class BuildArtifact:
     target_triple: str
 
 
-def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
+def cargo_build(
+    tag: str,
+    target_triple: str,
+    repo_root: Path,
+    *,
+    target_dir: Path | None = None,
+) -> None:
     """Run a release build for the peppy binary.
 
     Sets PEPPY_GIT_TAG env var for the build.
@@ -38,6 +49,8 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
     env = {**os.environ, "PEPPY_GIT_TAG": tag, "PEPPY_CROSS_ARCH": "1"}
+    if target_dir is not None:
+        env["CARGO_TARGET_DIR"] = str(target_dir)
     try:
         proc = subprocess.Popen(
             [
@@ -81,16 +94,22 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
 
 def _get_target_dir(repo_root: Path) -> Path:
     """Get the cargo target directory, respecting CARGO_TARGET_DIR."""
-    return Path(os.environ.get("CARGO_TARGET_DIR", str(repo_root / "target")))
+    configured = Path(os.environ.get("CARGO_TARGET_DIR", str(repo_root / "target")))
+    return configured if configured.is_absolute() else repo_root / configured
 
 
-def find_peppy_binary(target_triple: str, repo_root: Path) -> Path:
+def find_peppy_binary(
+    target_triple: str,
+    repo_root: Path,
+    *,
+    target_dir: Path | None = None,
+) -> Path:
     """Locate the compiled peppy binary in the target directory.
 
     Checks {target_dir}/{target_triple}/release/peppy first, then
     falls back to {target_dir}/release/peppy.
     """
-    target_dir = _get_target_dir(repo_root)
+    target_dir = target_dir or _get_target_dir(repo_root)
 
     primary = target_dir / target_triple / "release" / "peppy"
     if primary.is_file():
@@ -103,18 +122,64 @@ def find_peppy_binary(target_triple: str, repo_root: Path) -> Path:
     raise ReleaseError(f"peppy binary not found (expected '{primary}')")
 
 
-def find_zenohd_binary(target_triple: str, repo_root: Path) -> Path:
+def _contains_bytes(path: Path, needle: bytes) -> bool:
+    """Search a binary without loading the whole artifact into memory."""
+    overlap = b""
+    try:
+        with path.open("rb") as artifact:
+            while chunk := artifact.read(1024 * 1024):
+                window = overlap + chunk
+                if needle in window:
+                    return True
+                overlap = window[-(len(needle) - 1) :]
+    except OSError as exc:
+        raise ReleaseError(f"failed to inspect zenohd artifact '{path}': {exc}") from exc
+    return False
+
+
+def validate_zenohd_tls_policy(path: Path) -> None:
+    """Require the patched Zenoh TLS-policy marker in an exact artifact."""
+    if not path.is_file():
+        raise ReleaseError(f"zenohd artifact is not a regular file: '{path}'")
+    if not _contains_bytes(path, ZENOHD_TLS_POLICY_MARKER):
+        raise ReleaseError(
+            f"zenohd artifact '{path}' lacks Peppy's required exclusive-root "
+            "mTLS policy marker"
+        )
+
+
+def find_zenohd_binary(
+    target_triple: str,
+    repo_root: Path,
+    *,
+    target_dir: Path | None = None,
+) -> Path:
     """Locate the built zenohd binary in the build output.
 
     Searches {target_dir}/{target_triple}/release/build/pmi-*/out/zenohd.
-    Raises ReleaseError if not found.
+    Only a binary carrying Peppy's exact TLS-policy marker is eligible. An
+    ambiguous build tree fails closed instead of selecting a stale candidate.
     """
-    target_dir = _get_target_dir(repo_root)
+    target_dir = target_dir or _get_target_dir(repo_root)
     build_dir = target_dir / target_triple / "release" / "build"
 
-    matches = sorted(build_dir.glob("pmi-*/out/zenohd"))
+    matches = sorted(path for path in build_dir.glob("pmi-*/out/zenohd") if path.is_file())
+    verified = [
+        path for path in matches if _contains_bytes(path, ZENOHD_TLS_POLICY_MARKER)
+    ]
+    if len(verified) == 1:
+        return verified[0]
+    if len(verified) > 1:
+        candidates = ", ".join(str(path) for path in verified)
+        raise ReleaseError(
+            "multiple TLS-policy-verified zenohd build artifacts were found; "
+            f"refusing an ambiguous package selection: {candidates}"
+        )
     if matches:
-        return matches[0]
+        raise ReleaseError(
+            "zenohd build artifacts were found, but none carries Peppy's "
+            "required exclusive-root mTLS policy marker"
+        )
 
     raise ReleaseError(
         f"zenohd binary not found in build output "
@@ -127,13 +192,15 @@ def find_build_dir(
     repo_root: Path,
     pattern: str,
     label: str,
+    *,
+    target_dir: Path | None = None,
 ) -> Path:
     """Locate a required directory in the build output.
 
     Searches {target_dir}/{target_triple}/release/build/{pattern}.
     Raises ReleaseError if not found.
     """
-    target_dir = _get_target_dir(repo_root)
+    target_dir = target_dir or _get_target_dir(repo_root)
     build_dir = target_dir / target_triple / "release" / "build"
 
     matches = sorted(build_dir.glob(pattern))
@@ -164,6 +231,10 @@ def package_release(
 
     Writes the archive to {dist_dir}/peppy-{target_triple}.tgz.
     """
+    # Recheck the exact source immediately before it is copied. Callers cannot
+    # bypass the policy gate by supplying a stock or stale zenohd directly.
+    validate_zenohd_tls_policy(zenohd_bin)
+
     dist_dir = Path(os.environ.get("PEPPY_DIST_DIR", str(repo_root / "dist")))
     dist_dir.mkdir(parents=True, exist_ok=True)
 
@@ -215,34 +286,66 @@ def build_and_package(
             f"unsupported target '{target_triple}' (supported: {supported})"
         )
 
-    if limactl is not None:
-        from .lima import cargo_build_in_lima
+    target_root = _get_target_dir(repo_root)
+    target_root.mkdir(parents=True, exist_ok=True)
+    # A release invocation gets a fresh Cargo output tree. This makes candidate
+    # discovery exact even on long-lived builders whose ordinary target tree
+    # contains old PMI build hashes.
+    with tempfile.TemporaryDirectory(
+        prefix=f".peppy-release-{target_triple}-",
+        dir=target_root,
+    ) as isolated_target:
+        target_dir = Path(isolated_target)
+        if limactl is not None:
+            from .lima import cargo_build_in_lima
 
-        cargo_build_in_lima(limactl, tag, target_triple, repo_root)
-    else:
-        cargo_build(tag, target_triple, repo_root)
+            cargo_build_in_lima(
+                limactl,
+                tag,
+                target_triple,
+                repo_root,
+                target_dir=target_dir,
+            )
+        else:
+            cargo_build(
+                tag,
+                target_triple,
+                repo_root,
+                target_dir=target_dir,
+            )
 
-    peppy_bin = find_peppy_binary(target_triple, repo_root)
-    zenohd_bin = find_zenohd_binary(target_triple, repo_root)
+        peppy_bin = find_peppy_binary(
+            target_triple, repo_root, target_dir=target_dir
+        )
+        zenohd_bin = find_zenohd_binary(
+            target_triple, repo_root, target_dir=target_dir
+        )
 
-    apptainer_dir = find_build_dir(
-        target_triple,
-        repo_root,
-        "containers-*/out/apptainer-install",
-        "apptainer install",
-    )
-
-    lima_dir = (
-        find_build_dir(
+        apptainer_dir = find_build_dir(
             target_triple,
             repo_root,
-            "containers-*/out/lima-install",
-            "lima install",
+            "containers-*/out/apptainer-install",
+            "apptainer install",
+            target_dir=target_dir,
         )
-        if "apple-darwin" in target_triple
-        else None
-    )
 
-    return package_release(
-        target_triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
-    )
+        lima_dir = (
+            find_build_dir(
+                target_triple,
+                repo_root,
+                "containers-*/out/lima-install",
+                "lima install",
+                target_dir=target_dir,
+            )
+            if "apple-darwin" in target_triple
+            else None
+        )
+
+        return package_release(
+            target_triple,
+            repo_root,
+            peppy_bin,
+            zenohd_bin,
+            apptainer_dir,
+            lima_dir,
+        )

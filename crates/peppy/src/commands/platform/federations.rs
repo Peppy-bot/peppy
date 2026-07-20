@@ -5,6 +5,14 @@
 //!
 //! ```json
 //! {
+//!   "identity_control": {
+//!     "controller_settled": true,
+//!     "authentication": "oauth", "certificate": "valid",
+//!     "bound_core_node_name": "daemon-a", "certificate_expiry_unix": 1784563200,
+//!     "generation": "generation-1", "next_retry_after_secs": null,
+//!     "router_apply_state": "applied", "operator_managed": false,
+//!     "offline_recovery_required": false
+//!   },
 //!   "platform_federation": { "endpoint": "tls/router.example:7447", "status": "federated" },
 //!   "core_node_certificate": {
 //!     "status": "valid", "core_node_name": "daemon-a",
@@ -31,7 +39,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use daemon::control::{self as daemon_control, LinkState, QueryStatusOutcome};
+use daemon::control::{self as daemon_control, ControlClientError, LinkState};
+use daemon::state::{DaemonState, RouterOwnership};
 use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
 use pmi::CoreNodePresence;
@@ -75,10 +84,28 @@ struct CoreNodeCertificateStatus {
     error: Option<String>,
 }
 
+/// Sanitized daemon-owned identity lifecycle. This mirrors the local control
+/// protocol without exposing credentials, certificate bodies, or backend
+/// diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct IdentityControlStatus {
+    controller_settled: bool,
+    authentication: daemon_control::AuthenticationState,
+    certificate: daemon_control::CertificateState,
+    bound_core_node_name: Option<String>,
+    certificate_expiry_unix: Option<i64>,
+    generation: Option<String>,
+    next_retry_after_secs: Option<u64>,
+    router_apply_state: daemon_control::RouterApplyState,
+    operator_managed: bool,
+    offline_recovery_required: bool,
+}
+
 /// The whole report document. Every field always serializes (an absent
 /// endpoint is an explicit `null`), so the JSON contract is byte-stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct FederationsDocument {
+    identity_control: IdentityControlStatus,
     platform_federation: PlatformFederation,
     core_node_certificate: CoreNodeCertificateStatus,
     daemon_running: bool,
@@ -95,11 +122,10 @@ enum PlatformView {
     Restarting,
     /// A daemon is running (its messaging answered, or the status query timed
     /// out mid-flight) but its cached status could not be read.
-    Unavailable,
+    Unavailable {
+        operator_managed: bool,
+    },
     DaemonDown,
-    /// An operator-run router (`zenoh.external`) owns federation; the daemon
-    /// has no status socket and peppy infers nothing.
-    OperatorManaged,
 }
 
 impl PlatformView {
@@ -112,9 +138,15 @@ impl PlatformView {
     /// and mid-restart or daemon-down there is no live session to trust.
     fn presence_rows_meaningful(&self) -> bool {
         match self {
-            Self::Status(status) => !status.pinned,
-            Self::Unavailable => true,
-            Self::OperatorManaged | Self::Restarting | Self::DaemonDown => false,
+            Self::Status(status) => {
+                !status.pinned
+                    && !status.operator_managed
+                    && !matches!(
+                        status.router_apply_state,
+                        daemon_control::RouterApplyState::OperatorManaged
+                    )
+            }
+            Self::Unavailable { .. } | Self::Restarting | Self::DaemonDown => false,
         }
     }
 }
@@ -122,8 +154,7 @@ impl PlatformView {
 /// The report inputs that are not the presence listing: the resolved daemon
 /// view plus what the credentials say.
 struct AuthState {
-    /// A PAT or a stored OAuth session is present.
-    authenticated: bool,
+    authentication: daemon_control::AuthenticationState,
     /// The platform endpoint from the credentials' router cache, used only for
     /// states where the daemon could not report an applied endpoint. Never
     /// sufficient for a `federated` status on its own.
@@ -131,14 +162,26 @@ struct AuthState {
     /// Enrolled production identity metadata. PEM/key bytes are never loaded by
     /// this status command.
     core_node_identity: Option<auth::identity::CoreNodeIdentity>,
+    binding_incomplete: bool,
+    material_invalid: bool,
+    offline_recovery_required: bool,
 }
 
 impl AuthState {
+    fn authenticated(&self) -> bool {
+        !matches!(
+            self.authentication,
+            daemon_control::AuthenticationState::Missing
+        )
+    }
+
     /// The cached endpoint as a display hint for states where the daemon could
     /// not report an applied endpoint, shown only while authenticated (a
     /// logged-out cache is stale identity data).
     fn endpoint_hint(&self) -> Option<String> {
-        self.cached_endpoint.clone().filter(|_| self.authenticated)
+        self.cached_endpoint
+            .clone()
+            .filter(|_| self.authenticated())
     }
 }
 
@@ -171,7 +214,22 @@ impl FederationsReport {
 
     /// An operator-run router owns federation (external or pinned).
     fn operator_managed(&self) -> bool {
-        self.pinned() || matches!(self.view, PlatformView::OperatorManaged)
+        self.pinned()
+            || matches!(
+                self.view,
+                PlatformView::Unavailable {
+                    operator_managed: true
+                }
+            )
+            || matches!(
+                &self.view,
+                PlatformView::Status(status)
+                    if status.operator_managed
+                        || matches!(
+                            status.router_apply_state,
+                            daemon_control::RouterApplyState::OperatorManaged
+                        )
+            )
     }
 
     /// The daemon acked a mid-restart status query.
@@ -193,67 +251,124 @@ pub struct FederationsCommand {
 
 impl Command for FederationsCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
+        let pat_active = self.pat.is_some();
         let dirs = self.peppy_dirs.unwrap_or_default();
-        let config =
-            daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-
-        // Managed vs external follows the RUNNING daemon's mode (its state file),
-        // the same single source login/logout use, so a disk config edited after
-        // the daemon started can never misclassify the report.
-        let managed = super::federation_poke_timeout_secs(&dirs, &config).is_some();
+        let live_daemon_state = DaemonState::read_from(&DaemonState::state_file_in(dirs.root()))
+            .ok()
+            .filter(DaemonState::is_running);
 
         // Load-resilient: a stale or unsupported credentials file reads as
         // not-authenticated (with a warning) rather than failing the report.
-        let auth_state = match auth::storage::load(&auth::storage::credentials_path(&dirs)) {
-            Ok(credentials) => AuthState {
-                authenticated: self.pat.is_some() || credentials.session.is_some(),
-                cached_endpoint: credentials.router.map(|router| router.endpoint),
-                core_node_identity: credentials.core_node_identity,
-            },
-            Err(error) => {
-                eprintln!("Warning: could not read stored credentials ({error}).");
-                AuthState {
-                    authenticated: self.pat.is_some(),
-                    cached_endpoint: None,
-                    core_node_identity: None,
+        let mut auth_state =
+            match auth::storage::load_read_only(&auth::storage::credentials_path(&dirs)) {
+                Ok(credentials) => AuthState {
+                    authentication: if pat_active {
+                        daemon_control::AuthenticationState::Pat
+                    } else if credentials.session.is_some() {
+                        daemon_control::AuthenticationState::Oauth
+                    } else {
+                        daemon_control::AuthenticationState::Missing
+                    },
+                    cached_endpoint: credentials.router.map(|router| router.endpoint),
+                    core_node_identity: credentials.core_node_identity,
+                    binding_incomplete: false,
+                    material_invalid: false,
+                    offline_recovery_required: false,
+                },
+                Err(error) => {
+                    eprintln!("Warning: could not read stored credentials ({error}).");
+                    AuthState {
+                        authentication: if pat_active {
+                            daemon_control::AuthenticationState::Pat
+                        } else {
+                            daemon_control::AuthenticationState::Missing
+                        },
+                        cached_endpoint: None,
+                        core_node_identity: None,
+                        binding_incomplete: false,
+                        material_invalid: false,
+                        offline_recovery_required: true,
+                    }
                 }
+            };
+        match auth::identity::load_identity_metadata_read_only(&dirs) {
+            Ok(identity) => auth_state.core_node_identity = identity,
+            Err(error) => {
+                eprintln!("Warning: could not read protected identity state ({error}).");
+                auth_state.offline_recovery_required = true;
             }
-        };
+        }
+        match auth::identity::binding_incomplete_read_only(&dirs) {
+            Ok(incomplete) => auth_state.binding_incomplete = incomplete,
+            Err(error) => {
+                eprintln!("Warning: could not read the identity transition marker ({error}).");
+                auth_state.offline_recovery_required = true;
+            }
+        }
+        if let Some(identity) = auth_state.core_node_identity.as_ref()
+            && let Err(error) =
+                auth::identity::validate_identity_material_read_only(&dirs, identity)
+        {
+            eprintln!("Warning: stored certificate material is invalid ({error}).");
+            auth_state.material_invalid = true;
+            auth_state.offline_recovery_required = true;
+        }
 
         // The status query (control socket) and the presence listing (messaging
         // session) use unrelated channels, so run them concurrently; a degraded
-        // daemon then costs max(status, presence) instead of their sum. External
-        // mode has no control socket, so only the presence side runs.
+        // daemon then costs max(status, presence) instead of their sum. Managed
+        // and external Zenoh modes both expose the identity-control socket.
         let socket = daemon_control::federation_control_socket_path(&dirs);
         let (status_query, presence) = crate::commands::block_on(async {
             let status = tokio::task::spawn_blocking(move || {
-                managed.then(|| daemon_control::query_status(&socket, STATUS_TIMEOUT))
+                daemon_control::status(&socket, STATUS_TIMEOUT)
             });
             Ok(tokio::join!(status, gather_presence(ctx)))
         })?;
         let status_query = status_query.map_err(|error| {
             Error::ExecutionFailed(format!("federation status query task failed: {error}"))
         })?;
+        let operator_managed_without_status = live_daemon_state
+            .as_ref()
+            .is_some_and(|state| state.router_ownership == RouterOwnership::OperatorManaged);
+        let service_pat_without_status = live_daemon_state
+            .as_ref()
+            .is_some_and(|state| state.service_pat_active);
 
         let view = match status_query {
-            // External mode: an operator-run router owns federation; peppy
-            // neither manages nor infers platform topology. Daemon liveness
-            // comes from the messaging probe alone.
-            None if presence.daemon_running => PlatformView::OperatorManaged,
-            None => PlatformView::DaemonDown,
-            Some(QueryStatusOutcome::Status(status)) => PlatformView::Status(status),
-            Some(QueryStatusOutcome::Restarting { .. }) => PlatformView::Restarting,
-            Some(QueryStatusOutcome::TimedOut) => PlatformView::Unavailable,
-            Some(QueryStatusOutcome::DaemonNotRunning) if presence.daemon_running => {
-                PlatformView::Unavailable
+            Ok(status) => PlatformView::Status(status),
+            Err(ControlClientError::TimedOut) => {
+                if service_pat_without_status {
+                    auth_state.authentication = daemon_control::AuthenticationState::Pat;
+                }
+                PlatformView::Unavailable {
+                    operator_managed: operator_managed_without_status,
+                }
             }
-            Some(QueryStatusOutcome::DaemonNotRunning) => PlatformView::DaemonDown,
-            Some(QueryStatusOutcome::DaemonError(message)) => {
+            Err(ControlClientError::DaemonNotRunning) if presence.daemon_running => {
+                if service_pat_without_status {
+                    auth_state.authentication = daemon_control::AuthenticationState::Pat;
+                }
+                PlatformView::Unavailable {
+                    operator_managed: operator_managed_without_status,
+                }
+            }
+            Err(ControlClientError::DaemonNotRunning) => PlatformView::DaemonDown,
+            Err(ControlClientError::UnexpectedResponse {
+                actual: "restarting",
+                ..
+            }) => {
+                if service_pat_without_status {
+                    auth_state.authentication = daemon_control::AuthenticationState::Pat;
+                }
+                PlatformView::Restarting
+            }
+            Err(error) => {
                 // A malformed daemon reply is a hard CLI error, never an
                 // `"error"` status in the report: that status is reserved for
                 // a failed platform link.
                 return Err(Error::ExecutionFailed(format!(
-                    "the daemon could not report federation status: {message}"
+                    "the daemon could not report federation status: {error}"
                 )));
             }
         };
@@ -337,21 +452,42 @@ fn build_report(
     presence_unavailable: bool,
 ) -> FederationsReport {
     let (status, endpoint) = match &view {
-        PlatformView::OperatorManaged => ("operator_managed", None),
-        PlatformView::Status(daemon_status) if daemon_status.pinned => ("operator_managed", None),
+        PlatformView::Status(daemon_status)
+            if daemon_status.pinned
+                || daemon_status.operator_managed
+                || matches!(
+                    daemon_status.router_apply_state,
+                    daemon_control::RouterApplyState::OperatorManaged
+                ) =>
+        {
+            ("operator_managed", None)
+        }
+        PlatformView::Status(daemon_status)
+            if matches!(
+                daemon_status.router_apply_state,
+                daemon_control::RouterApplyState::Error
+            ) =>
+        {
+            ("error", daemon_status.link.endpoint.clone())
+        }
         PlatformView::Status(daemon_status) => match &daemon_status.link.link_state {
             LinkState::Verified => ("federated", daemon_status.link.endpoint.clone()),
             LinkState::Unverified => ("connecting", daemon_status.link.endpoint.clone()),
             LinkState::Error(_) => ("error", daemon_status.link.endpoint.clone()),
-            LinkState::NotConfigured if auth_state.authenticated => {
+            LinkState::NotConfigured
+                if !matches!(
+                    daemon_status.authentication,
+                    daemon_control::AuthenticationState::Missing
+                ) =>
+            {
                 ("connecting", auth_state.endpoint_hint())
             }
             LinkState::NotConfigured => ("logged_out", None),
         },
-        PlatformView::Restarting | PlatformView::Unavailable => {
+        PlatformView::Restarting | PlatformView::Unavailable { .. } => {
             ("status_unavailable", auth_state.endpoint_hint())
         }
-        PlatformView::DaemonDown if auth_state.authenticated => {
+        PlatformView::DaemonDown if auth_state.authenticated() => {
             ("daemon_not_running", auth_state.endpoint_hint())
         }
         PlatformView::DaemonDown => ("logged_out", None),
@@ -376,12 +512,15 @@ fn build_report(
         auth_state.core_node_identity.as_ref(),
         auth::storage::now_unix(),
         local_core_node,
-        certificate_is_being_applied,
+        certificate_is_being_applied || auth_state.binding_incomplete,
+        auth_state.material_invalid,
         certificate_error,
     );
+    let identity_control = identity_control_status(&view, auth_state, &core_node_certificate);
 
     FederationsReport {
         document: FederationsDocument {
+            identity_control,
             platform_federation: PlatformFederation { endpoint, status },
             core_node_certificate,
             daemon_running: view.daemon_running(),
@@ -389,6 +528,66 @@ fn build_report(
         },
         view,
         presence_unavailable,
+    }
+}
+
+fn identity_control_status(
+    view: &PlatformView,
+    auth_state: &AuthState,
+    certificate: &CoreNodeCertificateStatus,
+) -> IdentityControlStatus {
+    if let PlatformView::Status(status) = view {
+        return IdentityControlStatus {
+            controller_settled: status.controller_settled,
+            authentication: status.authentication,
+            certificate: status.certificate,
+            bound_core_node_name: status.bound_core_node_name.clone(),
+            certificate_expiry_unix: status.certificate_expiry_unix,
+            generation: status.generation.clone(),
+            next_retry_after_secs: status.next_retry_after_secs,
+            router_apply_state: status.router_apply_state,
+            operator_managed: status.operator_managed,
+            offline_recovery_required: status.offline_recovery_required,
+        };
+    }
+
+    let router_apply_state = match view {
+        PlatformView::Restarting | PlatformView::Unavailable { .. } => {
+            daemon_control::RouterApplyState::Error
+        }
+        PlatformView::DaemonDown => daemon_control::RouterApplyState::Standalone,
+        PlatformView::Status(_) => unreachable!("returned above"),
+    };
+    IdentityControlStatus {
+        controller_settled: false,
+        authentication: auth_state.authentication,
+        certificate: match certificate.status {
+            "enrolling" => daemon_control::CertificateState::Enrolling,
+            "valid" => daemon_control::CertificateState::Valid,
+            "renewing" => daemon_control::CertificateState::Renewing,
+            "expiring" => daemon_control::CertificateState::Expiring,
+            "expired" => daemon_control::CertificateState::Expired,
+            "error" => daemon_control::CertificateState::Error,
+            _ => daemon_control::CertificateState::Missing,
+        },
+        bound_core_node_name: certificate.core_node_name.clone(),
+        certificate_expiry_unix: auth_state
+            .core_node_identity
+            .as_ref()
+            .map(|identity| identity.not_after),
+        generation: auth_state
+            .core_node_identity
+            .as_ref()
+            .map(|identity| identity.active_generation.clone()),
+        next_retry_after_secs: None,
+        router_apply_state,
+        operator_managed: matches!(
+            view,
+            PlatformView::Unavailable {
+                operator_managed: true
+            }
+        ),
+        offline_recovery_required: auth_state.offline_recovery_required,
     }
 }
 
@@ -400,6 +599,7 @@ fn certificate_status(
     now: i64,
     live_core_node_name: Option<&str>,
     applying: bool,
+    material_invalid: bool,
     error: Option<&str>,
 ) -> CoreNodeCertificateStatus {
     let Some(identity) = identity
@@ -413,7 +613,9 @@ fn certificate_status(
         };
     };
 
-    let status = if !identity.is_valid_at(now) {
+    let status = if material_invalid {
+        "error"
+    } else if !identity.is_valid_at(now) {
         "expired"
     } else if applying {
         // Activation publishes the replacement generation before zenohd reloads
@@ -488,8 +690,35 @@ fn format_human(report: &FederationsReport) -> String {
         "status  : {}",
         report.document.platform_federation.status
     );
+    let identity = &report.document.identity_control;
+    let _ = writeln!(
+        platform,
+        "auth    : {}",
+        authentication_label(identity.authentication)
+    );
     let certificate = &report.document.core_node_certificate;
-    let _ = writeln!(platform, "cert    : {}", certificate.status);
+    let _ = writeln!(
+        platform,
+        "cert    : {}",
+        certificate_label(identity.certificate)
+    );
+    let _ = writeln!(
+        platform,
+        "router  : {}",
+        router_apply_label(identity.router_apply_state)
+    );
+    if let Some(bound_name) = &identity.bound_core_node_name {
+        let _ = writeln!(platform, "bound   : {bound_name}");
+    }
+    if let Some(generation) = &identity.generation {
+        let _ = writeln!(platform, "generation: {generation}");
+    }
+    if let Some(retry_after) = identity.next_retry_after_secs {
+        let _ = writeln!(platform, "retry in: {retry_after}s");
+    }
+    if identity.offline_recovery_required {
+        let _ = writeln!(platform, "recovery: offline action required");
+    }
     if let Some(not_after) = &certificate.not_after {
         let _ = writeln!(platform, "expires : {not_after}");
     }
@@ -545,6 +774,35 @@ fn format_human(report: &FederationsReport) -> String {
     out
 }
 
+fn authentication_label(state: daemon_control::AuthenticationState) -> &'static str {
+    match state {
+        daemon_control::AuthenticationState::Missing => "missing",
+        daemon_control::AuthenticationState::Oauth => "oauth",
+        daemon_control::AuthenticationState::Pat => "pat",
+    }
+}
+
+fn certificate_label(state: daemon_control::CertificateState) -> &'static str {
+    match state {
+        daemon_control::CertificateState::Missing => "missing",
+        daemon_control::CertificateState::Enrolling => "enrolling",
+        daemon_control::CertificateState::Valid => "valid",
+        daemon_control::CertificateState::Renewing => "renewing",
+        daemon_control::CertificateState::Expiring => "expiring",
+        daemon_control::CertificateState::Expired => "expired",
+        daemon_control::CertificateState::Error => "error",
+    }
+}
+
+fn router_apply_label(state: daemon_control::RouterApplyState) -> &'static str {
+    match state {
+        daemon_control::RouterApplyState::Standalone => "standalone",
+        daemon_control::RouterApplyState::Applied => "applied",
+        daemon_control::RouterApplyState::OperatorManaged => "operator_managed",
+        daemon_control::RouterApplyState::Error => "error",
+    }
+}
+
 /// Human note for a pinned managed router (mirrors login/logout wording).
 const PINNED_HUMAN_NOTE: &str =
     "note    : an operator-pinned ZENOH_CONFIG owns this router; federation is not auto-managed.";
@@ -566,7 +824,28 @@ mod tests {
         link_state: LinkState,
         pinned: bool,
     ) -> daemon_control::FederationStatus {
+        let router_apply_state = if pinned {
+            daemon_control::RouterApplyState::OperatorManaged
+        } else {
+            match &link_state {
+                LinkState::Verified | LinkState::Unverified => {
+                    daemon_control::RouterApplyState::Applied
+                }
+                LinkState::Error(_) => daemon_control::RouterApplyState::Error,
+                LinkState::NotConfigured => daemon_control::RouterApplyState::Standalone,
+            }
+        };
         daemon_control::FederationStatus {
+            controller_settled: true,
+            authentication: daemon_control::AuthenticationState::Oauth,
+            certificate: daemon_control::CertificateState::Valid,
+            bound_core_node_name: Some("daemon-a".into()),
+            certificate_expiry_unix: Some(CERT_NOT_AFTER),
+            generation: Some("generation-1".into()),
+            next_retry_after_secs: None,
+            router_apply_state,
+            operator_managed: pinned,
+            offline_recovery_required: false,
             link: daemon_control::PlatformLink {
                 endpoint: endpoint.map(str::to_string),
                 link_state,
@@ -580,17 +859,23 @@ mod tests {
 
     fn authed_with_cache() -> AuthState {
         AuthState {
-            authenticated: true,
+            authentication: daemon_control::AuthenticationState::Oauth,
             cached_endpoint: Some(CACHED.to_string()),
             core_node_identity: Some(certificate_identity("daemon-a", 0, 4_000_000_000)),
+            binding_incomplete: false,
+            material_invalid: false,
+            offline_recovery_required: false,
         }
     }
 
     fn logged_out() -> AuthState {
         AuthState {
-            authenticated: false,
+            authentication: daemon_control::AuthenticationState::Missing,
             cached_endpoint: None,
             core_node_identity: None,
+            binding_incomplete: false,
+            material_invalid: false,
+            offline_recovery_required: false,
         }
     }
 
@@ -602,6 +887,7 @@ mod tests {
         auth::identity::CoreNodeIdentity {
             api_origin: "https://api.peppy.bot".into(),
             subject: "subject-a".into(),
+            session_revision: None,
             workspace_id: config::namespace::Namespace::parse(
                 "550e8400-e29b-41d4-a716-446655440000",
             )
@@ -645,6 +931,18 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report.document).unwrap(),
             serde_json::json!({
+                "identity_control": {
+                    "controller_settled": true,
+                    "authentication": "oauth",
+                    "certificate": "valid",
+                    "bound_core_node_name": "daemon-a",
+                    "certificate_expiry_unix": CERT_NOT_AFTER,
+                    "generation": "generation-1",
+                    "next_retry_after_secs": null,
+                    "router_apply_state": "applied",
+                    "operator_managed": false,
+                    "offline_recovery_required": false
+                },
                 "platform_federation": { "endpoint": HUB, "status": "federated" },
                 "core_node_certificate": {
                     "status": "valid",
@@ -688,6 +986,7 @@ mod tests {
     fn daemon_rotation_flag_reports_an_observable_renewing_state() {
         let mut daemon_status = status(Some(HUB), LinkState::Verified, false);
         daemon_status.certificate_renewing = true;
+        daemon_status.certificate = daemon_control::CertificateState::Renewing;
         let report = build_report(
             PlatformView::Status(daemon_status),
             &authed_with_cache(),
@@ -698,6 +997,60 @@ mod tests {
 
         assert_eq!(report.document.platform_federation.status, "federated");
         assert_eq!(report.document.core_node_certificate.status, "renewing");
+    }
+
+    #[test]
+    fn rich_identity_control_state_is_presented_without_sensitive_material() {
+        let mut daemon_status = status(
+            Some(HUB),
+            LinkState::Error("public link failure".into()),
+            false,
+        );
+        daemon_status.authentication = daemon_control::AuthenticationState::Pat;
+        daemon_status.certificate = daemon_control::CertificateState::Expiring;
+        daemon_status.bound_core_node_name = Some("daemon-a".into());
+        daemon_status.certificate_expiry_unix = Some(CERT_NOT_AFTER);
+        daemon_status.generation = Some("generation-public-id".into());
+        daemon_status.next_retry_after_secs = Some(45);
+        daemon_status.router_apply_state = daemon_control::RouterApplyState::Error;
+        daemon_status.offline_recovery_required = true;
+
+        let report = build_report(
+            PlatformView::Status(daemon_status),
+            &authed_with_cache(),
+            Some("daemon-a"),
+            &[],
+            false,
+        );
+        assert_eq!(
+            serde_json::to_value(&report.document.identity_control).unwrap(),
+            serde_json::json!({
+                "controller_settled": true,
+                "authentication": "pat",
+                "certificate": "expiring",
+                "bound_core_node_name": "daemon-a",
+                "certificate_expiry_unix": CERT_NOT_AFTER,
+                "generation": "generation-public-id",
+                "next_retry_after_secs": 45,
+                "router_apply_state": "error",
+                "operator_managed": false,
+                "offline_recovery_required": true
+            })
+        );
+        let human = format_human(&report);
+        assert!(human.contains("auth    : pat"), "{human}");
+        assert!(human.contains("cert    : expiring"), "{human}");
+        assert!(human.contains("router  : error"), "{human}");
+        assert!(
+            human.contains("generation: generation-public-id"),
+            "{human}"
+        );
+        assert!(human.contains("retry in: 45s"), "{human}");
+        assert!(
+            human.contains("recovery: offline action required"),
+            "{human}"
+        );
+        assert!(!human.contains("token"), "{human}");
     }
 
     #[test]
@@ -786,8 +1139,14 @@ mod tests {
 
     #[test]
     fn logged_out_reports_logged_out_with_a_null_endpoint() {
+        let mut daemon_status = status(None, LinkState::NotConfigured, false);
+        daemon_status.authentication = daemon_control::AuthenticationState::Missing;
+        daemon_status.certificate = daemon_control::CertificateState::Missing;
+        daemon_status.bound_core_node_name = None;
+        daemon_status.certificate_expiry_unix = None;
+        daemon_status.generation = None;
         let live = build_report(
-            PlatformView::Status(status(None, LinkState::NotConfigured, false)),
+            PlatformView::Status(daemon_status),
             &logged_out(),
             Some("daemon-a"),
             &[],
@@ -825,9 +1184,34 @@ mod tests {
     }
 
     #[test]
-    fn an_external_router_reports_operator_managed_and_infers_nothing() {
+    fn explicit_operator_managed_status_suppresses_topology_without_being_pinned() {
+        let mut daemon_status = status(Some(HUB), LinkState::Verified, false);
+        daemon_status.operator_managed = true;
+        daemon_status.router_apply_state = daemon_control::RouterApplyState::OperatorManaged;
         let report = build_report(
-            PlatformView::OperatorManaged,
+            PlatformView::Status(daemon_status),
+            &authed_with_cache(),
+            Some("daemon-a"),
+            &two_remote_presences(),
+            false,
+        );
+
+        assert_eq!(
+            report.document.platform_federation.status,
+            "operator_managed"
+        );
+        assert!(report.document.federated_core_nodes.is_empty());
+        assert!(!report.pinned());
+        assert!(report.operator_managed());
+    }
+
+    #[test]
+    fn an_external_router_reports_operator_managed_and_infers_nothing() {
+        let mut daemon_status = status(None, LinkState::Unverified, false);
+        daemon_status.operator_managed = true;
+        daemon_status.router_apply_state = daemon_control::RouterApplyState::OperatorManaged;
+        let report = build_report(
+            PlatformView::Status(daemon_status),
             &authed_with_cache(),
             Some("daemon-a"),
             &two_remote_presences(),
@@ -863,7 +1247,9 @@ mod tests {
     #[test]
     fn a_status_timeout_reports_status_unavailable_with_the_cached_endpoint() {
         let report = build_report(
-            PlatformView::Unavailable,
+            PlatformView::Unavailable {
+                operator_managed: false,
+            },
             &authed_with_cache(),
             Some("daemon-a"),
             &[presence("daemon-a", "gen-1"), presence("daemon-b", "gen-1")],
@@ -877,11 +1263,27 @@ mod tests {
             report.document.platform_federation.endpoint.as_deref(),
             Some(CACHED)
         );
-        assert_eq!(
-            report.document.federated_core_nodes.len(),
-            1,
-            "rows presence answered with are still reported"
+        assert!(
+            report.document.federated_core_nodes.is_empty(),
+            "without authoritative ownership status, hub-path inference must fail closed"
         );
+    }
+
+    #[test]
+    fn an_unavailable_operator_router_preserves_authoritative_state_ownership() {
+        let report = build_report(
+            PlatformView::Unavailable {
+                operator_managed: true,
+            },
+            &authed_with_cache(),
+            Some("daemon-a"),
+            &two_remote_presences(),
+            false,
+        );
+
+        assert!(report.document.identity_control.operator_managed);
+        assert!(report.document.federated_core_nodes.is_empty());
+        assert!(report.operator_managed());
     }
 
     #[test]
@@ -890,8 +1292,12 @@ mod tests {
             PlatformView::Status(status(None, LinkState::NotConfigured, false)).daemon_running()
         );
         assert!(PlatformView::Restarting.daemon_running());
-        assert!(PlatformView::Unavailable.daemon_running());
-        assert!(PlatformView::OperatorManaged.daemon_running());
+        assert!(
+            PlatformView::Unavailable {
+                operator_managed: false
+            }
+            .daemon_running()
+        );
         assert!(!PlatformView::DaemonDown.daemon_running());
     }
 
@@ -902,19 +1308,19 @@ mod tests {
         // deterministic for every generation hash.
         let identity = certificate_identity("daemon-a", 100, 500);
         assert_eq!(
-            certificate_status(None, 150, Some("daemon-a"), false, None).status,
+            certificate_status(None, 150, Some("daemon-a"), false, false, None).status,
             "missing"
         );
         assert_eq!(
-            certificate_status(Some(&identity), 150, Some("daemon-a"), false, None).status,
+            certificate_status(Some(&identity), 150, Some("daemon-a"), false, false, None,).status,
             "valid"
         );
         assert_eq!(
-            certificate_status(Some(&identity), 500, Some("daemon-a"), false, None).status,
+            certificate_status(Some(&identity), 500, Some("daemon-a"), false, false, None,).status,
             "expiring"
         );
         assert_eq!(
-            certificate_status(Some(&identity), 500, Some("daemon-a"), true, None).status,
+            certificate_status(Some(&identity), 500, Some("daemon-a"), true, false, None,).status,
             "renewing"
         );
         assert_eq!(
@@ -923,13 +1329,22 @@ mod tests {
                 CERT_NOT_AFTER,
                 Some("daemon-a"),
                 false,
+                false,
                 None,
             )
             .status,
             "expired"
         );
         assert_eq!(
-            certificate_status(Some(&identity), 150, Some("renamed-daemon"), false, None,).status,
+            certificate_status(
+                Some(&identity),
+                150,
+                Some("renamed-daemon"),
+                false,
+                false,
+                None,
+            )
+            .status,
             "missing",
             "a certificate for a different core-node name is unusable by this daemon"
         );
@@ -991,6 +1406,18 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report.document).unwrap(),
             serde_json::json!({
+                "identity_control": {
+                    "controller_settled": true,
+                    "authentication": "oauth",
+                    "certificate": "valid",
+                    "bound_core_node_name": "daemon-a",
+                    "certificate_expiry_unix": CERT_NOT_AFTER,
+                    "generation": "generation-1",
+                    "next_retry_after_secs": null,
+                    "router_apply_state": "applied",
+                    "operator_managed": false,
+                    "offline_recovery_required": false
+                },
                 "platform_federation": { "endpoint": HUB, "status": "federated" },
                 "core_node_certificate": {
                     "status": "valid",

@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::builder::ServeCommandBuilder;
 use crate::error::{Error, Result};
+use crate::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +36,13 @@ pub(crate) const RESTART_EXIT_CODE: i32 = 75;
 /// (otherwise invisible to systemd) into a visible `exit(RESTART_EXIT_CODE)`.
 const FLAP_WINDOW: Duration = Duration::from_secs(60);
 const FLAP_CAP: usize = 5;
+/// Bounded old-generation child reap performed after graceful task teardown.
+pub(crate) const RESTART_REAP_BUDGET: Duration = Duration::from_secs(2);
+/// Bounded wait for a managed router's listener to be released.
+pub(crate) const RESTART_PORT_RELEASE_BUDGET: Duration = Duration::from_secs(5);
+/// PMI's managed-router startup/readiness ceiling. Kept explicit in the daemon
+/// client budget until PMI exposes this constant as public API.
+pub(crate) const MANAGED_ROUTER_STARTUP_BUDGET: Duration = Duration::from_secs(30);
 
 pub(crate) type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
@@ -387,6 +395,42 @@ pub fn serve(options: ServeOptions) -> Result<()> {
     // for a second daemon. Every exit path releases it (kernel flock),
     // including SIGKILL and the process::exit calls below.
     let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&options.peppy_dirs)?;
+    // The daemon is the sole normal writer of certificate identity state. Hold
+    // the stable owner lock above the generation-restart loop so neither
+    // offline cleanup nor another writer can enter between namespaces.
+    let _identity_owner =
+        auth::identity::acquire_identity_owner(&options.peppy_dirs).map_err(|error| {
+            Error::ExecutionFailed(format!("cannot acquire daemon identity ownership: {error}"))
+        })?;
+    let pending_logout =
+        auth::logout::pending_local_logout(&options.peppy_dirs).map_err(|error| {
+            Error::ExecutionFailed(format!(
+                "cannot inspect interrupted platform logout state before router startup: {error}"
+            ))
+        })?;
+    let prior_state_path = DaemonState::state_file_in(options.peppy_dirs.root());
+    crate::router_process::stop_before_startup(&prior_state_path, pending_logout)?;
+    match auth::logout::recover_pending_local_logout(&options.peppy_dirs).map_err(|error| {
+        Error::ExecutionFailed(format!(
+            "cannot recover an interrupted platform logout before router startup: {error}"
+        ))
+    })? {
+        auth::logout::PendingLogoutRecovery::None => {}
+        auth::logout::PendingLogoutRecovery::Completed => {
+            info!(
+                event = "identity_logout_recovery",
+                outcome = "completed",
+                "completed interrupted platform logout before daemon generation startup"
+            );
+        }
+        auth::logout::PendingLogoutRecovery::Superseded => {
+            info!(
+                event = "identity_logout_recovery",
+                outcome = "superseded",
+                "discarded interrupted logout intent because a newer login is present"
+            );
+        }
+    }
     let mut flap = FlapWindow::new();
     loop {
         let (outcome, router_adopted) = run_one_generation(&options)?;
@@ -476,7 +520,7 @@ fn finalize_before_restart(router_adopted: bool) {
     // re-parenting to init) an un-reaped child becomes a persistent zombie. A
     // single WNOHANG pass can miss a killed-but-not-yet-zombie child, so loop with
     // a short sleep until no children remain or the deadline.
-    reap_stragglers(Duration::from_secs(2));
+    reap_stragglers(RESTART_REAP_BUDGET);
 
     if router_adopted {
         info!(
@@ -490,7 +534,7 @@ fn finalize_before_restart(router_adopted: bool) {
     // zenohd has not released the port after a short bounded retry the in-process
     // loop cannot recover, so exit for the supervisor rather than spin.
     let port = crate::builder::extract_messaging_port();
-    if !wait_port_free(port, Duration::from_secs(5)) {
+    if !wait_port_free(port, RESTART_PORT_RELEASE_BUDGET) {
         error!(
             port,
             "messaging port still bound after the previous generation tore down; \

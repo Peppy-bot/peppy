@@ -1,10 +1,11 @@
 use super::core_node::CoreNodeRunner;
 use super::federation_control::FederationControl;
 use super::messaging_router::{MessagingRouter, teardown_budget_for};
-use super::router_federation::{RouterFederation, trigger_channel};
+use super::router_federation::{IdentityController, trigger_channel};
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
-use crate::state::DaemonState;
+use crate::router_process::RouterProcessRecorder;
+use crate::state::{DaemonState, RouterOwnership};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PeppyConfig;
 use pmi::Messenger;
@@ -48,7 +49,7 @@ pub struct ServeCommandBuilder {
     /// Backend URL for platform federation, set by
     /// [`with_messaging_router`](Self::with_messaging_router) for the `zenoh`
     /// engine. `Some` means [`build`](Self::build) spawns the
-    /// [`RouterFederation`] task that federates the local router to the
+    /// [`IdentityController`] task that federates the local router to the
     /// platform router (and keeps it federated across login/logout). The local
     /// router is always started *standalone*; the task applies the federation
     /// off the startup path so a slow/unreachable backend can never stall
@@ -60,19 +61,27 @@ pub struct ServeCommandBuilder {
     /// Bound on the federation backend round-trip (the startup gate and each
     /// resolve). Read from `peppy_config.zenoh.managed.federation` in
     /// [`with_messaging_router`](Self::with_messaging_router) before the config is
-    /// moved into the core node, and shared by [`RouterFederation`] and
+    /// moved into the core node, and shared by [`IdentityController`] and
     /// [`FederationControl`].
     federation_connect_timeout: Duration,
     /// Whether the managed router was built from an operator-pinned
     /// `ZENOH_CONFIG` file, captured when the adapter is created and handed to
     /// the federation task so its first poll reports ownership correctly.
     router_pinned: bool,
+    /// Whether the Zenoh process is adopted from an operator rather than
+    /// spawned and supervised by Peppy.
+    router_operator_managed: bool,
+    /// Exact `-c` argument of a Peppy-spawned zenohd. The controller snapshots
+    /// the corresponding child identity immediately before committing logout,
+    /// so crash recovery can stop only that process before deleting keys.
+    managed_router_config_path: Option<PathBuf>,
+    router_process_recorder: Option<RouterProcessRecorder>,
     /// The namespace resolved once for this daemon generation (`"local"` when
     /// logged out, else the workspace id). Resolved in
     /// [`with_messaging_router`](Self::with_messaging_router) from the cached
     /// credentials and applied to the daemon's own session there; also threaded
     /// into [`DaemonState`], the core node (and thus every spawned node), and the
-    /// [`RouterFederation`] task (which compares against it to decide restart vs
+    /// [`IdentityController`] task (which compares against it to decide restart vs
     /// live re-federate). A single source for the whole generation.
     namespace: config::namespace::Namespace,
     /// The shared coordinator token for this generation: cloned into every serve
@@ -105,6 +114,9 @@ impl ServeCommandBuilder {
                 daemon_config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
             ),
             router_pinned: false,
+            router_operator_managed: false,
+            managed_router_config_path: None,
+            router_process_recorder: None,
             // Default for the mock/other engines that never resolve a namespace;
             // the zenoh path overwrites this in `with_messaging_router`.
             namespace: config::namespace::Namespace::local(),
@@ -146,21 +158,19 @@ impl ServeCommandBuilder {
 
                 // A managed local router starts STANDALONE here. Federating it
                 // to the platform router needs a backend round-trip, done off
-                // this synchronous startup path by `RouterFederation`.
-                // External routers are entirely operator-run, so federation is
-                // not armed and no control socket or presence gate is created.
+                // this synchronous startup path by `IdentityController`.
                 // `resolve_api_url` is a local config/env lookup (no I/O), so it
                 // is safe here; an invalid URL fails startup loudly rather than
                 // silently degrading the daemon to standalone mode.
-                if let Some(federation_config) = self.peppy_config.zenoh.federation() {
-                    let api_url =
-                        auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers)
-                            .map_err(|e| {
+                let api_url =
+                    auth::profile::resolve_api_url(None, &self.peppy_config.resource_servers)
+                        .map_err(|e| {
                             Error::ExecutionFailed(format!(
-                                "invalid managed-federation backend URL: {e}"
+                                "invalid platform identity backend URL: {e}"
                             ))
                         })?;
-                    self.federation_api_url = Some(api_url);
+                self.federation_api_url = Some(api_url);
+                if let Some(federation_config) = self.peppy_config.zenoh.federation() {
                     // Capture the federation timeout here, before `peppy_config`
                     // is moved into the core node in `build`; both the federation
                     // task and its control socket share it.
@@ -219,6 +229,31 @@ impl ServeCommandBuilder {
             MessengerAdapter::Zenoh(adapter) => adapter.router_config_is_pinned(),
             MessengerAdapter::Mock(_) => false,
         };
+        self.router_operator_managed = self.peppy_config.zenoh.external_endpoint().is_some();
+        self.managed_router_config_path =
+            if matches!(&adapter, MessengerAdapter::Zenoh(_)) && !self.router_operator_managed {
+                if self.router_pinned {
+                    std::env::var("ZENOH_CONFIG")
+                        .ok()
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                } else {
+                    Some(std::env::temp_dir().join(format!("zenohd_config_{listening_port}.json5")))
+                }
+            } else {
+                None
+            };
+        self.router_process_recorder = self
+            .managed_router_config_path
+            .clone()
+            .map(|config_path| {
+                RouterProcessRecorder::new(
+                    DaemonState::state_file_in(self.peppy_dirs.root()),
+                    config_path,
+                )
+            })
+            .transpose()?;
         let messenger = Arc::new(Mutex::new(Messenger::new(adapter)));
         let (messaging_ready_tx, messaging_ready_rx) = watch::channel(false);
         // Shutdown-side counterpart of `messaging_ready`: the core node signals
@@ -238,6 +273,7 @@ impl ServeCommandBuilder {
                     messaging_ready_tx,
                     Some(core_node_done_rx),
                     teardown_budget,
+                    self.router_process_recorder.clone(),
                     self.teardown_token.clone(),
                 )));
         Ok(self)
@@ -266,7 +302,7 @@ impl ServeCommandBuilder {
         // declaration until the *initial* federation poll has settled, so it
         // sees the federated mesh rather than the always-standalone just-started
         // local router (a same-name daemon reachable only through the platform
-        // router must refuse boot). RouterFederation fires the sender in
+        // router must refuse boot). IdentityController fires the sender in
         // lockstep with its startup readiness gate, so the wait is bounded by
         // `federation_connect_timeout` and fail-open (dropped sender ⇒ the core
         // node proceeds standalone).
@@ -336,19 +372,32 @@ impl ServeCommandBuilder {
                 let core_node_name = core_node.node_name().to_string();
                 let daemon_state = {
                     let messenger = messenger.blocking_lock();
-                    daemon_state_for_messenger(
+                    let router_ownership = if self.router_operator_managed || self.router_pinned {
+                        RouterOwnership::OperatorManaged
+                    } else if self.federation_api_url.is_some() {
+                        RouterOwnership::PeppyManaged
+                    } else {
+                        RouterOwnership::Unmanaged
+                    };
+                    let mut state = daemon_state_for_messenger(
                         &messenger,
                         &core_node_name,
                         &self.git_hash,
                         shutdown_grace_secs,
                         self.namespace.clone(),
-                        // `Some` exactly when this generation arms managed-router
-                        // federation below (a control socket will exist), so the
-                        // auth commands can follow the running daemon's mode.
+                        // `Some` exactly when this generation arms the identity
+                        // controller and its control socket (managed and
+                        // external Zenoh modes).
                         self.federation_api_url
                             .as_ref()
                             .map(|_| self.federation_connect_timeout.as_secs()),
-                    )
+                        router_ownership,
+                        self.router_operator_managed,
+                    );
+                    if let Some(recorder) = self.router_process_recorder.as_ref() {
+                        state = state.with_managed_router_launch(recorder.launch_descriptor());
+                    }
+                    state
                 };
                 let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
                 DaemonState::write_to(&state_path, &daemon_state).map_err(|e| {
@@ -370,16 +419,11 @@ impl ServeCommandBuilder {
             }
         }
 
-        // Platform-router federation manager (zenoh engine only; other engines
-        // never set `federation_api_url`). Applies the initial federation once the
-        // router is up (gating `serve` reporting ready, bounded by the timeout)
-        // and (de)federates the local router live on login/logout: immediately
-        // when poked over the control socket, else on the next poll. It waits on
-        // `messaging_ready` before touching the router, so it can't race
-        // MessagingRouter's initial `start_router`.
-        // In-process restart channel. Armed only for managed zenoh when the
-        // federation API URL resolves; external zenoh and the mock engine have no
-        // federation control channel and never restart through this path.
+        // Identity controller (Zenoh engine only; other engines never set
+        // `federation_api_url`). Managed routers are applied and verified;
+        // external routers receive certificate maintenance and status but stay
+        // wholly operator-managed. Both modes expose the versioned control
+        // socket and can request an in-process namespace restart.
         let mut restart_rx: Option<watch::Receiver<bool>> = None;
         if self.federation_api_url.is_some() && federation_core_node_name.is_none() {
             // Only reachable when a zenoh router was built without a core node
@@ -402,7 +446,7 @@ impl ServeCommandBuilder {
             // `Restarting` ack; the serve coordinator observes it.
             let (restart_tx, restart_signal_rx) = watch::channel(false);
             restart_rx = Some(restart_signal_rx);
-            let (federation, federation_status_rx) = RouterFederation::new(
+            let (federation, federation_status_rx) = IdentityController::new(
                 messenger,
                 api_url,
                 // This generation's core-node name, carried in every
@@ -429,6 +473,8 @@ impl ServeCommandBuilder {
                 // Router-config ownership captured when the adapter was
                 // built, so the first status reports pinned correctly.
                 self.router_pinned,
+                self.router_operator_managed,
+                self.router_process_recorder.clone(),
                 self.teardown_token.clone(),
             );
             self.composite_command = self
@@ -468,6 +514,7 @@ impl ServeCommandBuilder {
 /// the full locator (including an operator-configured host and port) the single
 /// source used by [`ServeCommandBuilder::build`]. Mock backends retain the
 /// historical loopback-host fallback.
+#[allow(clippy::too_many_arguments)]
 fn daemon_state_for_messenger(
     messenger: &Messenger,
     core_node_name: &str,
@@ -475,6 +522,8 @@ fn daemon_state_for_messenger(
     shutdown_grace_secs: u64,
     namespace: config::namespace::Namespace,
     federation_connect_timeout_secs: Option<u64>,
+    router_ownership: RouterOwnership,
+    router_external: bool,
 ) -> DaemonState {
     let (messaging_host, messaging_port) = messenger
         .messaging_locator()
@@ -492,9 +541,11 @@ fn daemon_state_for_messenger(
         git_hash,
         shutdown_grace_secs,
         namespace,
+        router_ownership,
         federation_connect_timeout_secs,
     )
     .with_service_pat_active(auth::resolver::pat_from_env().is_some())
+    .with_router_external(router_external)
 }
 
 /// Extracts the messaging port from the environment variable, falling back to the default port.
@@ -626,9 +677,10 @@ mod tests {
                 .with_messaging_router("zenoh".to_string())
                 .expect("build external messaging adapter without starting it");
         assert!(
-            builder.federation_api_url.is_none(),
-            "external mode must not arm router federation"
+            builder.federation_api_url.is_some(),
+            "external mode must arm daemon-owned identity lifecycle control"
         );
+        assert!(builder.router_operator_managed);
         let messenger = builder
             .messenger_handle()
             .expect("builder retains its messenger");
@@ -666,12 +718,17 @@ mod tests {
                 .federation_api_url
                 .as_ref()
                 .map(|_| builder.federation_connect_timeout.as_secs()),
+            RouterOwnership::OperatorManaged,
+            true,
         );
         assert_eq!(state.messaging_host, "zenoh-router.regression.test");
         assert_eq!(state.messaging_port, 17555);
+        assert_eq!(state.router_ownership, RouterOwnership::OperatorManaged);
+        assert!(state.router_external);
         assert_eq!(
-            state.federation_connect_timeout_secs, None,
-            "external mode must record no federation control channel in the daemon state"
+            state.federation_connect_timeout_secs,
+            Some(daemon_config::peppy_config::DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS),
+            "external mode must advertise its identity-control channel timeout"
         );
     }
 

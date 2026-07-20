@@ -185,6 +185,7 @@ mod tests {
             vec!["peppy", "platform", "login", "--no-browser", "--yes"],
             vec!["peppy", "platform", "login", "--api-url", "http://x:3000"],
             vec!["peppy", "platform", "logout", "-y"],
+            vec!["peppy", "platform", "logout", "--offline"],
             vec!["peppy", "platform", "whoami", "--json"],
             vec!["peppy", "platform", "whoami", "--api-url", "http://x:3000"],
             vec!["peppy", "platform", "federations"],

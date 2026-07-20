@@ -237,6 +237,7 @@ impl ServeCommandEmulation {
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
+            daemon::state::RouterOwnership::Unmanaged,
             None,
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)

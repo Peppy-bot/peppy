@@ -15,6 +15,10 @@ GUEST_RUST_DIR = "/opt/peppy-rust"
 GUEST_RUSTUP_HOME = f"{GUEST_RUST_DIR}/rustup"
 GUEST_CARGO_HOME = f"{GUEST_RUST_DIR}/cargo"
 
+# Must stay synchronized with the verified Lima archive pin in
+# crates/containers-internal/build.rs.
+LIMA_VERSION = "2.1.3"
+
 # Pinned Go toolchain for the in-VM Linux target builds. The containers crate
 # builds apptainer from source, whose `mconfig` needs a Go newer than Ubuntu's
 # `golang-go`; we install the official toolchain (SHA-verified) and pin it with
@@ -50,9 +54,20 @@ SO_BUILD_STATE_MARKER = ".so-build-state"
 def find_limactl(repo_root: Path) -> Path:
     """Find the limactl binary from the macOS build output or cache.
 
-    Checks the cargo build output first (created by the containers crate build.rs),
-    then falls back to the peppy Lima cache directory.
+    Selects the exact verified cache pin first, then falls back to the cargo
+    build output created by the containers crate build.rs.
     """
+    cached = (
+        Path.home()
+        / ".peppy"
+        / "tmp"
+        / f"lima-{LIMA_VERSION}-Darwin-arm64"
+        / "bin"
+        / "limactl"
+    )
+    if cached.is_file():
+        return cached
+
     target_dir = Path(
         os.environ.get("CARGO_TARGET_DIR", str(repo_root / "target"))
     )
@@ -61,13 +76,9 @@ def find_limactl(repo_root: Path) -> Path:
     if matches and matches[0].is_file():
         return matches[0]
 
-    cache_matches = sorted(Path.home().glob(".peppy/tmp/lima-*/bin/limactl"))
-    if cache_matches and cache_matches[-1].is_file():
-        return cache_matches[-1]
-
     raise ReleaseError(
         "limactl not found. Build the macOS target first so that the "
-        "containers crate downloads Lima, or check ~/.peppy/tmp/lima-*/bin/limactl"
+        f"containers crate downloads Lima {LIMA_VERSION}, or check {cached}"
     )
 
 
@@ -286,6 +297,8 @@ def cargo_build_in_lima(
     tag: str,
     target_triple: str,
     repo_root: Path,
+    *,
+    target_dir: Path | None = None,
 ) -> None:
     """Run cargo build inside the Lima VM for a Linux target.
 
@@ -315,6 +328,7 @@ export PEPPY_GIT_TAG={tag}
 export PEPPY_CROSS_ARCH=1
 export RUSTC_WRAPPER=""
 export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
+{f'export CARGO_TARGET_DIR={target_dir}' if target_dir is not None else ''}
 {cross_linker}
 cd {repo_root}
 cargo build -p peppy --release --locked --target {target_triple} -j 8

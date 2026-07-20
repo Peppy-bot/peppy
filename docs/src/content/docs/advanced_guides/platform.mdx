@@ -20,24 +20,27 @@ each running core node enrolls its own short-lived client certificate; its
 private key is generated and retained locally and is never sent to the
 platform.
 
-:::caution[Breaking credentials and federation cutover]
-Current releases require credentials schema **v3** and a per-core-node client
-certificate. A v2 (or unversioned) `credentials.json5` is deliberately rejected
-with an instruction to run `peppy platform login`; it is not migrated or
-silently treated as logged out. Upgrade every Peppy client before production is
-switched to per-node mTLS. Once the production router requires these
-certificates, an old release with no per-core-node identity cannot federate;
-the router rejects its former one-way-TLS attempt, and there is no compatibility
-flag or fallback.
+The lifecycle ownership decision, security invariants, local protocol, and
+cross-repository boundaries are recorded in
+[`docs/architecture/0001-daemon-owned-certificate-management.md`](https://github.com/Peppy-bot/peppy/blob/main/docs/architecture/0001-daemon-owned-certificate-management.md).
+
+:::note[Clean-break credentials format]
+`credentials.json5` has one strict on-disk contract: `"version": 1`. Peppy
+rejects malformed, unversioned, or differently versioned documents without
+rewriting them during normal operation. The explicit locked `logout --offline`
+recovery path may reset such a document after proving the daemon is stopped so
+orphaned renewable state can be removed. There is no credentials migration
+because this format has not been deployed to production.
 :::
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
-| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Authenticates with OAuth or `PEPPY_API_KEY`, enrolls a certificate for the running core node, and federates a managed router to the platform router. |
+| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Authenticates with OAuth or the daemon's `PEPPY_API_KEY`, then asks the running daemon to enroll and apply this core node's identity. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
-| `peppy platform logout [--yes]` | Deletes this core node's certificate, revokes the OAuth access token, clears local identity material, and de-federates a managed router. Refuses to start while `PEPPY_API_KEY` is present. |
+| `peppy platform logout [--yes]` | Asks the running daemon to revoke and clear this core node's identity and de-federate a managed router. Refuses while `PEPPY_API_KEY` is active. |
+| `peppy platform logout --offline` | Recovery-only logout after proving the daemon is stopped and acquiring its identity-owner lock. |
 | `peppy platform federations [--json]` | Reports the platform link, local certificate state, and core nodes reachable through the hub. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
@@ -64,36 +67,78 @@ peppy platform login --no-browser
 
 ### How it works
 
-1. The CLI fetches the public `GET {api_url}/cli/auth-config`, which returns the
-   `issuer`, the `client_id`, and the exact `scopes` to request.
-2. It runs OIDC discovery against the `issuer`
+1. Before reading or writing authentication state, the CLI completes a
+   protocol-v1 handshake with the running daemon. Login does not fall back to
+   direct certificate-store changes when daemon control is unavailable.
+2. For OAuth, the CLI fetches the public `GET {api_url}/cli/auth-config`, which
+   returns the `issuer`, the `client_id`, and the exact `scopes` to request. It
+   runs OIDC discovery against the `issuer`
    (`{issuer}/.well-known/openid-configuration`) to find the device and token
-   endpoints, then starts the device flow and polls until you approve. With a
-   PAT, this step is replaced by validating `PEPPY_API_KEY` against the backend.
-3. A production login reads the immutable `core_node_name` captured by the
-   **running daemon**. It does not derive a second device id or reread an edited
-   config file. Start `peppy service serve` before logging in.
-4. Peppy generates a fresh ECDSA P-256 private key and proof-of-possession CSR
-   locally. Only the CSR is submitted to the authenticated enrollment endpoint.
-5. The backend's managed ECDSA P-256 issuer signs a short-lived certificate
+   endpoints, then starts the device flow and polls until you approve.
+3. After OAuth or CLI-PAT validation, the daemon durably marks the binding
+   transition incomplete and applies standalone. A fresh OAuth session is then
+   stored with a new opaque `session_revision` only if that exact revision still
+   owns the transition; a newer login or completed logout wins the
+   compare-and-swap. Token refresh preserves the revision. The CLI sends only
+   the expected revision to the daemon; access and refresh tokens do not cross
+   the control socket. With a PAT, no session is persisted and no PAT value is
+   sent: the request carries the validated non-secret subject and canonical API
+   origin, and the daemon independently validates both using `PEPPY_API_KEY`
+   from its own service environment.
+4. The daemon rereads the exact current credential, checks the revision, and
+   uses the immutable `core_node_name` captured when it started. It does not
+   accept an arbitrary name from the CLI. Start `peppy service serve` before
+   logging in.
+5. The daemon generates a fresh ECDSA P-256 private key and
+   proof-of-possession CSR locally. Only the CSR is submitted to the
+   authenticated enrollment endpoint.
+6. The backend's managed ECDSA P-256 issuer signs a short-lived certificate
    with ECDSA/SHA-256, bound to the API origin, authenticated subject,
    workspace, core-node name, and generated public key. Peppy validates the
    signing chain plus all of those bindings, usages, and validity before
-   accepting it.
-6. The new key and certificate chain are written to an immutable generation and
-   activated atomically. OAuth tokens (when used) and non-secret certificate
-   metadata are recorded in credentials schema v3.
-7. Under `zenoh.managed`, the daemon reloads its router with the generation's
+   accepting it. For OAuth, the daemon checks the revision again after issuance
+   and before publishing certificate state, so a delayed response cannot bind a
+   replacement login.
+7. The new key and certificate chain are staged in an immutable generation and
+   activated atomically. OAuth tokens (when used), cached router data, and
+   non-secret certificate metadata use credentials format `"version": 1`.
+8. Under `zenoh.managed`, the daemon reloads its router with the generation's
    certificate and key, verifies a real mTLS connection to the platform router,
    and only then commits the generation. A failed apply or probe rolls back to
    the previous generation while that certificate remains valid.
 
-When `PEPPY_API_KEY` is set, `login` skips the device flow entirely: the key is
-verified against the backend and federation is applied immediately. The PAT
-itself is environment-only and is never written to disk, but the enrolled
-core-node key, certificate chain, and non-secret metadata **are** persisted so
-the router can use them. See [CI and automation](#ci-and-automation) for the
-daemon environment requirement.
+When `PEPPY_API_KEY` is set in the CLI, `login` skips the device flow and asks
+the daemon to use its ambient PAT. The daemon's PAT is the credential that is
+actually validated and used for enrollment. It must resolve to the same subject
+and canonical API origin that the CLI validated. The PAT itself is
+environment-only and is never written to disk or sent over the socket, but the
+enrolled core-node key, certificate chain, and non-secret metadata **are**
+persisted so the router can use them. See [CI and automation](#ci-and-automation)
+for the daemon environment requirement.
+
+### Daemon ownership and the local control boundary
+
+The daemon holds the identity-owner lock for its process lifetime and serializes
+enrollment, rebinding, renewal, recovery, router application, and normal logout
+through one identity controller. The CLI still performs the interactive OAuth
+exchange and publishes the resulting session, but it does not generate keys,
+write certificate generations, activate identity metadata, or perform normal
+certificate cleanup.
+
+Login and logout use an owner-only Unix-domain socket in Peppy's private runtime
+directory. Protocol v1 is one strict JSON request line followed by one strict
+JSON response line. Each envelope carries `protocol_version: 1`; unknown fields,
+oversized or unterminated lines, invalid revisions, and incompatible protocol
+versions are rejected. The runtime directory is mode `0700`, the socket is mode
+`0600`, and the daemon validates the peer UID on supported Unix systems.
+
+The protocol supports `hello`, `prepare_oauth_login`,
+`enroll_current_credential`, `logout`, and `status`. OAuth preparation and
+enrollment carry only an opaque expected session revision. PAT enrollment
+carries the CLI-validated non-secret subject and canonical API origin so the
+daemon can fence its independently validated service credential; the PAT value
+never crosses the socket. Private keys, CSRs, certificate PEM, bearer and
+refresh tokens, and raw backend errors also never cross this boundary.
 
 ## Workspace federation
 
@@ -132,9 +177,11 @@ Continue? [y/N]
 ```
 
 Pass `--yes` (`-y`) to skip the prompt. It is also skipped automatically when
-stdin is not a terminal (so scripts and CI are never blocked), when no daemon is
-running, or when the stack holds no user nodes; in each case the restart wipes
-nothing.
+stdin is not a terminal (so scripts and CI are never blocked) or when the stack
+holds no user nodes. A non-interactive invocation proceeds even if user nodes
+are running, so automation must treat login/logout as stack-destructive. A
+missing or incompatible daemon is rejected by the protocol handshake before
+authentication or confirmation.
 
 Under `zenoh.managed`, `login` is **strict** about federation: after
 authentication and enrollment it waits for the daemon to establish and verify
@@ -143,8 +190,13 @@ succeeded, so follow the error and rerun `login` after correcting it. How long
 the daemon waits to resolve the platform router is bounded by
 [`zenoh.managed.federation.connect_timeout_secs`](/advanced_guides/daemon_config/#zenohmanagedfederation-platform-federation).
 
-With `zenoh.external`, login and logout skip federation and print a note instead;
-the daemon applies the new namespace to its sessions on its next manual restart.
+With `zenoh.external`, the same daemon controller owns Peppy's local
+certificate lifecycle, but router application is explicitly
+`operator_managed`. Peppy does not install the identity into the external
+router, reload it, verify its upstream, or claim that it is federated. The
+operator must install and rotate the router's identity and remove it after
+logout. Peppy may restart its own daemon sessions to apply a changed namespace;
+it never restarts the external router.
 
 ### Production trust and fail-closed behavior
 
@@ -221,6 +273,18 @@ link-by-link. The JSON contract:
 
 ```json
 {
+  "identity_control": {
+    "controller_settled": true,
+    "authentication": "oauth",
+    "certificate": "valid",
+    "bound_core_node_name": "daemon-a",
+    "certificate_expiry_unix": 1784563200,
+    "generation": "generation-1",
+    "next_retry_after_secs": null,
+    "router_apply_state": "applied",
+    "operator_managed": false,
+    "offline_recovery_required": false
+  },
   "platform_federation": {
     "endpoint": "tls/router.example:7447",
     "status": "federated"
@@ -254,10 +318,16 @@ By default the CLI talks to the prod backend, `https://api.peppy.bot`. That URL
 is stored in the `resource_servers` block of
 `~/.peppy/conf/peppy_config.json5` (see [Daemon configuration](/advanced_guides/daemon_config/)),
 seeded on first run and editable in place. To point at a different backend
-without editing the file, use `--api-url` or `PEPPY_API_URL`.
-The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
-`resource_servers.api`. Plain `http` is allowed only for local backends (loopback
-/ `*.localhost`); anything else must be `https`.
+without editing the file, use `PEPPY_API_URL` in both the CLI and daemon service
+environments. `--api-url` overrides the interactive CLI exchange only; the
+daemon still derives enrollment and renewal origin from its own startup
+configuration, so both processes must resolve the same backend. Restart the
+daemon after changing its environment or configuration.
+
+For the CLI, the URL precedence is `--api-url`, then `PEPPY_API_URL`, then
+`resource_servers.api`. The daemon uses `PEPPY_API_URL`, then
+`resource_servers.api`. Plain `http` is allowed only for local backends
+(loopback / `*.localhost`); anything else must be `https`.
 
 ## CI and automation
 
@@ -269,20 +339,22 @@ browser. If the PAT is revoked, requests start failing with 401 and you must
 rotate it. A PAT principal shows up as `kind: "machine"` under
 `peppy platform whoami`.
 
-`peppy platform login` with an active PAT verifies the key and applies
-federation immediately instead of starting the OAuth flow. Because the daemon
-performs unattended certificate renewal and config pulls from its **own**
-environment, PAT-driven federation requires `PEPPY_API_KEY` in the daemon's
-service environment too, not just the shell running the CLI. Configure the
-variable in the systemd unit, container, or other service manager and restart
-the daemon before logging in. Login fails instead of reporting a healthy
-federation when the shell can authenticate but the daemon cannot.
+`peppy platform login` with a PAT in the invoking environment selects PAT mode
+instead of starting the OAuth flow. It does not forward that value. Because the
+daemon performs enrollment, unattended renewal, and config pulls from its
+**own** environment, PAT-driven federation requires `PEPPY_API_KEY` in the
+daemon's service environment too. Configure the variable in the systemd unit,
+container, or other service manager and restart the daemon before logging in.
+If the daemon has no PAT, login returns a specific service-configuration error;
+if its canonical API origin or validated subject differs from the CLI's, login
+also fails before router or identity-store mutation. It does not persist the
+CLI's PAT or fall back to OAuth.
 
 `peppy platform logout` cannot clear an environment variable safely. If
-`PEPPY_API_KEY` is present in the command's environment, logout **refuses before
-remote revocation, local deletion, daemon restart, or any other cleanup**.
-Remove the PAT from both the shell and the daemon service environment, restart
-the service without it, and then run logout again.
+`PEPPY_API_KEY` is present in either the command or daemon environment, logout
+**refuses before remote revocation, local deletion, daemon restart, or any other
+cleanup**. Remove the PAT from both environments, restart the service without
+it, and then run logout again.
 
 ## Credential storage
 
@@ -292,27 +364,42 @@ identity state is laid out as follows:
 ```text
 <PEPPY_HOME>/conf/
 ├── credentials.json5
+├── .platform-auth-operation.lock
+├── .platform-binding-incomplete
 ├── .platform-core-node.lock
 ├── .platform-core-node-rotation.lock
-├── .platform-auth-operation.lock
 └── platform-core-node/
     ├── identity.json5
+    ├── pending.json5
+    ├── unverified-rotation.json5
     └── generations/
         └── <generation-id>/
             ├── client-key.pem
             └── client-chain.pem
 ```
 
-`credentials.json5` uses schema v3. It contains the cached OAuth session when
-OAuth is used, cached router data, and a non-secret `core_node_identity`
-metadata record. It never contains a PAT, private key, or certificate PEM.
-`identity.json5` is the atomic pointer to the active immutable generation. The
-identity lock protects short metadata and generation updates, the rotation
-lease remains held across staging plus router apply/probe, and the auth-operation
-lock prevents overlapping CLI login/logout commands. Their global order is auth
-operation → rotation lease → identity lock → credentials lock. Generation paths
+`credentials.json5` has `"version": 1`. When OAuth is used it contains the
+cached session and its required UUID `session_revision`; it also contains cached
+router data and a non-secret `core_node_identity` metadata record. It never
+contains a PAT, private key, or certificate PEM. Each fresh login receives a new
+revision, including a login by the same account; proactive and reactive token
+refresh preserve it. Normal operations never repair or overwrite a malformed,
+unversioned, or unsupported credentials document. Explicit `logout --offline`
+may reset one only after its stopped-daemon and owner-lock checks succeed.
+
+`identity.json5` is the atomic pointer to the active immutable generation.
+`pending.json5` represents staged key material, and
+`unverified-rotation.json5` is the durable receipt that lets the daemon recover
+an interrupted apply, commit, or rollback deterministically. Generation paths
 change on every key rotation so the router cannot accidentally keep using stale
 material.
+
+The daemon holds `.platform-auth-operation.lock` for its lifetime. Its single
+identity-controller command loop serializes lifecycle operations, while the
+remaining store locks protect short filesystem transactions. The explicit
+offline path must acquire the same lifetime owner lock, so it cannot overlap
+daemon startup, renewal, or recovery. These dotfiles are internal state; do not
+edit or remove them while the daemon is running.
 
 Protected directories are owner-only (`0700`) and the identity, key,
 certificate, and credentials files are `0600`. Peppy writes and activates them
@@ -337,6 +424,16 @@ remote cleanup failure but still removes the local certificate generations,
 credentials/router cache, and desired federation state. With neither OAuth nor
 a PAT, logout is still allowed as orphan cleanup.
 
+Normal logout requires the running daemon and begins with the same protocol-v1
+handshake as login. The daemon checks the expected OAuth session revision,
+serializes the operation against renewal and enrollment, and reports remote
+certificate revocation, OAuth revocation, router disposition, and local cleanup
+as separate outcomes. Remote cleanup is best effort; local cleanup remains
+fail-closed. For a Peppy-managed router, the daemon applies standalone before
+discarding the usable local identity. If it cannot prove de-federation, it
+attempts to stop the managed router and does not report a completely clean
+logout while an authenticated link may remain.
+
 Certificate deletion is control-plane revocation: it blocks discovery and
 future renewal, while local cleanup removes the normal client's key and link.
 The current Zenoh router does not consult that database state or a dynamic CRL,
@@ -350,12 +447,36 @@ Logout also returns this machine to the `local` namespace. Under `zenoh.managed`
 it de-federates the router, restarts the daemon, and wipes the running node stack,
 with the same confirmation prompt and `--yes` bypass (see
 [Workspace federation](#workspace-federation)). Under `zenoh.external`,
-the operator's federation is left untouched and the namespace changes on the
-next manual daemon restart. An external-router operator must separately remove
+the operator's federation is left untouched: Peppy revokes and clears only the
+identity it owns, reports the router as operator-managed, and never claims the
+external link was removed. An external-router operator must separately remove
 any client identity installed in that router.
 
 If `PEPPY_API_KEY` is still present, none of the preceding actions happen:
 logout exits with instructions to remove it first.
+
+### Offline recovery
+
+Use offline logout only when the daemon cannot run:
+
+```sh
+peppy platform logout --offline
+```
+
+This is an explicit maintenance path, not an automatic fallback from normal
+logout. It refuses an ambient PAT, checks both daemon state and the control
+socket, acquires the daemon's process-lifetime identity-owner lock, and repeats
+the stopped-daemon check while holding that lock before mutating anything. An
+active owner, a live control responder, or an ambiguous liveness result aborts
+without cleanup.
+
+When a valid stored OAuth session is available, offline logout best-effort
+attempts certificate deletion and token revocation before clearing local state.
+Without an OAuth session, it performs orphaned local cleanup and explicitly
+warns that server-side revocation was unavailable. Remote failure does not
+prevent local deletion, and the command reports the distinction. Never run it
+concurrently with daemon startup or manipulate the identity files by hand to
+bypass its ownership checks.
 
 ## Environment variables
 

@@ -49,7 +49,7 @@ pub struct CoreNodeRunner {
     /// only to construct the probe.
     messenger: Arc<Mutex<Messenger>>,
     messaging_ready: Option<watch::Receiver<bool>>,
-    /// Goes `true` once the [`RouterFederation`](super::router_federation) task's
+    /// Goes `true` once the [`IdentityController`](super::router_federation::IdentityController) task's
     /// *initial* poll has settled (federation applied, or the connect timeout
     /// elapsed and the daemon proceeds standalone). The runner waits on it —
     /// after `messaging_ready`, before `start_with_ready` — so the boot-time

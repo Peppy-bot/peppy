@@ -52,6 +52,7 @@ fn resolver_prefers_pat_env_over_files() {
 
     assert!(matches!(cred.kind, CredentialKind::Pat));
     assert!(!cred.is_refreshable(), "a PAT is not refreshable");
+    assert_eq!(cred.session_revision(), None);
     assert_eq!(cred.token.expose_secret(), "pat-secret");
 }
 
@@ -86,6 +87,7 @@ fn resolver_refreshes_an_expired_session_token() {
         session: Some(seeded_creds(&server, 1)),
         ..Default::default()
     };
+    let original_revision = creds.session.as_ref().unwrap().session_revision;
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
@@ -103,6 +105,10 @@ fn resolver_refreshes_an_expired_session_token() {
     assert_eq!(pc.access_token.expose_secret(), "refreshed-access");
     assert_eq!(pc.refresh_token.expose_secret(), "rotated-refresh");
     assert!(pc.expires_at > storage::now_unix(), "expiry refreshed");
+    assert_eq!(
+        pc.session_revision, original_revision,
+        "a proactive refresh must preserve the login revision"
+    );
 }
 
 #[test]
@@ -186,6 +192,42 @@ fn stale_request_cannot_adopt_a_concurrent_same_origin_login() {
         0,
         "neither the stale nor replacement bearer may be transmitted"
     );
+}
+
+#[test]
+fn same_subject_relogin_invalidates_the_previous_session_revision() {
+    let server = MockServer::start();
+    let received = server.mock(|when, then| {
+        when.method(GET).path("/me");
+        then.status(200).json_body(json!({ "sub": "user-123" }));
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = creds_path(&dir);
+    let old = seeded_creds(&server, 9_999_999_999);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(old.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut stale = resolver::session_credential(&path, &old);
+
+    storage::update(&path, |credentials| {
+        let mut replacement = old.clone();
+        replacement.session_revision = "22222222-2222-4222-8222-222222222222"
+            .parse()
+            .expect("valid replacement revision");
+        credentials.session = Some(replacement);
+        Ok(())
+    })
+    .unwrap();
+
+    let error = client::get_me(&HttpClient::new(), &server.base_url(), &mut stale)
+        .expect_err("the old revision must fail before authenticated I/O");
+    assert!(matches!(error, auth::AuthError::StaleSessionRevision));
+    assert_eq!(received.calls(), 0);
 }
 
 #[test]
@@ -505,6 +547,7 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
     let mut cred = auth::Credential {
         token: storage::secret("seeded-access".to_string()),
         kind: CredentialKind::Session(SessionContext {
+            session_revision: test_session_revision(),
             api_url: server.base_url(),
             issuer: server.base_url(),
             client_id: "cli-client-id".to_string(),
@@ -524,6 +567,7 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
     assert!(pull_rejected.calls() >= 1, "the seeded token must be tried");
     assert!(token.calls() >= 1, "a refresh must occur on the 401");
     assert!(pull_ok.calls() >= 1, "the retry uses the rotated token");
+    assert_eq!(cred.session_revision(), Some(test_session_revision()));
 
     // The rotation was persisted (so a later command starts from the new token).
     let after = storage::load(&path).expect("reload");
@@ -535,6 +579,11 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
             .refresh_token
             .expose_secret(),
         "rotated-refresh"
+    );
+    assert_eq!(
+        after.session.as_ref().unwrap().session_revision,
+        test_session_revision(),
+        "a reactive refresh must preserve the login revision"
     );
 }
 
@@ -594,7 +643,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     // The daemon's federation target: pull the per-user router config and turn it
     // into the `tls/<host>:<port>` connect endpoint the local zenohd federates to,
     // plus the connect-side trust. Proves the derivation the `serve` builder and
-    // the `RouterFederation` task both rely on.
+    // the daemon identity controller both rely on.
     let server = MockServer::start();
     // The body matcher doubles as the C1 wire-contract check: the daemon's
     // federation pull must always identify itself by core-node name.
@@ -1036,6 +1085,7 @@ fn test_client_identity() -> router::RouterClientIdentity {
 /// A session credential pointing at `server` with the given absolute expiry.
 fn seeded_creds(server: &MockServer, expires_at: i64) -> ProfileCreds {
     ProfileCreds {
+        session_revision: test_session_revision(),
         api_url: server.base_url(),
         issuer: server.base_url(),
         client_id: "cli-client-id".to_string(),
@@ -1047,4 +1097,9 @@ fn seeded_creds(server: &MockServer, expires_at: i64) -> ProfileCreds {
         subject: "user-123".to_string(),
         username: "alice".to_string(),
     }
+}
+
+fn test_session_revision() -> uuid::Uuid {
+    uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111")
+        .expect("valid test session revision")
 }

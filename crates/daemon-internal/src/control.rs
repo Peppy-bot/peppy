@@ -1,61 +1,48 @@
-//! Client and wire protocol for the daemon's *federation control socket*.
+//! Versioned client and wire contract for the daemon's local identity-control
+//! socket.
 //!
-//! `peppy platform login`/`logout` run in a separate, short-lived process from
-//! the `serve` daemon; their only shared state is the on-disk credentials file,
-//! which the daemon would otherwise only re-read on its periodic poll (so
-//! federation would lag a login by up to that interval). To apply it
-//! immediately, the command **pokes** the running daemon over a per-user
-//! Unix-domain socket: it sends [`REFEDERATE_VERB`] and waits for the daemon to
-//! re-resolve and (de)federate, so federation is in place by the time the
-//! command returns.
-//!
-//! The transport is a UDS rather than the daemon's Zenoh session on purpose: the
-//! federation apply *bounces the local zenohd*, which would tear down a Zenoh-
-//! carried ack mid-operation. A UDS is independent of zenohd, so the ack (sent
-//! after the bounce) reliably reports the post-apply state.
-//!
-//! The socket path is *derived* from [`PeppyDirs`] (not stored anywhere): both
-//! the daemon (the private `federation_control` module) and this client
-//! resolve it the same way, so no discovery handshake is needed. A connect that
-//! is refused or finds no socket simply means "no daemon running"; the command
-//! succeeds and federation is applied the next time `serve` starts.
+//! The protocol is one UTF-8 JSON request line followed by one UTF-8 JSON
+//! response line. Every envelope carries [`PROTOCOL_VERSION`], both envelopes
+//! reject unknown fields, and there is deliberately no parser for the former
+//! raw `refederate`/`defederate`/`status` commands. The Unix-domain socket keeps
+//! the acknowledgement independent of the local router that an identity
+//! operation may restart.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+#[cfg(test)]
+use std::io::{BufRead, BufReader};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-/// File name of the daemon's federation control socket under the runtime dir.
+/// The only protocol version understood by this pre-production, clean-slate
+/// control surface.
+pub const PROTOCOL_VERSION: u16 = 1;
+
+/// File name of the daemon's identity-control socket under the private runtime
+/// directory. The name is retained to avoid introducing a second stale socket
+/// path while the surrounding identity-controller refactor lands.
 pub const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
 
-/// Re-resolve the platform upstream and (de)federate the local router to match
-/// the current credentials. One verb covers both ordinary login and logout;
-/// logout resolves the cleared credentials to standalone and can therefore
-/// detect the required workspace-to-local namespace restart.
-pub const REFEDERATE_VERB: &str = "refederate";
+/// Maximum request line size, including its required newline.
+pub const MAX_REQUEST_LINE_BYTES: usize = 16 * 1024;
 
-/// Force the managed router standalone without resolving retained auth state.
-/// Reserved for post-auth-change failures (and partial logout cleanup errors)
-/// where credentials may intentionally remain and must not be reused.
-pub const DEFEDERATE_VERB: &str = "defederate";
+/// Maximum response line size, including its required newline.
+pub const MAX_RESPONSE_LINE_BYTES: usize = 64 * 1024;
 
-/// Reads the daemon's cached federation state without resolving, rewriting the
-/// router config, or restarting zenohd.
-pub const STATUS_VERB: &str = "status";
+/// Maximum public error-message size, in UTF-8 bytes.
+pub const MAX_ERROR_MESSAGE_BYTES: usize = 2 * 1024;
 
-/// Extra time the client waits for the daemon's ack on top of the configured
-/// federation connect timeout. Kept strictly larger than the daemon-side ack
-/// budget (`APPLY_ACK_SLACK`, which itself covers the verifying poke's TLS probe)
-/// so the daemon always replies a definite status (even "timed out applying")
-/// before the client gives up, turning a slow apply into a definite status rather
-/// than a client-side timeout. (The `ack_budget_*` test guards this ordering.)
-pub const POKE_READ_SLACK: Duration = Duration::from_secs(11);
+/// Extra time the client waits for the daemon's reply on top of the configured
+/// identity/federation operation timeout. This remains strictly larger than the
+/// daemon-side acknowledgement slack.
+pub const POKE_READ_SLACK: Duration = Duration::from_secs(16);
 
-/// Where the daemon binds (and the client connects to) the federation control
-/// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
+/// Where the daemon binds and local clients connect.
 pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs
         .runtime_config_dir()
@@ -66,48 +53,109 @@ pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkState {
-    /// No upstream resolved (logged out, or nothing pulled yet); the managed
-    /// router is standalone.
     #[default]
     NotConfigured,
-    /// Rendered into the router config but not yet checked by an explicit
-    /// verifying federation request from this daemon generation.
     Unverified,
-    /// A verifying poke confirmed the managed router's outbound link is established.
     Verified,
-    /// The upstream was applied but the last verifying poke failed with this
-    /// human-readable reason, so federation is not actually in effect.
     Error(String),
 }
 
-/// The platform link a refederation poke reports: the applied upstream
-/// endpoint (when any) and its verification state.
+/// The platform link applied by an identity operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlatformLink {
     pub endpoint: Option<String>,
     pub link_state: LinkState,
 }
 
-/// Cached federation state returned by [`query_status`]: the platform link
-/// plus whether an operator-pinned `ZENOH_CONFIG` owns the router config.
-/// The link is flattened on the wire, so the JSON shape is unchanged from
-/// when the fields were spelled out here.
+/// Sanitized authentication source known to the daemon. This reports only the
+/// credential class; tokens, subjects, and session revisions are never exposed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationState {
+    #[default]
+    Missing,
+    Oauth,
+    Pat,
+}
+
+/// Sanitized lifecycle state of the daemon-owned client certificate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateState {
+    #[default]
+    Missing,
+    Enrolling,
+    Valid,
+    Renewing,
+    Expiring,
+    Expired,
+    Error,
+}
+
+/// Last known disposition of applying identity state to the router.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterApplyState {
+    #[default]
+    Standalone,
+    Applied,
+    OperatorManaged,
+    Error,
+}
+
+/// Sanitized result of one logout cleanup stage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupState {
+    #[default]
+    NotNeeded,
+    Succeeded,
+    Failed,
+}
+
+/// Structured outcome of a daemon-owned logout. Each field is deliberately a
+/// bounded enum or boolean rather than a raw backend diagnostic.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogoutResult {
+    pub certificate_revocation: CleanupState,
+    pub oauth_revocation: CleanupState,
+    pub router_apply: RouterApplyState,
+    pub local_cleanup: CleanupState,
+    pub operator_action_required: bool,
+    /// Namespace the daemon will restart into after flushing this response.
+    /// `None` means the current generation namespace remains valid.
+    pub target_namespace: Option<String>,
+}
+
+/// Cached daemon identity/federation state returned by [`status`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationStatus {
-    #[serde(flatten)]
+    /// The current daemon generation completed its initial identity/router
+    /// reconciliation. Seeded startup state is deliberately not login-ready.
+    pub controller_settled: bool,
+    pub authentication: AuthenticationState,
+    pub certificate: CertificateState,
+    pub bound_core_node_name: Option<String>,
+    pub certificate_expiry_unix: Option<i64>,
+    pub generation: Option<String>,
+    pub next_retry_after_secs: Option<u64>,
+    pub router_apply_state: RouterApplyState,
+    pub operator_managed: bool,
+    pub offline_recovery_required: bool,
+    // Transitional internal consumers still use the fields below. They remain
+    // required/strict on the v1 wire unless explicitly annotated optional.
     pub link: PlatformLink,
     pub pinned: bool,
-    /// Whether the running daemon observed `PEPPY_API_KEY` in its own service
-    /// environment. The token is never exposed. Omitted on the wire when false
-    /// so old standalone/debug status fixtures remain compact.
+    /// Whether the daemon observed a PAT in its own environment. The PAT itself
+    /// never enters this type or the wire protocol.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pat_active: bool,
-    /// Latest non-secret certificate maintenance failure while an older valid
-    /// generation may still be serving. Cleared by successful maintenance.
+    /// Latest explicitly non-secret certificate maintenance failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate_error: Option<String>,
-    /// True only while the daemon is applying/probing an unverified
-    /// certificate generation.
     #[serde(default, skip_serializing_if = "is_false")]
     pub certificate_renewing: bool,
 }
@@ -116,183 +164,680 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// The daemon's one-line JSON reply to a control-socket request.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ControlResponse {
-    /// The refederation ran: the platform link now applied (or cleared) and
-    /// its verification state.
-    Ok(PlatformLink),
-    /// Cached state for a [`STATUS_VERB`] request.
-    FederationStatus(FederationStatus),
-    /// An operator-pinned `ZENOH_CONFIG` owns the router config; not auto-managed.
-    Pinned,
-    /// The daemon attempted the apply and it failed (e.g. backend unreachable
-    /// within the federation timeout).
-    Error { message: String },
-    /// The credentials changed the daemon's *namespace*, which is immutable for
-    /// a live session, so the daemon is restarting its whole generation to
-    /// re-open every session under `target_namespace`. The daemon flushes this
-    /// ack and only then tears down; the CLI polls the (path-stable) control
-    /// socket until the daemon is back under exactly that namespace.
-    Restarting { target_namespace: String },
+/// Strict request envelope. Operations carry only identifiers and expected
+/// revisions; bearer tokens, private keys, and certificate PEM are not protocol
+/// fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlRequest {
+    pub protocol_version: u16,
+    pub request: ControlOperation,
 }
 
-impl ControlResponse {
-    pub fn error(message: impl Into<String>) -> Self {
-        Self::Error {
-            message: message.into(),
+impl ControlRequest {
+    pub fn new(request: ControlOperation) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            request,
+        }
+    }
+
+    pub fn hello() -> Self {
+        Self::new(ControlOperation::Hello)
+    }
+
+    pub fn enroll_current_credential(
+        expected_session_revision: Option<Uuid>,
+        expected_pat_subject: Option<String>,
+        expected_api_origin: Option<String>,
+    ) -> Self {
+        Self::new(ControlOperation::EnrollCurrentCredential {
+            expected_session_revision,
+            expected_pat_subject,
+            expected_api_origin,
+        })
+    }
+
+    pub fn prepare_oauth_login(expected_session_revision: Uuid) -> Self {
+        Self::new(ControlOperation::PrepareOauthLogin {
+            expected_session_revision,
+        })
+    }
+
+    pub fn logout(expected_session_revision: Option<Uuid>) -> Self {
+        Self::new(ControlOperation::Logout {
+            expected_session_revision,
+        })
+    }
+
+    pub fn status() -> Self {
+        Self::new(ControlOperation::Status)
+    }
+}
+
+/// Version-1 identity-control operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum ControlOperation {
+    Hello,
+    EnrollCurrentCredential {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_session_revision: Option<Uuid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_pat_subject: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_api_origin: Option<String>,
+    },
+    PrepareOauthLogin {
+        expected_session_revision: Uuid,
+    },
+    Logout {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_session_revision: Option<Uuid>,
+    },
+    Status,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ControlOperationTag {
+    Hello,
+    EnrollCurrentCredential,
+    PrepareOauthLogin,
+    Logout,
+    Status,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictControlOperation {
+    operation: ControlOperationTag,
+    #[serde(default)]
+    expected_session_revision: Option<Uuid>,
+    #[serde(default)]
+    expected_pat_subject: Option<String>,
+    #[serde(default)]
+    expected_api_origin: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ControlOperation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let wire = StrictControlOperation::deserialize(deserializer)?;
+        match (
+            wire.operation,
+            wire.expected_session_revision,
+            wire.expected_pat_subject,
+            wire.expected_api_origin,
+        ) {
+            (ControlOperationTag::Hello, None, None, None) => Ok(Self::Hello),
+            (
+                ControlOperationTag::EnrollCurrentCredential,
+                expected_session_revision,
+                expected_pat_subject,
+                expected_api_origin,
+            ) if matches!(
+                (
+                    &expected_session_revision,
+                    &expected_pat_subject,
+                    &expected_api_origin
+                ),
+                (Some(_), None, None) | (None, Some(_), Some(_))
+            ) && expected_pat_subject
+                .as_ref()
+                .is_none_or(|subject| !subject.is_empty() && subject.len() <= 1024)
+                && expected_api_origin
+                    .as_ref()
+                    .is_none_or(|origin| !origin.is_empty() && origin.len() <= 2048) =>
+            {
+                Ok(Self::EnrollCurrentCredential {
+                    expected_session_revision,
+                    expected_pat_subject,
+                    expected_api_origin,
+                })
+            }
+            (
+                ControlOperationTag::PrepareOauthLogin,
+                Some(expected_session_revision),
+                None,
+                None,
+            ) => Ok(Self::PrepareOauthLogin {
+                expected_session_revision,
+            }),
+            (ControlOperationTag::Logout, expected_session_revision, None, None) => {
+                Ok(Self::Logout {
+                    expected_session_revision,
+                })
+            }
+            (ControlOperationTag::Status, None, None, None) => Ok(Self::Status),
+            _ => Err(D::Error::custom(
+                "enroll_current_credential requires either one OAuth revision or a bounded PAT principal and API origin; logout alone accepts an optional revision",
+            )),
         }
     }
 }
 
-/// What [`poke_refederate`] could determine about the daemon's federation state.
-#[derive(Debug, PartialEq, Eq)]
-pub enum PokeOutcome {
-    /// The daemon acked with the applied platform link and its state.
-    Applied(PlatformLink),
-    /// Operator-pinned `ZENOH_CONFIG` owns the router config (not auto-managed).
-    Pinned,
-    /// The daemon acked an error (e.g. the backend was unreachable in time), or
-    /// replied with malformed data.
-    DaemonError(String),
-    /// No running daemon to poke (no socket, or the connection was refused).
-    /// Federation will be applied the next time `serve` starts.
-    DaemonNotRunning,
-    /// Connected, but the daemon did not ack within the read deadline.
-    TimedOut,
-    /// The credentials changed the daemon's namespace, so the daemon acked and
-    /// is restarting its whole generation. The caller then polls until the
-    /// daemon is back under `target_namespace`.
-    Restarting { target_namespace: String },
+/// Stable, machine-readable daemon error classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlErrorCode {
+    InvalidRequest,
+    UnsupportedProtocol,
+    Busy,
+    Unavailable,
+    DeadlineExceeded,
+    StaleSessionRevision,
+    NotAuthenticated,
+    PatNotConfigured,
+    PatActive,
+    PatPrincipalMismatch,
+    PatOriginMismatch,
+    OperationFailed,
+    Internal,
 }
 
-/// What [`query_status`] could determine about the daemon's cached state.
-#[derive(Debug, PartialEq, Eq)]
-pub enum QueryStatusOutcome {
-    Status(FederationStatus),
-    DaemonError(String),
-    DaemonNotRunning,
-    TimedOut,
-    /// The daemon acked that it is mid-restart into `target_namespace` (a
-    /// status query racing a namespace change).
+/// Strict response envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlResponse {
+    pub protocol_version: u16,
+    pub response: ControlResult,
+}
+
+impl ControlResponse {
+    pub fn new(response: ControlResult) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            response,
+        }
+    }
+
+    pub fn hello() -> Self {
+        Self::new(ControlResult::Hello)
+    }
+
+    pub fn error(code: ControlErrorCode, message: impl AsRef<str>) -> Self {
+        Self::new(ControlResult::Error {
+            code,
+            message: sanitize_error(message.as_ref()),
+        })
+    }
+}
+
+/// Version-1 operation results. The wire never contains credentials, key
+/// material, certificate bodies, or raw internal errors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ControlResult {
+    Hello,
+    Applied {
+        link: PlatformLink,
+    },
+    Status {
+        status: FederationStatus,
+    },
+    OperatorManaged,
+    LoggedOut {
+        outcome: LogoutResult,
+    },
+    Error {
+        code: ControlErrorCode,
+        message: String,
+    },
     Restarting {
         target_namespace: String,
     },
 }
 
-/// The transport-level failures every control-socket verb classifies the same
-/// way, mapped into each verb's outcome enum via `From`.
-enum TransportFailure {
-    /// A read/write timeout: surfaces as WouldBlock/TimedOut on a socket with
-    /// a deadline set.
-    TimedOut,
-    /// No socket file, or nothing listening: no daemon to reach.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ControlResultTag {
+    Hello,
+    Applied,
+    Status,
+    OperatorManaged,
+    LoggedOut,
+    Error,
+    Restarting,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyResultWire {
+    result: ControlResultTag,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppliedResultWire {
+    result: ControlResultTag,
+    link: PlatformLink,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusResultWire {
+    result: ControlResultTag,
+    status: FederationStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoggedOutResultWire {
+    result: ControlResultTag,
+    outcome: LogoutResult,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ErrorResultWire {
+    result: ControlResultTag,
+    code: ControlErrorCode,
+    message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestartingResultWire {
+    result: ControlResultTag,
+    target_namespace: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StrictControlResult {
+    Applied(AppliedResultWire),
+    Status(StatusResultWire),
+    LoggedOut(LoggedOutResultWire),
+    Error(ErrorResultWire),
+    Restarting(RestartingResultWire),
+    Empty(EmptyResultWire),
+}
+
+impl<'de> Deserialize<'de> for ControlResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        match StrictControlResult::deserialize(deserializer)? {
+            StrictControlResult::Applied(AppliedResultWire {
+                result: ControlResultTag::Applied,
+                link,
+            }) => Ok(Self::Applied { link }),
+            StrictControlResult::Status(StatusResultWire {
+                result: ControlResultTag::Status,
+                status,
+            }) => Ok(Self::Status { status }),
+            StrictControlResult::LoggedOut(LoggedOutResultWire {
+                result: ControlResultTag::LoggedOut,
+                outcome,
+            }) => Ok(Self::LoggedOut { outcome }),
+            StrictControlResult::Error(ErrorResultWire {
+                result: ControlResultTag::Error,
+                code,
+                message,
+            }) => Ok(Self::Error { code, message }),
+            StrictControlResult::Restarting(RestartingResultWire {
+                result: ControlResultTag::Restarting,
+                target_namespace,
+            }) => Ok(Self::Restarting { target_namespace }),
+            StrictControlResult::Empty(EmptyResultWire {
+                result: ControlResultTag::Hello,
+            }) => Ok(Self::Hello),
+            StrictControlResult::Empty(EmptyResultWire {
+                result: ControlResultTag::OperatorManaged,
+            }) => Ok(Self::OperatorManaged),
+            _ => Err(D::Error::custom(
+                "control result fields do not match its result tag",
+            )),
+        }
+    }
+}
+
+/// Successful result of an identity-changing control operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyResult {
+    Applied(PlatformLink),
+    OperatorManaged,
+    Restarting { target_namespace: String },
+}
+
+/// Structured client failures. Protocol error codes remain typed instead of
+/// being collapsed into transport strings.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ControlClientError {
+    #[error("daemon is not running")]
     DaemonNotRunning,
-    /// Any other I/O failure, carried as a message.
-    Error(String),
+    #[error("control request timed out")]
+    TimedOut,
+    #[error("control transport failed: {0}")]
+    Transport(String),
+    #[error("daemon protocol version {actual} is incompatible with client version {expected}")]
+    ProtocolVersion { expected: u16, actual: u16 },
+    #[error("daemon rejected the request ({code:?}): {message}")]
+    Daemon {
+        code: ControlErrorCode,
+        message: String,
+    },
+    #[error("daemon returned {actual} to a request expecting {expected}")]
+    UnexpectedResponse {
+        expected: &'static str,
+        actual: &'static str,
+    },
 }
 
-impl TransportFailure {
-    fn classify(error: &std::io::Error) -> Self {
-        match error.kind() {
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => Self::TimedOut,
-            ErrorKind::NotFound | ErrorKind::ConnectionRefused => Self::DaemonNotRunning,
-            _ => Self::Error(error.to_string()),
-        }
+/// Typed version handshake.
+pub fn hello(socket_path: &Path, total_timeout: Duration) -> Result<(), ControlClientError> {
+    match request(socket_path, total_timeout, &ControlRequest::hello())?.response {
+        ControlResult::Hello => Ok(()),
+        other => Err(unexpected("hello", &other)),
     }
 }
 
-impl From<TransportFailure> for PokeOutcome {
-    fn from(failure: TransportFailure) -> Self {
-        match failure {
-            TransportFailure::TimedOut => Self::TimedOut,
-            TransportFailure::DaemonNotRunning => Self::DaemonNotRunning,
-            TransportFailure::Error(message) => Self::DaemonError(message),
-        }
-    }
-}
-
-impl From<TransportFailure> for QueryStatusOutcome {
-    fn from(failure: TransportFailure) -> Self {
-        match failure {
-            TransportFailure::TimedOut => Self::TimedOut,
-            TransportFailure::DaemonNotRunning => Self::DaemonNotRunning,
-            TransportFailure::Error(message) => Self::DaemonError(message),
-        }
-    }
-}
-
-/// Pokes the running daemon over `socket_path` to re-resolve and (re)apply
-/// federation, blocking until it acks or `read_timeout` elapses.
-///
-/// Best effort by design: a poke failure must never fail the calling command, so
-/// a missing/refused socket maps to [`PokeOutcome::DaemonNotRunning`] and any
-/// other I/O error to a definite outcome rather than an `Err`.
-pub fn poke_refederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
-    poke(socket_path, read_timeout, REFEDERATE_VERB)
-}
-
-/// Forces the running managed router standalone, without re-resolving current
-/// credentials. This is required when auth is intentionally retained after a
-/// failed identity bind: an ordinary refederate could reuse the prior identity.
-pub fn poke_defederate(socket_path: &Path, read_timeout: Duration) -> PokeOutcome {
-    poke(socket_path, read_timeout, DEFEDERATE_VERB)
-}
-
-fn poke(socket_path: &Path, read_timeout: Duration, verb: &str) -> PokeOutcome {
-    match request(socket_path, read_timeout, verb) {
-        Ok(ControlResponse::Ok(link)) => PokeOutcome::Applied(link),
-        Ok(ControlResponse::Pinned) => PokeOutcome::Pinned,
-        Ok(ControlResponse::Error { message }) => PokeOutcome::DaemonError(message),
-        Ok(ControlResponse::Restarting { target_namespace }) => {
-            PokeOutcome::Restarting { target_namespace }
-        }
-        Ok(ControlResponse::FederationStatus(_)) => {
-            PokeOutcome::DaemonError("daemon returned status state to a federation request".into())
-        }
-        Err(e) => TransportFailure::classify(&e).into(),
-    }
-}
-
-/// Queries cached federation state without triggering a router rewrite.
-pub fn query_status(socket_path: &Path, read_timeout: Duration) -> QueryStatusOutcome {
-    match request(socket_path, read_timeout, STATUS_VERB) {
-        Ok(ControlResponse::FederationStatus(status)) => QueryStatusOutcome::Status(status),
-        Ok(ControlResponse::Error { message }) => QueryStatusOutcome::DaemonError(message),
-        Ok(ControlResponse::Restarting { target_namespace }) => {
-            QueryStatusOutcome::Restarting { target_namespace }
-        }
-        Ok(_) => QueryStatusOutcome::DaemonError(
-            "daemon returned a refederation reply to a status request".into(),
+/// Ask the daemon to enroll/apply the current credential, optionally guarded by
+/// a session revision.
+pub fn enroll_current_credential(
+    socket_path: &Path,
+    total_timeout: Duration,
+    expected_session_revision: Option<Uuid>,
+    expected_pat_subject: Option<String>,
+    expected_api_origin: Option<String>,
+) -> Result<ApplyResult, ControlClientError> {
+    apply_request(
+        socket_path,
+        total_timeout,
+        ControlRequest::enroll_current_credential(
+            expected_session_revision,
+            expected_pat_subject,
+            expected_api_origin,
         ),
-        Err(e) => TransportFailure::classify(&e).into(),
+    )
+}
+
+/// Atomically reject daemon-PAT mode or prepare a fail-closed OAuth handoff.
+pub fn prepare_oauth_login(
+    socket_path: &Path,
+    total_timeout: Duration,
+    expected_session_revision: Uuid,
+) -> Result<ApplyResult, ControlClientError> {
+    apply_request(
+        socket_path,
+        total_timeout,
+        ControlRequest::prepare_oauth_login(expected_session_revision),
+    )
+}
+
+/// Ask the daemon to own logout, optionally guarded by a session revision.
+pub fn logout(
+    socket_path: &Path,
+    total_timeout: Duration,
+    expected_session_revision: Option<Uuid>,
+) -> Result<LogoutResult, ControlClientError> {
+    match request(
+        socket_path,
+        total_timeout,
+        &ControlRequest::logout(expected_session_revision),
+    )?
+    .response
+    {
+        ControlResult::LoggedOut { outcome } => Ok(outcome),
+        other => Err(unexpected("logout result", &other)),
+    }
+}
+
+/// Query cached state without scheduling identity or router work.
+pub fn status(
+    socket_path: &Path,
+    total_timeout: Duration,
+) -> Result<FederationStatus, ControlClientError> {
+    match request(socket_path, total_timeout, &ControlRequest::status())?.response {
+        ControlResult::Status { status } => Ok(status),
+        other => Err(unexpected("status", &other)),
+    }
+}
+
+fn apply_request(
+    socket_path: &Path,
+    total_timeout: Duration,
+    control_request: ControlRequest,
+) -> Result<ApplyResult, ControlClientError> {
+    match request(socket_path, total_timeout, &control_request)?.response {
+        ControlResult::Applied { link } => Ok(ApplyResult::Applied(link)),
+        ControlResult::OperatorManaged => Ok(ApplyResult::OperatorManaged),
+        ControlResult::Restarting { target_namespace } => {
+            Ok(ApplyResult::Restarting { target_namespace })
+        }
+        other => Err(unexpected("identity operation result", &other)),
+    }
+}
+
+fn unexpected(expected: &'static str, response: &ControlResult) -> ControlClientError {
+    if let ControlResult::Error { code, message } = response {
+        return ControlClientError::Daemon {
+            code: *code,
+            message: sanitize_error(message),
+        };
+    }
+    ControlClientError::UnexpectedResponse {
+        expected,
+        actual: response.kind(),
+    }
+}
+
+impl ControlResult {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Hello => "hello",
+            Self::Applied { .. } => "applied",
+            Self::Status { .. } => "status",
+            Self::OperatorManaged => "operator_managed",
+            Self::LoggedOut { .. } => "logged_out",
+            Self::Error { .. } => "error",
+            Self::Restarting { .. } => "restarting",
+        }
     }
 }
 
 fn request(
     socket_path: &Path,
-    read_timeout: Duration,
-    verb: &str,
-) -> std::io::Result<ControlResponse> {
-    let mut stream = UnixStream::connect(socket_path)?;
-    stream.set_read_timeout(Some(read_timeout))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    total_timeout: Duration,
+    request: &ControlRequest,
+) -> Result<ControlResponse, ControlClientError> {
+    let deadline = Instant::now() + total_timeout;
+    let mut stream = connect_until(socket_path, deadline)?;
 
-    stream.write_all(format!("{verb}\n").as_bytes())?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let read = reader.read_line(&mut line)?;
-    if read == 0 {
-        // The daemon hung up before replying (e.g. it was shutting down).
-        return Err(std::io::Error::new(
-            ErrorKind::ConnectionAborted,
-            "daemon closed the control connection before replying",
+    let mut request_line = serde_json::to_vec(request)
+        .map_err(|error| ControlClientError::Transport(error.to_string()))?;
+    request_line.push(b'\n');
+    if request_line.len() > MAX_REQUEST_LINE_BYTES {
+        return Err(ControlClientError::Transport(
+            "serialized control request exceeds the protocol limit".into(),
         ));
     }
-    serde_json::from_str(line.trim()).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
+
+    write_all_until(&mut stream, &request_line, deadline)?;
+    let response_line = read_bounded_line_until(&mut stream, MAX_RESPONSE_LINE_BYTES, deadline)?;
+    let response: ControlResponse = serde_json::from_slice(&response_line).map_err(|_| {
+        ControlClientError::Transport("daemon returned an invalid control response".into())
+    })?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(ControlClientError::ProtocolVersion {
+            expected: PROTOCOL_VERSION,
+            actual: response.protocol_version,
+        });
+    }
+    Ok(response)
+}
+
+fn connect_until(socket_path: &Path, deadline: Instant) -> Result<UnixStream, ControlClientError> {
+    use rustix::io::Errno;
+    use rustix::net::{
+        AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with,
+        sockopt::socket_error,
+    };
+
+    let socket = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(|error| classify_io(error.into()))?;
+    let address = SocketAddrUnix::new(socket_path).map_err(|error| classify_io(error.into()))?;
+    match connect(&socket, &address) {
+        Ok(()) => {}
+        Err(error)
+            if error == Errno::INPROGRESS
+                || error == Errno::AGAIN
+                || error == Errno::WOULDBLOCK =>
+        {
+            wait_until(&socket, rustix::event::PollFlags::OUT, deadline)?;
+            match socket_error(&socket).map_err(|error| classify_io(error.into()))? {
+                Ok(()) => {}
+                Err(error) => return Err(classify_io(error.into())),
+            }
+        }
+        Err(error) => return Err(classify_io(error.into())),
+    }
+    Ok(UnixStream::from(socket))
+}
+
+fn wait_until(
+    fd: &impl std::os::fd::AsFd,
+    readiness: rustix::event::PollFlags,
+    deadline: Instant,
+) -> Result<(), ControlClientError> {
+    use rustix::event::{PollFd, Timespec, poll};
+
+    loop {
+        let timeout = Timespec::try_from(remaining(deadline)?).map_err(|_| {
+            ControlClientError::Transport("control deadline is out of range".into())
+        })?;
+        let mut descriptor = [PollFd::new(fd, readiness)];
+        match poll(&mut descriptor, Some(&timeout)) {
+            Ok(0) => return Err(ControlClientError::TimedOut),
+            Ok(_) => return Ok(()),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(classify_io(error.into())),
+        }
+    }
+}
+
+fn write_all_until(
+    stream: &mut UnixStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> Result<(), ControlClientError> {
+    while !bytes.is_empty() {
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(ControlClientError::Transport(
+                    "daemon closed the control connection while receiving the request".into(),
+                ));
+            }
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                wait_until(stream, rustix::event::PollFlags::OUT, deadline)?;
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(classify_io(error)),
+        }
+    }
+    Ok(())
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, ControlClientError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(ControlClientError::TimedOut)
+}
+
+fn read_bounded_line_until(
+    stream: &mut UnixStream,
+    maximum_including_newline: usize,
+    deadline: Instant,
+) -> Result<Vec<u8>, ControlClientError> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let capacity = (maximum_including_newline + 1 - bytes.len()).min(chunk.len());
+        match stream.read(&mut chunk[..capacity]) {
+            Ok(0) if bytes.is_empty() => {
+                return Err(ControlClientError::Transport(
+                    "daemon closed the control connection before replying".into(),
+                ));
+            }
+            Ok(0) => {
+                return Err(ControlClientError::Transport(
+                    "daemon response is missing its required newline".into(),
+                ));
+            }
+            Ok(read) => {
+                if let Some(newline) = chunk[..read].iter().position(|byte| *byte == b'\n') {
+                    bytes.extend_from_slice(&chunk[..=newline]);
+                    if bytes.len() > maximum_including_newline {
+                        return Err(ControlClientError::Transport(
+                            "daemon response exceeds the protocol limit".into(),
+                        ));
+                    }
+                    bytes.pop();
+                    return Ok(bytes);
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+                if bytes.len() > maximum_including_newline {
+                    return Err(ControlClientError::Transport(
+                        "daemon response exceeds the protocol limit".into(),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                wait_until(stream, rustix::event::PollFlags::IN, deadline)?;
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(classify_io(error)),
+        }
+    }
+}
+
+fn classify_io(error: std::io::Error) -> ControlClientError {
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => ControlClientError::TimedOut,
+        ErrorKind::NotFound | ErrorKind::ConnectionRefused => ControlClientError::DaemonNotRunning,
+        _ => ControlClientError::Transport(error.to_string()),
+    }
+}
+
+/// Removes control characters and truncates on a UTF-8 boundary. Callers must
+/// still pass only public diagnostics; raw backend bodies and credentials are
+/// not accepted by the protocol types.
+pub(crate) fn sanitize_error(message: &str) -> String {
+    let mut sanitized = String::with_capacity(message.len().min(MAX_ERROR_MESSAGE_BYTES));
+    for character in message.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if sanitized.len() + character.len_utf8() > MAX_ERROR_MESSAGE_BYTES {
+            break;
+        }
+        sanitized.push(character);
+    }
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        "operation failed".to_string()
+    } else if trimmed.len() == sanitized.len() {
+        sanitized
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -300,8 +845,6 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
-    /// Spawns a one-shot stub daemon on `path` that reads the request line and
-    /// runs `reply` with it, returning the request the stub observed.
     fn stub_daemon(
         path: PathBuf,
         reply: impl FnOnce(&str, &mut UnixStream) + Send + 'static,
@@ -312,281 +855,303 @@ mod tests {
             let mut reader = BufReader::new(stream.try_clone().expect("clone"));
             let mut line = String::new();
             reader.read_line(&mut line).expect("read request");
-            reply(line.trim(), &mut stream);
-            line.trim().to_string()
+            reply(&line, &mut stream);
+            line
         })
     }
 
     #[test]
-    fn poke_sends_refederate_and_parses_the_ack() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, stream| {
-            stream
-                .write_all(
-                    b"{\"status\":\"ok\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"verified\"}\n",
-                )
-                .unwrap();
-        });
-
-        let outcome = poke_refederate(&path, Duration::from_secs(5));
-        let request = handle.join().unwrap();
-
-        assert_eq!(request, REFEDERATE_VERB);
-        assert_eq!(
-            outcome,
-            PokeOutcome::Applied(PlatformLink {
-                endpoint: Some("tls/hub.example:7447".to_string()),
-                link_state: LinkState::Verified,
-            })
-        );
-    }
-
-    #[test]
-    fn forced_standalone_sends_the_distinct_defederate_verb() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, stream| {
-            stream
-                .write_all(
-                    b"{\"status\":\"ok\",\"endpoint\":null,\"link_state\":\"not_configured\"}\n",
-                )
-                .unwrap();
-        });
-
-        let outcome = poke_defederate(&path, Duration::from_secs(5));
-        let request = handle.join().unwrap();
-
-        assert_eq!(request, DEFEDERATE_VERB);
-        assert_eq!(
-            outcome,
-            PokeOutcome::Applied(PlatformLink {
-                endpoint: None,
-                link_state: LinkState::NotConfigured,
-            })
-        );
-    }
-
-    #[test]
-    fn poke_parses_defederated_pinned_error_and_link_error() {
-        for (reply, expected) in [
+    fn request_wire_shapes_are_exact() {
+        let revision = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let cases = [
             (
-                "{\"status\":\"ok\",\"endpoint\":null,\"link_state\":\"not_configured\"}\n",
-                PokeOutcome::Applied(PlatformLink {
-                    endpoint: None,
-                    link_state: LinkState::NotConfigured,
-                }),
-            ),
-            ("{\"status\":\"pinned\"}\n", PokeOutcome::Pinned),
-            (
-                "{\"status\":\"error\",\"message\":\"boom\"}\n",
-                PokeOutcome::DaemonError("boom".to_string()),
+                ControlRequest::hello(),
+                r#"{"protocol_version":1,"request":{"operation":"hello"}}"#,
             ),
             (
-                "{\"status\":\"ok\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":{\"error\":\"received fatal alert: UnknownCA\"}}\n",
-                PokeOutcome::Applied(PlatformLink {
-                    endpoint: Some("tls/hub.example:7447".to_string()),
-                    link_state: LinkState::Error("received fatal alert: UnknownCA".to_string()),
-                }),
+                ControlRequest::enroll_current_credential(Some(revision), None, None),
+                r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_session_revision":"550e8400-e29b-41d4-a716-446655440000"}}"#,
             ),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-            let handle = stub_daemon(path.clone(), move |_req, stream| {
-                stream.write_all(reply.as_bytes()).unwrap();
-            });
-            let outcome = poke_refederate(&path, Duration::from_secs(5));
-            handle.join().unwrap();
-            assert_eq!(outcome, expected, "reply {reply:?}");
+            (
+                ControlRequest::enroll_current_credential(
+                    None,
+                    Some("subject-a".into()),
+                    Some("https://api.peppy.bot".into()),
+                ),
+                r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_pat_subject":"subject-a","expected_api_origin":"https://api.peppy.bot"}}"#,
+            ),
+            (
+                ControlRequest::prepare_oauth_login(revision),
+                r#"{"protocol_version":1,"request":{"operation":"prepare_oauth_login","expected_session_revision":"550e8400-e29b-41d4-a716-446655440000"}}"#,
+            ),
+            (
+                ControlRequest::logout(None),
+                r#"{"protocol_version":1,"request":{"operation":"logout"}}"#,
+            ),
+            (
+                ControlRequest::status(),
+                r#"{"protocol_version":1,"request":{"operation":"status"}}"#,
+            ),
+        ];
+        for (request, golden) in cases {
+            assert_eq!(serde_json::to_string(&request).unwrap(), golden);
         }
     }
 
     #[test]
-    fn poke_without_a_socket_reports_not_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        // No listener bound: connect is refused / the path does not exist.
-        assert_eq!(
-            poke_refederate(&path, Duration::from_secs(1)),
-            PokeOutcome::DaemonNotRunning
-        );
-    }
-
-    #[test]
-    fn poke_times_out_when_daemon_never_replies() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        // Stub accepts and reads the request but never writes a reply, then
-        // sleeps past the client's deadline before dropping the connection.
-        let handle = stub_daemon(path.clone(), |_req, _stream| {
-            std::thread::sleep(Duration::from_millis(400));
-        });
-        let outcome = poke_refederate(&path, Duration::from_millis(150));
-        handle.join().unwrap();
-        assert_eq!(outcome, PokeOutcome::TimedOut);
-    }
-
-    /// The ack and status wire shapes, pinned exactly: the platform link is
-    /// `endpoint` + typed `link_state`, and the restarting ack carries the
-    /// target namespace.
-    #[test]
-    fn platform_status_wire_shape_is_stable() {
-        let ack = ControlResponse::Ok(PlatformLink {
-            endpoint: Some("tls/hub.example:7447".to_string()),
-            link_state: LinkState::Error("UnknownIssuer".to_string()),
-        });
-        assert_eq!(
-            serde_json::to_string(&ack).unwrap(),
-            r#"{"status":"ok","endpoint":"tls/hub.example:7447","link_state":{"error":"UnknownIssuer"}}"#
-        );
-
-        let status = ControlResponse::FederationStatus(FederationStatus {
+    fn response_wire_shapes_are_exact() {
+        let status = FederationStatus {
             link: PlatformLink {
-                endpoint: Some("tls/hub.example:7447".to_string()),
+                endpoint: Some("tls/hub.example:7447".into()),
                 link_state: LinkState::Verified,
             },
             pinned: false,
-            pat_active: false,
-            certificate_error: None,
-            certificate_renewing: false,
-        });
-        assert_eq!(
-            serde_json::to_string(&status).unwrap(),
-            r#"{"status":"federation_status","endpoint":"tls/hub.example:7447","link_state":"verified","pinned":false}"#
-        );
-
-        let restarting = ControlResponse::Restarting {
-            target_namespace: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            ..FederationStatus::default()
         };
         assert_eq!(
-            serde_json::to_string(&restarting).unwrap(),
-            r#"{"status":"restarting","target_namespace":"550e8400-e29b-41d4-a716-446655440000"}"#
+            serde_json::to_string(&ControlResponse::hello()).unwrap(),
+            r#"{"protocol_version":1,"response":{"result":"hello"}}"#
         );
-    }
-
-    #[test]
-    fn restarting_ack_carries_the_target_namespace() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, stream| {
-            stream
-                .write_all(
-                    b"{\"status\":\"restarting\",\"target_namespace\":\"550e8400-e29b-41d4-a716-446655440000\"}\n",
-                )
-                .unwrap();
-        });
-
-        let outcome = poke_refederate(&path, Duration::from_secs(5));
-        handle.join().unwrap();
-
         assert_eq!(
-            outcome,
-            PokeOutcome::Restarting {
-                target_namespace: "550e8400-e29b-41d4-a716-446655440000".to_string()
-            }
+            serde_json::to_string(&ControlResponse::new(ControlResult::OperatorManaged)).unwrap(),
+            r#"{"protocol_version":1,"response":{"result":"operator_managed"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ControlResponse::new(ControlResult::Status { status })).unwrap(),
+            r#"{"protocol_version":1,"response":{"result":"status","status":{"controller_settled":false,"authentication":"missing","certificate":"missing","bound_core_node_name":null,"certificate_expiry_unix":null,"generation":null,"next_retry_after_secs":null,"router_apply_state":"standalone","operator_managed":false,"offline_recovery_required":false,"link":{"endpoint":"tls/hub.example:7447","link_state":"verified"},"pinned":false}}}"#
+        );
+
+        let logout = LogoutResult {
+            certificate_revocation: CleanupState::Succeeded,
+            oauth_revocation: CleanupState::Failed,
+            router_apply: RouterApplyState::Standalone,
+            local_cleanup: CleanupState::Succeeded,
+            operator_action_required: false,
+            target_namespace: Some("local".into()),
+        };
+        assert_eq!(
+            serde_json::to_string(&ControlResponse::new(ControlResult::LoggedOut {
+                outcome: logout
+            }))
+            .unwrap(),
+            r#"{"protocol_version":1,"response":{"result":"logged_out","outcome":{"certificate_revocation":"succeeded","oauth_revocation":"failed","router_apply":"standalone","local_cleanup":"succeeded","operator_action_required":false,"target_namespace":"local"}}}"#
         );
     }
 
     #[test]
-    fn query_status_sends_status_and_parses_the_platform_state() {
-        fn status(endpoint: Option<&str>, link_state: LinkState, pinned: bool) -> FederationStatus {
-            FederationStatus {
-                link: PlatformLink {
-                    endpoint: endpoint.map(str::to_string),
-                    link_state,
-                },
-                pinned,
-                pat_active: false,
-                certificate_error: None,
-                certificate_renewing: false,
-            }
-        }
-        for (reply, expected) in [
-            (
-                "{\"status\":\"federation_status\",\"endpoint\":null,\"link_state\":\"not_configured\",\"pinned\":false}\n",
-                status(None, LinkState::NotConfigured, false),
-            ),
-            (
-                "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"unverified\",\"pinned\":false}\n",
-                status(Some("tls/hub.example:7447"), LinkState::Unverified, false),
-            ),
-            (
-                "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"verified\",\"pinned\":true}\n",
-                status(Some("tls/hub.example:7447"), LinkState::Verified, true),
-            ),
-            (
-                "{\"status\":\"federation_status\",\"endpoint\":\"tls/hub.example:7447\",\"link_state\":{\"error\":\"UnknownCA\"},\"pinned\":false}\n",
-                status(
-                    Some("tls/hub.example:7447"),
-                    LinkState::Error("UnknownCA".to_string()),
-                    false,
-                ),
-            ),
+    fn unknown_fields_and_non_uuid_revisions_are_rejected() {
+        for invalid in [
+            r#"{"protocol_version":1,"surprise":true,"request":{"operation":"hello"}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"hello","surprise":true}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"logout","expected_session_revision":"not-a-uuid"}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_pat_subject":"subject-a"}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_api_origin":"https://api.peppy.bot"}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_session_revision":"550e8400-e29b-41d4-a716-446655440000","expected_pat_subject":"subject-a","expected_api_origin":"https://api.peppy.bot"}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_pat_subject":"","expected_api_origin":"https://api.peppy.bot"}}"#,
+            r#"{"protocol_version":1,"request":{"operation":"enroll_current_credential","expected_pat_subject":"subject-a","expected_api_origin":""}}"#,
         ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-            let handle = stub_daemon(path.clone(), move |req, stream| {
-                assert_eq!(req, STATUS_VERB);
-                stream.write_all(reply.as_bytes()).unwrap();
-            });
+            assert!(
+                serde_json::from_str::<ControlRequest>(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
 
-            let outcome = query_status(&path, Duration::from_secs(5));
-            handle.join().unwrap();
-            assert_eq!(
-                outcome,
-                QueryStatusOutcome::Status(expected),
-                "reply {reply:?}"
+        for (field, value) in [
+            ("expected_pat_subject", "s".repeat(1025)),
+            ("expected_api_origin", "o".repeat(2049)),
+        ] {
+            let mut request = serde_json::json!({
+                "protocol_version": 1,
+                "request": {
+                    "operation": "enroll_current_credential",
+                    "expected_pat_subject": "subject-a",
+                    "expected_api_origin": "https://api.peppy.bot",
+                }
+            });
+            request["request"][field] = serde_json::Value::String(value);
+            assert!(
+                serde_json::from_value::<ControlRequest>(request).is_err(),
+                "accepted over-limit {field}"
+            );
+        }
+
+        for invalid in [
+            r#"{"protocol_version":1,"response":{"result":"status","status":{"link":{"endpoint":null,"link_state":"not_configured"},"pinned":false}}}"#,
+            r#"{"protocol_version":1,"response":{"result":"logged_out","outcome":{"certificate_revocation":"succeeded","oauth_revocation":"succeeded","router_apply":"standalone","local_cleanup":"succeeded","operator_action_required":false,"target_namespace":null,"surprise":true}}}"#,
+            r#"{"protocol_version":1,"response":{"result":"logged_out","outcome":{"certificate_revocation":"maybe","oauth_revocation":"succeeded","router_apply":"standalone","local_cleanup":"succeeded","operator_action_required":false,"target_namespace":null}}}"#,
+            r#"{"protocol_version":1,"response":{"result":"pinned"}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ControlResponse>(invalid).is_err(),
+                "accepted {invalid}"
             );
         }
     }
 
     #[test]
-    fn query_status_reports_an_invalid_reply_as_a_daemon_error() {
+    fn typed_client_parses_structured_logout_outcome() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, stream| {
-            stream.write_all(b"not-json\n").unwrap();
+        let handle = stub_daemon(path.clone(), |_request, stream| {
+            stream
+                .write_all(
+                    b"{\"protocol_version\":1,\"response\":{\"result\":\"logged_out\",\"outcome\":{\"certificate_revocation\":\"succeeded\",\"oauth_revocation\":\"not_needed\",\"router_apply\":\"operator_managed\",\"local_cleanup\":\"succeeded\",\"operator_action_required\":true,\"target_namespace\":\"local\"}}}\n",
+                )
+                .unwrap();
+        });
+        let revision = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let outcome = logout(&path, Duration::from_secs(2), Some(revision)).unwrap();
+        let request = handle.join().unwrap();
+        assert_eq!(
+            request,
+            "{\"protocol_version\":1,\"request\":{\"operation\":\"logout\",\"expected_session_revision\":\"550e8400-e29b-41d4-a716-446655440000\"}}\n"
+        );
+        assert_eq!(
+            outcome,
+            LogoutResult {
+                certificate_revocation: CleanupState::Succeeded,
+                oauth_revocation: CleanupState::NotNeeded,
+                router_apply: RouterApplyState::OperatorManaged,
+                local_cleanup: CleanupState::Succeeded,
+                operator_action_required: true,
+                target_namespace: Some("local".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn typed_client_sends_enroll_and_parses_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_request, stream| {
+            stream
+                .write_all(
+                    b"{\"protocol_version\":1,\"response\":{\"result\":\"applied\",\"link\":{\"endpoint\":\"tls/hub.example:7447\",\"link_state\":\"verified\"}}}\n",
+                )
+                .unwrap();
+        });
+        let outcome = enroll_current_credential(
+            &path,
+            Duration::from_secs(2),
+            None,
+            Some("cli-subject".into()),
+            Some("https://api.peppy.bot".into()),
+        )
+        .unwrap();
+        let request = handle.join().unwrap();
+        assert_eq!(
+            request,
+            "{\"protocol_version\":1,\"request\":{\"operation\":\"enroll_current_credential\",\"expected_pat_subject\":\"cli-subject\",\"expected_api_origin\":\"https://api.peppy.bot\"}}\n"
+        );
+        assert_eq!(
+            outcome,
+            ApplyResult::Applied(PlatformLink {
+                endpoint: Some("tls/hub.example:7447".into()),
+                link_state: LinkState::Verified,
+            })
+        );
+    }
+
+    #[test]
+    fn typed_client_reports_operator_managed_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_request, stream| {
+            stream
+                .write_all(
+                    b"{\"protocol_version\":1,\"response\":{\"result\":\"operator_managed\"}}\n",
+                )
+                .unwrap();
+        });
+        assert_eq!(
+            prepare_oauth_login(&path, Duration::from_secs(2), Uuid::new_v4()),
+            Ok(ApplyResult::OperatorManaged)
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn client_rejects_oversized_or_unterminated_responses() {
+        for reply in [vec![b'x'; MAX_RESPONSE_LINE_BYTES + 1], b"{}".to_vec()] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+            let handle = stub_daemon(path.clone(), move |_request, stream| {
+                stream.write_all(&reply).unwrap();
+            });
+            let result = hello(&path, Duration::from_secs(2));
+            handle.join().unwrap();
+            assert!(matches!(result, Err(ControlClientError::Transport(_))));
+        }
+    }
+
+    #[test]
+    fn client_rejects_unknown_response_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_request, stream| {
+            stream
+                .write_all(
+                    b"{\"protocol_version\":1,\"response\":{\"result\":\"hello\",\"surprise\":true}}\n",
+                )
+                .unwrap();
+        });
+        let result = hello(&path, Duration::from_secs(2));
+        handle.join().unwrap();
+        assert!(matches!(result, Err(ControlClientError::Transport(_))));
+    }
+
+    #[test]
+    fn errors_are_control_free_utf8_bounded_and_typed() {
+        let response = ControlResponse::error(
+            ControlErrorCode::OperationFailed,
+            format!("  bad\n{}  ", "é".repeat(MAX_ERROR_MESSAGE_BYTES)),
+        );
+        let ControlResult::Error { code, message } = response.response else {
+            panic!("expected error")
+        };
+        assert_eq!(code, ControlErrorCode::OperationFailed);
+        assert!(message.len() <= MAX_ERROR_MESSAGE_BYTES);
+        assert!(!message.chars().any(char::is_control));
+        assert!(std::str::from_utf8(message.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn missing_socket_and_deadline_are_structured() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            hello(&dir.path().join("absent.sock"), Duration::from_millis(10)),
+            Err(ControlClientError::DaemonNotRunning)
+        );
+
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_request, _stream| {
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        assert_eq!(
+            hello(&path, Duration::from_millis(30)),
+            Err(ControlClientError::TimedOut)
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn response_trickle_cannot_reset_the_absolute_client_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
+        let handle = stub_daemon(path.clone(), |_request, stream| {
+            let reply = b"{\"protocol_version\":1,\"response\":{\"result\":\"hello\"}}\n";
+            for byte in reply {
+                if stream.write_all(std::slice::from_ref(byte)).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         });
 
-        let outcome = query_status(&path, Duration::from_secs(5));
-        handle.join().unwrap();
-
-        assert!(matches!(outcome, QueryStatusOutcome::DaemonError(message) if !message.is_empty()));
-    }
-
-    #[test]
-    fn query_status_reports_an_aborted_reply_as_a_daemon_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, _stream| {});
-
-        let outcome = query_status(&path, Duration::from_secs(5));
-        handle.join().unwrap();
-
-        assert!(matches!(outcome, QueryStatusOutcome::DaemonError(message)
-            if message.contains("closed the control connection")));
-    }
-
-    #[test]
-    fn query_status_without_a_socket_reports_not_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-
         assert_eq!(
-            query_status(&path, Duration::from_secs(1)),
-            QueryStatusOutcome::DaemonNotRunning
+            hello(&path, Duration::from_millis(35)),
+            Err(ControlClientError::TimedOut)
         );
-    }
-
-    #[test]
-    fn query_status_with_a_refused_socket_reports_not_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        drop(UnixListener::bind(&path).expect("bind stale socket"));
-
-        assert_eq!(
-            query_status(&path, Duration::from_secs(1)),
-            QueryStatusOutcome::DaemonNotRunning
-        );
+        handle.join().unwrap();
     }
 }

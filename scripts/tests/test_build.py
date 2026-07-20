@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from functions.build import (
+    ZENOHD_TLS_POLICY_MARKER,
     build_and_package,
     find_build_dir,
     find_peppy_binary,
@@ -17,6 +18,10 @@ from functions.build import (
     package_release,
 )
 from functions.cli import RELEASE_TRIPLES, ReleaseError
+
+
+def _write_verified_zenohd(path: Path, prefix: bytes = b"fake zenohd") -> None:
+    path.write_bytes(prefix + b"\0" + ZENOHD_TLS_POLICY_MARKER + b"\0")
 
 
 def test_release_triples_contains_expected_values() -> None:
@@ -73,7 +78,7 @@ def test_find_zenohd_binary_found(tmp_path: Path) -> None:
         / "zenohd"
     )
     zenohd_path.parent.mkdir(parents=True)
-    zenohd_path.write_bytes(b"fake zenohd")
+    _write_verified_zenohd(zenohd_path)
 
     with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
         result = find_zenohd_binary(triple, tmp_path)
@@ -87,6 +92,57 @@ def test_find_zenohd_binary_not_found_raises(tmp_path: Path) -> None:
 
     with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
         with pytest.raises(ReleaseError, match="zenohd binary not found"):
+            find_zenohd_binary(triple, tmp_path)
+
+
+def test_find_zenohd_binary_rejects_markerless_candidate(tmp_path: Path) -> None:
+    triple = "aarch64-apple-darwin"
+    zenohd_path = (
+        tmp_path
+        / "target"
+        / triple
+        / "release"
+        / "build"
+        / "pmi-stock"
+        / "out"
+        / "zenohd"
+    )
+    zenohd_path.parent.mkdir(parents=True)
+    zenohd_path.write_bytes(b"stock zenohd")
+
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
+        with pytest.raises(ReleaseError, match="none carries"):
+            find_zenohd_binary(triple, tmp_path)
+
+
+def test_find_zenohd_binary_selects_only_verified_candidate(tmp_path: Path) -> None:
+    triple = "aarch64-apple-darwin"
+    build_dir = tmp_path / "target" / triple / "release" / "build"
+    stock = build_dir / "pmi-a-stock" / "out" / "zenohd"
+    verified = build_dir / "pmi-b-verified" / "out" / "zenohd"
+    stock.parent.mkdir(parents=True)
+    verified.parent.mkdir(parents=True)
+    stock.write_bytes(b"stock zenohd")
+    _write_verified_zenohd(verified)
+
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
+        assert find_zenohd_binary(triple, tmp_path) == verified
+
+
+def test_find_zenohd_binary_rejects_multiple_verified_candidates(
+    tmp_path: Path,
+) -> None:
+    triple = "aarch64-apple-darwin"
+    build_dir = tmp_path / "target" / triple / "release" / "build"
+    first = build_dir / "pmi-a" / "out" / "zenohd"
+    second = build_dir / "pmi-b" / "out" / "zenohd"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    _write_verified_zenohd(first)
+    _write_verified_zenohd(second)
+
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
+        with pytest.raises(ReleaseError, match="multiple TLS-policy-verified"):
             find_zenohd_binary(triple, tmp_path)
 
 
@@ -134,7 +190,7 @@ def test_package_release_creates_valid_tarball(tmp_path: Path) -> None:
     peppy_bin = tmp_path / "peppy"
     peppy_bin.write_bytes(b"peppy binary")
     zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"zenohd binary")
+    _write_verified_zenohd(zenohd_bin)
 
     apptainer_dir = tmp_path / "apptainer-install"
     apptainer_dir.mkdir()
@@ -172,7 +228,7 @@ def test_package_release_creates_tarball_without_lima(tmp_path: Path) -> None:
     peppy_bin = tmp_path / "peppy"
     peppy_bin.write_bytes(b"peppy binary")
     zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"zenohd binary")
+    _write_verified_zenohd(zenohd_bin)
 
     apptainer_dir = tmp_path / "apptainer-install"
     apptainer_dir.mkdir()
@@ -201,7 +257,7 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
     peppy_bin = tmp_path / "peppy"
     peppy_bin.write_bytes(b"peppy binary")
     zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"zenohd binary")
+    _write_verified_zenohd(zenohd_bin)
 
     apptainer_dir = tmp_path / "apptainer-install"
     apptainer_dir.mkdir()
@@ -237,7 +293,7 @@ def test_package_release_respects_peppy_dist_dir(tmp_path: Path) -> None:
     peppy_bin = tmp_path / "peppy"
     peppy_bin.write_bytes(b"binary")
     zenohd_bin = tmp_path / "zenohd"
-    zenohd_bin.write_bytes(b"binary")
+    _write_verified_zenohd(zenohd_bin, b"binary")
 
     apptainer_dir = tmp_path / "apptainer-install"
     apptainer_dir.mkdir()
@@ -283,7 +339,10 @@ def test_build_and_package_native_calls_cargo_build(
     build_and_package("v0.1.0", "aarch64-unknown-linux-gnu", tmp_path)
 
     mock_cargo.assert_called_once_with(
-        "v0.1.0", "aarch64-unknown-linux-gnu", tmp_path
+        "v0.1.0",
+        "aarch64-unknown-linux-gnu",
+        tmp_path,
+        target_dir=ANY,
     )
 
 
@@ -312,5 +371,9 @@ def test_build_and_package_with_lima_calls_lima_build(
     )
 
     mock_lima_build.assert_called_once_with(
-        limactl, "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path
+        limactl,
+        "v0.1.0",
+        "x86_64-unknown-linux-gnu",
+        tmp_path,
+        target_dir=ANY,
     )
