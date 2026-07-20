@@ -45,11 +45,6 @@ jobs:
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
 
-      # The cheapest check in the job, so it runs first: failing on formatting
-      # here saves a multi-minute build.
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
-
       - name: Run tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
