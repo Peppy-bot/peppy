@@ -24,10 +24,18 @@ class BuildArtifact:
     target_triple: str
 
 
-def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
+def cargo_build(
+    tag: str,
+    target_triple: str,
+    repo_root: Path,
+    *,
+    target_dir: Path | None = None,
+) -> None:
     """Run a release build for the peppy binary.
 
-    Sets PEPPY_GIT_TAG env var for the build.
+    Sets PEPPY_GIT_TAG env var for the build. When `target_dir` is given, cargo
+    writes into that tree instead of the shared one, which is how a release
+    invocation keeps pre-existing build output out of its archive.
     Each target triple gets its own directory under target/{triple}/release/,
     so no cargo clean is needed.
 
@@ -38,6 +46,8 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
     env = {**os.environ, "PEPPY_GIT_TAG": tag, "PEPPY_CROSS_ARCH": "1"}
+    if target_dir is not None:
+        env["CARGO_TARGET_DIR"] = str(target_dir)
     try:
         proc = subprocess.Popen(
             [
@@ -80,17 +90,31 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
 
 
 def _get_target_dir(repo_root: Path) -> Path:
-    """Get the cargo target directory, respecting CARGO_TARGET_DIR."""
-    return Path(os.environ.get("CARGO_TARGET_DIR", str(repo_root / "target")))
+    """Get the cargo target directory, respecting CARGO_TARGET_DIR.
+
+    Cargo resolves a relative CARGO_TARGET_DIR against the current working
+    directory, so a bare value like `target-release` must be resolved against
+    repo_root here too; otherwise this function and cargo look in different
+    places and artifact discovery silently finds nothing. An absolute value is
+    honoured verbatim, including one outside repo_root: that is a legitimate
+    configuration for a native build.
+    """
+    configured = Path(os.environ.get("CARGO_TARGET_DIR", str(repo_root / "target")))
+    return configured if configured.is_absolute() else repo_root / configured
 
 
-def find_peppy_binary(target_triple: str, repo_root: Path) -> Path:
+def find_peppy_binary(
+    target_triple: str,
+    repo_root: Path,
+    *,
+    target_dir: Path | None = None,
+) -> Path:
     """Locate the compiled peppy binary in the target directory.
 
     Checks {target_dir}/{target_triple}/release/peppy first, then
     falls back to {target_dir}/release/peppy.
     """
-    target_dir = _get_target_dir(repo_root)
+    target_dir = target_dir or _get_target_dir(repo_root)
 
     primary = target_dir / target_triple / "release" / "peppy"
     if primary.is_file():
@@ -103,13 +127,18 @@ def find_peppy_binary(target_triple: str, repo_root: Path) -> Path:
     raise ReleaseError(f"peppy binary not found (expected '{primary}')")
 
 
-def find_zenohd_binary(target_triple: str, repo_root: Path) -> Path:
+def find_zenohd_binary(
+    target_triple: str,
+    repo_root: Path,
+    *,
+    target_dir: Path | None = None,
+) -> Path:
     """Locate the built zenohd binary in the build output.
 
     Searches {target_dir}/{target_triple}/release/build/pmi-*/out/zenohd.
     Raises ReleaseError if not found.
     """
-    target_dir = _get_target_dir(repo_root)
+    target_dir = target_dir or _get_target_dir(repo_root)
     build_dir = target_dir / target_triple / "release" / "build"
 
     matches = sorted(build_dir.glob("pmi-*/out/zenohd"))
@@ -127,13 +156,15 @@ def find_build_dir(
     repo_root: Path,
     pattern: str,
     label: str,
+    *,
+    target_dir: Path | None = None,
 ) -> Path:
     """Locate a required directory in the build output.
 
     Searches {target_dir}/{target_triple}/release/build/{pattern}.
     Raises ReleaseError if not found.
     """
-    target_dir = _get_target_dir(repo_root)
+    target_dir = target_dir or _get_target_dir(repo_root)
     build_dir = target_dir / target_triple / "release" / "build"
 
     matches = sorted(build_dir.glob(pattern))
@@ -215,34 +246,78 @@ def build_and_package(
             f"unsupported target '{target_triple}' (supported: {supported})"
         )
 
-    if limactl is not None:
-        from .lima import cargo_build_in_lima
+    target_root = _get_target_dir(repo_root)
+    target_root.mkdir(parents=True, exist_ok=True)
+    # A release invocation gets a fresh cargo output tree, so no pre-existing
+    # `pmi-*`, `containers-*`, or zenohd output on a long-lived builder can be
+    # globbed into the archive. The cost is that a release build is always a
+    # cold build.
+    #
+    # The isolated tree must stay under `target_root`. The Lima cross build
+    # exports this host path into the guest, which only sees what is inside the
+    # repo mount; the default `repo_root/target` satisfies that automatically,
+    # and an operator who points CARGO_TARGET_DIR at an absolute path elsewhere
+    # owns keeping it visible to the VM.
+    with tempfile.TemporaryDirectory(
+        prefix=f".peppy-release-{target_triple}-",
+        dir=target_root,
+    ) as isolated_target:
+        target_dir = Path(isolated_target)
+        if limactl is not None:
+            # Imported lazily: `lima` imports `_get_target_dir` from this module
+            # at module level, so hoisting this to the top would create a
+            # circular import.
+            from .lima import cargo_build_in_lima
 
-        cargo_build_in_lima(limactl, tag, target_triple, repo_root)
-    else:
-        cargo_build(tag, target_triple, repo_root)
+            cargo_build_in_lima(
+                limactl,
+                tag,
+                target_triple,
+                repo_root,
+                target_dir=target_dir,
+            )
+        else:
+            cargo_build(
+                tag,
+                target_triple,
+                repo_root,
+                target_dir=target_dir,
+            )
 
-    peppy_bin = find_peppy_binary(target_triple, repo_root)
-    zenohd_bin = find_zenohd_binary(target_triple, repo_root)
+        peppy_bin = find_peppy_binary(
+            target_triple, repo_root, target_dir=target_dir
+        )
+        zenohd_bin = find_zenohd_binary(
+            target_triple, repo_root, target_dir=target_dir
+        )
 
-    apptainer_dir = find_build_dir(
-        target_triple,
-        repo_root,
-        "containers-*/out/apptainer-install",
-        "apptainer install",
-    )
-
-    lima_dir = (
-        find_build_dir(
+        apptainer_dir = find_build_dir(
             target_triple,
             repo_root,
-            "containers-*/out/lima-install",
-            "lima install",
+            "containers-*/out/apptainer-install",
+            "apptainer install",
+            target_dir=target_dir,
         )
-        if "apple-darwin" in target_triple
-        else None
-    )
 
-    return package_release(
-        target_triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
-    )
+        lima_dir = (
+            find_build_dir(
+                target_triple,
+                repo_root,
+                "containers-*/out/lima-install",
+                "lima install",
+                target_dir=target_dir,
+            )
+            if "apple-darwin" in target_triple
+            else None
+        )
+
+        # Inside the `with`, because the tarball is assembled from files under
+        # the isolated tree and `TemporaryDirectory` deletes it on exit.
+        return package_release(
+            target_triple,
+            repo_root,
+            peppy_bin,
+            zenohd_bin,
+            apptainer_dir,
+            lima_dir,
+        )
