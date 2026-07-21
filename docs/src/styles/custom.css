@@ -1,16 +1,139 @@
+/* Peppy brand layer on top of the @astrojs/starlight-tailwind token mapping.
+   The lime accent and navy gray scales live in tailwind.css; this file handles
+   the brand details Starlight's scale variables cannot express: cyan inline
+   links with a lime hover, translucent frosted chrome, the toned-down blueprint
+   background, selection and scrollbar colors, and brand radii.
+   Ported from landing-page/src/styles/global.css. */
+
 :root {
-	--sl-color-bg: #070810;
-	--sl-color-bg-nav: rgba(7, 8, 16, 0.72);
-	--sl-color-bg-sidebar: rgba(7, 8, 16, 0.72);
+	--peppy-cy: #5fd4f0; /* secondary accent: inline links */
+	--peppy-acc: #c8f542; /* lime: link hover */
+	--peppy-grid: rgba(148, 170, 220, 0.14);
+	--peppy-glow-acc: rgba(200, 245, 66, 0.08);
+	--peppy-glow-cy: rgba(95, 212, 240, 0.05);
+
+	/* Cyan inline links, matching the landing page body-link treatment. */
+	--sl-color-text-accent: var(--peppy-cy);
+
+	/* Translucent frosted chrome, paired with the header backdrop blur. */
+	--sl-color-bg-nav: rgba(7, 11, 20, 0.72);
+	--sl-color-bg-sidebar: rgba(7, 11, 20, 0.72);
 }
 
 :root[data-theme='light'] {
+	--peppy-cy: #0c7fa6;
+	--peppy-acc: #5e8f00;
+	--peppy-grid: rgba(28, 48, 96, 0.12);
+	--peppy-glow-acc: rgba(150, 190, 40, 0.14);
+	--peppy-glow-cy: rgba(12, 127, 166, 0.06);
+
+	--sl-color-text-accent: var(--peppy-cy);
+
 	--sl-color-bg: #f8f9fc;
 	--sl-color-bg-nav: rgba(248, 249, 252, 0.85);
 	--sl-color-bg-sidebar: rgba(248, 249, 252, 0.85);
 }
 
-/* Add backdrop blur to header like landing page */
+/* Frosted header, like the landing page. */
 header.header {
 	backdrop-filter: blur(18px);
+}
+
+/* Inline content links: cyan by default (via --sl-color-text-accent), lime on hover. */
+.sl-markdown-content a:hover {
+	color: var(--peppy-acc);
+}
+
+/* Brand selection + scrollbars. */
+::selection {
+	background: rgba(200, 245, 66, 0.28);
+	color: var(--sl-color-white);
+}
+::-webkit-scrollbar {
+	width: 9px;
+	height: 9px;
+}
+::-webkit-scrollbar-thumb {
+	background: #233150;
+	border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+:root[data-theme='light'] ::-webkit-scrollbar-thumb {
+	background: #c3cce0;
+}
+
+/* Brand radius on asides. Code/terminal frames are rounded via Expressive Code's
+   borderRadius styleOverride so the whole window stays one cohesive shape. */
+.sl-markdown-content .starlight-aside {
+	border-radius: 12px;
+}
+
+/* Drop the terminal window title bar (the empty ••• strip) - it is wasted space.
+   Only bare terminal frames are affected; frames with a real title (is-terminal +
+   has-title) keep their bar. The bar is collapsed rather than removed so its
+   screen-reader label survives, and the code area regains the top border and
+   rounded corners the bar used to provide. */
+.expressive-code .frame.is-terminal:not(.has-title) {
+	/* The terminal frame reserves ~1.9rem of top spacing for the title bar when
+	   positioning the copy button. With the bar gone, drop back to the editor
+	   default so the button stays inside the code box (top-right). */
+	--button-spacing: 0.4rem;
+}
+.expressive-code .frame.is-terminal:not(.has-title) .header {
+	height: 0;
+	padding: 0;
+	border: none;
+}
+.expressive-code .frame.is-terminal:not(.has-title) .header::before,
+.expressive-code .frame.is-terminal:not(.has-title) .header::after {
+	display: none;
+}
+.expressive-code .frame.is-terminal:not(.has-title) pre,
+.expressive-code .frame.is-terminal:not(.has-title) code {
+	border-top: var(--ec-brdWd) solid var(--ec-brdCol);
+	border-top-left-radius: var(--ec-brdRad);
+	border-top-right-radius: var(--ec-brdRad);
+}
+
+/* Toned-down blueprint grid + top glow, ported from the landing page and dialed
+   back so long-form docs stay readable. Fixed, painted behind all content. */
+body::before {
+	content: '';
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: -2;
+	background-image:
+		linear-gradient(var(--peppy-grid) 1px, transparent 1px),
+		linear-gradient(90deg, var(--peppy-grid) 1px, transparent 1px);
+	background-size: 56px 56px;
+	mask-image: radial-gradient(ellipse 90% 55% at 50% 0%, #000 25%, transparent 70%);
+	opacity: 0.25;
+}
+
+body::after {
+	content: '';
+	position: fixed;
+	left: 50%;
+	top: -320px;
+	width: 1100px;
+	height: 640px;
+	transform: translateX(-50%);
+	pointer-events: none;
+	z-index: -1;
+	background: radial-gradient(closest-side, var(--peppy-glow-acc), var(--peppy-glow-cy) 55%, transparent);
+	filter: blur(10px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.001ms !important;
+		scroll-behavior: auto !important;
+	}
 }
