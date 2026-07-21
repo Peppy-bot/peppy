@@ -125,7 +125,7 @@ fn node_add_command_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -274,7 +274,7 @@ fn node_add_command_with_run_arg_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -451,7 +451,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -595,7 +595,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -648,7 +648,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     // Verify the instance was stopped and node was re-added with 0 instances
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -782,7 +782,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -868,7 +868,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     // Step 5: Verify the existing instance was stopped and node was re-added
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -1033,7 +1033,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         .expect("messenger handle should be available");
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,

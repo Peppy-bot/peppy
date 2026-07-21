@@ -11,10 +11,11 @@ use tracing::{error, info, warn};
 ///
 /// The probe cadence ([`WATCHDOG_PROBE_INTERVAL`] / [`WATCHDOG_PROBE_TIMEOUT`] /
 /// [`WATCHDOG_MAX_FAILURES`]) is tuned so the watchdog detects a wedge, respawns
-/// zenohd, and lets node sessions reconnect promptly. While a session is down
-/// the core node's health monitor flags the affected nodes unhealthy and clears
-/// the flag once they reconnect, so a transient router hang surfaces as a brief
-/// unhealthy blip rather than tearing the stack down.
+/// a managed zenohd, and lets node sessions reconnect promptly. An adopted
+/// router is reported loudly but remains under operator control. While a session
+/// is down the core node's health monitor flags the affected nodes unhealthy and
+/// clears the flag once they reconnect, so a transient router hang surfaces as
+/// a brief unhealthy blip rather than tearing the stack down.
 const WATCHDOG_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 /// Per-probe timeout. A wedged router exceeds any real localhost round-trip.
 const WATCHDOG_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -107,10 +108,10 @@ impl ServeAsyncCommand for MessagingRouter {
             messaging_ready.send(true).ok();
             ready_tx.send(()).ok();
 
-            // Router watchdog: probe the router's liveness and respawn zenohd
-            // if it wedges. Backends without a restartable router (the mock)
-            // return `None` and just wait for ctrl-c. Either way, ctrl-c ends
-            // the wait.
+            // Router watchdog: probe the router's liveness and respawn managed
+            // zenohd if it wedges. An adopted router is observed but never
+            // restarted. Backends without a router (the mock) return `None` and
+            // just wait for ctrl-c. Either way, ctrl-c ends the wait.
             let health_checker = { messenger.lock().await.router_health_checker() };
             match health_checker {
                 Some(checker) => {
@@ -195,9 +196,9 @@ async fn await_core_node_teardown(
     tokio::time::timeout(teardown_budget, wait).await.is_ok()
 }
 
-/// Periodically probes the Zenoh router and respawns zenohd if it stops
-/// responding. Loops for the daemon's lifetime. Every restart is announced with
-/// a prominent warning banner, and recovery (or continued failure) is reported.
+/// Periodically probes the Zenoh router. A managed zenohd is respawned if it
+/// stops responding; an adopted router is reported loudly and left to its
+/// operator. Loops for the daemon's lifetime.
 async fn run_router_watchdog(messenger: &Arc<Mutex<Messenger>>, checker: &RouterHealthChecker) {
     let mut consecutive_failures: u32 = 0;
     loop {
@@ -217,46 +218,71 @@ async fn run_router_watchdog(messenger: &Arc<Mutex<Messenger>>, checker: &Router
             continue;
         }
 
-        // The router is wedged. Warn loudly *before* touching it, then respawn.
-        warn_messaging_restarting(consecutive_failures);
+        let router_is_adopted = messenger.lock().await.router_is_adopted();
+        if router_is_adopted {
+            warn_external_router_unresponsive(consecutive_failures);
+        } else {
+            // The managed router is wedged. Warn loudly before touching it,
+            // then respawn it.
+            warn_messaging_restarting(consecutive_failures);
 
-        let restart = {
-            let mut messenger = messenger.lock().await;
-            // stop_router is best-effort: the old process may already be
-            // unresponsive, but we still need its listening port freed.
-            if let Err(e) = messenger.stop_router().await {
-                warn!("Watchdog: stop_router returned an error (continuing to restart): {e}");
-            }
-            messenger.start_router().await
-        };
+            let restart = {
+                let mut messenger = messenger.lock().await;
+                // stop_router is best-effort: the old process may already be
+                // unresponsive, but we still need its listening port freed.
+                if let Err(e) = messenger.stop_router().await {
+                    warn!("Watchdog: stop_router returned an error (continuing to restart): {e}");
+                }
+                messenger.start_router().await
+            };
 
-        match restart {
-            Ok(()) => {
-                // Give the daemon's reconnecting session (and any nodes) a
-                // moment to re-establish before re-probing.
-                tokio::time::sleep(WATCHDOG_RESTART_GRACE).await;
-                if checker.is_router_responsive(WATCHDOG_PROBE_TIMEOUT).await {
-                    warn_messaging_restarted();
-                } else {
+            match restart {
+                Ok(()) => {
+                    // Give the daemon's reconnecting session (and any nodes) a
+                    // moment to re-establish before re-probing.
+                    tokio::time::sleep(WATCHDOG_RESTART_GRACE).await;
+                    if checker.is_router_responsive(WATCHDOG_PROBE_TIMEOUT).await {
+                        warn_messaging_restarted();
+                    } else {
+                        error!(
+                            "Watchdog: Zenoh router still not responding after restart. Will keep \
+                             monitoring; a full `peppy service` restart may be required."
+                        );
+                    }
+                }
+                Err(e) => {
                     error!(
-                        "Watchdog: Zenoh router still not responding after restart. Will keep \
-                         monitoring; a full `peppy service` restart may be required."
+                        "Watchdog: failed to restart the Zenoh router: {e}. Will keep monitoring; a \
+                         full `peppy service` restart may be required."
                     );
                 }
-            }
-            Err(e) => {
-                error!(
-                    "Watchdog: failed to restart the Zenoh router: {e}. Will keep monitoring; a \
-                     full `peppy service` restart may be required."
-                );
             }
         }
 
         // Reset and back off so a persistently-failing router does not spin in a
-        // tight restart loop; the next failure has to accrue from scratch.
+        // tight restart or warning loop; the next failure accrues from scratch.
         consecutive_failures = 0;
         tokio::time::sleep(WATCHDOG_POST_RESTART_BACKOFF).await;
     }
+}
+
+/// Loud, multi-line banner emitted when an adopted router is unresponsive.
+fn warn_external_router_unresponsive(failures: u32) {
+    let unresponsive_secs =
+        ((WATCHDOG_PROBE_INTERVAL + WATCHDOG_PROBE_TIMEOUT) * failures).as_secs();
+    error!(
+        "\n\
+         ====================================================================\n\
+         ⚠️  EXTERNAL MESSAGING ROUTER UNRESPONSIVE\n\
+         ====================================================================\n\
+         The adopted Zenoh router failed {failures} consecutive liveness\n\
+         probes (no response for ~{unresponsive_secs}s). Peppy does NOT manage\n\
+         this router and will NOT restart it. Restart it yourself.\n\
+         \n\
+         The daemon and node sessions reconnect automatically when the router\n\
+         is responsive again.\n\
+         ===================================================================="
+    );
 }
 
 /// Loud, multi-line banner emitted just before the watchdog respawns the router.

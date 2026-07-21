@@ -353,7 +353,7 @@ async fn validate_binds_against_stack(
     defer_pairs: &[String],
 ) -> Result<Option<config::runtime::SlotBindings>> {
     let stack_response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger,
         core_node_name,
         CALLER_INSTANCE_ID,

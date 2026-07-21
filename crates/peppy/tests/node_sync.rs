@@ -524,6 +524,12 @@ async fn node_sync_generates_peer_modules_for_pairing_slots() {
                     ]
                 }
             },
+            interfaces: {
+                topics: {
+                    emits: [{ link_id: "controller", name: "joint_states" }],
+                    consumes: [{ link_id: "controller", name: "joint_commands" }]
+                }
+            },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }
         }"#,
     )
@@ -578,6 +584,12 @@ async fn node_sync_pairing_cache_miss_suggests_repo_refresh() {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
                     ]
+                }
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ link_id: "controller", name: "joint_states" }],
+                    consumes: [{ link_id: "controller", name: "joint_commands" }]
                 }
             },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }

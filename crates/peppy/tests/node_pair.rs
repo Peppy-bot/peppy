@@ -26,10 +26,13 @@ use tokio::sync::watch;
 
 use super::common::{seed_pairing_repo, test_node_target};
 
-/// A node declaring one pairing slot. `run_cmd` is a plain `sleep` so the
-/// daemon has a real process to own; the node's services are emulated
-/// in-process by the test.
+/// A node declaring one pairing slot, with the `interfaces.topics` entries
+/// the role owes: `emits` must cover the role's topics exactly, `consumes`
+/// names the counterpart's. `run_cmd` is a plain `sleep` so the daemon has a
+/// real process to own; the node's services are emulated in-process by the
+/// test.
 fn node_config(name: &str, role: &str, link_id: &str) -> String {
+    let (emits, consumes) = arm_link_topics(role);
     format!(
         r#"{{
             peppy_schema: "node/v1",
@@ -42,9 +45,25 @@ fn node_config(name: &str, role: &str, link_id: &str) -> String {
                     ]
                 }}
             }},
+            interfaces: {{
+                topics: {{
+                    emits: [{{ link_id: "{link_id}", name: "{emits}" }}],
+                    consumes: [{{ link_id: "{link_id}", name: "{consumes}" }}]
+                }}
+            }},
             execution: {{ language: "rust", run_cmd: ["sleep", "30"] }}
         }}"#
     )
+}
+
+/// The `(emitted, consumed)` topic names of `common::ARM_LINK_PAIRING` for a
+/// role, so a manifest's entries stay in step with the document.
+fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
+    match role {
+        "controller" => ("joint_commands", "joint_states"),
+        "arm" => ("joint_states", "joint_commands"),
+        other => panic!("arm_link declares no role `{other}`"),
+    }
 }
 
 /// Writes a node dir with the given config and `node add --build`s it (no
@@ -228,9 +247,10 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
 
     // `stack list` shows the pair with the bidirectional arrow, the peer
     // slot carrying its core node like the bindings table's producers.
-    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, None, false)
+    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
-        .expect("stack list should succeed");
+        .expect("stack list should succeed")
+        .output;
     assert!(
         listing.contains(&format!(
             "controller ⇌ ctrl_1:arm@{core_node_name} (arm_link:v1)"
@@ -272,9 +292,10 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
         arm_rx.borrow_and_update().pin.is_none(),
         "the surviving arm must be live-notified Unpaired on peer death"
     );
-    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, None, false)
+    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false)
         .await
-        .expect("stack list should succeed");
+        .expect("stack list should succeed")
+        .output;
     assert!(
         listing.contains("controller ⇌ (unpaired) [role arm of arm_link:v1]"),
         "stack list should show the survivor's slot unpaired:\n{listing}"

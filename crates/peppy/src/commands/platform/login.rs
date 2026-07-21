@@ -1,4 +1,4 @@
-//! `peppy auth login`: OAuth 2.0 device-authorization login (RFC 8628).
+//! `peppy platform login`: OAuth 2.0 device-authorization login (RFC 8628).
 //!
 //! Fetches the public `/cli/auth-config`, runs OIDC discovery against the returned
 //! issuer, performs the device flow (opening the browser on a TTY), caches the
@@ -38,21 +38,29 @@ impl Command for LoginCommand {
         // per-profile URL fallback.
         let config =
             daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
+        // Managed vs external follows the RUNNING daemon's mode (from its state
+        // file), not the disk config, which may have been edited since it
+        // started; only with no daemon running does the disk config decide.
+        let federation = super::federation_poke_timeout_secs(&dirs, &config);
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
 
-        // Warn (before authentication begins) that a login changing the
-        // organization namespace restarts the daemon and wipes the running node
-        // stack. Bypassed by `--yes`, and skipped when no daemon is running or
-        // its node stack holds no user nodes (so the restart wipes nothing).
-        if !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)? {
+        // With a managed router, warn (before authentication begins) that a login
+        // changing the workspace namespace restarts the daemon and wipes the
+        // running node stack. Bypassed by `--yes`, and skipped when no daemon is
+        // running or its node stack holds no user nodes (so the restart wipes
+        // nothing). External mode never pokes or restarts the daemon.
+        if federation.is_some()
+            && !super::confirm_restart(ctx, self.yes, &super::FederationPokeAction::Login)?
+        {
             println!("Login aborted.");
             return Ok(());
         }
 
-        let cfg = cli_config::fetch(&http, &api_url)?;
-        let endpoints = discovery::discover(&http, &cfg.issuer)?;
+        let policy = profile::build_transport_policy();
+        let cfg = cli_config::fetch(&http, &api_url, policy)?;
+        let endpoints = discovery::discover(&http, &cfg.issuer, policy)?;
         let tokens = run_device_flow(
             &http,
             &endpoints,
@@ -62,7 +70,7 @@ impl Command for LoginCommand {
         )?;
 
         // Persist immediately so a transient `/me` failure can't lose a good login.
-        // Load-resilient: a malformed / pre-`organization_id` / version-mismatched
+        // Load-resilient: a malformed / pre-`workspace_id` / version-mismatched
         // file fails to parse with `Error::Auth`; start fresh rather than wedge
         // login on it (the stale file self-heals on this save).
         let mut creds = match storage::load(&creds_path) {
@@ -104,18 +112,26 @@ impl Command for LoginCommand {
             }
         }
 
-        // Federation lives in the running daemon, which would otherwise only see
-        // this login on its next poll. Poke it so it re-resolves the now-saved
-        // credentials and federates immediately. Strict: if federation cannot be
-        // established (no daemon, unreachable/untrusted router, apply timeout, or
-        // no upstream), this returns an actionable error and the command exits
-        // non-zero. The credentials were already saved above, so the user stays
-        // authenticated; only the command fails.
-        super::poke_federation_and_report(
-            &dirs,
-            config.federation.connect_timeout_secs,
-            super::FederationPokeAction::Login,
-        )
+        // Managed-router federation lives in the running daemon, which would
+        // otherwise only see this login on its next poll. Poke it so it
+        // re-resolves the now-saved credentials and federates immediately.
+        // Strict: if federation cannot be established (no daemon,
+        // unreachable/untrusted router, apply timeout, or no upstream), this
+        // returns an actionable error and the command exits non-zero. The
+        // credentials were already saved above, so the user stays authenticated;
+        // only the command fails. External mode leaves federation untouched and
+        // tells the operator that sessions change on the next manual restart.
+        match federation {
+            Some(connect_timeout_secs) => super::poke_federation_and_report(
+                &dirs,
+                connect_timeout_secs,
+                super::FederationPokeAction::Login,
+            ),
+            None => {
+                println!("{}", super::EXTERNAL_ROUTER_NOTE);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -132,7 +148,13 @@ fn run_device_flow(
 ) -> Result<TokenSet> {
     use std::io::IsTerminal;
 
-    let da = device::start(http, endpoints, client_id, scopes)?;
+    let da = device::start(
+        http,
+        endpoints,
+        client_id,
+        scopes,
+        profile::build_transport_policy(),
+    )?;
 
     let complete = da
         .verification_uri_complete

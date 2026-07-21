@@ -74,11 +74,36 @@ fn generated_peer_modules_compile_against_peppylib() {
     );
 
     // Both directions of the slot nest flat under pairings/<link_id>/<topic>.
-    let pairings_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src/pairings");
+    let src_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src");
+    let pairings_dir = src_dir.join("pairings");
     for module in ["arm/joint_commands.rs", "arm/joint_states.rs"] {
         assert!(
             pairings_dir.join(module).exists(),
             "expected generated module pairings/{module}"
+        );
+    }
+    // Neither direction may leak into the flat consumed/emitted namespaces.
+    // Asserted on directory contents so a misplaced-but-working module fails
+    // loudly instead of passing by compiling.
+    for category in ["consumed_topics", "emitted_topics"] {
+        let dir = src_dir.join(category);
+        // The scaffold creates every category dir, so a missing one means the
+        // layout changed and this check would otherwise pass vacuously.
+        assert!(
+            dir.is_dir(),
+            "expected category dir {}; if the scaffold stopped creating empty \
+             categories, rewrite this assertion rather than deleting it",
+            dir.display()
+        );
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .expect("category dir reads")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "mod.rs")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "pairing topics must not generate modules under {category}, found: {entries:?}"
         );
     }
 

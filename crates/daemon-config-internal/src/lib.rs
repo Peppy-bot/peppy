@@ -12,9 +12,9 @@
 //!
 //! It builds on the shared `config` crate (`peppy-config-model`), which keeps
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
-//! node config model, runtime configs, fingerprints, org namespaces, and
+//! node config model, runtime configs, fingerprints, workspace namespaces, and
 //! schema tags. Types crossing that boundary (`config::runtime::Name`,
-//! `config::node` manifest types, `config::peppy_config::PeerConfig`) are
+//! `config::node` manifest types, `config::peppy_config::SubscriberBufferConfig`) are
 //! used directly from `config` so each has exactly one definition.
 
 mod error;
@@ -49,10 +49,9 @@ pub mod atomic_write {
 // -- consts --
 pub mod consts {
     pub use crate::internal::consts::{
-        AppEnv, CREDENTIALS_FILE, DAEMON_STATE_FILE_ENV, DEFAULT_ALPINE_BASE_IMAGE,
-        DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_MESSAGING_PORT_VAR_NAME,
-        PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH, PeppyDirs, non_empty_env_path, peppy_root_dir,
-        set_app_env,
+        AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
+        DEFAULT_RUST_BASE_IMAGE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
+        PEPPYLIB_OUTPUT_PATH, PeppyDirs, non_empty_env_path, peppy_root_dir, set_app_env,
     };
 }
 
@@ -60,8 +59,9 @@ pub mod consts {
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
-        FederationConfig, LifecycleConfig, MAX_CORE_NODE_NAME_LEN, Mode, PeppyConfig,
-        ResourceServers, load_or_create,
+        ExternalZenohConfig, FederationConfig, LifecycleConfig, LocalNodesTopology,
+        MAX_CORE_NODE_NAME_LEN, ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig,
+        ResourceServers, ZenohConfig, load_or_create,
     };
 }
 

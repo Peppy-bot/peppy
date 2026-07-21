@@ -25,6 +25,8 @@ use crate::{context::AppContext, error::Error as CommandError};
 pub use add::{AddNodeParams, add_node};
 pub use builder::build_node_async;
 pub use init::NodeInitBuilder;
+#[cfg(feature = "test-support")]
+pub use run::run_instance_async;
 pub use types::NodeName;
 // Internal helper: `launch` reaches it through the `node::` path; no test or
 // `main.rs` consumer, so it stays off the public surface. (`BuildNodeParams`

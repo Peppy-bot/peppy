@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 /// On-disk schema version of `credentials.json5`. Bumped on any shape change;
 /// there is intentionally **no reader for an older version**. A clean break: a
 /// pre-Phase-F file has no `version`, deserializes to `0`, and is rejected by
-/// [`load`], so dev users simply re-run `peppy auth login` (acceptable pre-GA).
+/// [`load`], so dev users simply re-run `peppy platform login` (acceptable pre-GA).
 pub const CREDENTIALS_VERSION: u32 = 1;
 
 /// Whole `credentials.json5` document: the schema version, a single cached OAuth
@@ -70,17 +70,15 @@ pub struct RouterSession {
     /// next poke instead of reusing this cached config. A cache-freshness deadline
     /// only; derived at pull time from the server's `reconnect_after_secs`.
     pub repull_after: i64,
-    /// The organization id this config was pulled for (the platform's stable
-    /// per-user `Uuid`, as a string). Drives the daemon's session namespace, so
-    /// it is cached alongside the endpoint. Required: a pre-`organization_id`
-    /// file fails to parse with [`Error::Auth`], the intended clean break (the
-    /// load-resilient `auth login`/`logout` then start fresh).
-    pub organization_id: String,
+    /// The namespace this config was pulled for (the backend's `workspace_id`,
+    /// already validated at the HTTP boundary). It is cached alongside the
+    /// endpoint and fails loudly if an invalid value is read from disk.
+    pub namespace: config::namespace::Namespace,
     /// The OAuth subject the config was pulled for, tagging the cache to one
     /// identity. On reuse the daemon re-pulls when this no longer matches the
     /// active session, so a cache that survives an identity change can never be
-    /// reused under the wrong org. Empty for a PAT pull (no session). Required
-    /// for the same clean-break reason as `organization_id`.
+    /// reused under the wrong workspace. Empty for a PAT pull (no session). Required
+    /// for the same clean-break reason as `namespace`.
     pub subject: String,
     /// The core-node name the config was pulled under (the pull's POST body,
     /// which registers the daemon in the backend's core-node registry). Tags
@@ -89,7 +87,7 @@ pub struct RouterSession {
     /// `CoreNodeNameTaken` collision fix) re-pulls — and re-registers — on its
     /// next resolve instead of staying absent from the registry until the
     /// cache goes stale. Required for the same clean-break reason as
-    /// `organization_id`.
+    /// `namespace`.
     pub core_node_name: String,
 }
 
@@ -192,18 +190,13 @@ fn wrap<'de, D: Deserializer<'de>>(de: D) -> std::result::Result<SecretString, D
 
 /// Credentials path under a given peppy root: `<root>/conf/credentials.json5`.
 /// Pairs with `peppy_config.json5` in the same `conf/` dir so a caller derives
-/// both auth files from one [`PeppyDirs`].
+/// both auth files from one [`PeppyDirs`]. Every caller threads the `PeppyDirs`
+/// it resolved at its own process boundary; there is deliberately no
+/// default-root variant, so no auth read can silently reach the machine-global
+/// peppy home.
 pub fn credentials_path(dirs: &daemon_config::consts::PeppyDirs) -> PathBuf {
     dirs.conf_dir()
         .join(daemon_config::consts::CREDENTIALS_FILE)
-}
-
-/// Default credentials path: `<peppy root>/conf/credentials.json5`, honouring
-/// `PEPPY_HOME`. The root is the global peppy data dir, never the cwd.
-pub fn default_path() -> PathBuf {
-    credentials_path(&daemon_config::consts::PeppyDirs::new(
-        daemon_config::consts::peppy_root_dir(),
-    ))
 }
 
 /// Loads the credentials document, returning an empty one when the file does
@@ -219,7 +212,7 @@ pub fn load(path: &Path) -> Result<Credentials> {
             if creds.version != CREDENTIALS_VERSION {
                 return Err(Error::Auth(format!(
                     "credentials file {} is an unsupported format (v{}, expected v{}); \
-                     run `peppy auth login` again",
+                     run `peppy platform login` again",
                     path.display(),
                     creds.version,
                     CREDENTIALS_VERSION
@@ -331,7 +324,10 @@ mod tests {
                 endpoint: "tls/cap.zenoh.localhost:7443".into(),
                 protocol: "tls".into(),
                 repull_after: 1_700_000_000,
-                organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                namespace: config::namespace::Namespace::parse(
+                    "550e8400-e29b-41d4-a716-446655440000",
+                )
+                .unwrap(),
                 subject: "auth0|alice".into(),
                 core_node_name: "core-node-alice-1".into(),
             }),
@@ -344,14 +340,17 @@ mod tests {
         assert_eq!(rs.endpoint, "tls/cap.zenoh.localhost:7443");
         assert_eq!(rs.protocol, "tls");
         assert_eq!(rs.repull_after, 1_700_000_000);
-        assert_eq!(rs.organization_id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            rs.namespace.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
         assert_eq!(rs.subject, "auth0|alice");
         assert_eq!(rs.core_node_name, "core-node-alice-1");
     }
 
     /// A cached router session missing the `core_node_name` tag is rejected
     /// outright (no back-compat default), the same clean break as
-    /// `organization_id`: `auth login`/`logout` start fresh.
+    /// `namespace`: `auth login`/`logout` start fresh.
     #[test]
     fn rejects_a_router_session_missing_the_core_node_name() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -362,7 +361,7 @@ mod tests {
             format!(
                 r#"{{ version: {CREDENTIALS_VERSION}, router: {{
                     endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
-                    organization_id: "550e8400-e29b-41d4-a716-446655440000",
+                    namespace: "550e8400-e29b-41d4-a716-446655440000",
                     subject: "auth0|alice" }} }}"#
             ),
         )
@@ -397,7 +396,7 @@ mod tests {
         let err = load(&path).expect_err("old format must be rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("unsupported format") && msg.contains("peppy auth login"),
+            msg.contains("unsupported format") && msg.contains("peppy platform login"),
             "rejection should be actionable: {msg}"
         );
     }
@@ -408,7 +407,8 @@ mod tests {
             endpoint: "tls/cap:7443".into(),
             protocol: "tls".into(),
             repull_after: 1_000,
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            namespace: config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
+                .unwrap(),
             subject: "auth0|alice".into(),
             core_node_name: "core-node-alice-1".into(),
         };

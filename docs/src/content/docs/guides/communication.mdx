@@ -180,26 +180,30 @@ generate the proper interfaces for the programming language they are written in.
 Now we need to make sure our nodes are started. If we take a look at our node stack:
 ```
 $ peppy stack list
-Node stack
-
-┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────┐
-│ NODE                                 │ STAGE │ INSTANCES │ PATH                                              │
-├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.10.0 │ Root  │ 1 running │ ~/workspace/peppy                                 │
-│ hello_receiver:v1                    │ Ready │ 0         │ ~/.peppy/built_nodes/hello_receiver_v1.tar.zst    │
-│ hello_world_param:v1                 │ Ready │ 0         │ ~/.peppy/built_nodes/hello_world_param_v1.tar.zst │
-└──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────┘
-
-Instance bindings
-
-┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┐
-│ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┤
-│ core-node-sweet-germain-4388:v0.10.0 │ core-node-sweet-germain-4388 │ running │ healthy │ (none)   │
-└──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┘
-
-Dependencies
-  hello_receiver:v1 ➔ hello_world_param:v1
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-sweet-germain (host: robot-host)                                                                   │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                       │
+│                                                                                                                  │
+│ ┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────┐ │
+│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                              │ │
+│ ├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────┤ │
+│ │ cn-sweet-germain:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                 │ │
+│ │ hello_receiver:v1                    │ Ready │ 0         │ ~/.peppy/built_nodes/hello_receiver_v1.tar.zst    │ │
+│ │ hello_world_param:v1                 │ Ready │ 0         │ ~/.peppy/built_nodes/hello_world_param_v1.tar.zst │ │
+│ └──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────┘ │
+│                                                                                                                  │
+│ Instance bindings                                                                                                │
+│                                                                                                                  │
+│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┐           │
+│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS │           │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┤           │
+│ │ cn-sweet-germain:v0.10.0             │ cn-sweet-germain             │ running │ healthy │ (none)   │           │
+│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┘           │
+│                                                                                                                  │
+│ Dependencies                                                                                                     │
+│   hello_receiver:v1 ➔ hello_world_param:v1                                                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 We need to make sure that at least one instance is started for `hello_receiver:v1` and another one for `hello_world_param:v1`.
@@ -271,33 +275,37 @@ The receiver now follows `admiring-black-0614`, and only it. `gifted-moser-9365`
 
 ```
 $ peppy stack list
-Node stack
-
-┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────┐
-│ NODE                                 │ STAGE │ INSTANCES │ PATH                                              │
-├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────┤
-│ core-node-sweet-germain-4388:v0.10.0 │ Root  │ 1 running │ ~/workspace/peppy                                 │
-│ hello_receiver:v1                    │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_receiver_v1.tar.zst    │
-│ hello_world_param:v1                 │ Ready │ 2 running │ ~/.peppy/built_nodes/hello_world_param_v1.tar.zst │
-└──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────┘
-
-Instance bindings
-
-┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬───────────────────────────┐
-│ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                  │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
-│ core-node-sweet-germain-4388:v0.10.0 │ core-node-sweet-germain-4388 │ running │ healthy │ (none)                    │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
-│ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param →       │
-│                                      │                              │         │         │ admiring-black-0614@core- │
-│                                      │                              │         │         │ node-sweet-germain-4388   │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤
-│ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ (none)                    │
-│                                      │ admiring-black-0614          │ running │ healthy │ (none)                    │
-└──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴───────────────────────────┘
-
-Dependencies
-  hello_receiver:v1 ➔ hello_world_param:v1
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-sweet-germain (host: robot-host)                                                                          │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                              │
+│                                                                                                                         │
+│ ┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────┐        │
+│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                              │        │
+│ ├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────┤        │
+│ │ cn-sweet-germain:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                 │        │
+│ │ hello_receiver:v1                    │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_receiver_v1.tar.zst    │        │
+│ │ hello_world_param:v1                 │ Ready │ 2 running │ ~/.peppy/built_nodes/hello_world_param_v1.tar.zst │        │
+│ └──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────┘        │
+│                                                                                                                         │
+│ Instance bindings                                                                                                       │
+│                                                                                                                         │
+│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬───────────────────────────┐ │
+│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                  │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤ │
+│ │ cn-sweet-germain:v0.10.0             │ cn-sweet-germain             │ running │ healthy │ (none)                    │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤ │
+│ │ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param →       │ │
+│ │                                      │                              │         │         │ admiring-black-0614@core- │ │
+│ │                                      │                              │         │         │ node-sweet-germain-4388   │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤ │
+│ │ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ (none)                    │ │
+│ │                                      │ admiring-black-0614          │ running │ healthy │ (none)                    │ │
+│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴───────────────────────────┘ │
+│                                                                                                                         │
+│ Dependencies                                                                                                            │
+│   hello_receiver:v1 ➔ hello_world_param:v1                                                                              │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to the one producer we bound, rendered as `instance_id@core_node` (its full wire address). A slot only ever receives from the producer bound to it: that is exactly why `vigorous-buck-8117` prints messages from `admiring-black-0614` and nothing from `gifted-moser-9365` above.

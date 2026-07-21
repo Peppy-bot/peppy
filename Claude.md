@@ -14,6 +14,7 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - Do not leave legacy code behind or code that is meant to support previous version of the code.
 - When you write comments or documentation, stop using em-dash `—`, this is a recurring pattern that you make and immediately jumps at users as being your coding style.
 - Push back hard against design implementation that you think are fundamentally wrong and explain your reasoning
+- Never open or merge PRs in the remote repository without my consent
 
 ---
 

@@ -1,4 +1,4 @@
-//! `peppy auth whoami` (alias `status`): resolve the cached credential, call
+//! `peppy platform whoami` (alias `status`): resolve the cached credential, call
 //! `GET /me`, and print the identity, backend, and token validity. `--json`
 //! emits a machine-readable object (never including raw tokens).
 
@@ -54,7 +54,7 @@ impl Command for WhoamiCommand {
                     println!("{doc}");
                 } else {
                     println!(
-                        "Not authenticated ({}). Run `peppy auth login`.",
+                        "Not authenticated ({}). Run `peppy platform login`.",
                         profile::build_env_name()
                     );
                 }

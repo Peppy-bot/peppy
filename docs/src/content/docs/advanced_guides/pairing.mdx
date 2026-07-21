@@ -66,6 +66,8 @@ After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag
 
 Each node declares a **pairing slot** under `depends_on.pairings`: the contract, the role this node plays, and a `link_id` naming the slot. The `link_id` is how the node's own code and the pairing commands refer to *the other end*; while paired, exactly one peer instance sits behind it.
 
+The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is just `{ link_id, name }`: the pairing document remains the single source of shape and QoS, so an inline `message_format` or `qos_profile` on one of these entries is rejected.
+
 <Tabs>
   <TabItem label="Python">
     <Code code={robotArmPythonConfig} lang="json5" title="robot_arm/peppy.json5" />
@@ -84,12 +86,23 @@ Each node declares a **pairing slot** under `depends_on.pairings`: the contract,
   </TabItem>
 </Tabs>
 
+The two manifests are mirror images, which is what makes the conversation legible from either side alone:
+
 | Node | Role in `arm_link` | Slot (`link_id`) | Emits to the peer | Consumes from the peer |
 |---|---|---|---|---|
 | `robot_arm` | `arm` | `controller` | `joint_states` | `joint_commands` |
 | `arm_controller` | `controller` | `arm` | `joint_commands` | `joint_states` |
 
-A slot is **required** by default: starting the instance without pairing it (or explicitly deferring it) fails loudly. Mark a slot `optional: true` to let the instance boot unpaired with no ceremony.
+### Coverage: emit side complete, consume side free
+
+The two directions are checked differently, and for the same reasons contracts are:
+
+- **`emits` must be exact.** The entries for a slot are precisely the document's topics whose `emitted_by` is the slot's role: no missing entry, no unknown name, no duplicate, and never a topic the *counterpart* role emits. A role that silently stopped emitting one of its topics would break its peer, and the pairing document is the promise that it will not.
+- **`consumes` may be partial.** List any subset of the counterpart role's topics. Omitting one is a legitimate way to ignore part of a pairing: no module is generated for that topic, so no subscription can be created for it. This is a local decision with no effect on the peer. Declaring zero consumes is fine, including for a slot whose counterpart role emits nothing.
+
+Naming a topic under `consumes` that this node's own role emits is an error, as is naming a topic that is absent from the document. Both are reported as one aggregated diff per slot, so a manifest with several wrong entries produces one readable report rather than a cascade.
+
+A slot is **required** by default: starting the instance without pairing it (or explicitly deferring it) fails loudly. Mark a slot `optional: true` to let the instance boot unpaired with no ceremony. Optionality governs whether the slot must be paired at launch, not what the node declares about it: an optional slot is coverage-checked identically.
 
 ## Establishing pairs
 
@@ -147,13 +160,13 @@ In a launcher, the pair is declared once, on either instance, with `pairings:`; 
 Instance pairings
 
 NODE                INSTANCE   PAIRINGS
-robot_arm:v1        arm_1      controller ⇌ ctrl_1:arm@core-node-adoring-wiles-7286 (arm_link:v1)
-arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@core-node-adoring-wiles-7286 (arm_link:v1)
+robot_arm:v1        arm_1      controller ⇌ ctrl_1:arm@cn-adoring-wiles (arm_link:v1)
+arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@cn-adoring-wiles (arm_link:v1)
 ```
 
 ## Using the generated API
 
-`peppy node sync` generates a module per slot topic under `peppygen.pairings.<link_id>.<topic>` (Python) / `peppygen::pairings::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
+`peppy node sync` generates a module per declared slot topic under `peppygen.pairings.<link_id>.<topic>` (Python) / `peppygen::pairings::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. The modules follow the manifest's entries, not the document's full topic list, so a counterpart topic you left out of `consumes` simply has no module. Pairing topics never appear under `consumed_topics` or `emitted_topics`, whichever direction they travel. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
 
 <Tabs>
   <TabItem label="Python">
@@ -205,6 +218,8 @@ Pairing state lives in the daemon, alongside the node stack itself. Like the sta
 
 Because the slot, not the node, is the unit of pairing, a node can declare several slots of the *same* pairing and hold one peer per slot, each a fully isolated stream:
 
+Each slot is declared and covered on its own, so the two arms stay independent all the way down to the generated modules:
+
 ```json5
 // commander/peppy.json5 (manifest excerpt)
 depends_on: {
@@ -212,6 +227,20 @@ depends_on: {
     { name: "arm_link", tag: "v1", role: "controller", link_id: "left_arm" },
     { name: "arm_link", tag: "v1", role: "controller", link_id: "right_arm" },
   ],
+},
+interfaces: {
+  topics: {
+    // Emit coverage is per slot, so the controller role's `joint_commands`
+    // is listed once for each arm.
+    emits: [
+      { link_id: "left_arm", name: "joint_commands" },
+      { link_id: "right_arm", name: "joint_commands" },
+    ],
+    consumes: [
+      { link_id: "left_arm", name: "joint_states" },
+      { link_id: "right_arm", name: "joint_states" },
+    ],
+  },
 },
 ```
 
@@ -245,6 +274,8 @@ Pairing and [contract implementation](/advanced_guides/contract_implementation) 
 
 | | Pairing | Contract |
 |---|---|---|
+| Declaration model | The node enumerates what it uses in `interfaces.topics`; the document owns shape and QoS | The node enumerates what it uses in `interfaces`; the document owns shape and QoS |
+| Coverage | Produced side (`emits`) exact per slot, consumed side free | Produced side (`implements`) exact per slot, consumed side free |
 | Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key) | Declared per slot: exactly one by default, an application-selected set for `one_or_more` / `zero_or_more` |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |
 | Establishment | Explicit (`--pair` / `pairings:`), at instance start | Explicit (`--bind` / `bindings:`), at instance start |

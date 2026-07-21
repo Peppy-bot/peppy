@@ -52,10 +52,12 @@ const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn services_communication_no_target_instance_id(#[case] mode: crate::helpers::Mode) {
+async fn services_communication_no_target_instance_id(
+    #[case] topology: crate::helpers::LocalNodesTopology,
+) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -109,7 +111,7 @@ async fn services_communication_no_target_instance_id(#[case] mode: crate::helpe
         TEST_CORE_NODE,
         "the_exposer",
     );
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -174,7 +176,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
+    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -363,11 +365,11 @@ fn main() -> Result<()> {
 }
 
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_exposed_service_without_request_body(
-    #[case] mode: crate::helpers::Mode,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -422,7 +424,7 @@ async fn services_communication_exposed_service_without_request_body(
         TEST_CORE_NODE,
         "the_exposer",
     );
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -483,7 +485,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_mode(exposer_runtime_config, mode);
+    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
@@ -665,11 +667,11 @@ fn main() -> Result<()> {
 /// the request to the bound instance, and the other instance never runs its
 /// handler.
 #[rstest::rstest]
-#[case::peer(crate::helpers::Mode::Peer)]
-#[case::router(crate::helpers::Mode::Router)]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_bound_one(
-    #[case] mode: crate::helpers::Mode,
+    #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -725,7 +727,7 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
         TEST_CORE_NODE,
         "exposer1_instance",
     );
-    let consumer_runtime_config = crate::helpers::apply_mode(consumer_runtime_config, mode);
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
     let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
     consumer_runtime_config
         .save_json5_launch_config(&consumer_runtime_config_path)
@@ -789,7 +791,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer1_runtime_config = crate::helpers::apply_mode(exposer1_runtime_config, mode);
+    let exposer1_runtime_config = crate::helpers::apply_topology(exposer1_runtime_config, topology);
     let exposer1_runtime_config_path = temp_dir_exposer1.path().join("peppy_runtime.json5");
     exposer1_runtime_config
         .save_json5_launch_config(&exposer1_runtime_config_path)
@@ -851,7 +853,7 @@ fn main() -> Result<()> {
         TEST_CORE_NODE,
     )
     .unwrap();
-    let exposer2_runtime_config = crate::helpers::apply_mode(exposer2_runtime_config, mode);
+    let exposer2_runtime_config = crate::helpers::apply_topology(exposer2_runtime_config, topology);
     let exposer2_runtime_config_path = temp_dir_exposer2.path().join("peppy_runtime.json5");
     exposer2_runtime_config
         .save_json5_launch_config(&exposer2_runtime_config_path)

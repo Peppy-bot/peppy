@@ -28,30 +28,28 @@ use super::run_steps::{
     create_instance_dir, extract_node_archive, kill_and_collect_error,
 };
 
-impl From<&NodeEntity> for SerializedNode {
-    fn from(entity: &NodeEntity) -> Self {
-        let all_instances = entity.instances();
-        Self {
-            name: entity.config().manifest.name.as_str().to_string(),
-            tag: entity.config().manifest.tag.clone(),
-            config_path: entity.config_path().display().to_string(),
-            artifact_path: entity.artifact_path().map(|p| p.display().to_string()),
-            stage: Some(entity.stage().to_serialized()),
-            instances: all_instances
-                .iter()
-                .map(|i| SerializedInstance {
-                    instance_id: i.instance_id().as_str().to_string(),
-                    state: i.state(),
-                    healthy: i.healthy(),
-                    slot_bindings: i.slot_bindings().clone(),
-                    // Filled by the graph-level overlay in
-                    // `NodeStackInner::to_serialized_graph` (manifest +
-                    // pairing registry); the entity alone cannot know pair
-                    // state.
-                    pairing_slots: std::collections::BTreeMap::new(),
-                })
-                .collect(),
-        }
+pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> SerializedNode {
+    let all_instances = entity.instances();
+    SerializedNode {
+        name: entity.config().manifest.name.as_str().to_string(),
+        tag: entity.config().manifest.tag.clone(),
+        core_node: core_node.to_string(),
+        config_path: entity.config_path().display().to_string(),
+        artifact_path: entity.artifact_path().map(|p| p.display().to_string()),
+        stage: Some(entity.stage().to_serialized()),
+        instances: all_instances
+            .iter()
+            .map(|i| SerializedInstance {
+                instance_id: i.instance_id().as_str().to_string(),
+                state: i.state(),
+                healthy: i.healthy(),
+                slot_bindings: i.slot_bindings().clone(),
+                // Filled by the graph-level overlay in
+                // `NodeStackInner::to_serialized_graph` (manifest + pairing
+                // registry); the entity alone cannot know pair state.
+                pairing_slots: std::collections::BTreeMap::new(),
+            })
+            .collect(),
     }
 }
 
@@ -1442,7 +1440,8 @@ mod tests {
             vec![bound, unbound],
         );
 
-        let serialized = SerializedNode::from(&entity);
+        let serialized = serialize_node_entity(&entity, "core_a");
+        assert_eq!(serialized.core_node, "core_a");
         assert_eq!(serialized.instances.len(), 2);
         assert_eq!(serialized.instances[0].instance_id, "sensor-1");
         assert_eq!(serialized.instances[0].slot_bindings, bindings);
@@ -1450,7 +1449,7 @@ mod tests {
     }
 
     /// Guards the one line that places per-instance health onto the
-    /// `graph_json` wire: `From<&NodeEntity>` must copy each instance's
+    /// `graph_json` wire: `serialize_node_entity` must copy each instance's
     /// `healthy()` through to its `SerializedInstance`. Hardcoding that line to
     /// `true` (or dropping it) makes the unhealthy assertion fail. Also the
     /// only coverage of the `healthy()`/`set_healthy()` pair: a fresh instance
@@ -1486,7 +1485,7 @@ mod tests {
             vec![healthy, unhealthy],
         );
 
-        let serialized = SerializedNode::from(&entity);
+        let serialized = serialize_node_entity(&entity, "core_a");
         assert_eq!(serialized.instances.len(), 2);
         assert!(
             serialized.instances[0].healthy,

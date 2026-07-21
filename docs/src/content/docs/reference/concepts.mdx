@@ -91,12 +91,9 @@ The **Node Stack** is the central data structure that manages all active nodes i
 3. Tracks pending requirements when dependencies are not yet available
 4. Resolves pending requirements when dependencies are added
 
-### Visualization
+### Stack inspection
 
-The node stack can be visualized in multiple formats:
-
-- **DOT format**: For Graphviz visualization of the dependency graph
-- **Serialized graph**: JSON representation for programmatic access
+The stack-list API exposes the nodes and dependency edges as a serialized JSON graph for programmatic access. The `peppy stack list` command renders that graph as operator-friendly tables inside a separate outer panel for each live core node.
 
 ## The Core Node
 
@@ -112,6 +109,8 @@ Each Peppy runtime has exactly one core node that manages its local DAG of nodes
 In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines. 
 The core nodes operate independently, managing their local node stacks without a centralized controller. 
 Nodes communicate across runtimes through the shared messaging layer, enabling a fully decentralized system where each core node is responsible only for its own set of nodes.
+
+Each machine runs at most one daemon per Peppy data root. `peppy service serve` takes an exclusive lock at startup, and a second invocation refuses to boot while the first runs.
 
 Because core nodes are addressed by name over the messaging layer, every core node reachable over the same router or federation must have a **unique name**. Each daemon derives a stable, machine-specific name by default, or you can pin one with [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a daemon whose name is already taken refuses to boot.
 

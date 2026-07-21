@@ -11,7 +11,7 @@ Every peppy stack has a **core node** that tracks which nodes have been added, w
 `peppylib` exposes two helpers that let any node query the core node at runtime:
 
 - `info`: a typed snapshot of the core node (uptime, hostname, node count, git version, container runtimes).
-- `stack.list`: the live node graph, with every node's stage and running instances, and optionally a Graphviz DOT rendering.
+- `stack.list`: the live node graph, with the serving daemon's hostname and every node's owning core node, stage, and running instances.
 
 `info` is a single top-level call; `stack.list` and the `StackList` type it returns live in the `stack` submodule. They are available from Rust as `peppylib::info`, `peppylib::stack::list`, and `peppylib::stack::StackList`, and from Python as `from peppylib import info` and `from peppylib import stack` (then `stack.list`, `stack.StackList`). They are not re-exported by `peppygen`; import them from `peppylib` directly.
 
@@ -21,7 +21,7 @@ Both take a `NodeRunner`, the same handle your node receives from `NodeBuilder::
 
 - **Runtime introspection of instances.** A node can call `stack.list` to discover, at runtime, how many instances of a given dependency are currently up and what their instance IDs are. A router or load-balancer node, for example, can iterate `graph.nodes`, find the entry whose `name` matches its target, and read `instances` (keeping only those whose `state` is `"running"`) to decide where to dispatch work.
 - **Health checks and dashboards.** `info` returns uptime, hostname, node count, git version, and container runtime versions, enough to drive a status page or a liveness probe without scraping logs.
-- **Graph visualisation.** `stack.list` with `with_dot_graph: true` returns a Graphviz DOT string you can pipe straight into `dot -Tsvg` or any renderer that accepts DOT.
+- **Topology inspection.** `stack.list` returns nodes and dependency edges as structured data, so tooling can filter, render, or analyze the graph without scraping CLI output.
 - **Tests and tooling.** Integration tests or CLI utilities that need to assert "node X is up with N instances" or "edge A→B exists in the graph" can use the same helpers production code does.
 
 ## `info`
@@ -93,9 +93,9 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 `stack.list` returns a `StackList` with two fields:
 
 - `graph`: the node graph, with every node's metadata and its tracked instances.
-- `dot_graph`: an optional Graphviz DOT rendering, populated only when the second argument (`with_dot_graph`) is `true`. Pass `false` to skip the rendering when you only need the structured graph.
+- `host_name`: the hostname of the daemon that served this stack snapshot.
 
-Each node entry carries its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
+Each node entry carries its required `core_node` owner plus its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
 Each instance has an `instance_id` and a `state` (`starting`, `running`, or the terminal `finished` / `failed`). A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
 The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [contract implementation](/advanced_guides/contract_implementation): a contract edge carries a `via_contract` of `name:tag` (the contract it was resolved through), while a direct edge has none.
 
@@ -115,16 +115,18 @@ The example below uses `stack.list` to count the running instances of each node 
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
-        result = await stack.list(node_runner, True, 3.0)
+        result = await stack.list(node_runner, 3.0)
+
+        print(f"served by {result.host_name}")
 
         for node in result.graph["nodes"]:
             running = [i for i in node["instances"] if i["state"] == "running"]
-            print(f"{node['name']} ({node['stage']}): {len(running)} running instance(s)")
+            print(
+                f"{node['name']} on {node['core_node']} ({node['stage']}): "
+                f"{len(running)} running instance(s)"
+            )
             for instance in running:
                 print(f"  - {instance['instance_id']}")
-
-        if result.dot_graph is not None:
-            print(result.dot_graph)
 
 
     def main():
@@ -144,25 +146,23 @@ The example below uses `stack.list` to count the running instances of each node 
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-            let result = stack::list(&node_runner, true, Duration::from_secs(3)).await?;
+            let result = stack::list(&node_runner, Duration::from_secs(3)).await?;
+
+            println!("served by {}", result.host_name);
 
             for node in &result.graph.nodes {
                 println!(
-                    "{} ({:?}): {} instance(s)",
+                    "{} on {} ({:?}): {} instance(s)",
                     node.name,
+                    node.core_node,
                     node.stage,
-                    node.instances.len(),
+                    node.running_instance_ids().len(),
                 );
                 for instance in &node.instances {
                     // `state` displays as "starting", "running", "finished", or "failed".
                     println!("  - {} ({})", instance.instance_id, instance.state);
                 }
             }
-
-            if let Some(dot) = result.dot_graph {
-                println!("{dot}");
-            }
-
             Ok(())
         })
     }
@@ -177,7 +177,7 @@ When you know which dependency you want, skip the manual iteration with `StackLi
 <Tabs>
   <TabItem label="Python">
     ```python title="src/my_node/__main__.py"
-    result = await stack.list(node_runner, False, 3.0)
+    result = await stack.list(node_runner, 3.0)
     try:
         ids = result.running_instance_ids_by_node("router_target", "v1")
     except KeyError as e:
@@ -191,7 +191,7 @@ When you know which dependency you want, skip the manual iteration with `StackLi
   </TabItem>
   <TabItem label="Rust">
     ```rust title="src/main.rs"
-    let result = stack::list(&node_runner, false, Duration::from_secs(3)).await?;
+    let result = stack::list(&node_runner, Duration::from_secs(3)).await?;
     match result.graph.running_instance_ids_by_node("router_target", "v1") {
         Ok(ids) if !ids.is_empty() => println!("dispatch to {ids:?}"),
         Ok(_) => println!("router_target:v1 is present but all instances are still starting"),
