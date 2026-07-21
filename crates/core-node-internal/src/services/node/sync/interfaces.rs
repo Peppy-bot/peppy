@@ -8,7 +8,7 @@ use config::node::InterfaceKind;
 use daemon_config::consts::PeppyDirs;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Collects consumed interfaces from a node config and resolves their message
 /// formats by looking up the exposed interfaces from dependency nodes via the
@@ -42,10 +42,29 @@ pub fn collect_all_deployment_interfaces(
             .map_err(|reason| format!("failed to resolve `manifest.implements`: {reason}"))?,
     );
     interfaces.extend(
-        super::pairings::collect_pairing_interfaces(manifest, peppy_dirs, on_feedback)
-            .map_err(|reason| format!("failed to resolve `depends_on.pairings`: {reason}"))?,
+        super::pairings::collect_pairing_interfaces(
+            manifest,
+            interfaces_cfg,
+            peppy_dirs,
+            on_feedback,
+        )
+        .map_err(|reason| format!("failed to resolve `depends_on.pairings`: {reason}"))?,
     );
     Ok(interfaces)
+}
+
+/// The `depends_on.pairings` slot link_ids of a manifest. Entries naming one
+/// are resolved by `collect_pairing_interfaces` against the pairing document
+/// and generated under `pairings/<link_id>/<topic>`, so both the consumed
+/// collector and the implements resolver must step over them: neither knows
+/// the pairing kind, and collecting an entry twice would either drop it
+/// silently or land it in the wrong module category.
+fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
+    manifest
+        .depends_on
+        .iter()
+        .flat_map(|d| d.pairings.iter().map(|p| p.link_id.as_str()))
+        .collect()
 }
 
 pub fn collect_consumed_interfaces(
@@ -99,26 +118,39 @@ pub fn collect_consumed_interfaces(
         }
     }
 
+    let pairing_slots = pairing_slot_link_ids(manifest);
+
     if let Some(topic_interfaces) = &interfaces_cfg.topics
         && let Some(consumed_topics) = &topic_interfaces.consumes
     {
         for consumed_topic in consumed_topics {
+            // Topics are the one consumed section a pairing slot may appear
+            // in; services and actions are rejected at parse time.
+            if pairing_slots.contains(consumed_topic.link_id.as_str()) {
+                continue;
+            }
             let Some((message_format, dependency)) = resolve_consumed_offering(
                 &dep_lookup,
                 &node_dep_offerings,
                 &contract_dep_docs,
+                config::node::InterfaceKind::Topic.consumed_section(),
                 &consumed_topic.link_id,
                 consumed_topic.name.trim(),
                 |offerings, name| offerings.topics.get(name).cloned(),
+                // A contract topic declared without a `message_format`
+                // defaults like a contract service does, so a `None` here
+                // means the name is absent from the document and nothing
+                // else.
                 |parsed, name| {
                     parsed
                         .interfaces
                         .topics
                         .iter()
                         .find(|t| t.name.trim() == name)
-                        .and_then(|emitted| emitted.message_format.clone())
+                        .map(|emitted| emitted.message_format.clone().unwrap_or_default())
                 },
-            ) else {
+            )?
+            else {
                 continue;
             };
             interfaces.push(DeploymentInterface::consumed_topic(
@@ -137,6 +169,7 @@ pub fn collect_consumed_interfaces(
                 &dep_lookup,
                 &node_dep_offerings,
                 &contract_dep_docs,
+                config::node::InterfaceKind::Service.consumed_section(),
                 &consumed_service.link_id,
                 consumed_service.name.trim(),
                 |offerings, name| offerings.services.get(name).cloned(),
@@ -151,7 +184,8 @@ pub fn collect_consumed_interfaces(
                         exposed.response_message_format.clone().unwrap_or_default();
                     Some((request_format, response_format))
                 },
-            ) else {
+            )?
+            else {
                 continue;
             };
             interfaces.push(DeploymentInterface::consumed_service(
@@ -171,6 +205,7 @@ pub fn collect_consumed_interfaces(
                 &dep_lookup,
                 &node_dep_offerings,
                 &contract_dep_docs,
+                config::node::InterfaceKind::Action.consumed_section(),
                 &consumed_action.link_id,
                 consumed_action.name.trim(),
                 |offerings, name| offerings.actions.get(name).cloned(),
@@ -182,7 +217,8 @@ pub fn collect_consumed_interfaces(
                         .find(|a| a.name.trim() == name)
                         .map(action_message_from_exposed)
                 },
-            ) else {
+            )?
+            else {
                 continue;
             };
             interfaces.push(DeploymentInterface::consumed_action(
@@ -201,21 +237,40 @@ pub fn collect_consumed_interfaces(
 /// resolve against the producer's native offerings only (node-addressed);
 /// contract dependencies resolve against the contract document
 /// (contract-addressed).
+///
+/// `Ok(None)` means the entry is not this collector's to report: an
+/// undeclared link_id, an unresolved node dependency, and a name the producer
+/// does not natively offer are all reported by `validate_dependency_specs`
+/// upstream, which sees node dependencies and would otherwise report each
+/// twice.
+///
+/// A name absent from a *contract* document has no upstream reporter at all:
+/// `validate_dependency_specs` stops at the declaration check for
+/// `depends_on.contracts` link_ids, and no layer below this one can open a
+/// contract document. So it errors here, or nowhere.
 fn resolve_consumed_offering<T>(
     dep_lookup: &HashMap<String, DependencyLookupEntry>,
     node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
     contract_dep_docs: &HashMap<String, daemon_config::contract::PeppyContract>,
+    section: &str,
     link_id: &str,
     lookup_name: &str,
     extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
     extract_from_contract: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
-) -> Option<(T, generator::DependencyContext)> {
-    let entry = dep_lookup.get(link_id)?;
+) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
+    let Some(entry) = dep_lookup.get(link_id) else {
+        return Ok(None);
+    };
     match entry.kind {
         DependencyKind::Node => {
-            let offerings = node_dep_offerings.get(&(entry.name.clone(), entry.tag.clone()))?;
-            let extracted = extract_from_node(offerings, lookup_name)?;
-            Some((
+            let Some(offerings) = node_dep_offerings.get(&(entry.name.clone(), entry.tag.clone()))
+            else {
+                return Ok(None);
+            };
+            let Some(extracted) = extract_from_node(offerings, lookup_name) else {
+                return Ok(None);
+            };
+            Ok(Some((
                 extracted,
                 generator::DependencyContext::native(
                     &entry.name,
@@ -223,12 +278,24 @@ fn resolve_consumed_offering<T>(
                     link_id,
                     entry.cardinality,
                 ),
-            ))
+            )))
         }
         DependencyKind::Contract => {
-            let parsed = contract_dep_docs.get(link_id)?;
-            let extracted = extract_from_contract(parsed, lookup_name)?;
-            Some((
+            let parsed = contract_dep_docs.get(link_id).ok_or_else(|| {
+                format!(
+                    "`{section}` entry `{lookup_name}` references link_id `{link_id}`, \
+                     whose contract `{}:{}` failed to resolve",
+                    entry.name, entry.tag
+                )
+            })?;
+            let extracted = extract_from_contract(parsed, lookup_name).ok_or_else(|| {
+                format!(
+                    "`{section}` entry `{lookup_name}` (link_id `{link_id}`) names no member \
+                     of contract `{}:{}`",
+                    entry.name, entry.tag
+                )
+            })?;
+            Ok(Some((
                 extracted,
                 generator::DependencyContext::contract(
                     &entry.name,
@@ -236,7 +303,7 @@ fn resolve_consumed_offering<T>(
                     link_id,
                     entry.cardinality,
                 ),
-            ))
+            )))
         }
     }
 }
@@ -392,8 +459,15 @@ pub fn resolve_implements(
 
     let mut out: Vec<DeploymentInterface> = Vec::new();
     let mut coverage: HashMap<&str, SlotCoverage> = HashMap::new();
+    let pairing_slots = pairing_slot_link_ids(manifest);
 
-    for (kind, entry) in interfaces_cfg.contract_backed_entries() {
+    for (kind, entry) in interfaces_cfg.linked_entries() {
+        // A pairing-backed emit is resolved against the pairing document by
+        // `collect_pairing_interfaces`. It must not count toward any
+        // implements slot's coverage, nor trip the unknown-link_id arm below.
+        if pairing_slots.contains(entry.link_id.as_str()) {
+            continue;
+        }
         let name = entry.name.as_str();
         let Some((slot, doc)) = docs.get(entry.link_id.as_str()) else {
             // Parse-time validation guarantees every produced entry's
@@ -1115,6 +1189,207 @@ mod implements_tests {
             }
             other => panic!("expected ConsumedService variant, got {other:?}"),
         }
+    }
+
+    /// The category partition, end to end: a node holding a pairing slot AND
+    /// a contract dependency must route each entry to exactly one collector.
+    ///
+    /// This is the regression this whole design is most exposed to. Admitting
+    /// pairing link_ids into the consumed collector would either drop them
+    /// (the consumed dependency lookup knows only node and contract kinds) or
+    /// land them in the flat `consumed_topics` namespace, splitting a slot's
+    /// two directions across unrelated module trees.
+    #[test]
+    fn pairing_and_contract_entries_route_to_separate_collectors() {
+        const ARM_LINK_BODY: &str = r#"{
+            peppy_schema: "pairing/v1",
+            manifest: { name: "arm_link", tag: "v1" },
+            roles: ["controller", "arm"],
+            topics: [
+                { emitted_by: "controller", name: "joint_commands" },
+                { emitted_by: "arm", name: "joint_states" }
+            ]
+        }"#;
+
+        // One PeppyDirs holding both caches, so `collect_all_deployment_interfaces`
+        // can resolve the contract and the pairing document in one pass.
+        let tmp = TempDir::new().unwrap();
+        let contract = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[contract]);
+        let pairing_path = tmp.path().join("arm_link_v1.json5");
+        fs::write(&pairing_path, ARM_LINK_BODY).expect("write pairing doc");
+        let pairing_entry = repo_cache::PairingCacheEntry {
+            pairing_name: "arm_link".to_string(),
+            tag: "v1".to_string(),
+            sha256: config::fingerprint::fingerprint_for_bytes(ARM_LINK_BODY.as_bytes()),
+            source_type: RepoSourceKind::Fs,
+            source_uri: None,
+            resolved_ref: None,
+            path: pairing_path.to_string_lossy().to_string(),
+            repo_id: 0,
+        };
+        fs::write(
+            repo_cache::pairings_repo_cache_path(&dirs),
+            serde_json5::to_string(&vec![pairing_entry]).expect("serialize pairing cache"),
+        )
+        .expect("write pairing cache");
+
+        // The relay shape plus a pairing: one implements slot, one contract
+        // dependency on the same contract, and one pairing slot. All three
+        // collectors run, and each must claim exactly its own entries.
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "robot_arm", tag: "v1",
+                implements: [{ name: "depth_camera", tag: "v1", link_id: "cam_out" }],
+                depends_on: {
+                    contracts: [{ name: "depth_camera", tag: "v1", link_id: "cam_in" }],
+                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg = interfaces_from(
+            r#"{ topics: {
+                emits: [
+                    { link_id: "cam_out", name: "video_stream" },
+                    { link_id: "controller", name: "joint_states" },
+                ],
+                consumes: [
+                    { link_id: "controller", name: "joint_commands" },
+                    { link_id: "cam_in", name: "video_stream" },
+                ],
+            } }"#,
+        );
+
+        let out = collect_all_deployment_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+            .expect("all three kinds resolve together");
+
+        let mut emitted_topics = Vec::new();
+        let mut peer_emitted = Vec::new();
+        let mut peer_consumed = Vec::new();
+        let mut consumed_topics = Vec::new();
+        for interface in &out {
+            match interface.interface() {
+                InterfaceVariant::EmittedTopic { topic, .. } => {
+                    emitted_topics.push(topic.name.as_str())
+                }
+                InterfaceVariant::PeerEmittedTopic { topic, .. } => {
+                    peer_emitted.push(topic.name.as_str())
+                }
+                InterfaceVariant::PeerConsumedTopic { topic, .. } => {
+                    peer_consumed.push(topic.name.as_str())
+                }
+                InterfaceVariant::ConsumedTopic { topic, .. } => {
+                    consumed_topics.push(topic.name.as_str())
+                }
+                other => panic!("unexpected variant {other:?}"),
+            }
+        }
+        assert_eq!(peer_emitted, vec!["joint_states"]);
+        assert_eq!(peer_consumed, vec!["joint_commands"]);
+        assert_eq!(
+            emitted_topics,
+            vec!["video_stream"],
+            "the pairing emit must not be counted against the implements slot"
+        );
+        assert_eq!(
+            consumed_topics,
+            vec!["video_stream"],
+            "the contract topic is the ONLY entry that may reach the consumed collector"
+        );
+        assert_eq!(out.len(), 4, "no entry may be collected twice: {out:?}");
+    }
+
+    /// A consumed entry naming no member of its contract used to resolve to
+    /// `None` and get dropped, so a typo produced a missing module and a
+    /// successful sync. Nothing upstream sees contract link_ids, so this is
+    /// the only place it can be reported.
+    #[test]
+    fn consumed_entry_absent_from_contract_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "camera_consumer", tag: "v1",
+                depends_on: {
+                    contracts: [{ name: "depth_camera", tag: "v1", link_id: "cam" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg = interfaces_from(
+            r#"{ topics: { consumes: [{ link_id: "cam", name: "video_strem" }] } }"#,
+        );
+
+        let err = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+            .expect_err("a name absent from the contract must not be dropped silently");
+        for needle in [
+            "video_strem",
+            "cam",
+            "depth_camera",
+            "v1",
+            "topics.consumes",
+        ] {
+            assert!(
+                err.contains(needle),
+                "error must name the entry, the slot and the document, missing {needle}: {err}"
+            );
+        }
+    }
+
+    /// The same typo against a NODE dependency is reported once, by
+    /// `validate_dependency_specs` upstream. This collector stays silent so
+    /// the user does not see it twice.
+    #[test]
+    fn unknown_node_dep_name_is_left_to_the_upstream_reporter() {
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[]);
+
+        let producer: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "producer_node", tag: "v1" },
+                interfaces: {
+                    topics: { emits: [{ name: "debug_stream", message_format: { x: "f64" } }] },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        )
+        .expect("producer parses");
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "consumer", tag: "v1",
+                depends_on: { nodes: [{ name: "producer_node", tag: "v1", link_id: "producer" }] }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg = interfaces_from(
+            r#"{ topics: { consumes: [{ link_id: "producer", name: "debug_strem" }] } }"#,
+        );
+
+        let out = collect_consumed_interfaces(
+            &manifest,
+            &cfg,
+            |name, _| (name == "producer_node").then(|| producer.clone()),
+            &dirs,
+            &|_| {},
+        )
+        .expect("collection itself must not fail for a node dep");
+        assert!(out.is_empty(), "nothing resolves, and nothing is reported");
+
+        let upstream = config::node::validate_dependency_specs(
+            &manifest,
+            &cfg,
+            "consumer",
+            "v1",
+            |name, _| (name == "producer_node").then(|| producer.clone()),
+        );
+        assert_eq!(
+            upstream.len(),
+            1,
+            "exactly one reporter owns this error: {upstream:?}"
+        );
     }
 
     /// Node-dependency consumption resolves the producer's NATIVE entries

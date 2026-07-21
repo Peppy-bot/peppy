@@ -71,13 +71,36 @@ fn generated_peer_modules_import_from_venv() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let pairings_dir = user_node
-        .join(PEPPYGEN_OUTPUT_PATH)
-        .join("peppygen/pairings");
+    let peppygen_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("peppygen");
+    let pairings_dir = peppygen_dir.join("pairings");
     for module in ["controller/joint_states.py", "controller/joint_commands.py"] {
         assert!(
             pairings_dir.join(module).exists(),
             "expected generated module pairings/{module}"
+        );
+    }
+    // Neither direction may leak into the flat consumed/emitted namespaces.
+    // Asserted on directory contents so a misplaced-but-working module fails
+    // loudly instead of passing by importing.
+    for category in ["consumed_topics", "emitted_topics"] {
+        let dir = peppygen_dir.join(category);
+        // The scaffold creates every category dir, so a missing one means the
+        // layout changed and this check would otherwise pass vacuously.
+        assert!(
+            dir.is_dir(),
+            "expected category dir {}; if the scaffold stopped creating empty \
+             categories, rewrite this assertion rather than deleting it",
+            dir.display()
+        );
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .expect("category dir reads")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "__init__.py")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "pairing topics must not generate modules under {category}, found: {entries:?}"
         );
     }
 

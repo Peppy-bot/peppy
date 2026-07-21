@@ -2376,7 +2376,12 @@ async fn stack_launch_establishes_launcher_pairings() {
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
         ),
         None,
-        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "controller", name: "joint_states" }],
+                consumes: [{ link_id: "controller", name: "joint_commands" }]
+            } }"#,
+        ),
     );
     let ctrl_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -2388,7 +2393,12 @@ async fn stack_launch_establishes_launcher_pairings() {
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
         ),
         None,
-        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "arm", name: "joint_commands" }],
+                consumes: [{ link_id: "arm", name: "joint_states" }]
+            } }"#,
+        ),
     );
 
     // In-process node services for both instances, including the
@@ -2524,7 +2534,12 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
         ),
         None,
-        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "controller", name: "joint_states" }],
+                consumes: [{ link_id: "controller", name: "joint_commands" }]
+            } }"#,
+        ),
     );
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
