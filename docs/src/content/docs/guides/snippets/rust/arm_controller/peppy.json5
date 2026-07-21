@@ -11,6 +11,18 @@
       ],
     },
   },
+  interfaces: {
+    topics: {
+      // The mirror image of the arm's block: this role emits the commands and
+      // consumes the states.
+      emits: [
+        { link_id: "arm", name: "joint_commands" },
+      ],
+      consumes: [
+        { link_id: "arm", name: "joint_states" },
+      ],
+    },
+  },
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],

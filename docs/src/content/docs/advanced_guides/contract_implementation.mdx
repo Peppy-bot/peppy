@@ -147,8 +147,10 @@ This is the point of the explicit-entry design: the node's `peppy.json5` shows w
 
 Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings}` link_ids; a collision is rejected at parse time. Direction matters:
 
-- A produced entry (`topics.emits`, `services.exposes`, `actions.exposes`) may only reference a `manifest.implements` slot.
-- A consumed entry (`*.consumes`) may only reference a `depends_on.{nodes,contracts}` slot.
+- `services.exposes` and `actions.exposes` may only reference a `manifest.implements` slot.
+- `topics.emits` may reference a `manifest.implements` slot or a `depends_on.pairings` slot, because a [pairing](/advanced_guides/pairing) role produces the document's topics as well as consuming them.
+- `services.consumes` and `actions.consumes` may only reference a `depends_on.{nodes,contracts}` slot; a pairing document declares topics only, so it exposes no service or action to consume.
+- `topics.consumes` may additionally reference a `depends_on.pairings` slot, naming a topic the counterpart role emits.
 
 Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready`, `moves`), matching the consumer-side style, rather than echoing the contract name.
 
