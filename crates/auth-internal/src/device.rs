@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::discovery::OidcEndpoints;
 use super::http::HttpClient;
-use super::profile;
+use super::profile::{self, TransportPolicy};
 use super::storage::now_unix;
 use crate::error::{Error, Result};
 
@@ -145,6 +145,7 @@ pub fn start(
     endpoints: &OidcEndpoints,
     client_id: &str,
     scopes: &str,
+    policy: TransportPolicy,
 ) -> Result<DeviceAuthorization> {
     let start = http.post_form(
         &endpoints.device_authorization_endpoint,
@@ -159,7 +160,7 @@ pub fn start(
         )));
     }
     let mut authorization: DeviceAuthorization = start.json("device authorization")?;
-    canonicalize_verification_urls(endpoints, &mut authorization)?;
+    canonicalize_verification_urls(endpoints, &mut authorization, policy)?;
     Ok(authorization)
 }
 
@@ -178,14 +179,17 @@ pub fn start(
 fn canonicalize_verification_urls(
     endpoints: &OidcEndpoints,
     authorization: &mut DeviceAuthorization,
+    policy: TransportPolicy,
 ) -> Result<()> {
-    let device_endpoint = profile::validate_https_or_local(
+    let device_endpoint = profile::validate_https_or_local_with(
         &endpoints.device_authorization_endpoint,
         "OIDC device authorization endpoint",
+        policy,
     )?;
-    let verification = profile::validate_https_or_local(
+    let verification = profile::validate_https_or_local_with(
         &authorization.verification_uri,
         "device verification URI",
+        policy,
     )?;
     if device_endpoint.scheme() == "https" && verification.scheme() != "https" {
         return Err(Error::Auth(
@@ -197,8 +201,11 @@ fn canonicalize_verification_urls(
         .verification_uri_complete
         .as_deref()
         .map(|complete| {
-            let parsed =
-                profile::validate_https_or_local(complete, "complete device verification URI")?;
+            let parsed = profile::validate_https_or_local_with(
+                complete,
+                "complete device verification URI",
+                policy,
+            )?;
             if device_endpoint.scheme() == "https" && parsed.scheme() != "https" {
                 return Err(Error::Auth(
                     "complete device verification URI attempts an HTTPS to HTTP downgrade".into(),
@@ -293,8 +300,14 @@ mod tests {
             revocation_endpoint: None,
         };
 
-        let error = start(&HttpClient::new(), &endpoints, "client", "openid")
-            .expect_err("a remote cleartext URL must never reach browser-opening code");
+        let error = start(
+            &HttpClient::new(),
+            &endpoints,
+            "client",
+            "openid",
+            TransportPolicy::Strict,
+        )
+        .expect_err("a remote cleartext URL must never reach browser-opening code");
         assert!(error.to_string().contains("plain http"), "{error}");
         assert_eq!(authorization.calls(), 1);
     }
@@ -318,8 +331,14 @@ mod tests {
             revocation_endpoint: None,
         };
 
-        let error = start(&HttpClient::new(), &endpoints, "client", "openid")
-            .expect_err("the primary remote cleartext URL must be rejected too");
+        let error = start(
+            &HttpClient::new(),
+            &endpoints,
+            "client",
+            "openid",
+            TransportPolicy::Strict,
+        )
+        .expect_err("the primary remote cleartext URL must be rejected too");
         assert!(error.to_string().contains("plain http"), "{error}");
     }
 
@@ -333,8 +352,9 @@ mod tests {
         let mut authorization = device_auth(5, 300);
         authorization.verification_uri = "http://127.0.0.1/device".into();
 
-        let error = canonicalize_verification_urls(&endpoints, &mut authorization)
-            .expect_err("an https issuer flow cannot downgrade even to loopback http");
+        let error =
+            canonicalize_verification_urls(&endpoints, &mut authorization, TransportPolicy::Strict)
+                .expect_err("an https issuer flow cannot downgrade even to loopback http");
         assert!(error.to_string().contains("downgrade"), "{error}");
     }
 

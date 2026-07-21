@@ -6,7 +6,7 @@
 use serde::Deserialize;
 
 use super::http::HttpClient;
-use super::profile;
+use super::profile::{self, TransportPolicy};
 use crate::error::{Error, Result};
 
 /// The three fields the backend serves to the CLI (no endpoint URLs; those come
@@ -20,7 +20,9 @@ pub struct CliConfig {
 
 /// Fetches `/cli/auth-config`. A `503` means the deployment hasn't provisioned the
 /// CLI client yet (`PEPPY_CLI_CLIENT_ID` / `PEPPY_INTROSPECT_AUDIENCE` unset).
-pub fn fetch(http: &HttpClient, api_url: &str) -> Result<CliConfig> {
+/// Callers pass [`profile::build_transport_policy`]; the parameter exists so the
+/// strict policy stays exercisable from tests in any build profile.
+pub fn fetch(http: &HttpClient, api_url: &str, policy: TransportPolicy) -> Result<CliConfig> {
     let url = format!("{}/cli/auth-config", api_url.trim_end_matches('/'));
     let resp = http.get(&url, None)?;
     match resp.status {
@@ -30,7 +32,7 @@ pub fn fetch(http: &HttpClient, api_url: &str) -> Result<CliConfig> {
             // flow, up to and including the token exchange, is aimed at
             // whatever it names. Apply the transport policy here, at the point
             // it enters the process, rather than at each of those steps.
-            profile::validate_https_or_local(&config.issuer, "OIDC issuer")?;
+            profile::validate_https_or_local_with(&config.issuer, "OIDC issuer", policy)?;
             Ok(config)
         }
         503 => Err(Error::Auth(
@@ -57,8 +59,12 @@ mod tests {
             }));
         });
 
-        let error = fetch(&HttpClient::new(), &server.base_url())
-            .expect_err("a remote plain http issuer must not reach discovery");
+        let error = fetch(
+            &HttpClient::new(),
+            &server.base_url(),
+            TransportPolicy::Strict,
+        )
+        .expect_err("a remote plain http issuer must not reach discovery");
         assert!(error.to_string().contains("plain http"), "{error}");
     }
 }

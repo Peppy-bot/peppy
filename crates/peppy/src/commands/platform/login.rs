@@ -58,8 +58,9 @@ impl Command for LoginCommand {
             return Ok(());
         }
 
-        let cfg = cli_config::fetch(&http, &api_url)?;
-        let endpoints = discovery::discover(&http, &cfg.issuer)?;
+        let policy = profile::build_transport_policy();
+        let cfg = cli_config::fetch(&http, &api_url, policy)?;
+        let endpoints = discovery::discover(&http, &cfg.issuer, policy)?;
         let tokens = run_device_flow(
             &http,
             &endpoints,
@@ -147,7 +148,13 @@ fn run_device_flow(
 ) -> Result<TokenSet> {
     use std::io::IsTerminal;
 
-    let da = device::start(http, endpoints, client_id, scopes)?;
+    let da = device::start(
+        http,
+        endpoints,
+        client_id,
+        scopes,
+        profile::build_transport_policy(),
+    )?;
 
     let complete = da
         .verification_uri_complete

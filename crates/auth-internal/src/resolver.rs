@@ -15,7 +15,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use super::http::HttpClient;
 use super::storage::{self, ProfileCreds};
-use super::{discovery, refresh};
+use super::{discovery, profile, refresh};
 use crate::error::{Error, Result};
 
 /// Refresh slightly before the real expiry to avoid racing a just-expired token.
@@ -114,7 +114,7 @@ pub(crate) fn refresh_and_persist(
     creds_path: &Path,
     pc: &ProfileCreds,
 ) -> Result<ProfileCreds> {
-    let endpoints = discovery::discover(http, &pc.issuer)?;
+    let endpoints = discovery::discover(http, &pc.issuer, profile::build_transport_policy())?;
     let tokens = refresh::refresh(
         http,
         &endpoints.token_endpoint,
