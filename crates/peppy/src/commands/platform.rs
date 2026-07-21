@@ -346,8 +346,9 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
         }
         PokeOutcome::Unreachable(reason) => Err(Error::Auth(format!(
             "logged in, but federation with the platform could not be established: {reason}. \
-             The per-user cloud router is unreachable or its certificate is not trusted; in \
-             dev, ensure the router cert is signed by the committed dev CA (re-run \
+             The platform's shared router is unreachable, or its certificate is not trusted \
+             or does not cover the host being dialed; in dev, check that the router is up \
+             and that its cert is the committed one signed by the dev CA (rotate it with \
              gen_dev_certs), then run `peppy platform login` again."
         ))),
         PokeOutcome::DaemonError(msg) => Err(Error::Auth(format!(

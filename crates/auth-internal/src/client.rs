@@ -118,7 +118,8 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
 /// body always carries the daemon's core-node name — the backend requires it and
 /// upserts the name into its per-principal core-node registry (its `last_seen_at`
 /// tracks config pulls, not liveness). The daemon dials the returned endpoint
-/// over mTLS, presenting its client certificate.
+/// over one-way TLS, verifying the router's certificate and presenting none of
+/// its own.
 pub fn establish_federation(
     http: &HttpClient,
     api_url: &str,

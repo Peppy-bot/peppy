@@ -337,16 +337,9 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
-    let endpoint = router::resolve_router_endpoint(
-        &path,
-        &http,
-        &server.base_url(),
-        None,
-        None,
-        None,
-        CORE_NODE,
-    )
-    .expect("resolve from cache");
+    let endpoint =
+        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, CORE_NODE)
+            .expect("resolve from cache");
     assert_eq!(endpoint.host, "cached.zenoh.localhost");
     assert_eq!(endpoint.port, 7443);
     assert!(endpoint.tls.verify_name_on_connect);
@@ -383,32 +376,24 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     storage::save(&path, &creds).expect("seed creds");
 
     let ca = std::path::PathBuf::from("/etc/peppy/ca.pem");
-    let client_identity = (
-        std::path::PathBuf::from("/etc/peppy/client.pem"),
-        std::path::PathBuf::from("/etc/peppy/client-key.pem"),
-    );
     let target = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
         None,
-        Some(ca),
-        Some(client_identity),
+        Some(ca.clone()),
         SECS_30,
         CORE_NODE,
     )
     .expect("logged in ⇒ a federation target");
     assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
+    assert_eq!(
+        target.1.root_ca_certificate.as_deref(),
+        Some(ca.as_path()),
+        "the upstream link validates the router against the resolved trust anchor"
+    );
     assert!(
         target.1.verify_name_on_connect,
         "the upstream link verifies the router's cert name"
-    );
-    assert!(
-        target.1.enable_mtls,
-        "the daemon presents its client cert for mTLS to the shared router"
-    );
-    assert!(
-        target.1.connect_certificate.is_some(),
-        "the mTLS client certificate is set"
     );
     assert!(pull.calls() >= 1, "a logged-in resolve pulls the config");
 }
@@ -430,7 +415,6 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
     let target = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
-        None,
         None,
         None,
         SECS_30,
@@ -469,7 +453,6 @@ fn resolve_federation_target_fails_closed_on_an_invalid_workspace_namespace() {
     let target = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
-        None,
         None,
         None,
         SECS_30,
@@ -521,7 +504,6 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         &server.base_url(),
         None,
         None,
-        None,
         Duration::from_millis(100),
         CORE_NODE,
     );
@@ -534,7 +516,6 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
     let in_time = router::resolve_federation_target_at(
         &path,
         &server.base_url(),
-        None,
         None,
         None,
         SECS_30,
@@ -592,7 +573,6 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
         &server.base_url(),
         None,
         Some(ca.clone()),
-        None,
         CORE_NODE,
     )
     .expect("re-pull");
@@ -655,16 +635,9 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
-    let endpoint = router::resolve_router_endpoint(
-        &path,
-        &http,
-        &server.base_url(),
-        None,
-        None,
-        None,
-        CORE_NODE,
-    )
-    .expect("resolve re-pulls under the new name");
+    let endpoint =
+        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, CORE_NODE)
+            .expect("resolve re-pulls under the new name");
     assert_eq!(endpoint.host, "cap.zenoh.localhost");
     assert_eq!(
         pull.calls(),
@@ -722,7 +695,6 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         &server.base_url(),
         Some("the-pat".to_string()),
         None,
-        None,
         CORE_NODE,
     )
     .expect("PAT pull resolves");
@@ -746,16 +718,9 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
 
     // With the PAT gone, a session resolve must NOT reuse the PAT's cache: the
     // subjects differ, so it re-pulls rather than leaking the PAT's workspace.
-    let _ = router::resolve_router_endpoint(
-        &path,
-        &http,
-        &server.base_url(),
-        None,
-        None,
-        None,
-        CORE_NODE,
-    )
-    .expect("session resolve");
+    let _ =
+        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, CORE_NODE)
+            .expect("session resolve");
     assert_eq!(
         pull.calls(),
         2,

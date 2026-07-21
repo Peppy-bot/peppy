@@ -9,6 +9,11 @@
 //! from the server's response: a debug build trusts the committed dev CA embedded
 //! in the binary; a release build validates against the system trust store. There
 //! is no env var or runtime override; dev federation works with zero config.
+//!
+//! The link is one-way TLS in both build profiles: the router proves its
+//! identity and we verify it, but we present no certificate of our own. Only the
+//! trust anchor differs between debug and release, which is why both profiles
+//! exercise the same transport.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -44,29 +49,8 @@ const EMBEDDED_DEV_CA: Option<&[u8]> = Some(include_bytes!(concat!(
 #[cfg(not(debug_assertions))]
 const EMBEDDED_DEV_CA: Option<&[u8]> = None;
 
-/// The committed dev **client** leaf + key the CLI presents for mTLS, embedded the
-/// same debug-only way as [`EMBEDDED_DEV_CA`] (a release binary carries neither, so
-/// it does no mTLS and validates the router against the system trust store). The
-/// shared router requires a client cert signed by the dev CA; these are minted from
-/// that same CA by `dev-pki`'s `gen_dev_certs`. FOLLOW-UP: per-user client-cert
-/// issuance instead of this one shared dev leaf.
-#[cfg(debug_assertions)]
-const EMBEDDED_DEV_CLIENT_CERT: Option<&[u8]> = Some(include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/dev-ca/peppy-dev-client.pem"
-)));
-#[cfg(not(debug_assertions))]
-const EMBEDDED_DEV_CLIENT_CERT: Option<&[u8]> = None;
-#[cfg(debug_assertions)]
-const EMBEDDED_DEV_CLIENT_KEY: Option<&[u8]> = Some(include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/dev-ca/peppy-dev-client-key.pem"
-)));
-#[cfg(not(debug_assertions))]
-const EMBEDDED_DEV_CLIENT_KEY: Option<&[u8]> = None;
-
 /// The dialing parameters for a remote router: the `(host, port)` to connect to
-/// and the client TLS material to present/validate with.
+/// and the client TLS material to validate it with.
 pub struct RouterEndpoint {
     pub host: String,
     pub port: u16,
@@ -99,38 +83,10 @@ pub fn resolve_router_ca_from(embedded: Option<&[u8]>, cache_dir: &Path) -> Opti
     materialize_embedded(cache_dir, "peppy-dev-ca.pem", embedded?)
 }
 
-/// The client identity (cert + key) the CLI presents for mTLS, resolved
-/// client-side with zero configuration, mirroring [`resolve_router_ca`]
-/// (including the caller-supplied `cache_dir`). In a debug build it is the
-/// committed dev client leaf embedded at compile time, materialized to the cache
-/// dir (since [`pmi::TlsConfig`] takes paths). A release build embeds neither, so
-/// it returns `None` and the CLI does one-way TLS (no client cert); per-user
-/// client certs are a follow-up.
-pub fn resolve_router_client_identity(cache_dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    resolve_router_client_identity_from(
-        EMBEDDED_DEV_CLIENT_CERT,
-        EMBEDDED_DEV_CLIENT_KEY,
-        cache_dir,
-    )
-}
-
-/// Testable core of [`resolve_router_client_identity`]: materialize the embedded
-/// client cert + key (if both present) under `cache_dir` and return their paths;
-/// missing either yields `None` (no mTLS). A filesystem failure degrades to `None`.
-pub fn resolve_router_client_identity_from(
-    cert: Option<&[u8]>,
-    key: Option<&[u8]>,
-    cache_dir: &Path,
-) -> Option<(PathBuf, PathBuf)> {
-    let cert_path = materialize_embedded(cache_dir, "peppy-dev-client.pem", cert?)?;
-    let key_path = materialize_embedded(cache_dir, "peppy-dev-client-key.pem", key?)?;
-    Some((cert_path, key_path))
-}
-
 /// Materialize `bytes` to `<cache_dir>/<filename>` and return that path. Cheap in
 /// the steady state: only (re)writes when the file is missing or its contents differ
 /// (e.g. after a fixture change). A filesystem failure degrades to `None` with a
-/// warning rather than failing the resolve. Shared by the dev CA and client identity.
+/// warning rather than failing the resolve.
 fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Option<PathBuf> {
     let path = cache_dir.join(filename);
     if std::fs::read(&path).ok().as_deref() != Some(bytes) {
@@ -140,7 +96,7 @@ fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Optio
             tracing::warn!(
                 error = %e, dir = %parent.display(),
                 "router TLS: could not create the cache dir to materialize embedded dev \
-                 material ({filename}); falling back to the system trust store / no client cert"
+                 material ({filename}); falling back to the system trust store"
             );
             return None;
         }
@@ -158,8 +114,7 @@ fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Optio
 /// Resolves the caller's router connection: returns a cached endpoint while it
 /// is fresh, else pulls a new config and caches it. `api_url` and `pat` follow the
 /// same resolution the auth commands use; `ca_certificate` (the trust anchor, see
-/// [`resolve_router_ca`]) and `client_identity` (the mTLS cert + key, see
-/// [`resolve_router_client_identity`]) are applied fresh to the live TLS at connect
+/// [`resolve_router_ca`]) is applied fresh to the live TLS at connect
 /// time (never cached on disk). `core_node_name` is the daemon's core-node name,
 /// carried in the pull's POST body to register the daemon in the backend's
 /// core-node registry (see [`client::establish_federation`]); it also
@@ -174,7 +129,6 @@ pub fn resolve_router_endpoint(
     api_url: &str,
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
-    client_identity: Option<(PathBuf, PathBuf)>,
     core_node_name: &str,
 ) -> Result<RouterEndpoint> {
     let now = storage::now_unix();
@@ -220,7 +174,7 @@ pub fn resolve_router_endpoint(
     Ok(RouterEndpoint {
         host,
         port,
-        tls: client_tls(ca_certificate, client_identity),
+        tls: client_tls(ca_certificate),
         namespace,
     })
 }
@@ -298,14 +252,14 @@ fn pull_and_cache(
 }
 
 /// Best-effort federation target for the daemon's *local* router: the upstream
-/// `tls/<host>:<port>` connect endpoint plus the connect-side mTLS material,
+/// `tls/<host>:<port>` connect endpoint plus the connect-side trust anchor,
 /// resolved by pulling the shared router's connection config.
 ///
 /// Returns `None`, and the local router stays standalone (plaintext-only), when
 /// the user is not logged in, no backend is configured/reachable, or the pull
 /// fails, so the daemon always starts. The daemon dials the returned endpoint over
-/// mTLS, presenting the embedded dev client cert (debug builds); there is no
-/// client-side keepalive re-pull.
+/// one-way TLS, verifying the router's certificate and name and presenting none of
+/// its own; there is no client-side keepalive re-pull.
 ///
 /// `connect_timeout` bounds the (blocking) config pull so a slow/unreachable
 /// backend can't stall the caller (federation at startup / on a login-poke)
@@ -332,23 +286,20 @@ pub fn resolve_federation_target(
         api_url,
         resolver::pat_from_env(),
         resolve_router_ca(&cache_dir),
-        resolve_router_client_identity(&cache_dir),
         connect_timeout,
         core_node_name,
     )
 }
 
 /// Testable core of [`resolve_federation_target`] with the creds path, PAT, CA,
-/// client identity, and timeout made explicit (so it can be exercised against a
-/// stub backend without touching the process-global credentials file or
-/// `PEPPY_API_KEY`). Mirrors the [`super::profile::resolve_api_url`] /
-/// `resolve_api_url_from` split.
+/// and timeout made explicit (so it can be exercised against a stub backend
+/// without touching the process-global credentials file or `PEPPY_API_KEY`).
+/// Mirrors the [`super::profile::resolve_api_url`] / `resolve_api_url_from` split.
 pub fn resolve_federation_target_at(
     creds_path: &Path,
     api_url: &str,
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
-    client_identity: Option<(PathBuf, PathBuf)>,
     connect_timeout: Duration,
     core_node_name: &str,
 ) -> Option<(String, pmi::TlsConfig)> {
@@ -378,7 +329,6 @@ pub fn resolve_federation_target_at(
         api_url,
         pat,
         ca_certificate,
-        client_identity,
         core_node_name,
     ) {
         // Fail-closed gate, single source: only a validated, non-local namespace
@@ -416,26 +366,17 @@ pub fn session_namespace(creds_path: &Path) -> Result<config::namespace::Namespa
 
 /// Client TLS material for dialing the shared router: validate it against the
 /// resolved trust anchor (`ca_certificate`, or the system store if `None`), with
-/// name verification on: the dialed host must match the router's certificate SAN.
-/// When a `client_identity` (cert + key) is present, present it as the mTLS client
-/// certificate and enable mutual TLS; the shared router requires it. A release
-/// build with no embedded client identity falls back to one-way TLS.
-fn client_tls(
-    ca_certificate: Option<PathBuf>,
-    client_identity: Option<(PathBuf, PathBuf)>,
-) -> pmi::TlsConfig {
-    // `TlsConfig::client` sets `root_ca_certificate` and leaves
-    // `verify_name_on_connect` on (its default); `default` trusts the system store.
-    let mut tls = match ca_certificate {
+/// name verification on, so the dialed host must match the router's certificate
+/// SAN. The link is one-way: we present no certificate of our own, in either build
+/// profile.
+///
+/// `TlsConfig::client` sets `root_ca_certificate` and leaves
+/// `verify_name_on_connect` on (its default); `default` trusts the system store.
+fn client_tls(ca_certificate: Option<PathBuf>) -> pmi::TlsConfig {
+    match ca_certificate {
         Some(ca) => pmi::TlsConfig::client(ca),
         None => pmi::TlsConfig::default(),
-    };
-    if let Some((cert, key)) = client_identity {
-        tls.connect_certificate = Some(cert);
-        tls.connect_private_key = Some(key);
-        tls.enable_mtls = true;
     }
-    tls
 }
 
 /// Clamps a `u64` seconds value into the `i64` unix-time domain so an absurd
@@ -449,45 +390,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_tls_with_ca_and_client_identity_enables_mtls() {
-        let tls = client_tls(
-            Some(PathBuf::from("/etc/peppy/ca.pem")),
-            Some((
-                PathBuf::from("/etc/peppy/client.pem"),
-                PathBuf::from("/etc/peppy/client-key.pem"),
-            )),
-        );
+    fn client_tls_pins_the_resolved_ca_and_verifies_the_router_name() {
+        let tls = client_tls(Some(PathBuf::from("/etc/peppy/ca.pem")));
         assert_eq!(
             tls.root_ca_certificate.as_deref(),
             Some(std::path::Path::new("/etc/peppy/ca.pem"))
         );
         assert!(tls.verify_name_on_connect, "name verification must stay on");
-        assert!(tls.enable_mtls, "a client identity must enable mTLS");
-        assert_eq!(
-            tls.connect_certificate.as_deref(),
-            Some(std::path::Path::new("/etc/peppy/client.pem"))
-        );
-        assert_eq!(
-            tls.connect_private_key.as_deref(),
-            Some(std::path::Path::new("/etc/peppy/client-key.pem"))
-        );
-    }
-
-    #[test]
-    fn client_tls_without_client_identity_stays_one_way() {
-        // No embedded client cert (e.g. a release build): CA trust only, no mTLS.
-        let tls = client_tls(Some(PathBuf::from("/etc/peppy/ca.pem")), None);
-        assert_eq!(
-            tls.root_ca_certificate.as_deref(),
-            Some(std::path::Path::new("/etc/peppy/ca.pem"))
-        );
-        assert!(!tls.enable_mtls);
-        assert!(tls.connect_certificate.is_none());
     }
 
     #[test]
     fn client_tls_without_ca_falls_back_to_system_store() {
-        let tls = client_tls(None, None);
+        // A release build embeds no dev CA, so the router validates against the
+        // system trust store. Name verification stays on either way: that is the
+        // only difference between the two profiles.
+        let tls = client_tls(None);
         assert!(tls.root_ca_certificate.is_none());
         assert!(tls.verify_name_on_connect);
     }
