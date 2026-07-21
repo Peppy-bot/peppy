@@ -152,7 +152,7 @@ impl ServeCommandEmulation {
             None,
             true,
             pmi::SubscriberBufferSizes::default(),
-            Some(pmi::OrgNamespace::local()),
+            Some(pmi::Namespace::local()),
         )
         .await?;
         instance.messenger().start_session().await?;
@@ -205,7 +205,7 @@ impl ServeCommandEmulation {
             root_dir: temp_dir.path().to_path_buf(),
             peppy_dirs,
             peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
-            organization_namespace: "local".to_string(),
+            namespace: config::namespace::Namespace::local(),
             shutdown_token: shutdown_token.clone(),
         });
         let core_node_name = core_node.node_name().to_string();
@@ -236,7 +236,7 @@ impl ServeCommandEmulation {
             port,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
-            "local",
+            config::namespace::Namespace::local(),
             None,
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)

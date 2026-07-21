@@ -12,7 +12,7 @@
 //!
 //! It builds on the shared `config` crate (`peppy-config-model`), which keeps
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
-//! node config model, runtime configs, fingerprints, org namespaces, and
+//! node config model, runtime configs, fingerprints, workspace namespaces, and
 //! schema tags. Types crossing that boundary (`config::runtime::Name`,
 //! `config::node` manifest types, `config::peppy_config::SubscriberBufferConfig`) are
 //! used directly from `config` so each has exactly one definition.

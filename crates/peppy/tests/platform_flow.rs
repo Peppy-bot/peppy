@@ -402,7 +402,7 @@ fn external_logout_does_not_poke_federation_control() {
 
 #[test]
 fn logout_heals_a_malformed_credentials_file() {
-    // A malformed (e.g. pre-`organization_id`/unversioned) credentials file fails
+    // A malformed (e.g. pre-`workspace_id`/unversioned) credentials file fails
     // to parse with `AuthError::Auth`. Logout treats that as "already logged out",
     // but it must still rewrite the file to a clean default so the bad file does
     // not linger on disk (the early "Not logged in" return used to skip the save).

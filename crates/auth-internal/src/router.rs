@@ -71,10 +71,10 @@ pub struct RouterEndpoint {
     pub host: String,
     pub port: u16,
     pub tls: pmi::TlsConfig,
-    /// The organization id this endpoint was resolved for, carried out of the
-    /// same pull so the caller derives the federation gate and the session
-    /// namespace from one source.
-    pub organization_id: String,
+    /// The namespace this endpoint was resolved for, carried out of the same
+    /// pull so the caller derives the federation gate and session namespace
+    /// from one validated value.
+    pub namespace: config::namespace::Namespace,
 }
 
 /// The router trust anchor, resolved client-side with zero configuration. In a
@@ -188,10 +188,10 @@ pub fn resolve_router_endpoint(
         .unwrap_or_default();
     // The cache is identity-bound two ways: `login`/`logout` clear it with the
     // session, AND `RouterSession.subject` tags it with the backend identity it was
-    // pulled for. Reuse the cached endpoint (and its `organization_id`) only for a
+    // pulled for. Reuse the cached endpoint (and its `namespace`) only for a
     // *session* resolve (no active PAT) whose non-empty subject still matches the
     // cache, so a config pulled under one identity is never replayed under another
-    // (e.g. a PAT-pulled org leaking onto the on-disk session once the PAT is gone).
+    // (e.g. a PAT-pulled workspace leaking onto the on-disk session once the PAT is gone).
     // An active PAT always re-pulls: a PAT is bound to its own backend subject at
     // pull time (see `pull_and_cache`), which the session-derived `active_subject`
     // cannot match on this fast path, and re-pulling is cheap (federation resolves
@@ -204,14 +204,14 @@ pub fn resolve_router_endpoint(
     // thereby register its new name — instead of reusing a still-fresh cache and
     // staying absent from the registry until the cache goes stale.
     let reuse_cache = pat.is_none() && !active_subject.is_empty();
-    let (endpoint, organization_id) = match creds.router {
+    let (endpoint, namespace) = match creds.router {
         Some(rs)
             if reuse_cache
                 && !rs.is_stale(now, REPULL_SKEW_SECS)
                 && rs.subject == active_subject
                 && rs.core_node_name == core_node_name =>
         {
-            (rs.endpoint, rs.organization_id)
+            (rs.endpoint, rs.namespace)
         }
         _ => pull_and_cache(creds_path, http, api_url, pat, now, core_node_name)?,
     };
@@ -221,7 +221,7 @@ pub fn resolve_router_endpoint(
         host,
         port,
         tls: client_tls(ca_certificate, client_identity),
-        organization_id,
+        namespace,
     })
 }
 
@@ -239,11 +239,11 @@ fn pull_and_cache(
     pat: Option<String>,
     now: i64,
     core_node_name: &str,
-) -> Result<(String, String)> {
+) -> Result<(String, config::namespace::Namespace)> {
     let mut cred = resolver::resolve(creds_path, http, pat)?;
     // The identity this pull is actually authenticated as drives the cache tag
     // below. A PAT is not the on-disk session, so it must not be tagged with the
-    // session subject; doing so would let the session reuse the PAT's org once the
+    // session subject; doing so would let the session reuse the PAT's workspace once the
     // PAT is gone (a cross-identity leak).
     let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
     let cfg = client::establish_federation(http, api_url, &mut cred, core_node_name)?;
@@ -287,14 +287,14 @@ fn pull_and_cache(
         endpoint: cfg.endpoint.clone(),
         protocol: cfg.protocol.clone(),
         repull_after: now.saturating_add(saturating_secs_to_i64(cfg.reconnect_after_secs)),
-        organization_id: cfg.organization_id.clone(),
+        namespace: cfg.namespace.clone(),
         subject,
         // Tag the cache with the name this pull registered, so a rename forces
         // a re-pull (and re-registration) even while the cache is still fresh.
         core_node_name: core_node_name.to_string(),
     });
     storage::save(creds_path, &creds)?;
-    Ok((cfg.endpoint, cfg.organization_id))
+    Ok((cfg.endpoint, cfg.namespace))
 }
 
 /// Best-effort federation target for the daemon's *local* router: the upstream
@@ -381,19 +381,15 @@ pub fn resolve_federation_target_at(
         client_identity,
         core_node_name,
     ) {
-        // Fail-closed gate, single source: federate only when the resolved org id
-        // is a valid namespace. The daemon's session namespace is resolved from
-        // the same cached `organization_id`, so a config that cannot federate also
-        // cannot carry a federating namespace -- an unprefixed/`local` session can
-        // never reach the shared multi-tenant router.
-        Ok(ep) if config::org::should_federate(Some(&ep.organization_id)) => {
+        // Fail-closed gate, single source: only a validated, non-local namespace
+        // federates. The daemon session is resolved from the same cached value.
+        Ok(ep) if !ep.namespace.is_local() => {
             Some((format!("tls/{}:{}", ep.host, ep.port), ep.tls))
         }
         Ok(ep) => {
             tracing::warn!(
-                organization_id = %ep.organization_id,
-                "router federation: resolved organization id is not a valid namespace; \
-                 local router stays standalone (fail closed)"
+                namespace = %ep.namespace,
+                "router federation: local namespace keeps the router standalone"
             );
             None
         }
@@ -407,17 +403,15 @@ pub fn resolve_federation_target_at(
     }
 }
 
-/// The cached organization id the daemon resolves its session namespace from, or
-/// `None` when there is no fresh router cache (logged out, or not yet pulled). An
-/// empty cached value is treated as absent. Pairs with
-/// [`config::org::resolve_session_namespace`] (absent -> `local`) and
-/// [`config::org::should_federate`] (absent -> standalone).
-pub fn cached_organization_id(creds_path: &Path) -> Option<String> {
-    storage::load(creds_path)
-        .ok()?
+/// Resolve the daemon's session namespace from credentials. A missing file or a
+/// valid document without a router session is legitimate standalone operation
+/// and resolves to `local`; malformed, rejected, unreadable, or invalid state
+/// propagates as an error.
+pub fn session_namespace(creds_path: &Path) -> Result<config::namespace::Namespace> {
+    Ok(storage::load(creds_path)?
         .router
-        .map(|r| r.organization_id)
-        .filter(|s| !s.is_empty())
+        .map(|router| router.namespace)
+        .unwrap_or_else(config::namespace::Namespace::local))
 }
 
 /// Client TLS material for dialing the shared router: validate it against the

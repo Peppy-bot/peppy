@@ -24,7 +24,7 @@ struct Cli {
     /// Core-node name of the daemon to target (see `peppy info`). Defaults
     /// to the local daemon. The local daemon must be running either way (its
     /// router and federation carry the traffic), and a remote daemon must
-    /// belong to the same organization.
+    /// use the same workspace namespace.
     #[arg(long = "core-node", global = true, value_name = "NAME", value_parser = parse_core_node_target)]
     core_node: Option<String>,
 }

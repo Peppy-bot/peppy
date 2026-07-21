@@ -36,7 +36,7 @@ impl Command for LogoutCommand {
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
 
-        // Load-resilient: a malformed / pre-`organization_id` file fails to parse
+        // Load-resilient: a malformed / pre-`workspace_id` file fails to parse
         // with `Error::Auth`; treat it as "already effectively logged out" rather
         // than wedging logout. A default has no session, so the early return below
         // would otherwise leave the bad file on disk; overwrite it with a clean

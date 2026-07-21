@@ -207,7 +207,7 @@ mod tests {
                 target_is_override: target != "local-daemon",
                 git_hash: "test-git-hash".to_string(),
                 shutdown_grace_secs: 5,
-                organization_namespace: "local".to_string(),
+                namespace: config::namespace::Namespace::local(),
             };
 
             // Target == local (the no-override shape): allowed.

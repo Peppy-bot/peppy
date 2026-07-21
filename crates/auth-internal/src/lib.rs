@@ -20,7 +20,7 @@
 //!
 //! This crate owns everything non-interactive: credential storage and
 //! resolution, the blocking HTTP client, the device-flow *protocol* (start and
-//! poll), backend URL resolution, org-id and federation-target resolution, and
+//! poll), backend URL resolution, workspace-id and federation-target resolution, and
 //! the router-config cache (plus the debug-only embedded dev-CA/client-cert
 //! material). Consumers (the `peppy` CLI and the daemon) own every interactive
 //! or process-level concern: the user-facing command structs, printing the

@@ -20,31 +20,22 @@ pub struct DaemonState {
     pub core_node_name: String,
     pub daemon_pid: Option<u32>,
     /// The dial host the daemon, CLI, and spawned nodes use for the messaging
-    /// router. Older state files predate this field and therefore resolve to the
-    /// historical loopback host.
-    #[serde(default = "default_messaging_host")]
+    /// router.
     pub messaging_host: String,
     /// The dial port the messaging router is serving.
-    #[serde(default = "default_messaging_port")]
     pub messaging_port: u16,
     /// The git hash of the peppy binary at compile time.
-    #[serde(default)]
     pub git_hash: String,
     /// Cooperative-shutdown grace period the daemon resolved from
     /// `peppy_config.lifecycle.shutdown_grace_secs`. Surfaced here so a client
     /// command (`peppy node stop`) can size its request timeout to exceed the
-    /// daemon's grace + reap window. Defaulted on read so a state file written
-    /// by a daemon predating this field still parses.
-    #[serde(default = "default_shutdown_grace_secs")]
+    /// daemon's grace + reap window.
     pub shutdown_grace_secs: u64,
-    /// The organization namespace this daemon generation resolved at startup
-    /// (`"local"` when logged out, else the org id). A CLI control session reads
-    /// it so it opens its session under exactly the daemon's namespace; it is
-    /// written before the control socket binds, so a reader never sees a half-set
-    /// generation. Defaulted to `"local"` on read so a state file written before
-    /// this field still parses.
-    #[serde(default = "default_organization_namespace")]
-    pub organization_namespace: String,
+    /// The workspace namespace this daemon generation resolved at startup
+    /// (`local` when logged out, else the workspace id). A CLI control session
+    /// reads it so it opens under exactly the daemon's namespace. The field is
+    /// required and typed: missing or invalid persisted state fails at read.
+    pub namespace: config::namespace::Namespace,
     /// `Some(secs)` when this daemon generation armed managed-router federation
     /// (a control socket exists and login/logout pokes apply within this bound,
     /// the daemon's `zenoh.managed.federation.connect_timeout_secs` at startup);
@@ -55,22 +46,6 @@ pub struct DaemonState {
     pub federation_connect_timeout_secs: Option<u64>,
 }
 
-fn default_organization_namespace() -> String {
-    config::org::LOCAL_NAMESPACE.to_string()
-}
-
-fn default_messaging_port() -> u16 {
-    config::consts::DEFAULT_MESSAGING_PORT
-}
-
-fn default_messaging_host() -> String {
-    config::consts::DEFAULT_MESSAGING_HOST.to_string()
-}
-
-fn default_shutdown_grace_secs() -> u64 {
-    config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
-}
-
 impl DaemonState {
     pub fn new(
         core_node_name: impl Into<String>,
@@ -78,7 +53,7 @@ impl DaemonState {
         messaging_port: u16,
         git_hash: impl Into<String>,
         shutdown_grace_secs: u64,
-        organization_namespace: impl Into<String>,
+        namespace: config::namespace::Namespace,
         federation_connect_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
@@ -88,7 +63,7 @@ impl DaemonState {
             messaging_port,
             git_hash: git_hash.into(),
             shutdown_grace_secs,
-            organization_namespace: organization_namespace.into(),
+            namespace,
             federation_connect_timeout_secs,
         }
     }
@@ -177,7 +152,7 @@ mod tests {
             messaging_port: 7447,
             git_hash: "test".to_string(),
             shutdown_grace_secs: 5,
-            organization_namespace: "local".to_string(),
+            namespace: config::namespace::Namespace::local(),
             federation_connect_timeout_secs: Some(30),
         };
         DaemonState::write_to(&path, &original).expect("write");
@@ -189,7 +164,7 @@ mod tests {
         assert_eq!(read.messaging_port, 7447);
         assert_eq!(read.git_hash, "test");
         assert_eq!(read.shutdown_grace_secs, 5);
-        assert_eq!(read.organization_namespace, "local");
+        assert_eq!(read.namespace, config::namespace::Namespace::local());
         assert_eq!(read.federation_connect_timeout_secs, Some(30));
     }
 
@@ -199,15 +174,47 @@ mod tests {
         let path = dir.path().join("daemon_state.json5");
         std::fs::write(
             &path,
-            r#"{ "core_node_name": "old", "daemon_pid": null, "written_at_ms": 1234 }"#,
+            r#"{
+                "core_node_name": "old",
+                "daemon_pid": null,
+                "messaging_host": "127.0.0.1",
+                "messaging_port": 7448,
+                "git_hash": "old",
+                "shutdown_grace_secs": 5,
+                "namespace": "local",
+                "federation_connect_timeout_secs": null,
+                "written_at_ms": 1234
+            }"#,
         )
         .expect("write file with unknown field");
 
         let read = DaemonState::read_from(&path).expect("read");
         assert_eq!(read.core_node_name, "old");
         assert_eq!(read.daemon_pid, None);
-        assert_eq!(read.messaging_host, config::consts::DEFAULT_MESSAGING_HOST);
-        assert_eq!(read.messaging_port, config::consts::DEFAULT_MESSAGING_PORT);
+        assert_eq!(read.messaging_host, "127.0.0.1");
+        assert_eq!(read.messaging_port, 7448);
+    }
+
+    #[test]
+    fn an_invalid_namespace_fails_the_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon_state.json5");
+        std::fs::write(
+            &path,
+            r#"{
+                "core_node_name": "bad",
+                "daemon_pid": null,
+                "messaging_host": "127.0.0.1",
+                "messaging_port": 7448,
+                "git_hash": "test",
+                "shutdown_grace_secs": 5,
+                "namespace": "**",
+                "federation_connect_timeout_secs": null
+            }"#,
+        )
+        .expect("write invalid state");
+
+        assert!(DaemonState::read_from(&path).is_err());
     }
 
     #[cfg(unix)]

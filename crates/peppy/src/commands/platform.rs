@@ -3,7 +3,7 @@
 //! token storage, and credential resolution they share live in the separate
 //! `auth` engine crate. The group is named for the platform account rather than
 //! for auth because signing in does more than obtain a token: it stamps this
-//! machine's organization namespace and pokes the running daemon to refederate
+//! machine's workspace namespace and pokes the running daemon to refederate
 //! its messaging router, and a login whose federation link cannot be
 //! established fails.
 
@@ -51,16 +51,13 @@ const RESTART_POLL_DEADLINE: Duration = Duration::from_secs(60);
 const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The namespace the on-disk credentials under `dirs` resolve to (`local` when
-/// logged out, else the org id). The same resolution the daemon does at startup,
+/// logged out, else the workspace id). The same resolution the daemon does at startup,
 /// so the CLI can confirm the daemon came back under exactly what it just wrote.
 /// Reads the credentials from the same `dirs` the command resolved, so a test
 /// seam isolates it.
-fn current_creds_namespace(dirs: &PeppyDirs) -> String {
-    config::org::resolve_session_namespace(
-        auth::router::cached_organization_id(&auth::storage::credentials_path(dirs)).as_deref(),
-    )
-    .as_str()
-    .to_string()
+fn current_creds_namespace(dirs: &PeppyDirs) -> Result<config::namespace::Namespace> {
+    auth::router::session_namespace(&auth::storage::credentials_path(dirs))
+        .map_err(|error| Error::Auth(error.to_string()))
 }
 
 /// Whether a federation poke follows a login (federate) or a logout
@@ -133,7 +130,7 @@ pub(crate) fn confirm_restart(
         FederationPokeAction::Logout => "Logging out",
     };
     eprintln!(
-        "{verb} changes this machine's organization namespace, which restarts the messaging \
+        "{verb} changes this machine's workspace namespace, which restarts the messaging \
          daemon and wipes the running node stack."
     );
     eprint!("Continue? [y/N] ");
@@ -264,7 +261,7 @@ fn await_restart(
     action: &FederationPokeAction,
 ) -> Result<()> {
     // The namespace the daemon must come back under (what we just wrote).
-    let expected = current_creds_namespace(dirs);
+    let expected = current_creds_namespace(dirs)?;
     // This helper is shared by both flows, so the recovery guidance must name the
     // caller's own subcommand rather than always saying `login`.
     let subcommand = match action {
@@ -285,7 +282,7 @@ fn await_restart(
 
         // A concurrent login/logout rewrote the credentials mid-restart, so the
         // daemon will not come back under what we wrote.
-        if current_creds_namespace(dirs) != expected {
+        if current_creds_namespace(dirs)? != expected {
             break Err(Error::Auth(format!(
                 "credentials changed during restart; re-run `peppy platform {subcommand}`"
             )));
@@ -297,7 +294,7 @@ fn await_restart(
         // Read from the same `dirs` the command resolved, like the socket path.
         let back_under_expected = matches!(
             DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
-            Ok(state) if state.organization_namespace == expected
+            Ok(state) if state.namespace == expected
         );
         if !back_under_expected {
             continue;
@@ -505,7 +502,15 @@ mod tests {
     /// Writes a daemon state file under `dirs` whose recorded pid is this test
     /// process (so `is_running` holds) and whose federation field is `timeout`.
     fn write_running_state(dirs: &PeppyDirs, timeout: Option<u64>) {
-        let state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", timeout);
+        let state = DaemonState::new(
+            "cn-test",
+            "127.0.0.1",
+            7447,
+            "test",
+            5,
+            config::namespace::Namespace::local(),
+            timeout,
+        );
         DaemonState::write_to(&DaemonState::state_file_in(dirs.root()), &state)
             .expect("write daemon state");
     }
@@ -555,7 +560,15 @@ mod tests {
     fn a_stale_state_file_from_a_dead_daemon_falls_back_to_the_disk_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dirs = PeppyDirs::new(dir.path());
-        let mut state = DaemonState::new("cn-test", "127.0.0.1", 7447, "test", 5, "local", None);
+        let mut state = DaemonState::new(
+            "cn-test",
+            "127.0.0.1",
+            7447,
+            "test",
+            5,
+            config::namespace::Namespace::local(),
+            None,
+        );
         // A pid outside the valid range names no live process, so the state is
         // stale and the disk config decides again.
         state.daemon_pid = Some(u32::MAX);

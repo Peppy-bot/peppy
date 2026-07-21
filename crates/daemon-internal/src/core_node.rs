@@ -87,7 +87,7 @@ impl CoreNodeRunner {
         federation_settled: Option<watch::Receiver<bool>>,
         clock_source: crate::ClockSource,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
-        organization_namespace: String,
+        namespace: config::namespace::Namespace,
         name_claim_settle: Duration,
         serve_teardown_token: CancellationToken,
         core_node_done: watch::Sender<bool>,
@@ -121,7 +121,7 @@ impl CoreNodeRunner {
             root_dir,
             peppy_dirs,
             peppy_config,
-            organization_namespace,
+            namespace,
             shutdown_token: shutdown_token.clone(),
         });
         Self {
