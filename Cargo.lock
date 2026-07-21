@@ -573,7 +573,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "sha2",
 ]
@@ -774,7 +774,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "askama",
  "git2",
@@ -918,7 +918,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -1845,9 +1845,9 @@ dependencies = [
 
 [[package]]
 name = "glob"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "globset"
@@ -2577,7 +2577,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "serde",
  "serde_json",
@@ -2670,9 +2670,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.187"
+version = "0.2.188"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7743783ea728ef5c31194c6590797eed286449b4a4e87d626d8a51f0a94e732"
+checksum = "22053b6a34f84abc97f9129e61334f40174659a1b9bd18c970b83db6a9a6348b"
 
 [[package]]
 name = "libgit2-sys"
@@ -3351,7 +3351,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "capnp",
  "clap",
@@ -3374,7 +3374,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3569,7 +3569,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#cb6424ed12bfb93cbdcfe3417259d777110a0921"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#51c33b3aa6c69e1279eade7c8222a2d36e8ee4cc"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -5248,14 +5248,15 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.18"
+version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
+checksum = "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
 dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
  "futures-util",
+ "libc",
  "pin-project-lite",
  "tokio",
 ]

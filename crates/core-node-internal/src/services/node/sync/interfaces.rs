@@ -67,6 +67,22 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
         .collect()
 }
 
+/// The dependency tables every consumed-interface lookup resolves against,
+/// built once per `collect_consumed_interfaces` call.
+struct ResolvedDependencies {
+    lookup: HashMap<String, DependencyLookupEntry>,
+    /// Native emits/exposes per node dependency, keyed by `(name, tag)`.
+    /// Contract-backed entries are deliberately absent: node dependencies
+    /// expose native interfaces only, and contract-backed interfaces are
+    /// consumed through `depends_on.contracts`.
+    node_offerings: HashMap<(String, String), DependencyOfferings>,
+    /// Memoized parsed contracts for `depends_on.contracts` entries, keyed by
+    /// `link_id` so two entries with the same `(name, tag)` but different
+    /// sha256 pins are cached and resolved separately. `resolve_contract_doc`
+    /// handles SHA-pin matching and on-disk drift detection per load.
+    contract_docs: HashMap<String, daemon_config::contract::PeppyContract>,
+}
+
 pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
@@ -75,35 +91,29 @@ pub fn collect_consumed_interfaces(
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
-    let dep_lookup = build_dependency_lookup(manifest);
+    let mut deps = ResolvedDependencies {
+        lookup: build_dependency_lookup(manifest),
+        node_offerings: HashMap::new(),
+        contract_docs: HashMap::new(),
+    };
 
-    // Pre-resolve each unique node dependency into a per-dep offerings table
-    // of its NATIVE emits/exposes. Contract-backed entries are deliberately
-    // absent: node dependencies expose native interfaces only, and
-    // contract-backed interfaces are consumed through `depends_on.contracts`.
-    let mut node_dep_offerings: HashMap<(String, String), DependencyOfferings> = HashMap::new();
-    // Memoized parsed contracts for `depends_on.contracts`
-    // entries, keyed by `link_id` so two entries with the same
-    // `(name, tag)` but different sha256 pins are cached and resolved
-    // separately. `resolve_contract_doc` handles SHA-pin matching and
-    // on-disk drift detection per load.
-    let mut contract_dep_docs: HashMap<String, daemon_config::contract::PeppyContract> =
-        HashMap::new();
-
-    for (link_id, entry) in dep_lookup.iter() {
+    // Pre-resolve each unique dependency into its offerings table / contract
+    // document, so the per-entry lookups below are pure map reads.
+    for (link_id, entry) in deps.lookup.iter() {
         match entry.kind {
             DependencyKind::Node => {
                 let node_key = (entry.name.clone(), entry.tag.clone());
-                if node_dep_offerings.contains_key(&node_key) {
+                if deps.node_offerings.contains_key(&node_key) {
                     continue;
                 }
                 let Some(dep_config) = resolve(&entry.name, &entry.tag) else {
                     continue;
                 };
-                node_dep_offerings.insert(node_key, build_dependency_offerings(&dep_config));
+                deps.node_offerings
+                    .insert(node_key, build_dependency_offerings(&dep_config));
             }
             DependencyKind::Contract => {
-                if contract_dep_docs.contains_key(link_id) {
+                if deps.contract_docs.contains_key(link_id) {
                     continue;
                 }
                 let parsed = resolve_contract_doc(
@@ -113,7 +123,7 @@ pub fn collect_consumed_interfaces(
                     entry.sha256.as_deref(),
                     on_feedback,
                 )?;
-                contract_dep_docs.insert(link_id.clone(), parsed);
+                deps.contract_docs.insert(link_id.clone(), parsed);
             }
         }
     }
@@ -129,10 +139,7 @@ pub fn collect_consumed_interfaces(
             if pairing_slots.contains(consumed_topic.link_id.as_str()) {
                 continue;
             }
-            let Some((message_format, dependency)) = resolve_consumed_offering(
-                &dep_lookup,
-                &node_dep_offerings,
-                &contract_dep_docs,
+            let Some((message_format, dependency)) = deps.resolve_consumed_offering(
                 config::node::InterfaceKind::Topic.consumed_section(),
                 &consumed_topic.link_id,
                 consumed_topic.name.trim(),
@@ -165,26 +172,25 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
-            let Some(((request_format, response_format), dependency)) = resolve_consumed_offering(
-                &dep_lookup,
-                &node_dep_offerings,
-                &contract_dep_docs,
-                config::node::InterfaceKind::Service.consumed_section(),
-                &consumed_service.link_id,
-                consumed_service.name.trim(),
-                |offerings, name| offerings.services.get(name).cloned(),
-                |parsed, name| {
-                    let exposed = parsed
-                        .interfaces
-                        .services
-                        .iter()
-                        .find(|s| s.name.trim() == name)?;
-                    let request_format = exposed.request_message_format.clone().unwrap_or_default();
-                    let response_format =
-                        exposed.response_message_format.clone().unwrap_or_default();
-                    Some((request_format, response_format))
-                },
-            )?
+            let Some(((request_format, response_format), dependency)) = deps
+                .resolve_consumed_offering(
+                    config::node::InterfaceKind::Service.consumed_section(),
+                    &consumed_service.link_id,
+                    consumed_service.name.trim(),
+                    |offerings, name| offerings.services.get(name).cloned(),
+                    |parsed, name| {
+                        let exposed = parsed
+                            .interfaces
+                            .services
+                            .iter()
+                            .find(|s| s.name.trim() == name)?;
+                        let request_format =
+                            exposed.request_message_format.clone().unwrap_or_default();
+                        let response_format =
+                            exposed.response_message_format.clone().unwrap_or_default();
+                        Some((request_format, response_format))
+                    },
+                )?
             else {
                 continue;
             };
@@ -201,10 +207,7 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
-            let Some((action_message, dependency)) = resolve_consumed_offering(
-                &dep_lookup,
-                &node_dep_offerings,
-                &contract_dep_docs,
+            let Some((action_message, dependency)) = deps.resolve_consumed_offering(
                 config::node::InterfaceKind::Action.consumed_section(),
                 &consumed_action.link_id,
                 consumed_action.name.trim(),
@@ -232,78 +235,80 @@ pub fn collect_consumed_interfaces(
     Ok(interfaces)
 }
 
-/// Resolves a single consumed interface to its message-format payload plus the
-/// `DependencyContext` the generator needs to address it. Node dependencies
-/// resolve against the producer's native offerings only (node-addressed);
-/// contract dependencies resolve against the contract document
-/// (contract-addressed).
-///
-/// `Ok(None)` means the entry is not this collector's to report: an
-/// undeclared link_id, an unresolved node dependency, and a name the producer
-/// does not natively offer are all reported by `validate_dependency_specs`
-/// upstream, which sees node dependencies and would otherwise report each
-/// twice.
-///
-/// A name absent from a *contract* document has no upstream reporter at all:
-/// `validate_dependency_specs` stops at the declaration check for
-/// `depends_on.contracts` link_ids, and no layer below this one can open a
-/// contract document. So it errors here, or nowhere.
-fn resolve_consumed_offering<T>(
-    dep_lookup: &HashMap<String, DependencyLookupEntry>,
-    node_dep_offerings: &HashMap<(String, String), DependencyOfferings>,
-    contract_dep_docs: &HashMap<String, daemon_config::contract::PeppyContract>,
-    section: &str,
-    link_id: &str,
-    lookup_name: &str,
-    extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
-    extract_from_contract: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
-) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
-    let Some(entry) = dep_lookup.get(link_id) else {
-        return Ok(None);
-    };
-    match entry.kind {
-        DependencyKind::Node => {
-            let Some(offerings) = node_dep_offerings.get(&(entry.name.clone(), entry.tag.clone()))
-            else {
-                return Ok(None);
-            };
-            let Some(extracted) = extract_from_node(offerings, lookup_name) else {
-                return Ok(None);
-            };
-            Ok(Some((
-                extracted,
-                generator::DependencyContext::native(
-                    &entry.name,
-                    &entry.tag,
-                    link_id,
-                    entry.cardinality,
-                ),
-            )))
-        }
-        DependencyKind::Contract => {
-            let parsed = contract_dep_docs.get(link_id).ok_or_else(|| {
-                format!(
-                    "`{section}` entry `{lookup_name}` references link_id `{link_id}`, \
-                     whose contract `{}:{}` failed to resolve",
-                    entry.name, entry.tag
-                )
-            })?;
-            let extracted = extract_from_contract(parsed, lookup_name).ok_or_else(|| {
-                format!(
-                    "`{section}` entry `{lookup_name}` (link_id `{link_id}`) names no member \
-                     of contract `{}:{}`",
-                    entry.name, entry.tag
-                )
-            })?;
-            Ok(Some((
-                extracted,
-                generator::DependencyContext::contract(
-                    &entry.name,
-                    &entry.tag,
-                    link_id,
-                    entry.cardinality,
-                ),
-            )))
+impl ResolvedDependencies {
+    /// Resolves a single consumed interface to its message-format payload plus
+    /// the `DependencyContext` the generator needs to address it. Node
+    /// dependencies resolve against the producer's native offerings only
+    /// (node-addressed); contract dependencies resolve against the contract
+    /// document (contract-addressed).
+    ///
+    /// `Ok(None)` means the entry is not this collector's to report: an
+    /// undeclared link_id, an unresolved node dependency, and a name the
+    /// producer does not natively offer are all reported by
+    /// `validate_dependency_specs` upstream, which sees node dependencies and
+    /// would otherwise report each twice.
+    ///
+    /// A name absent from a *contract* document has no upstream reporter at
+    /// all: `validate_dependency_specs` stops at the declaration check for
+    /// `depends_on.contracts` link_ids, and no layer below this one can open a
+    /// contract document. So it errors here, or nowhere.
+    fn resolve_consumed_offering<T>(
+        &self,
+        section: &str,
+        link_id: &str,
+        lookup_name: &str,
+        extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
+        extract_from_contract: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
+    ) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
+        let Some(entry) = self.lookup.get(link_id) else {
+            return Ok(None);
+        };
+        match entry.kind {
+            DependencyKind::Node => {
+                let Some(offerings) = self
+                    .node_offerings
+                    .get(&(entry.name.clone(), entry.tag.clone()))
+                else {
+                    return Ok(None);
+                };
+                let Some(extracted) = extract_from_node(offerings, lookup_name) else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    extracted,
+                    generator::DependencyContext::native(
+                        &entry.name,
+                        &entry.tag,
+                        link_id,
+                        entry.cardinality,
+                    ),
+                )))
+            }
+            DependencyKind::Contract => {
+                let parsed = self.contract_docs.get(link_id).ok_or_else(|| {
+                    format!(
+                        "`{section}` entry `{lookup_name}` references link_id `{link_id}`, \
+                         whose contract `{}:{}` failed to resolve",
+                        entry.name, entry.tag
+                    )
+                })?;
+                let extracted = extract_from_contract(parsed, lookup_name).ok_or_else(|| {
+                    format!(
+                        "`{section}` entry `{lookup_name}` (link_id `{link_id}`) names no member \
+                         of contract `{}:{}`",
+                        entry.name, entry.tag
+                    )
+                })?;
+                Ok(Some((
+                    extracted,
+                    generator::DependencyContext::contract(
+                        &entry.name,
+                        &entry.tag,
+                        link_id,
+                        entry.cardinality,
+                    ),
+                )))
+            }
         }
     }
 }
