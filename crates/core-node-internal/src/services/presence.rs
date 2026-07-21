@@ -322,7 +322,7 @@ mod tests {
         )
         .expect("build a router-topology daemon session")
         .with_session_reconnect()
-        .with_namespace(Some(config::org::OrgNamespace::local()));
+        .with_namespace(Some(config::namespace::Namespace::local()));
         let mut client = Messenger::new(MessengerAdapter::Zenoh(adapter));
         client
             .start_session()

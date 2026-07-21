@@ -189,7 +189,7 @@ Both values must be greater than `0`; the daemon rejects a zero buffer size at s
 
 ## `zenoh.managed.federation`: cloud-router timeout
 
-When you are logged in under `zenoh.managed`, the daemon links ("federates") its local messaging router to your organization's private cloud router so that robots signed in to the same organization interoperate across the federation (see [Platform](/advanced_guides/platform/#organization-federation)). Resolving that cloud router involves a backend round-trip, and this block bounds it.
+When you are logged in under `zenoh.managed`, the daemon links ("federates") its local messaging router to your workspace's private cloud router so that sessions using the same workspace namespace can interoperate across the federation (see [Platform](/advanced_guides/platform/#workspace-federation)). The namespace is routing context only, not proof of membership, a tenant-isolation boundary, or an authorization policy. Resolving that cloud router involves a backend round-trip, and this block bounds it.
 
 - **`connect_timeout_secs`** (default `30`, minimum `1`): how long the daemon spends resolving the cloud router (once at startup, and again each time `peppy platform login` / `logout` pokes the daemon) before giving up for that attempt. If the backend is unreachable within the window, the daemon leaves its router **standalone** and retries federation in the background rather than blocking startup. A logged-out daemon never federates, so this timeout does not apply to it.
 
@@ -245,7 +245,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
-| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your organization's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
+| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your workspace's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
 | `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 
 Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.

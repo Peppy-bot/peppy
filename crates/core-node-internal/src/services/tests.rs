@@ -127,7 +127,7 @@ fn test_core_node_config(
         root_dir: std::env::temp_dir(),
         peppy_dirs,
         peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
-        organization_namespace: "local".to_string(),
+        namespace: config::namespace::Namespace::local(),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
     }
 }

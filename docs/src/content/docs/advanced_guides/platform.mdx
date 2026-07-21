@@ -14,12 +14,12 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 
 | Command | What it does |
 |---------|--------------|
-| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your organization's cloud router. |
+| `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your workspace's cloud router. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
 | `peppy platform logout [--yes]` | Revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
-[Organization federation](#organization-federation).
+[Workspace federation](#workspace-federation).
 
 ## Logging in
 
@@ -51,16 +51,18 @@ peppy platform login --no-browser
 4. It caches the tokens (and the `issuer`/`client_id`, so refresh works offline)
    under `~/.peppy/conf/credentials.json5`.
 
-## Organization federation
+## Workspace federation
 
 Logging in does more than cache a token: it stamps this machine with your
-**organization namespace** (your account's stable organization id). Under
-`zenoh.managed`, it also federates the peppy daemon's local messaging router to
-your organization's private cloud router. Robots signed in to the same
-organization then interoperate across that federation, while different
-organizations stay routing-isolated. Logged out, the machine falls back to the
-`local` namespace, which never reaches the cloud router; two logged-out machines
-on the same LAN still discover each other, but nothing leaves the local network.
+**workspace namespace**, using the stable `workspace_id` returned by the backend.
+The namespace is messaging routing context only. It is not proof of workspace
+membership, a tenant-isolation boundary, or an authorization policy, and it does
+not enforce ACLs. Under `zenoh.managed`, the daemon also federates its local
+messaging router to the workspace cloud router. Sessions using the same workspace
+namespace can interoperate across that federation, while different namespaces
+take separate routing paths. Logged out, the machine falls back to the `local`
+namespace, which never reaches the cloud router; two logged-out machines on the
+same LAN still discover each other, but nothing leaves the local network.
 
 A session's namespace is fixed once the daemon opens it. Under `zenoh.managed`,
 changing that namespace by logging in or out **restarts the messaging daemon and
@@ -68,7 +70,7 @@ wipes the running node stack**. When a managed daemon is running with user nodes
 `login` and `logout` confirm first:
 
 ```
-Logging in changes this machine's organization namespace, which restarts the messaging daemon and wipes the running node stack.
+Logging in changes this machine's workspace namespace, which restarts the messaging daemon and wipes the running node stack.
 Continue? [y/N]
 ```
 
@@ -131,7 +133,7 @@ token you presented; a session on another device keeps working.
 Logout also returns this machine to the `local` namespace. Under `zenoh.managed`,
 it de-federates the router, restarts the daemon, and wipes the running node stack,
 with the same confirmation prompt and `--yes` bypass (see
-[Organization federation](#organization-federation)). Under `zenoh.external`,
+[Workspace federation](#workspace-federation)). Under `zenoh.external`,
 the operator's federation is left untouched and the namespace changes on the
 next manual daemon restart.
 

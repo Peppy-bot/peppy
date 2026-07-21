@@ -193,12 +193,12 @@ pub async fn start_core_node_with_real_messenger_in_topology(
         None,
         topology.gossip(),
         pmi::SubscriberBufferSizes::default(),
-        // The core node stamps the `local` org namespace onto every node it
-        // spawns (see `organization_namespace` below); its own session must open
+        // The core node stamps the `local` workspace namespace onto every node it
+        // spawns (see `namespace` below); its own session must open
         // under the same namespace or it cannot reach a spawned node's
         // node_ready/health services. Mirrors the daemon's
         // `with_router(...).with_namespace(...)` pairing in production.
-        Some(config::org::OrgNamespace::local()),
+        Some(config::namespace::Namespace::local()),
     )
     .await
     .expect("failed to start zenoh router for test");
@@ -301,7 +301,7 @@ async fn start_core_node_with_messenger(
         root_dir,
         peppy_dirs: peppy_dirs.clone(),
         peppy_config,
-        organization_namespace: "local".to_string(),
+        namespace: config::namespace::Namespace::local(),
         shutdown_token: shutdown_token.clone(),
     });
     let core_node_name = core_node.node_name().to_string();

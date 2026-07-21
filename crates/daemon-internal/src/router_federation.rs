@@ -130,7 +130,7 @@ pub(crate) enum FederationOutcome {
     /// federation with platform-backend is NOT actually in effect (e.g. an
     /// UnknownCA handshake loop). Only a verifying poke produces this.
     Unreachable(String),
-    /// The credentials changed the daemon's *organization namespace*. A session's
+    /// The credentials changed the daemon's *workspace namespace*. A session's
     /// namespace is immutable after open and the core node holds long-lived
     /// declarations, so the change cannot be applied to the live session by a
     /// zenohd bounce; it needs a full daemon-generation restart. This poll does
@@ -141,25 +141,17 @@ pub(crate) enum FederationOutcome {
     Restart,
 }
 
-/// Resolves the daemon's *current* organization namespace from the credentials
+/// Resolves the daemon's current workspace namespace from the credentials
 /// (after a federation pull has warmed the cache), so the federation loop can
 /// compare it to the generation's startup namespace. A boxed closure so tests can
 /// inject a deterministic value in place of the real credentials read.
-type NamespaceResolver = Arc<dyn Fn() -> String + Send + Sync>;
+type NamespaceResolver = Arc<dyn Fn() -> auth::Result<config::namespace::Namespace> + Send + Sync>;
 
-/// The real namespace resolver: read the cached organization id from the
-/// generation's credentials file and resolve it to a namespace (absent ->
-/// `local`), matching exactly how the daemon generation resolved its own
-/// namespace at startup (the same [`auth::storage::credentials_path`] derived
-/// from the same `PeppyDirs`).
+/// The real namespace resolver reads the generation's credentials file with the
+/// same fallible policy as startup. Legitimate absence resolves to `local`, while
+/// malformed or unreadable credentials propagate instead of synthesizing it.
 fn real_namespace_resolver(creds_path: PathBuf) -> NamespaceResolver {
-    Arc::new(move || {
-        config::org::resolve_session_namespace(
-            auth::router::cached_organization_id(&creds_path).as_deref(),
-        )
-        .as_str()
-        .to_string()
-    })
+    Arc::new(move || auth::router::session_namespace(&creds_path))
 }
 
 /// A "refederate now" request from the control socket: run a poll immediately and
@@ -188,10 +180,10 @@ pub(crate) struct RouterFederation {
     /// Bound on the initial federation (the startup gate) and on each resolve, so
     /// a slow/unreachable backend can't stall startup or a poll past it.
     connect_timeout: Duration,
-    /// This generation's organization namespace, resolved once at startup. A poll
+    /// This generation's workspace namespace, resolved once at startup. A poll
     /// that re-resolves a *different* namespace from fresh creds requests a
     /// restart instead of a live re-federation.
-    startup_namespace: String,
+    startup_namespace: config::namespace::Namespace,
     /// Resolves the current namespace from the credentials (post-pull), compared
     /// against `startup_namespace` to detect a namespace change.
     namespace_resolver: NamespaceResolver,
@@ -224,7 +216,7 @@ impl RouterFederation {
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
         connect_timeout: Duration,
-        startup_namespace: String,
+        startup_namespace: config::namespace::Namespace,
         restart_tx: watch::Sender<bool>,
         presence_gate_tx: Option<watch::Sender<bool>>,
         teardown_token: CancellationToken,
@@ -345,7 +337,7 @@ async fn manage_federation(
     mut trigger_rx: TriggerReceiver,
     ready_tx: oneshot::Sender<()>,
     connect_timeout: Duration,
-    startup_namespace: String,
+    startup_namespace: config::namespace::Namespace,
     namespace_resolver: NamespaceResolver,
     restart_tx: watch::Sender<bool>,
     presence_gate_tx: Option<watch::Sender<bool>>,
@@ -407,10 +399,10 @@ async fn manage_federation(
     fire_gate(&mut ready_tx, &presence_gate_tx);
 
     // The initial poll re-pulled the federation config, so the credentials now
-    // reflect the current org. If that resolves to a *different* namespace than
+    // reflect the current workspace. If that resolves to a *different* namespace than
     // this generation started under (e.g. the daemon started logged-in but with a
     // cleared/stale router cache, so `startup_namespace` was `local` before the
-    // pull discovered the real org), the live session can't be re-namespaced.
+    // pull discovered the real workspace), the live session can't be re-namespaced.
     // Request a generation restart now; otherwise the daemon would run
     // un-federated under the wrong namespace until the next login/logout poke. The
     // steady-state poke path leaves the actual restart to the control handler
@@ -472,7 +464,7 @@ async fn poll_and_apply(
     connect_timeout: Duration,
     applied: &mut AppliedState,
     verify: bool,
-    startup_namespace: &str,
+    startup_namespace: &config::namespace::Namespace,
     namespace_resolver: &NamespaceResolver,
 ) -> FederationOutcome {
     // The resolver is blocking (HTTP + file I/O); keep it off the async worker. It
@@ -500,12 +492,12 @@ async fn poll_and_apply(
     };
 
     // Namespace-change gate. The resolve above re-pulled (and re-cached) the
-    // federation config, so the credentials now reflect the current org id. A
+    // federation config, so the credentials now reflect the current workspace id. A
     // session's namespace is immutable after open, so if the re-resolved namespace
     // differs from this generation's startup namespace the change cannot be applied
     // by a live zenodh bounce: request a full restart instead, WITHOUT federating
-    // (federating under a namespace that differs from the live session's would leak
-    // across tenants). The control handler flushes the ack before triggering the
+    // (federating under a namespace that differs from the live session's would use
+    // the wrong workspace routing context). The control handler flushes the ack before triggering the
     // restart; the initial (non-poke) poll discards this outcome but, crucially,
     // also does not federate, so it stays fail-closed until the next generation.
     // Like the resolve above, the namespace re-resolve is blocking (a file-backed
@@ -513,17 +505,21 @@ async fn poll_and_apply(
     // local read, not a network pull.
     let namespace_resolver = namespace_resolver.clone();
     let current_namespace = match tokio::task::spawn_blocking(move || namespace_resolver()).await {
-        Ok(ns) => ns,
+        Ok(Ok(namespace)) => namespace,
+        Ok(Err(error)) => {
+            warn!(error = %error, "router federation: namespace resolve failed; will retry");
+            return FederationOutcome::Failed(format!("namespace resolve failed: {error}"));
+        }
         Err(e) => {
             warn!(error = %e, "router federation: namespace resolve task panicked; will retry");
             return FederationOutcome::Failed(format!("namespace resolve task panicked: {e}"));
         }
     };
-    if current_namespace != startup_namespace {
+    if &current_namespace != startup_namespace {
         info!(
             from = %startup_namespace,
             to = %current_namespace,
-            "router federation: organization namespace changed; requesting a daemon restart \
+            "router federation: workspace namespace changed; requesting a daemon restart \
              (a namespace change cannot be applied to a live session)"
         );
         return FederationOutcome::Restart;
@@ -760,7 +756,7 @@ mod tests {
     /// startup namespace these tests pass, so no namespace change is detected and
     /// the existing federation behavior (Applied/Pinned/...) is exercised.
     fn local_ns_resolver() -> NamespaceResolver {
-        Arc::new(|| "local".to_string())
+        Arc::new(|| Ok(config::namespace::Namespace::local()))
     }
 
     /// A namespace resolver returning a fixed value and counting its calls, for a
@@ -768,10 +764,10 @@ mod tests {
     fn counting_ns_resolver(value: &str) -> (NamespaceResolver, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
-        let value = value.to_string();
+        let value = config::namespace::Namespace::parse(value).unwrap();
         let resolver: NamespaceResolver = Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            value.clone()
+            Ok(value.clone())
         });
         (resolver, calls)
     }
@@ -782,13 +778,13 @@ mod tests {
     /// `Restart` ack distinctly from the startup restart path.
     fn switching_ns_resolver(first: &str, rest: &str) -> NamespaceResolver {
         let calls = AtomicUsize::new(0);
-        let first = first.to_string();
-        let rest = rest.to_string();
+        let first = config::namespace::Namespace::parse(first).unwrap();
+        let rest = config::namespace::Namespace::parse(rest).unwrap();
         Arc::new(move || {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                first.clone()
+                Ok(first.clone())
             } else {
-                rest.clone()
+                Ok(rest.clone())
             }
         })
     }
@@ -811,7 +807,7 @@ mod tests {
             Duration::from_millis(50),
             &mut applied,
             true,
-            "local",
+            &config::namespace::Namespace::local(),
             &local_ns_resolver(),
         )
         .await;
@@ -853,7 +849,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             None,
@@ -928,7 +924,7 @@ mod tests {
             ready_tx,
             // A deliberately large connect_timeout: the probe must NOT inherit it.
             Duration::from_secs(45),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             None,
@@ -978,7 +974,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             None,
@@ -1035,7 +1031,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             None,
@@ -1099,7 +1095,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_millis(100),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             Some(presence_gate_tx),
@@ -1142,7 +1138,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             Some(presence_gate_tx),
@@ -1188,7 +1184,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             local_ns_resolver(),
             watch::channel(false).0,
             None,
@@ -1219,7 +1215,7 @@ mod tests {
         let (resolver, _calls) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
         // Startup resolves `local` (matches the startup namespace ⇒ no startup
-        // restart); the poke resolves the changed org id ⇒ a steady-state Restart.
+        // restart); the poke resolves the changed workspace id, producing a steady-state Restart.
         let ns_resolver = switching_ns_resolver("local", "550e8400-e29b-41d4-a716-446655440000");
         let (messaging_tx, messaging_rx) = watch::channel(true);
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
@@ -1235,7 +1231,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             ns_resolver,
             restart_tx,
             None,
@@ -1285,7 +1281,7 @@ mod tests {
     async fn startup_poll_requests_restart_on_namespace_drift() {
         let (resolver, _calls) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
-        // Every resolve returns an org id that differs from the `local` startup
+        // Every resolve returns a workspace id that differs from the `local` startup
         // namespace, so the very first (startup) poll detects the drift.
         let (ns_resolver, ns_calls) = counting_ns_resolver("550e8400-e29b-41d4-a716-446655440000");
         let (messaging_tx, messaging_rx) = watch::channel(true);
@@ -1301,7 +1297,7 @@ mod tests {
             trigger_rx,
             ready_tx,
             Duration::from_secs(5),
-            "local".to_string(),
+            config::namespace::Namespace::local(),
             ns_resolver,
             restart_tx,
             None,

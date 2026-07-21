@@ -93,13 +93,10 @@ impl AppContext {
         &self,
         messaging_host: &str,
         messaging_port: u16,
-        organization_namespace: &str,
+        namespace: config::namespace::Namespace,
     ) -> crate::error::Result<()> {
-        // Open the control session under the daemon's namespace so the CLI reaches
-        // the daemon/node services that run under it. The daemon recorded the
-        // namespace in `DaemonState` before binding the control socket, so it is a
-        // valid value; resolve defensively (a bad value falls back to `local`).
-        let namespace = config::org::resolve_session_namespace(Some(organization_namespace));
+        // Open the control session under the typed namespace recorded by the
+        // daemon generation so the CLI reaches its daemon and node services.
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::connect(messaging_host, messaging_port)
@@ -136,12 +133,12 @@ pub(crate) struct DaemonConnection<'a> {
     /// node, from its `peppy_config`. Lets `node stop` size its request timeout
     /// to outlast the daemon's grace + reap window.
     pub shutdown_grace_secs: u64,
-    /// The organization namespace recorded by the generation this connection was
+    /// The workspace namespace recorded by the generation this connection was
     /// established against, captured from the *same* `DaemonState` read the
     /// connection used. Callers reuse this instead of reading the state again,
     /// which could race a restart and pair this connection's data with a different
     /// generation's namespace.
-    pub organization_namespace: String,
+    pub namespace: config::namespace::Namespace,
 }
 
 impl AppContext {
@@ -150,7 +147,7 @@ impl AppContext {
         self.connect_with_endpoint(
             &daemon_state.messaging_host,
             daemon_state.messaging_port,
-            &daemon_state.organization_namespace,
+            daemon_state.namespace.clone(),
         )
         .await?;
         let messenger = self
@@ -168,7 +165,7 @@ impl AppContext {
             target_is_override,
             git_hash: daemon_state.git_hash,
             shutdown_grace_secs: daemon_state.shutdown_grace_secs,
-            organization_namespace: daemon_state.organization_namespace,
+            namespace: daemon_state.namespace,
         })
     }
 }
@@ -200,7 +197,7 @@ mod tests {
             0,
             "test-git-hash",
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
-            "local",
+            config::namespace::Namespace::local(),
             None,
         );
         DaemonState::write_to(&state_path, &state).expect("daemon state should write");

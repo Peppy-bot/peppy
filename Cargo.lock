@@ -573,7 +573,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "sha2",
 ]
@@ -774,7 +774,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "askama",
  "git2",
@@ -918,7 +918,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -2577,7 +2577,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "serde",
  "serde_json",
@@ -2585,9 +2585,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.47.0"
+version = "0.48.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "281c43ff06dcb331e9356d30e38853d559ce3d0a3f693e0b0e102667dec14fb1"
+checksum = "39d785c0683d1027839f1ac6a43b6d07c63d58ecd363d8146dda4531d53465a1"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2608,15 +2608,16 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "strum",
  "unicode-general-category",
  "uuid-simd",
 ]
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.47.0"
+version = "0.48.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee0b351864e7ffbc5db9273daf7fa1b4d5177b0946713d667ca571b83c0b4045"
+checksum = "917b3be16b2662538aafb55201790561e1f1ad1a0454baf42f33bd9de343778b"
 dependencies = [
  "regex-syntax",
 ]
@@ -2669,9 +2670,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.187"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "a7743783ea728ef5c31194c6590797eed286449b4a4e87d626d8a51f0a94e732"
 
 [[package]]
 name = "libgit2-sys"
@@ -3350,7 +3351,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "capnp",
  "clap",
@@ -3373,7 +3374,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3568,7 +3569,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#a9d0514fdc99448ff48d277b84f9788d8e8c6993"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#e19618a8de805b26045ec592dbf26c18e005690f"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3961,9 +3962,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.47.0"
+version = "0.48.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "348e860aeb0b7bd035778fd11dd9cd5290d32e4aed3b8f2274a00287a9fd362b"
+checksum = "2d2b21a85c07fcf1cb95ff7ab8a687fcd37fa70db59975b5a032abdaadfdf42e"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -4903,6 +4904,27 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "152a0b65a590ff6c3da95cabe2353ee04e6167c896b28e3b14478c2636c922fc"
 dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
+dependencies = [
+ "heck",
  "proc-macro2",
  "quote",
  "syn 2.0.119",

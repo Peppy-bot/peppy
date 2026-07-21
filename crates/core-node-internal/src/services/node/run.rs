@@ -103,27 +103,30 @@ pub struct DaemonDefaults {
     /// node so its runtime bounds registered shutdown hooks by the same window
     /// the daemon waits before force-killing a stopping node.
     pub shutdown_grace_secs: u64,
-    /// The daemon's organization namespace (`"local"` when logged out, else the
-    /// org id), stamped onto every spawned node's `discovery.organization_id` so
+    /// The daemon's workspace namespace (`local` when logged out, else the
+    /// workspace id), stamped onto every spawned node's `discovery.namespace` so
     /// the node opens its session under exactly the daemon's namespace and stays
     /// routing-isolated across the federation. Resolved per daemon generation
     /// from the cached credentials, not from `peppy_config`, so it is threaded in
     /// rather than derived in `from_peppy_config`.
-    pub organization_namespace: String,
+    pub namespace: config::namespace::Namespace,
 }
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
     /// (the single place that knows which of its fields are shipped to
-    /// spawned nodes) plus the daemon's resolved `organization_namespace`
+    /// spawned nodes) plus the daemon's resolved `namespace`
     /// (which comes from the credentials, not `peppy_config`).
-    pub fn from_peppy_config(config: &PeppyConfig, organization_namespace: String) -> Self {
+    pub fn from_peppy_config(
+        config: &PeppyConfig,
+        namespace: config::namespace::Namespace,
+    ) -> Self {
         Self {
             gossip: config.zenoh.gossip(),
             subscriber_buffers: config.zenoh.subscriber_buffers(),
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
-            organization_namespace,
+            namespace,
         }
     }
 }
@@ -179,10 +182,9 @@ fn apply_daemon_defaults(
         defaults.subscriber_buffers.high_throughput_buffer_size;
     cfg.lifecycle.daemon_grace_secs = defaults.daemon_grace_secs;
     cfg.lifecycle.shutdown_grace_secs = defaults.shutdown_grace_secs;
-    // Stamp the daemon's organization namespace so the spawned node opens its
-    // session under it (`peppylib` resolves `discovery.organization_id` through
-    // `resolve_session_namespace`). Always set: `"local"` when logged out.
-    cfg.discovery.organization_id = Some(defaults.organization_namespace.clone());
+    // Stamp the daemon's validated workspace namespace so the spawned node opens
+    // under it. Always set: `local` when logged out.
+    cfg.discovery.namespace = Some(defaults.namespace.clone());
 }
 
 struct ProcessNodeRunContext {
@@ -1847,7 +1849,7 @@ mod tests {
             subscriber_buffers,
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
-            organization_namespace: "local".to_string(),
+            namespace: config::namespace::Namespace::local(),
         }
     }
 
@@ -1894,7 +1896,7 @@ mod tests {
         );
     }
 
-    /// Subscriber buffer sizes, both grace periods, and the organization
+    /// Subscriber buffer sizes, both grace periods, and the workspace
     /// namespace are applied regardless of topology or container placement.
     #[test]
     fn apply_daemon_defaults_always_applies_subscriber_buffers_and_grace() {
@@ -1915,7 +1917,13 @@ mod tests {
             assert_eq!(cfg.lifecycle.shutdown_grace_secs, 17);
             // The node is stamped with the daemon's namespace, so it opens its
             // session under the same routing-isolation prefix as the daemon.
-            assert_eq!(cfg.discovery.organization_id.as_deref(), Some("local"));
+            assert_eq!(
+                cfg.discovery
+                    .namespace
+                    .as_ref()
+                    .map(|namespace| namespace.as_str()),
+                Some("local")
+            );
         }
     }
 
@@ -1930,7 +1938,8 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let defaults = DaemonDefaults::from_peppy_config(&config, "local".to_string());
+        let defaults =
+            DaemonDefaults::from_peppy_config(&config, config::namespace::Namespace::local());
 
         assert!(!defaults.gossip);
         assert_eq!(
@@ -1939,15 +1948,19 @@ mod tests {
         );
     }
 
-    /// A logged-in daemon stamps the org id (not `local`) onto every node.
+    /// A logged-in daemon stamps the workspace namespace onto every node.
     #[test]
-    fn apply_daemon_defaults_stamps_the_org_namespace() {
+    fn apply_daemon_defaults_stamps_the_workspace_namespace() {
         let mut defaults = daemon_defaults(true, SubscriberBufferConfig::default());
-        defaults.organization_namespace = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        defaults.namespace =
+            config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(&mut cfg, defaults, false);
         assert_eq!(
-            cfg.discovery.organization_id.as_deref(),
+            cfg.discovery
+                .namespace
+                .as_ref()
+                .map(|namespace| namespace.as_str()),
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
     }

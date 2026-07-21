@@ -69,7 +69,7 @@ pub enum ControlResponse {
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
     /// within the federation timeout).
     Error { message: String },
-    /// The credentials changed the daemon's *organization namespace*, which is
+    /// The credentials changed the daemon's *workspace namespace*, which is
     /// immutable for a live session, so the daemon is restarting its whole
     /// generation to re-open every session under the new namespace. The daemon
     /// flushes this ack and only then tears down; the CLI polls the (path-stable)
@@ -103,7 +103,7 @@ pub enum PokeOutcome {
     DaemonNotRunning,
     /// Connected, but the daemon did not ack within the read deadline.
     TimedOut,
-    /// The credentials changed the daemon's organization namespace, so the daemon
+    /// The credentials changed the daemon's workspace namespace, so the daemon
     /// acked and is restarting its whole generation. The caller then polls until
     /// the daemon is back under the expected namespace.
     Restarting,

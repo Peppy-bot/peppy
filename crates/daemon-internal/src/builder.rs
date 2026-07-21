@@ -61,14 +61,14 @@ pub struct ServeCommandBuilder {
     /// moved into the core node, and shared by [`RouterFederation`] and
     /// [`FederationControl`].
     federation_connect_timeout: Duration,
-    /// The organization namespace resolved once for this daemon generation
-    /// (`"local"` when logged out, else the org id). Resolved in
+    /// The workspace namespace resolved once for this daemon generation
+    /// (`local` when logged out, else the workspace id). Resolved in
     /// [`with_messaging_router`](Self::with_messaging_router) from the cached
     /// credentials and applied to the daemon's own session there; also threaded
     /// into [`DaemonState`], the core node (and thus every spawned node), and the
     /// [`RouterFederation`] task (which compares against it to decide restart vs
     /// live re-federate). A single source for the whole generation.
-    organization_namespace: String,
+    namespace: config::namespace::Namespace,
     /// The shared coordinator token for this generation: cloned into every serve
     /// task (so a restart/stop unparks them for graceful teardown) and handed to
     /// [`Serve`] (which cancels it on its way out). Created per generation.
@@ -100,7 +100,7 @@ impl ServeCommandBuilder {
             ),
             // Default for the mock/other engines that never resolve a namespace;
             // the zenoh path overwrites this in `with_messaging_router`.
-            organization_namespace: config::org::LOCAL_NAMESPACE.to_string(),
+            namespace: config::namespace::Namespace::local(),
             teardown_token: CancellationToken::new(),
         })
     }
@@ -161,20 +161,22 @@ impl ServeCommandBuilder {
                         Duration::from_secs(federation.connect_timeout_secs);
                 }
 
-                // Resolve this generation's organization namespace once, from the
-                // credentials cached under this run's data root: `"local"` when
-                // logged out, else the org id. It is the single source threaded
+                // Resolve this generation's workspace namespace once, from the
+                // credentials cached under this run's data root: `local` when
+                // logged out, else the workspace id. It is the single source threaded
                 // into the daemon's own session (here), `DaemonState`, every
                 // spawned node, and the federation task. The router itself is
                 // never namespaced (it only forwards), so the namespace rides
                 // only on application sessions.
-                let namespace = config::org::resolve_session_namespace(
-                    auth::router::cached_organization_id(&auth::storage::credentials_path(
-                        &self.peppy_dirs,
+                let namespace = auth::router::session_namespace(&auth::storage::credentials_path(
+                    &self.peppy_dirs,
+                ))
+                .map_err(|error| {
+                    Error::ExecutionFailed(format!(
+                        "failed to resolve the workspace namespace from credentials: {error}"
                     ))
-                    .as_deref(),
-                );
-                self.organization_namespace = namespace.as_str().to_string();
+                })?;
+                self.namespace = namespace.clone();
 
                 let gossip = self.peppy_config.zenoh.gossip();
                 let adapter = match self.peppy_config.zenoh.external_endpoint() {
@@ -307,14 +309,14 @@ impl ServeCommandBuilder {
                     federation_settled_rx,
                     self.clock_source,
                     self.peppy_config,
-                    self.organization_namespace.clone(),
+                    self.namespace.clone(),
                     name_claim_settle,
                     self.teardown_token.clone(),
                     core_node_done_tx,
                 );
 
                 // Write the daemon state file with the core node name. The
-                // organization namespace is recorded here, before the control
+                // workspace namespace is recorded here, before the control
                 // socket binds (below), so a CLI control session that reads it
                 // never sees a half-set generation.
                 let core_node_name = core_node.node_name().to_string();
@@ -325,7 +327,7 @@ impl ServeCommandBuilder {
                         &core_node_name,
                         &self.git_hash,
                         shutdown_grace_secs,
-                        &self.organization_namespace,
+                        self.namespace.clone(),
                         // `Some` exactly when this generation arms managed-router
                         // federation below (a control socket will exist), so the
                         // auth commands can follow the running daemon's mode.
@@ -403,7 +405,7 @@ impl ServeCommandBuilder {
                         // This generation's namespace: the federation loop compares
                         // the namespace it re-resolves from fresh creds against this
                         // to decide live re-federate (unchanged) vs restart (changed).
-                        self.organization_namespace.clone(),
+                        self.namespace.clone(),
                         // The startup poll raises this if it resolves a namespace
                         // that differs from this generation's (the steady-state
                         // poke path leaves the restart to the control handler).
@@ -451,7 +453,7 @@ fn daemon_state_for_messenger(
     core_node_name: &str,
     git_hash: &str,
     shutdown_grace_secs: u64,
-    organization_namespace: &str,
+    namespace: config::namespace::Namespace,
     federation_connect_timeout_secs: Option<u64>,
 ) -> DaemonState {
     let (messaging_host, messaging_port) = messenger
@@ -469,7 +471,7 @@ fn daemon_state_for_messenger(
         messaging_port,
         git_hash,
         shutdown_grace_secs,
-        organization_namespace,
+        namespace,
         federation_connect_timeout_secs,
     )
 }
@@ -628,7 +630,7 @@ mod tests {
             "regression-core",
             "regression-git-hash",
             42,
-            config::org::LOCAL_NAMESPACE,
+            config::namespace::Namespace::local(),
             builder
                 .federation_api_url
                 .as_ref()
