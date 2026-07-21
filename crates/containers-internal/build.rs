@@ -29,6 +29,51 @@ mod apptainer_build {
     const GO_LINUX_ARM64_SHA256: &str =
         "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129";
 
+    /// Bumped whenever the apptainer build recipe (not its version) changes in
+    /// a way that alters the produced tree — new link flags, newly bundled
+    /// libraries, a different install layout. It is part of the cache sentinel
+    /// filename, so a bump invalidates every previously built cache instead of
+    /// silently shipping a tree built by the old recipe.
+    const APPTAINER_RECIPE_REVISION: u32 = 1;
+
+    /// Directory, relative to the apptainer install prefix, holding the shared
+    /// libraries bundled with the binaries (see [`APPTAINER_CGO_LDFLAGS`]).
+    const APPTAINER_BUNDLED_LIB_DIR: &str = "lib";
+    /// SONAME of the libseccomp bundled next to the apptainer binaries.
+    const LIBSECCOMP_SONAME: &str = "libseccomp.so.2";
+
+    /// Linker flags for the two cgo binaries that link libseccomp (`bin/apptainer`
+    /// and `libexec/apptainer/bin/starter`).
+    ///
+    /// Both are dynamically linked against `libseccomp.so.2`, so without this
+    /// they resolve it from whatever the *runtime* host provides — and a binary
+    /// built against libseccomp 2.6 dies on a 2.5 host with
+    /// `undefined symbol: seccomp_transaction_reject`. That is exactly the skew
+    /// between a modern build host and the Ubuntu 24.04 guests peppy installs
+    /// into. We therefore copy the build host's libseccomp into
+    /// `<prefix>/lib` ([`bundle_libseccomp`]) and give both binaries
+    /// `$ORIGIN`-relative rpaths pointing there: one hop up for
+    /// `bin/apptainer`, three for `libexec/apptainer/bin/starter`. The bundle
+    /// keeps its layout through release packaging and `install.sh`, so the
+    /// rpaths stay valid on the installed tree.
+    ///
+    /// `--disable-new-dtags` is load-bearing, not tidiness: it emits the old
+    /// `DT_RPATH` instead of `DT_RUNPATH`. Extracting a SIF re-executes
+    /// `bin/apptainer` with an `LD_LIBRARY_PATH` apptainer builds from
+    /// `unsquashfs`'s own library directories (`unsquashfsRootlessCmd` in
+    /// `internal/pkg/image/unpacker/squashfs_apptainer.go`) — and
+    /// `LD_LIBRARY_PATH` is searched *before* `DT_RUNPATH`, so a RUNPATH bundle
+    /// loses to the runtime host's `/usr/lib/.../libseccomp.so.2` on exactly
+    /// the code path that needs it. `DT_RPATH` is searched first and wins.
+    ///
+    /// `$$ORIGIN` (not `$ORIGIN`) is deliberate: `mconfig` writes this value
+    /// verbatim into the generated makefile, where make would expand a lone
+    /// `$O` and leave a truncated `RIGIN/../lib`. `$$` survives make's
+    /// expansion as a literal `$`, and the value reaches `go build` through the
+    /// environment, so no shell re-expands it.
+    const APPTAINER_CGO_LDFLAGS: &str = "-Wl,--disable-new-dtags \
+         -Wl,-rpath,$$ORIGIN/../lib -Wl,-rpath,$$ORIGIN/../../../lib";
+
     /// Pinned gocryptfs version. Apptainer auto-discovers gocryptfs in
     /// `${prefix}/libexec/apptainer/bin/` (ahead of `$PATH`) and uses it for
     /// encrypted overlay/image support. Shipping it alongside apptainer means
@@ -81,13 +126,22 @@ mod apptainer_build {
     // -----------------------------------------------------------------------
 
     fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
-        cache_dir.join(format!(".peppy-version-{}", version))
+        cache_dir.join(format!(
+            ".peppy-version-{}-r{}",
+            version, APPTAINER_RECIPE_REVISION
+        ))
     }
 
     fn write_cache_sentinel(cache_dir: &Path, version: &str) {
         let sentinel = apptainer_cache_sentinel_path(cache_dir, version);
-        std::fs::write(&sentinel, format!("version={}\n", version))
-            .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
+        std::fs::write(
+            &sentinel,
+            format!(
+                "version={}\nrecipe={}\n",
+                version, APPTAINER_RECIPE_REVISION
+            ),
+        )
+        .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
     }
 
     fn apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
@@ -617,6 +671,69 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
+    // libseccomp: bundled alongside the binaries that link it
+    // -----------------------------------------------------------------------
+
+    /// Locate the build host's `libseccomp.so.2`. Prefers pkg-config (the same
+    /// source apptainer's own configure step consults) and falls back to the
+    /// conventional library directories.
+    fn locate_libseccomp(target_arch: &str) -> Option<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+
+        if let Ok(output) = Command::new("pkg-config")
+            .args(["--variable=libdir", "libseccomp"])
+            .output()
+            && output.status.success()
+        {
+            let libdir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !libdir.is_empty() {
+                dirs.push(PathBuf::from(libdir));
+            }
+        }
+
+        dirs.push(PathBuf::from(format!("/usr/lib/{}-linux-gnu", target_arch)));
+        dirs.push(PathBuf::from("/usr/lib64"));
+        dirs.push(PathBuf::from("/usr/lib"));
+        dirs.push(PathBuf::from("/lib64"));
+
+        dirs.into_iter()
+            .map(|dir| dir.join(LIBSECCOMP_SONAME))
+            .find(|candidate| candidate.exists())
+    }
+
+    /// Copy the build host's libseccomp into `<install_dir>/lib` so the
+    /// rpath-linked binaries (see [`APPTAINER_CGO_LDFLAGS`]) resolve it from the
+    /// bundle rather than from whatever the runtime host happens to ship.
+    fn bundle_libseccomp(install_dir: &Path, target_arch: &str) -> bool {
+        let Some(source) = locate_libseccomp(target_arch) else {
+            println!(
+                "cargo:warning=Could not locate {} to bundle with apptainer; \
+                 the binaries would depend on the runtime host's libseccomp",
+                LIBSECCOMP_SONAME
+            );
+            return false;
+        };
+
+        let lib_dir = install_dir.join(APPTAINER_BUNDLED_LIB_DIR);
+        if let Err(e) = std::fs::create_dir_all(&lib_dir) {
+            println!("cargo:warning=Failed to create {:?}: {}", lib_dir, e);
+            return false;
+        }
+        // `fs::copy` follows the `libseccomp.so.2 -> libseccomp.so.2.x.y`
+        // symlink, so the bundle holds a real file under its SONAME.
+        let dest = lib_dir.join(LIBSECCOMP_SONAME);
+        if let Err(e) = std::fs::copy(&source, &dest) {
+            println!(
+                "cargo:warning=Failed to copy {:?} to {:?}: {}",
+                source, dest, e
+            );
+            return false;
+        }
+        println!("cargo:warning=Bundled {:?} into {:?}", source, lib_dir);
+        true
+    }
+
+    // -----------------------------------------------------------------------
     // gocryptfs: bundled prebuilt static linux binary
     //
     // Apptainer searches `${prefix}/libexec/apptainer/bin/` for tools like
@@ -820,7 +937,7 @@ mod apptainer_build {
     /// Downloads the source tarball from GitHub, builds with `mconfig` + `make`,
     /// and installs to `install_dir`. Requires Go, make, gcc, libseccomp-dev,
     /// and pkg-config to be available on the host.
-    fn build_apptainer_from_source(version: &str, install_dir: &Path) -> bool {
+    fn build_apptainer_from_source(version: &str, install_dir: &Path, target_arch: &str) -> bool {
         println!(
             "cargo:warning=Building apptainer {} from source (requires Go, make, gcc, libseccomp-dev)...",
             version
@@ -889,9 +1006,13 @@ mod apptainer_build {
         // namespaces instead.  This avoids the "Relocation not allowed with
         // starter-suid" error that occurs when the compiled-in --prefix
         // doesn't match the final installation path.
+        //
+        // `CGO_LDFLAGS` must be set here, not at `make` time: mconfig bakes it
+        // into the generated makefile, which then overrides the environment.
         if !build_helpers::run_command(
             Command::new("./mconfig")
                 .current_dir(&source_dir)
+                .env("CGO_LDFLAGS", APPTAINER_CGO_LDFLAGS)
                 .arg("--without-suid")
                 .arg(format!("--prefix={}", install_dir.display())),
             "configure apptainer build",
@@ -926,6 +1047,12 @@ mod apptainer_build {
 
         // Clean up source directory
         std::fs::remove_dir_all(&source_dir).ok();
+
+        // Ship the libseccomp the binaries were just linked against, so they
+        // never resolve a version-skewed one from the runtime host.
+        if !bundle_libseccomp(install_dir, target_arch) {
+            return false;
+        }
 
         true
     }
@@ -1029,8 +1156,8 @@ mod apptainer_build {
 
     /// The apptainer build commands shared by every strategy: install the pinned
     /// Go toolchain, download + verify the source, configure, compile, install
-    /// to `install_dir`. Runs without `sudo` (callers supply root where the
-    /// environment needs it), and is embedded verbatim into a quoted `bash`
+    /// to `install_dir`, and bundle libseccomp there. Runs without `sudo`
+    /// (callers supply root where the environment needs it), and is embedded verbatim into a quoted `bash`
     /// here-doc on the Rosetta path, so its `$(nproc)`, `$go_arch` and other
     /// shell expansions must survive unexpanded until the guest runs them.
     ///
@@ -1071,11 +1198,28 @@ tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
 echo "{version}" > VERSION
 echo "=== Configuring apptainer ==="
+# Single-quoted: the `$$ORIGIN` rpaths must reach mconfig verbatim (see the
+# APPTAINER_CGO_LDFLAGS doc comment).
+export CGO_LDFLAGS='{cgo_ldflags}'
 ./mconfig --without-suid --prefix={install_dir}
 echo "=== Compiling apptainer ==="
 make -C builddir -j"$(nproc)"
 echo "=== Installing apptainer ==="
 make -C builddir install
+echo "=== Bundling {libseccomp} ==="
+# The rpaths above point the binaries here, so the bundle — not the runtime
+# host's libseccomp — is what they load.
+seccomp_libdir=$(pkg-config --variable=libdir libseccomp 2>/dev/null || true)
+seccomp_so="$seccomp_libdir/{libseccomp}"
+if [ ! -e "$seccomp_so" ]; then
+  seccomp_so=$(ldconfig -p | grep -m1 '{libseccomp} ' | sed 's/.*=> //')
+fi
+if [ -z "$seccomp_so" ] || [ ! -e "$seccomp_so" ]; then
+  echo "{libseccomp} not found; cannot bundle it with apptainer" >&2
+  exit 1
+fi
+mkdir -p {install_dir}/{lib_dir}
+cp -L "$seccomp_so" {install_dir}/{lib_dir}/{libseccomp}
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             version = version,
             install_dir = install_dir,
@@ -1083,6 +1227,9 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             go_version = GO_VERSION,
             go_amd64_sha = GO_LINUX_AMD64_SHA256,
             go_arm64_sha = GO_LINUX_ARM64_SHA256,
+            cgo_ldflags = APPTAINER_CGO_LDFLAGS,
+            libseccomp = LIBSECCOMP_SONAME,
+            lib_dir = APPTAINER_BUNDLED_LIB_DIR,
         )
     }
 
@@ -1478,7 +1625,7 @@ echo "=== Apptainer build complete ==="
             "cargo:warning=Building apptainer {} from source...",
             APPTAINER_VERSION
         );
-        let success = build_apptainer_from_source(APPTAINER_VERSION, &cache_dir);
+        let success = build_apptainer_from_source(APPTAINER_VERSION, &cache_dir, arch);
         assert!(
             success,
             "Failed to build apptainer {} from source for {}. \
