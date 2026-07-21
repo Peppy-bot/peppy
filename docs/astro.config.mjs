@@ -151,6 +151,9 @@ export default defineConfig({
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/orgs/Peppy-bot/repositories' }],
 			sidebar: [
 				{ slug: 'index' },
+				// Standalone entry, deliberately outside the Guides group: it is a
+				// zero-to-running demo, not part of the build-your-own-node sequence.
+				{ slug: 'quickstart' },
 				{
 					label: 'Guides',
 					items: [{ autogenerate: { directory: 'guides' } }],
