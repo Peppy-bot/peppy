@@ -1537,6 +1537,14 @@ echo "=== Apptainer build complete ==="
         let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
         println!("cargo:rerun-if-changed={}", cache_sentinel.display());
 
+        // Export the sentinel path so the cache-consistency test asserts on the
+        // name this build actually wrote. Only `apptainer_cache_sentinel_path`
+        // knows the naming scheme, so changing it cannot desync the test.
+        println!(
+            "cargo:rustc-env=APPTAINER_CACHE_SENTINEL={}",
+            cache_sentinel.display()
+        );
+
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
         // Use a sentinel to skip the copy when the source hasn't changed,
         // avoiding mtime bumps that trigger unnecessary recompilation.

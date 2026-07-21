@@ -843,7 +843,10 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
 // ---------------------------------------------------------------------------
 
 /// Verifies that the compile-time `APPTAINER_INSTALL_DIR` injected by build.rs
-/// points to a valid cache directory with the expected sentinel and binary.
+/// points to a valid cache directory with the expected sentinel and binary. The
+/// sentinel path comes from build.rs too, via `APPTAINER_CACHE_SENTINEL`: the
+/// name is version and recipe keyed, so re-deriving it here would go stale the
+/// next time the cache key changes.
 ///
 /// If this test fails after deleting `~/.peppy`, it means the build cache is
 /// stale and `cargo build` needs to re-run build.rs (which the
@@ -863,7 +866,10 @@ fn compile_time_apptainer_dir_exists_with_sentinel() {
         install_dir
     );
 
-    let sentinel = path.join(format!(".peppy-version-{}", env!("APPTAINER_VERSION")));
+    let sentinel = Path::new(env!(
+        "APPTAINER_CACHE_SENTINEL",
+        "APPTAINER_CACHE_SENTINEL should be set by build.rs at compile time"
+    ));
     assert!(
         sentinel.exists(),
         "Cache sentinel {:?} is missing; the apptainer cache may be corrupt",
