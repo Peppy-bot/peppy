@@ -89,7 +89,80 @@ to resolve the cloud router is bounded by
 [`zenoh.managed.federation.connect_timeout_secs`](/advanced_guides/daemon_config/#zenohmanagedfederation-cloud-router-timeout).
 
 With `zenoh.external`, login and logout skip federation and print a note instead;
-the daemon applies the new namespace to its sessions on its next manual restart.
+the daemon applies the resolved namespace to its sessions on its next manual
+restart. See [Federation outside the Peppy platform](#federation-outside-the-peppy-platform).
+
+## Federation outside the Peppy platform
+
+You do not need the Peppy platform to run nodes across several machines. Point
+every machine at a Zenoh router you run yourself with
+[`zenoh.external`](/advanced_guides/daemon_config/#zenohexternal-use-an-operator-run-router)
+in `~/.peppy/conf/peppy_config.json5`:
+
+```json5
+zenoh: {
+  external: {
+    endpoint: "tcp/router.internal:7448",
+  },
+},
+```
+
+`endpoint` is a dial address, so start the router first (for example
+`zenohd -l tcp/0.0.0.0:7448`) and make sure every machine, and every node
+environment on it, can reach that host and port. Peppy dials this router, adopts
+it, and never starts, restarts, reconfigures, or federates it: its lifecycle is
+yours. No login, no backend, and no cloud router is involved.
+
+### Stay logged out on every machine
+
+Every session carries a **namespace**, and it is applied under `zenoh.external`
+exactly as it is under `zenoh.managed`. It is `local` when logged out and the
+workspace namespace when logged in (see
+[Workspace federation](#workspace-federation)). External mode changes which
+router peppy dials, not how sessions are namespaced: the daemon stamps its own
+session, and every node it spawns, with whatever namespace the local credentials
+resolve to. A shared router forwards traffic between namespaces without matching
+it, so a machine on a workspace namespace and a machine on `local` discover
+nothing from each other even though both are connected to your router.
+
+So keep all the machines on the same namespace, and the only namespace you can
+count on without the platform is `local`:
+
+```
+peppy platform logout
+```
+
+Then restart the daemon on that machine (see below).
+
+Being signed in is not by itself what replaces the namespace. A workspace
+namespace is cached in `~/.peppy/conf/credentials.json5` under a `router` block,
+and only managed-mode federation ever writes it there. `peppy platform login`
+clears that block, and external mode never re-pulls it, so a fresh login under
+`zenoh.external` still resolves to `local`.
+
+The case that bites is a machine that **previously ran in managed mode while
+logged in** and was then switched to `zenoh.external`. Its credentials still
+carry the cached `router` block, the daemon reads it with no staleness check,
+and that machine silently comes up on the workspace namespace while its
+logged-out peers sit on `local`. Nothing warns about the mismatch. Logging out
+removes the block; you can also confirm it is gone by checking that
+`credentials.json5` has no `router` key.
+
+### Applying a change
+
+External mode has no federation control socket, so `login` and `logout` cannot
+poke the daemon and never restart it. A namespace change, like any other
+`peppy_config.json5` change, reaches sessions only when the daemon is restarted
+by hand: stop it (`peppy service stop`, or `systemctl stop` your unit) and start
+it again. A session's namespace is fixed once it is open, so nothing changes
+until that restart happens.
+
+### Checklist
+
+1. Start your Zenoh router and make it reachable from every machine.
+2. On each machine, set `zenoh.external.endpoint` to that router's dial address.
+3. On each machine, run `peppy platform logout`.
+4. Restart the daemon on each machine.
 
 ## Backend
 
@@ -135,7 +208,8 @@ it de-federates the router, restarts the daemon, and wipes the running node stac
 with the same confirmation prompt and `--yes` bypass (see
 [Workspace federation](#workspace-federation)). Under `zenoh.external`,
 the operator's federation is left untouched and the namespace changes on the
-next manual daemon restart.
+next manual daemon restart (see
+[Federation outside the Peppy platform](#federation-outside-the-peppy-platform)).
 
 ## Environment variables
 
