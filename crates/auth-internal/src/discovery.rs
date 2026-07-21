@@ -6,7 +6,7 @@
 use serde::Deserialize;
 
 use super::http::HttpClient;
-use super::profile;
+use super::profile::{self, TransportPolicy};
 use crate::error::{Error, Result};
 
 /// The endpoints the device flow needs, plus the (optional) revocation endpoint.
@@ -48,9 +48,9 @@ impl OidcDiscoveryDocument {
 /// itself, or an endpoint that fails the transport policy, is a hard error
 /// instead: those are answers from the wrong realm or over the wrong transport,
 /// not an unavailable document.
-pub fn discover(http: &HttpClient, issuer: &str) -> Result<OidcEndpoints> {
+pub fn discover(http: &HttpClient, issuer: &str, policy: TransportPolicy) -> Result<OidcEndpoints> {
     let issuer = issuer.trim_end_matches('/');
-    let parsed_issuer = profile::validate_https_or_local(issuer, "OIDC issuer")?;
+    let parsed_issuer = profile::validate_https_or_local_with(issuer, "OIDC issuer", policy)?;
     if parsed_issuer.query().is_some() || parsed_issuer.fragment().is_some() {
         return Err(Error::Auth(format!(
             "invalid OIDC issuer `{issuer}`: a query string or fragment is not allowed"
@@ -62,18 +62,18 @@ pub fn discover(http: &HttpClient, issuer: &str) -> Result<OidcEndpoints> {
         && resp.status == 200
         && let Ok(document) = serde_json::from_str::<OidcDiscoveryDocument>(&resp.body)
     {
-        validate_discovered_issuer(&parsed_issuer, &document.issuer)?;
+        validate_discovered_issuer(&parsed_issuer, &document.issuer, policy)?;
         let endpoints = document.endpoints();
         if !endpoints.device_authorization_endpoint.is_empty()
             && !endpoints.token_endpoint.is_empty()
         {
-            validate_endpoints(&parsed_issuer, &endpoints)?;
+            validate_endpoints(&parsed_issuer, &endpoints, policy)?;
             return Ok(endpoints);
         }
     }
 
     let endpoints = fallback(issuer);
-    validate_endpoints(&parsed_issuer, &endpoints)?;
+    validate_endpoints(&parsed_issuer, &endpoints, policy)?;
     Ok(endpoints)
 }
 
@@ -82,9 +82,14 @@ pub fn discover(http: &HttpClient, issuer: &str) -> Result<OidcEndpoints> {
 /// issuer by its literal URL, so normalizing case or ports any further than
 /// `Url::parse` already does would accept a realm the operator did not
 /// configure.
-fn validate_discovered_issuer(configured: &url::Url, discovered: &str) -> Result<()> {
+fn validate_discovered_issuer(
+    configured: &url::Url,
+    discovered: &str,
+    policy: TransportPolicy,
+) -> Result<()> {
     let discovered = discovered.trim_end_matches('/');
-    let parsed = profile::validate_https_or_local(discovered, "discovered OIDC issuer")?;
+    let parsed =
+        profile::validate_https_or_local_with(discovered, "discovered OIDC issuer", policy)?;
     if parsed.query().is_some() || parsed.fragment().is_some() {
         return Err(Error::Auth(format!(
             "invalid discovered OIDC issuer `{discovered}`: a query string or fragment is not allowed"
@@ -106,7 +111,11 @@ fn validate_discovered_issuer(configured: &url::Url, discovered: &str) -> Result
 /// loopback, because the issuer that authorized the flow was reached over TLS.
 /// A local HTTP issuer may advertise local HTTP endpoints, which is what the
 /// hermetic development stack runs on.
-fn validate_endpoints(issuer: &url::Url, endpoints: &OidcEndpoints) -> Result<()> {
+fn validate_endpoints(
+    issuer: &url::Url,
+    endpoints: &OidcEndpoints,
+    policy: TransportPolicy,
+) -> Result<()> {
     let mut values = vec![
         (
             "OIDC device authorization endpoint",
@@ -119,7 +128,7 @@ fn validate_endpoints(issuer: &url::Url, endpoints: &OidcEndpoints) -> Result<()
     }
 
     for (what, endpoint) in values {
-        let parsed = profile::validate_https_or_local(endpoint, what)?;
+        let parsed = profile::validate_https_or_local_with(endpoint, what, policy)?;
         if issuer.scheme() == "https" && parsed.scheme() != "https" {
             return Err(Error::Auth(format!(
                 "{what} attempts an HTTPS to HTTP downgrade"
@@ -159,9 +168,25 @@ mod tests {
 
     #[test]
     fn rejects_a_non_local_plain_http_issuer() {
-        let error = discover(&HttpClient::new(), "http://auth.example.test")
-            .expect_err("a remote OIDC issuer must use https");
+        let error = discover(
+            &HttpClient::new(),
+            "http://auth.example.test",
+            TransportPolicy::Strict,
+        )
+        .expect_err("a remote OIDC issuer must use https");
         assert!(error.to_string().contains("plain http"), "{error}");
+    }
+
+    /// Debug builds relax the transport policy so the dev backend can hand out
+    /// a plain-http issuer on a trusted network (LAN name or Tailscale IP).
+    /// The address comes from `100.64.0.0/10`, the shared address space
+    /// Tailscale allocates from, standing in for a TS-mode dev stack.
+    #[test]
+    fn permissive_policy_admits_a_non_local_plain_http_issuer() {
+        let issuer = url::Url::parse("http://100.64.0.7:8080").unwrap();
+        let endpoints = fallback(issuer.as_str().trim_end_matches('/'));
+        validate_endpoints(&issuer, &endpoints, TransportPolicy::AllowInsecureHttp)
+            .expect("the dev policy admits a trusted-network http issuer");
     }
 
     #[test]
@@ -173,9 +198,12 @@ mod tests {
             revocation_endpoint: Some("https://auth.example.test/revoke".into()),
         };
 
-        let error = validate_endpoints(&issuer, &endpoints).expect_err(
-            "an https issuer cannot downgrade its token endpoint, not even to loopback",
-        );
+        // The downgrade guard holds under the permissive policy too: it is
+        // about the issuer's own transport, not about host locality.
+        let error = validate_endpoints(&issuer, &endpoints, TransportPolicy::AllowInsecureHttp)
+            .expect_err(
+                "an https issuer cannot downgrade its token endpoint, not even to loopback",
+            );
         assert!(error.to_string().contains("downgrade"), "{error}");
     }
 
@@ -183,7 +211,8 @@ mod tests {
     fn local_development_issuer_and_endpoints_are_allowed() {
         let issuer = url::Url::parse("http://auth.peppy.localhost:8080").unwrap();
         let endpoints = fallback(issuer.as_str().trim_end_matches('/'));
-        validate_endpoints(&issuer, &endpoints).expect("the local development policy is explicit");
+        validate_endpoints(&issuer, &endpoints, TransportPolicy::Strict)
+            .expect("the local development policy is explicit");
     }
 
     #[test]
@@ -199,7 +228,7 @@ mod tests {
             }));
         });
 
-        let error = discover(&HttpClient::new(), &base)
+        let error = discover(&HttpClient::new(), &base, TransportPolicy::Strict)
             .expect_err("endpoints from a different issuer realm must be rejected");
         assert!(error.to_string().contains("issuer mismatch"), "{error}");
         assert_eq!(discovery.calls(), 1);
