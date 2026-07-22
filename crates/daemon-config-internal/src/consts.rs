@@ -126,6 +126,17 @@ impl PeppyDirs {
         self.root.join("tmp")
     }
 
+    /// Directory holding the peppy-provided binaries (`peppy`, `zenohd`,
+    /// `apptainer`, and the extracted `capnp`).
+    ///
+    /// This is the same `~/.peppy/bin` the installer populates as
+    /// `PEPPY_BIN_DIR` (see `scripts/install.sh`); exposing it here gives the
+    /// runtime code one source of truth for that location instead of the path
+    /// being known only to the shell installer.
+    pub fn bin_dir(&self) -> PathBuf {
+        self.root.join("bin")
+    }
+
     /// Path to the stack operations log file.
     ///
     /// Records daemon-initiated lifecycle events (e.g. automatic instance
