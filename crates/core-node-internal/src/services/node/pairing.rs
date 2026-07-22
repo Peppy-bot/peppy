@@ -23,7 +23,8 @@ use daemon_config::launcher::{
 };
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
 use peppylib::MessengerHandle;
-use peppylib::encoding::peer_update::{PeerUpdateRequest, PeerUpdateResponse};
+use peppylib::encoding::peer_update::PeerUpdateRequest;
+use peppylib::encoding::slot_update::SlotUpdateResponse;
 use peppylib::messaging::{
     PEER_UPDATE_SERVICE, PeerPin, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
 };
@@ -245,7 +246,7 @@ impl PairingCoordinator {
         .map_err(|e| e.to_string())?;
 
         let response =
-            PeerUpdateResponse::decode(&reply.payload_bytes()).map_err(|e| e.to_string())?;
+            SlotUpdateResponse::decode(&reply.payload_bytes()).map_err(|e| e.to_string())?;
         if response.accepted || response.stale_sequence {
             Ok(())
         } else {

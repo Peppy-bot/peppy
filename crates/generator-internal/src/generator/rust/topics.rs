@@ -329,7 +329,7 @@ pub fn build_observed_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) ->
             /// observed source instance.
         },
         quote! {
-            let Some((producer, message)) = self.inner.next().await else {
+            let Some((producer, message)) = self.inner.on_next_message().await else {
                 return Ok(None);
             };
         },

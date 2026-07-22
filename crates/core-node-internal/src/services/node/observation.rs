@@ -22,7 +22,8 @@ use core_node_api::encoding::ObservationTarget;
 use daemon_config::launcher::PlannedObservation;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
-use peppylib::encoding::observation_update::{ObservationUpdateRequest, ObservationUpdateResponse};
+use peppylib::encoding::observation_update::ObservationUpdateRequest;
+use peppylib::encoding::slot_update::SlotUpdateResponse;
 use peppylib::messaging::{
     OBSERVATION_UPDATE_SERVICE, ObservationPin, ProducerRef, SenderTarget, ServiceMessenger,
     ServiceTarget,
@@ -403,7 +404,7 @@ impl ObservationCoordinator {
         .map_err(|e| e.to_string())?;
 
         let response =
-            ObservationUpdateResponse::decode(&reply.payload_bytes()).map_err(|e| e.to_string())?;
+            SlotUpdateResponse::decode(&reply.payload_bytes()).map_err(|e| e.to_string())?;
         if response.accepted || response.stale_sequence {
             Ok(())
         } else {
