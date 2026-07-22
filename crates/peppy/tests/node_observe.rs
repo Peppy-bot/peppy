@@ -17,11 +17,12 @@
 //! peppylib node exposes.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
+use peppy::commands::service::{ServiceCommand, ServiceCommands};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
@@ -29,6 +30,7 @@ use peppylib::messaging::ObservationState;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::observation_update::listen_for_observation_update;
 use peppylib::services::ready::listen_for_node_ready;
+use peppylib::services::shutdown::listen_for_shutdown;
 use tokio::sync::watch;
 
 use super::common::{seed_pairing_repo, test_node_target};
@@ -79,6 +81,74 @@ fn observer_config() -> &'static str {
         },
         execution: { language: "rust", run_cmd: ["sleep", "30"] }
     }"#
+}
+
+/// Same source as [`source_config`], but its `run_cmd` records its own pid to
+/// `pidfile` before sleeping, so a cooperatively-emulated shutdown can kill the
+/// exact process (see [`emulate_cooperative_source`]). `exec` keeps the pid the
+/// daemon tracks (the shell becomes the sleep).
+fn killable_source_config(pidfile: &Path) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "node/v1",
+        manifest: {{
+            name: "robot_arm",
+            tag: "v1",
+            depends_on: {{
+                pairings: [
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }}
+                ]
+            }}
+        }},
+        interfaces: {{
+            topics: {{
+                emits: [{{ link_id: "controller", name: "joint_states" }}],
+                consumes: [{{ link_id: "controller", name: "joint_commands" }}]
+            }}
+        }},
+        execution: {{ language: "rust", run_cmd: ["sh", "-c", "echo $$ > '{pidfile}'; exec sleep 30"] }}
+    }}"#,
+        pidfile = pidfile.display()
+    )
+}
+
+/// Emulates a source instance whose process exits the instant the daemon asks it
+/// to shut down cooperatively: the shutdown service, on the daemon's request,
+/// SIGKILLs the run_cmd process whose pid it wrote to `pidfile`. This is what
+/// keeps the reset test deterministic rather than time-based: without it a
+/// `sleep` node ignores the cooperative shutdown and the daemon waits out
+/// `force_kill_deadline` (~12s), which is longer than the reset command's own
+/// request timeout, so the reset call would time out. Killing on request makes
+/// the daemon's `wait_until_all_gone` return at once.
+async fn emulate_cooperative_source(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    pidfile: PathBuf,
+) {
+    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
+    let (_handle, shutdown_rx) = listen_for_shutdown(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("shutdown service should start");
+    tokio::spawn(async move {
+        if shutdown_rx.await.is_ok()
+            && let Ok(pid) = std::fs::read_to_string(&pidfile)
+        {
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                let _ = tokio::process::Command::new("kill")
+                    .args(["-9", pid])
+                    .status()
+                    .await;
+            }
+        }
+    });
 }
 
 /// Writes a node dir with the given config and `node add --build`s it (no
@@ -343,5 +413,112 @@ async fn node_remove_source_notifies_running_observer() {
     assert!(
         state.source.is_some(),
         "the source pin is retained on remove so the observer keeps its subscription declared"
+    );
+}
+
+/// Fix #2 on the whole-stack teardown path: `service reset` mass-stops every
+/// instance (bypassing the per-instance seam, since mark_stopping makes the exit
+/// watchers bail), so it must clear the observation registry the same way
+/// `node_stack.reset()` clears the pairing registry. If it did not, the source's
+/// incarnation generation would survive the reset and a re-run of the same
+/// source id would resume from a stale generation instead of a clean one.
+///
+/// The source is still RUNNING at reset time (so the registry is genuinely
+/// non-empty and only reset's clear can empty it), but its shutdown service kills
+/// the process on request, so the reset tears it down at once instead of waiting
+/// out `force_kill_deadline`. The assertion is on the generation value, not on
+/// any timing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_reset_clears_the_observation_registry() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+    let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+
+    let work_dir = tempfile::tempdir().expect("temp work dir");
+    let ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    let ctrl_dir = tempfile::tempdir().expect("temp control dir");
+    let arm_pidfile = ctrl_dir.path().join("arm.pid");
+    // One config string reused for both adds: re-adding the same node dir with a
+    // different config would trip the codegen fingerprint check.
+    let arm_config = killable_source_config(&arm_pidfile);
+    let arm_dir = tempfile::tempdir().expect("source node dir");
+
+    // Phase 1: run the source so it reaches Running and bumps its incarnation
+    // generation to 1. It stays running (killable on cooperative shutdown) until
+    // the reset below.
+    add_node(&ctx, arm_dir.path(), &arm_config);
+    emulate_cooperative_source(
+        &messenger,
+        &core_node_name,
+        "robot_arm",
+        "arm_1",
+        arm_pidfile.clone(),
+    )
+    .await;
+    run_command(
+        "arm_1",
+        "robot_arm",
+        Vec::new(),
+        vec!["controller".to_string()],
+    )
+    .execute(&ctx)
+    .expect("source run should succeed");
+
+    // Reset: mass teardown (the source's shutdown service kills its process, so
+    // this returns promptly) + node_stack.reset() (clears pairing) + the fix
+    // under test (observation.clear()).
+    ServiceCommand {
+        command: ServiceCommands::Reset {},
+    }
+    .execute(&ctx)
+    .expect("service reset should succeed");
+
+    // Phase 2: reset dropped the nodes; re-add (identical config) and re-run the
+    // source with the SAME id. It is not stopped again, so its kill hook never
+    // fires. Its ready/health services from phase 1 still answer.
+    add_node(&ctx, arm_dir.path(), &arm_config);
+    run_command(
+        "arm_1",
+        "robot_arm",
+        Vec::new(),
+        vec!["controller".to_string()],
+    )
+    .execute(&ctx)
+    .expect("source re-run after reset should succeed");
+
+    // A fresh observer links to the re-run source and reads its generation. Had
+    // reset left the registry stale, arm_1 would resume at generation 2; a
+    // cleared registry makes it a clean first incarnation at generation 1.
+    let obs_dir = tempfile::tempdir().expect("observer node dir");
+    add_node(&ctx, obs_dir.path(), observer_config());
+    let mut obs_rx =
+        emulate_observer_services(&messenger, &core_node_name, "recorder", "rec_2", "watch").await;
+    run_command(
+        "rec_2",
+        "recorder",
+        vec![("watch".to_string(), "arm_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect("fresh observer run after reset should succeed");
+
+    let state = obs_rx.borrow_and_update().clone();
+    let pin = state
+        .source
+        .expect("rec_2 should resolve its source after reset");
+    assert_eq!(pin.producer.instance_id, "arm_1");
+    assert_eq!(
+        state.source_generation, 1,
+        "service reset must clear the observation registry, so the re-run source \
+         is a clean incarnation at generation 1, not a stale carry-over"
     );
 }
