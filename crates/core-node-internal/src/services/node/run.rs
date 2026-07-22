@@ -1,8 +1,10 @@
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
-use super::observation::ObservationCoordinator;
-use super::pairing::{PairingCoordinator, plan_requested_pairs};
-use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
+use super::pairing::plan_requested_pairs;
+use super::{
+    FeedbackLine, FeedbackStream, RelationshipCoordinators, create_action_log_file,
+    write_error_to_log,
+};
 use crate::Result;
 use config::peppy_config::SubscriberBufferConfig;
 use config::runtime::Name;
@@ -144,12 +146,8 @@ pub struct NodeRunServiceConfig {
     /// per-node health monitors stop probing before the stack is torn down,
     /// rather than flagging intentionally-stopping nodes as unhealthy.
     pub shutdown_token: CancellationToken,
-    /// The daemon's single pairing authority: reserve/deliver/dissolve for
-    /// the goal's `requested_pairs`/`deferred_pairs`.
-    pub pairing: Arc<PairingCoordinator>,
-    /// The daemon's single observation authority: notified as this instance
-    /// reaches Running (delivering source pins to observers) and exits.
-    pub observation: Arc<ObservationCoordinator>,
+    /// The daemon authorities used for pairing and observation lifecycle work.
+    pub(crate) relationships: RelationshipCoordinators,
 }
 
 #[derive(Clone)]
@@ -165,8 +163,7 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) health_monitor_timeout: Duration,
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
-    pub(crate) pairing: Arc<PairingCoordinator>,
-    pub(crate) observation: Arc<ObservationCoordinator>,
+    pub(crate) relationships: RelationshipCoordinators,
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
@@ -230,8 +227,7 @@ pub async fn listen_for_node_run(
             health_monitor_timeout: config.health_monitor_timeout,
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
-            pairing: config.pairing,
-            observation: config.observation,
+            relationships: config.relationships,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -981,7 +977,13 @@ async fn process_node_run(
     // fails here — loudly — instead of double-pairing. Pins are NOT
     // delivered yet; that happens after the instance commits to Running.
     for pair in &planned_pairs {
-        let Err(reserve_msg) = ctx.action.pairing.reserve(&pair.own, &pair.peer).await else {
+        let Err(reserve_msg) = ctx
+            .action
+            .relationships
+            .pairing()
+            .reserve(&pair.own, &pair.peer)
+            .await
+        else {
             continue;
         };
         let reason = format!(
@@ -989,7 +991,8 @@ async fn process_node_run(
             pair.own.link_id
         );
         ctx.action
-            .pairing
+            .relationships
+            .pairing()
             .dissolve_for_instance(instance_id_str)
             .await;
         let msg = node_stack::NodeEntity::abort_started(
@@ -1045,7 +1048,8 @@ async fn process_node_run(
             instance_id_str, reason
         );
         ctx.action
-            .pairing
+            .relationships
+            .pairing()
             .dissolve_for_instance(instance_id_str)
             .await;
         let msg = node_stack::NodeEntity::abort_started(
@@ -1095,7 +1099,8 @@ async fn process_node_run(
                     instance_id_str, reason
                 );
                 ctx.action
-                    .pairing
+                    .relationships
+                    .pairing()
                     .dissolve_for_instance(instance_id_str)
                     .await;
                 let msg = node_stack::NodeEntity::abort_started(
@@ -1135,8 +1140,7 @@ async fn process_node_run(
                         node_tag: tag.clone(),
                         target_instance_id: instance_id.clone(),
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
-                        pairing: Arc::clone(&ctx.action.pairing),
-                        observation: Arc::clone(&ctx.action.observation),
+                        relationships: ctx.action.relationships.clone(),
                         instance_done: instance_done.clone(),
                         shutdown_token: ctx.action.shutdown_token.clone(),
                     });
@@ -1166,7 +1170,8 @@ async fn process_node_run(
                     // into the live registry instead of replacing the stack.
                     if !planned_observations.is_empty() {
                         ctx.action
-                            .observation
+                            .relationships
+                            .observation()
                             .register_instance(instance_id_str, &planned_observations);
                     }
 
@@ -1177,7 +1182,8 @@ async fn process_node_run(
                     // for any source already up. Best-effort and independent of
                     // pairing, so it always runs (a source need not be paired).
                     ctx.action
-                        .observation
+                        .relationships
+                        .observation()
                         .on_instance_running(instance_id_str)
                         .await;
 
@@ -1189,12 +1195,14 @@ async fn process_node_run(
                     if !planned_pairs.is_empty() {
                         if let Err(reason) = ctx
                             .action
-                            .pairing
+                            .relationships
+                            .pairing()
                             .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
                             .await
                         {
                             ctx.action
-                                .pairing
+                                .relationships
+                                .pairing()
                                 .dissolve_for_instance(instance_id_str)
                                 .await;
                             let msg = format!(
@@ -1242,7 +1250,8 @@ async fn process_node_run(
                 Err(e) => {
                     let msg = format!("Failed to register instance: {}", e);
                     ctx.action
-                        .pairing
+                        .relationships
+                        .pairing()
                         .dissolve_for_instance(instance_id_str)
                         .await;
                     write_error_to_log(&ctx.log_file, &msg);
@@ -1265,7 +1274,8 @@ async fn process_node_run(
                 instance_id_str, reason
             );
             ctx.action
-                .pairing
+                .relationships
+                .pairing()
                 .dissolve_for_instance(instance_id_str)
                 .await;
             let msg = node_stack::NodeEntity::abort_started(
@@ -1697,14 +1707,9 @@ struct ExitWatcherParams {
     node_tag: String,
     target_instance_id: Name,
     peppy_dirs: PeppyDirs,
-    /// Death auto-clears pairs: on a self-exit the watcher eagerly dissolves
-    /// every pair involving this instance and notifies each live survivor.
-    pairing: Arc<PairingCoordinator>,
-    /// Death also notifies observers: on a self-exit the watcher tells the
-    /// observation coordinator so live observers of this source see it go down
-    /// (informational `source_live: false`) and this instance's own observer
-    /// registrations are dropped.
-    observation: Arc<ObservationCoordinator>,
+    /// Relationship authorities used to clear pairing and observation state
+    /// when the process exits on its own.
+    relationships: RelationshipCoordinators,
     /// Cancelled once the process exits, to stop this instance's health monitor.
     instance_done: CancellationToken,
     shutdown_token: CancellationToken,
@@ -1733,8 +1738,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         node_tag,
         target_instance_id,
         peppy_dirs,
-        pairing,
-        observation,
+        relationships,
         instance_done,
         shutdown_token,
     } = p;
@@ -1786,7 +1790,9 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         // telling any live observer of this (now-dead) source it went down.
         // The registry's lazy prune-on-read is the backstop for paths that
         // never reach here.
-        super::tear_down_instance(&pairing, &observation, instance_id_str.as_str()).await;
+        relationships
+            .tear_down_instance(instance_id_str.as_str())
+            .await;
 
         match new_state {
             InstanceState::Finished => {

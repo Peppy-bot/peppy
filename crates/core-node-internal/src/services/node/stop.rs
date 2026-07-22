@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use super::RelationshipCoordinators;
+
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -33,8 +35,7 @@ pub async fn listen_for_node_stop(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
-    pairing: Arc<super::pairing::PairingCoordinator>,
-    observation: Arc<super::observation::ObservationCoordinator>,
+    relationships: RelationshipCoordinators,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -58,8 +59,7 @@ pub async fn listen_for_node_stop(
                     core_node_node.clone(),
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
-                    Arc::clone(&pairing),
-                    Arc::clone(&observation),
+                    relationships.clone(),
                 )
             })
             .await
@@ -69,15 +69,13 @@ pub async fn listen_for_node_stop(
     Ok(handle)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_node_stop_request(
     context: ServiceRequestContext,
     messenger: MessengerHandle,
     core_node_node: String,
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
-    pairing: Arc<super::pairing::PairingCoordinator>,
-    observation: Arc<super::observation::ObservationCoordinator>,
+    relationships: RelationshipCoordinators,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -87,22 +85,19 @@ async fn handle_node_stop_request(
             &core_node_node,
             &core_instance_id,
             node_stack,
-            &pairing,
-            &observation,
+            &relationships,
         )
         .await,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_node_stop_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
-    pairing: &super::pairing::PairingCoordinator,
-    observation: &super::observation::ObservationCoordinator,
+    relationships: &RelationshipCoordinators,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -208,7 +203,7 @@ async fn handle_node_stop_request_inner(
     // re-pairing is explicit). A stopped node is torn down identically whether
     // it paired, observed, both, or neither.
     remove_instance_from_registry(&node_stack, &node_name, &node_tag, &instance_id);
-    super::tear_down_instance(pairing, observation, instance_id.as_str()).await;
+    relationships.tear_down_instance(instance_id.as_str()).await;
 
     // Tell the caller whether the node exited gracefully or had to be
     // force-killed, so the CLI can warn the user about the latter.

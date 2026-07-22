@@ -43,7 +43,6 @@ use ureq::Error as HttpError;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use peppylib::messaging::SenderTarget;
 
-#[allow(clippy::too_many_arguments)]
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -51,8 +50,7 @@ pub async fn listen_for_node_add(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    pairing: Arc<super::pairing::PairingCoordinator>,
-    observation: Arc<super::observation::ObservationCoordinator>,
+    relationships: super::RelationshipCoordinators,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -71,8 +69,7 @@ pub async fn listen_for_node_add(
             bound_core_node: core_node_name.to_string(),
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
-            pairing,
-            observation,
+            relationships,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -250,13 +247,8 @@ pub(crate) struct NodeAddActionContext {
     pub(crate) bound_core_node: String,
     pub(crate) core_instance_id: String,
     pub(crate) peppy_dirs: PeppyDirs,
-    /// The daemon's single pairing authority; the overwrite path stops the
-    /// entity's old instances, which must dissolve their pairs eagerly.
-    pub(crate) pairing: Arc<super::pairing::PairingCoordinator>,
-    /// The daemon's observation authority, torn down alongside pairing for
-    /// every instance the overwrite path stops, so a stopped node is cleaned
-    /// up identically here as on the stop and remove paths.
-    pub(crate) observation: Arc<super::observation::ObservationCoordinator>,
+    /// All relationship authorities needed to tear down overwritten instances.
+    pub(crate) relationships: super::RelationshipCoordinators,
 }
 
 struct ProcessNodeAddContext {
@@ -1301,12 +1293,10 @@ async fn shutdown_existing_instances(
     .await;
 
     for instance_id in &instances {
-        super::tear_down_instance(
-            &ctx.action.pairing,
-            &ctx.action.observation,
-            instance_id.as_str(),
-        )
-        .await;
+        ctx.action
+            .relationships
+            .tear_down_instance(instance_id.as_str())
+            .await;
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
             line: format!("{} has been stopped", instance_id.as_str()),

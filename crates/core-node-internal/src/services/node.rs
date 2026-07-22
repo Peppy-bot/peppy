@@ -21,6 +21,7 @@ mod sync;
 use config::node::NodeConfig;
 use core_node_api::encoding::NodeSource;
 use daemon_config::consts::PeppyDirs;
+use std::sync::Arc;
 
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).
@@ -78,25 +79,43 @@ pub(crate) async fn resolve_node_config(
     info::resolve_node_config(source, peppy_dirs).await
 }
 
-/// Tear down every cross-instance relationship an instance holds, in one place,
-/// so a node that is stopped, removed, or exits on its own always leaves the
-/// pairing registry and the observation registry the same way no matter which
-/// path stopped it. Both teardowns are no-ops for an instance that participates
-/// in neither, so this is safe (and correct) to call for every stopped node.
+/// The daemon authorities responsible for relationships between node instances.
 ///
-/// This is the single teardown seam: the stop, remove, add-overwrite, and
-/// process-exit paths all funnel through it, which is what guarantees they
-/// behave identically for pairing and observation alike. Pairing is dissolved
-/// first (it may notify a live peer), then observation (it notifies a source's
-/// live observers that it went down and drops this instance's own observer
-/// records).
-pub(crate) async fn tear_down_instance(
-    pairing: &PairingCoordinator,
-    observation: &ObservationCoordinator,
-    instance_id: &str,
-) {
-    pairing.dissolve_for_instance(instance_id).await;
-    observation.on_instance_down(instance_id).await;
+/// Keeping them together gives every lifecycle path one complete dependency for
+/// teardown while still exposing each authority to flows that operate on one
+/// relationship type directly.
+#[derive(Clone)]
+pub(crate) struct RelationshipCoordinators {
+    pairing: Arc<PairingCoordinator>,
+    observation: Arc<ObservationCoordinator>,
+}
+
+impl RelationshipCoordinators {
+    pub(crate) fn new(
+        pairing: Arc<PairingCoordinator>,
+        observation: Arc<ObservationCoordinator>,
+    ) -> Self {
+        Self {
+            pairing,
+            observation,
+        }
+    }
+
+    pub(crate) fn pairing(&self) -> &Arc<PairingCoordinator> {
+        &self.pairing
+    }
+
+    pub(crate) fn observation(&self) -> &Arc<ObservationCoordinator> {
+        &self.observation
+    }
+
+    /// Tears down every cross-instance relationship held by `instance_id`.
+    /// Pairing is dissolved first because it may notify a live peer, then
+    /// observation notifies live observers and drops the instance's records.
+    pub(crate) async fn tear_down_instance(&self, instance_id: &str) {
+        self.pairing.dissolve_for_instance(instance_id).await;
+        self.observation.on_instance_down(instance_id).await;
+    }
 }
 
 #[cfg(test)]

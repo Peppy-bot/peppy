@@ -47,8 +47,7 @@ pub(super) async fn add_node_directly(
         bound_core_node: ctx.bound_core_node.clone(),
         core_instance_id: ctx.core_instance_id.clone(),
         peppy_dirs: ctx.peppy_dirs.clone(),
-        pairing: Arc::clone(&ctx.pairing),
-        observation: Arc::clone(&ctx.observation),
+        relationships: ctx.relationships.clone(),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -181,8 +180,7 @@ pub(super) async fn start_node_directly(
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
         daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
-        pairing: Arc::clone(&ctx.pairing),
-        observation: Arc::clone(&ctx.observation),
+        relationships: ctx.relationships.clone(),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -543,5 +541,5 @@ pub(super) async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
     )
     .await;
     ctx.node_stack.reset();
-    ctx.observation.clear();
+    ctx.relationships.observation().clear();
 }

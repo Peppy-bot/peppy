@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use super::RelationshipCoordinators;
+
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_remove(
@@ -24,8 +26,7 @@ pub async fn listen_for_node_remove(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
-    pairing: Arc<super::pairing::PairingCoordinator>,
-    observation: Arc<super::observation::ObservationCoordinator>,
+    relationships: RelationshipCoordinators,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -49,8 +50,7 @@ pub async fn listen_for_node_remove(
                     core_node_node.clone(),
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
-                    Arc::clone(&pairing),
-                    Arc::clone(&observation),
+                    relationships.clone(),
                 )
             })
             .await
@@ -60,15 +60,13 @@ pub async fn listen_for_node_remove(
     Ok(handle)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_node_remove_request(
     context: ServiceRequestContext,
     messenger: MessengerHandle,
     core_node_node: String,
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
-    pairing: Arc<super::pairing::PairingCoordinator>,
-    observation: Arc<super::observation::ObservationCoordinator>,
+    relationships: RelationshipCoordinators,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -78,22 +76,19 @@ async fn handle_node_remove_request(
             &core_node_node,
             &core_instance_id,
             node_stack,
-            &pairing,
-            &observation,
+            &relationships,
         )
         .await,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_node_remove_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
-    pairing: &super::pairing::PairingCoordinator,
-    observation: &super::observation::ObservationCoordinator,
+    relationships: &RelationshipCoordinators,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -344,7 +339,9 @@ async fn handle_node_remove_request_inner(
     // of entity presence, so it runs even when the entity was concurrently
     // removed above.
     for target in targets.iter().chain(terminal_targets.iter()) {
-        super::tear_down_instance(pairing, observation, target.instance_id.as_str()).await;
+        relationships
+            .tear_down_instance(target.instance_id.as_str())
+            .await;
     }
 
     for target in &config_targets {

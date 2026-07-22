@@ -13,10 +13,8 @@ use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::observation::ObservationCoordinator;
-use crate::services::node::pairing::PairingCoordinator;
 use crate::services::node::{
-    DaemonDefaults, create_action_log_file, resolve_mount_path_parameters,
+    DaemonDefaults, RelationshipCoordinators, create_action_log_file, resolve_mount_path_parameters,
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
@@ -89,8 +87,7 @@ pub async fn listen_for_stack_launch(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     defaults: StackLaunchDefaults,
-    pairing: Arc<PairingCoordinator>,
-    observation: Arc<ObservationCoordinator>,
+    relationships: RelationshipCoordinators,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -119,8 +116,7 @@ pub async fn listen_for_stack_launch(
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
-            pairing,
-            observation,
+            relationships,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -174,14 +170,9 @@ struct ProcessLaunchContext {
     daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor.
     shutdown_token: CancellationToken,
-    /// The daemon's single pairing authority, forwarded into each instance's
-    /// `node_run` flow (the launcher's participant `links:` entries ride the
-    /// per-instance `NodeRunGoal`).
-    pairing: Arc<PairingCoordinator>,
-    /// The daemon's single observation authority. The launcher registers every
-    /// planned observation with it up front, and each instance's `node_run`
-    /// notifies it on Running so source pins reach observers.
-    observation: Arc<ObservationCoordinator>,
+    /// The daemon authorities forwarded into each instance's relationship
+    /// lifecycle work.
+    relationships: RelationshipCoordinators,
 }
 
 #[derive(Clone)]
@@ -195,8 +186,7 @@ struct LaunchActionContext {
     daemon_use_sim_time: bool,
     daemon_defaults: DaemonDefaults,
     shutdown_token: CancellationToken,
-    pairing: Arc<PairingCoordinator>,
-    observation: Arc<ObservationCoordinator>,
+    relationships: RelationshipCoordinators,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -532,7 +522,9 @@ async fn start_node_instances(
     // observers of a source when that source reaches Running). Registering
     // before any instance starts means a source that comes up first still
     // finds its observers waiting.
-    ctx.observation.register_planned(planned_observations);
+    ctx.relationships
+        .observation()
+        .register_planned(planned_observations);
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
     // Each planned pair is established by the LATER-started endpoint's
@@ -826,8 +818,7 @@ async fn handle_goal_request(
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
-            pairing,
-            observation,
+            relationships,
         } = action_context;
         let env_vars = goal.env_vars.clone();
         // Compute the launch deadline once. `None` => no overall deadline (idle-only).
@@ -854,8 +845,7 @@ async fn handle_goal_request(
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
-            pairing,
-            observation,
+            relationships,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
