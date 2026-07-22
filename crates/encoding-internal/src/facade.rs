@@ -186,6 +186,19 @@ impl CapnpFacade {
         }
     }
 
+    /// Returns whether the file at `path` is byte-for-byte the `expected`
+    /// embedded binary. A cheap size check runs first so a mismatched file
+    /// (typically a different capnp version from an earlier install) is rejected
+    /// without reading its contents; only a same-size file is fully compared.
+    fn matches_embedded(path: &Path, expected: &[u8]) -> bool {
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.len() == expected.len() as u64 => std::fs::read(path)
+                .map(|actual| actual.as_slice() == expected)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
     fn ensure_bundled_binary() -> Result<PathBuf> {
         mod embedded {
             include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
@@ -202,10 +215,14 @@ impl CapnpFacade {
         let bin_dir = daemon_config::consts::PeppyDirs::default().bin_dir();
         let binary_path = bin_dir.join("peppy_capnp_binary");
 
-        // Reuse an already-extracted binary only if it still runs. A stale file
-        // left by an earlier (broken or different-arch) install is re-extracted
-        // rather than trusted, which replaces the old "never overwrite" guard.
-        if binary_path.exists() && Self::verify_runs(&binary_path).is_ok() {
+        // Reuse an already-extracted binary only if it matches the bytes this
+        // build embeds and still runs. A stale file left by an earlier install
+        // (different capnp version, or a broken/wrong-arch binary) fails the
+        // content comparison or the run probe and is re-extracted rather than
+        // trusted, which replaces the old "never overwrite" guard.
+        if Self::matches_embedded(&binary_path, binary_bytes)
+            && Self::verify_runs(&binary_path).is_ok()
+        {
             return Ok(binary_path);
         }
 
@@ -264,6 +281,40 @@ mod tests {
             path.exists(),
             "expected bundled capnp binary at {}",
             path.display()
+        );
+    }
+
+    #[test]
+    fn matches_embedded_requires_identical_contents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let embedded = b"capnp v1 bytes";
+
+        let missing = dir.path().join("absent");
+        assert!(
+            !CapnpFacade::matches_embedded(&missing, embedded),
+            "a missing file cannot match"
+        );
+
+        let wrong_size = dir.path().join("wrong_size");
+        std::fs::write(&wrong_size, b"capnp v2 longer bytes").expect("write");
+        assert!(
+            !CapnpFacade::matches_embedded(&wrong_size, embedded),
+            "a different-length file (e.g. a new capnp version) must be rejected"
+        );
+
+        let same_size_diff = dir.path().join("same_size_diff");
+        std::fs::write(&same_size_diff, b"capnp X bytes!").expect("write");
+        assert_eq!(same_size_diff.metadata().unwrap().len(), embedded.len() as u64);
+        assert!(
+            !CapnpFacade::matches_embedded(&same_size_diff, embedded),
+            "a same-length but differing file must be rejected"
+        );
+
+        let identical = dir.path().join("identical");
+        std::fs::write(&identical, embedded).expect("write");
+        assert!(
+            CapnpFacade::matches_embedded(&identical, embedded),
+            "a byte-for-byte identical file must match"
         );
     }
 
