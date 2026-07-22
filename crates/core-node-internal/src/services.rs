@@ -284,6 +284,10 @@ struct ListenerCtx<'a> {
     /// stop, node add overwrite, exit watchers): its op lock serializes all
     /// pairing operations daemon-wide.
     pairing: Arc<node::PairingCoordinator>,
+    /// The daemon's single observation authority. ONE instance shared by the
+    /// stack-launch registration and every instance's `node_run` lifecycle
+    /// notifications, so a source coming up finds its observers and vice versa.
+    observation: Arc<node::ObservationCoordinator>,
 }
 
 /// Why a daemon-side registration for a registry method deliberately does
@@ -620,6 +624,7 @@ impl CoreNode {
                     shutdown_token: self.shutdown_token.clone(),
                 },
                 Arc::clone(&ctx.pairing),
+                Arc::clone(&ctx.observation),
             )
             .boxed(),
             ActionId::StackBenchmark => stack::listen_for_stack_benchmark(
@@ -668,6 +673,7 @@ impl CoreNode {
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     pairing: Arc::clone(&ctx.pairing),
+                    observation: Arc::clone(&ctx.observation),
                 },
             )
             .boxed(),
@@ -797,6 +803,12 @@ impl CoreNode {
             clock_source,
             datastore: Arc::new(datastore::Datastore::new()),
             pairing: Arc::new(node::PairingCoordinator::new(
+                Arc::clone(&self.node_stack),
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+            )),
+            observation: Arc::new(node::ObservationCoordinator::new(
                 Arc::clone(&self.node_stack),
                 self.messenger.clone(),
                 core_node_name,

@@ -9,7 +9,7 @@
         {
           instance_id: "the_brain",
           arguments: {},
-          bindings: {
+          links: {
             front_camera: "camera_front",
             robot_controller: "the_nervous_system",
           },

@@ -1,7 +1,7 @@
 //! End-to-end pairing flow over an in-process daemon (mock messaging):
 //! `repo refresh` discovers the pairing doc, `node add` resolves
 //! `depends_on.pairings` through the pairing cache, and `node run` enforces
-//! coverage, establishes pairs via `--pair`, delivers live `peer_update`
+//! coverage, establishes pairs via `--link`, delivers live `peer_update`
 //! pins to both endpoints, auto-clears on `node stop` (notifying the
 //! survivor), supports re-pairing the survivor, and enforces slot
 //! exclusivity. The "nodes" are `sleep` processes; their ready/health and
@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use core_node_api::encoding::PairTarget;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::context::AppContext;
@@ -81,9 +80,8 @@ fn add_node(ctx: &Arc<AppContext>, dir: &Path, config: &str) {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -136,7 +134,7 @@ async fn emulate_instance_services(
 fn run_command(
     instance_id: &str,
     node: &str,
-    pairs: Vec<(String, PairTarget)>,
+    links: Vec<(String, String)>,
     defer: Vec<String>,
 ) -> NodeCommand {
     NodeCommand {
@@ -146,9 +144,8 @@ fn run_command(
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs,
-            defer_pairs: defer,
+            links,
+            defer_links: defer,
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -190,10 +187,10 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     // ── Coverage is enforced loudly ─────────────────────────────────────
     let err = run_command("arm_0", "robot_arm", Vec::new(), Vec::new())
         .execute(&ctx)
-        .expect_err("a required pairing slot without --pair/--defer-pair must fail");
+        .expect_err("a required pairing slot without --link/--defer-link must fail");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && msg.contains("--pair") && msg.contains("--defer-pair"),
+        msg.contains("controller") && msg.contains("--link") && msg.contains("--defer-link"),
         "coverage failure should name the slot and both flags: {msg}"
     );
 
@@ -213,7 +210,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         vec!["controller".to_string()],
     )
     .execute(&ctx)
-    .expect("run with --defer-pair should succeed");
+    .expect("run with --defer-link should succeed");
     assert!(
         arm_rx.borrow().pin.is_none(),
         "a deferred slot must boot unpaired"
@@ -231,11 +228,11 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     run_command(
         "ctrl_1",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
-    .expect("run with --pair should succeed");
+    .expect("run with --link should succeed");
 
     // Both endpoints received their absolute pin state live.
     let arm_pin = arm_rx.borrow_and_update().clone();
@@ -272,7 +269,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     let err = run_command(
         "ctrl_2",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
@@ -325,7 +322,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     let err = run_command(
         "ctrl_2b",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
@@ -348,7 +345,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     run_command(
         "ctrl_3",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)

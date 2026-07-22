@@ -19,7 +19,7 @@
 use config::runtime::Name;
 use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, DeploymentInstance, PairingValidationItem, validate_pairings,
+    AlreadyPairedSlots, DeploymentInstance, LinkValue, PairingValidationItem, validate_pairings,
 };
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
 use peppylib::MessengerHandle;
@@ -296,7 +296,7 @@ pub struct PairingRequest<'a> {
     /// `link_id -> peer target` from `--pair` / a launch plan.
     pub requested: &'a std::collections::BTreeMap<String, PairTarget>,
     /// Slots deliberately starting unpaired (`--defer-pair` / the
-    /// launcher's `defer_pairings:`).
+    /// launcher's `defer_links:`).
     pub deferred: &'a [String],
     /// Launch-mechanism markers: slots a later-starting instance of the
     /// same launch will claim ([`NodeRunGoal::covered_pairs`] — see its doc
@@ -321,7 +321,7 @@ pub struct PairingRequest<'a> {
 /// - covered slots (the earlier endpoints of launch-planned pairs) satisfy
 ///   the coverage rule like defers, but optional covered slots are dropped
 ///   before the validator: optional slots pass coverage on their own, and
-///   the validator rightly rejects optional entries in `defer_pairings` as
+///   the validator rightly rejects optional entries in `defer_links` as
 ///   a user error. A covered key naming an unknown slot is kept so the
 ///   validator reports it.
 ///
@@ -354,6 +354,29 @@ pub fn plan_requested_pairs(
         }
     }
 
+    // Every requested / covered / deferred key must name one of this node's
+    // participant pairing slots. `validate_pairings` intentionally SKIPS keys
+    // that are not participant slots (the unified `links` map lets producer and
+    // observer keys share the namespace), so this boundary — where the goal has
+    // already classified pairs — is where a stray key is caught. This restores
+    // the old dead-key rejection that the by-validator classification dropped.
+    let participant_slots: std::collections::BTreeSet<&str> = pairing_deps
+        .iter()
+        .filter_map(|d| match d {
+            config::node::PairingDependency::Participant(p) => Some(p.link_id.as_str()),
+            config::node::PairingDependency::Observer(_) => None,
+        })
+        .collect();
+    for link_id in requested.keys().chain(covered.keys()).chain(deferred.iter()) {
+        if !participant_slots.contains(link_id.as_str()) {
+            return Err(format!(
+                "pairing slot `{link_id}` on instance '{instance_id}' matches no declared \
+                 participant pairing slot; declared: [{}]",
+                participant_slots.iter().copied().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+
     let defer_like: Vec<String> = deferred
         .iter()
         .chain(covered.keys().filter(|link| {
@@ -371,13 +394,13 @@ pub fn plan_requested_pairs(
         .collect();
     let own_instances = vec![DeploymentInstance {
         // Rendered into the validator's launcher target grammar
-        // (`peer[/peer_link]`); lossless, since instance ids and link_ids
-        // are `/`-free names.
-        pairings: requested
+        // (`peer[/peer_link]`) as a scalar link value; lossless, since
+        // instance ids and link_ids are `/`-free names.
+        links: requested
             .iter()
-            .map(|(link_id, target)| (link_id.clone(), target.to_string()))
+            .map(|(link_id, target)| (link_id.clone(), LinkValue::Scalar(target.to_string())))
             .collect(),
-        defer_pairings: defer_like,
+        defer_links: defer_like,
         ..DeploymentInstance::empty(
             Name::new(instance_id)
                 .map_err(|e| format!("invalid instance id `{instance_id}`: {e}"))?,
@@ -570,7 +593,7 @@ mod tests {
         let err = plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &[])
             .expect_err("required slot must be covered");
         assert!(
-            err.contains("arm") && err.contains("--pair") && err.contains("--defer-pair"),
+            err.contains("arm") && err.contains("--link") && err.contains("--defer-link"),
             "error should name the slot and both flags: {err}"
         );
 

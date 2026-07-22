@@ -1,5 +1,6 @@
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
+use super::observation::ObservationCoordinator;
 use super::pairing::{PairingCoordinator, plan_requested_pairs};
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
@@ -146,6 +147,9 @@ pub struct NodeRunServiceConfig {
     /// The daemon's single pairing authority: reserve/deliver/dissolve for
     /// the goal's `requested_pairs`/`deferred_pairs`.
     pub pairing: Arc<PairingCoordinator>,
+    /// The daemon's single observation authority: notified as this instance
+    /// reaches Running (delivering source pins to observers) and exits.
+    pub observation: Arc<ObservationCoordinator>,
 }
 
 #[derive(Clone)]
@@ -162,6 +166,7 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) pairing: Arc<PairingCoordinator>,
+    pub(crate) observation: Arc<ObservationCoordinator>,
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
@@ -226,6 +231,7 @@ pub async fn listen_for_node_run(
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
             pairing: config.pairing,
+            observation: config.observation,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -1129,6 +1135,7 @@ async fn process_node_run(
                         target_instance_id: instance_id.clone(),
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
                         pairing: Arc::clone(&ctx.action.pairing),
+                        observation: Arc::clone(&ctx.action.observation),
                         instance_done: instance_done.clone(),
                         shutdown_token: ctx.action.shutdown_token.clone(),
                     });
@@ -1148,6 +1155,17 @@ async fn process_node_run(
                         shutdown_token: ctx.action.shutdown_token.clone(),
                         instance_done,
                     });
+
+                    // The instance is Running: notify the observation
+                    // coordinator. If this instance is a source, every live
+                    // observer of it now receives its pin at a freshly bumped
+                    // generation; if it is itself an observer, it receives pins
+                    // for any source already up. Best-effort and independent of
+                    // pairing, so it always runs (a source need not be paired).
+                    ctx.action
+                        .observation
+                        .on_instance_running(instance_id_str)
+                        .await;
 
                     // The instance is Running: deliver every reserved pin
                     // live over `peer_update` (boot config is always
@@ -1668,6 +1686,11 @@ struct ExitWatcherParams {
     /// Death auto-clears pairs: on a self-exit the watcher eagerly dissolves
     /// every pair involving this instance and notifies each live survivor.
     pairing: Arc<PairingCoordinator>,
+    /// Death also notifies observers: on a self-exit the watcher tells the
+    /// observation coordinator so live observers of this source see it go down
+    /// (informational `source_live: false`) and this instance's own observer
+    /// registrations are dropped.
+    observation: Arc<ObservationCoordinator>,
     /// Cancelled once the process exits, to stop this instance's health monitor.
     instance_done: CancellationToken,
     shutdown_token: CancellationToken,
@@ -1697,6 +1720,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         target_instance_id,
         peppy_dirs,
         pairing,
+        observation,
         instance_done,
         shutdown_token,
     } = p;
@@ -1747,6 +1771,9 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         // paths that never reach here).
         pairing
             .dissolve_for_instance(instance_id_str.as_str())
+            .await;
+        observation
+            .on_instance_down(instance_id_str.as_str())
             .await;
 
         match new_state {

@@ -37,8 +37,8 @@ mod internal {
 
 // -- error --
 pub use error::{
-    BindingTargetMismatch, BindingUnknownSlot, DuplicateInstanceIdAcrossStack,
-    Error as DaemonConfigError, ParsingError, SlotKind, format_bulleted,
+    BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
+    LinkUnknownSlot, ParsingError, SlotKind, format_bulleted,
 };
 
 // -- atomic_write --
@@ -68,12 +68,13 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, BindingTargets, BindingValidationItem, BindingValue, Deployment,
-        DeploymentGitSource, DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource,
-        DeploymentSource, DeploymentUrlSource, DuplicateBindingTarget, FrameworkOverrides,
-        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, PlannedPairEndpoint,
-        PlannedPairing, ValidatedBindings, ValidatedPairings, split_pair_target, validate_bindings,
-        validate_pairings,
+        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentGitSource,
+        DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
+        DeploymentUrlSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
+        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, PlannedObservation,
+        PlannedPairEndpoint, PlannedPairing, ValidatedBindings, ValidatedObservations,
+        ValidatedPairings, split_pair_target, validate_bindings, validate_link_slots,
+        validate_observations, validate_pairings,
     };
 }
 

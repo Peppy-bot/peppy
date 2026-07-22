@@ -181,6 +181,7 @@ pub(super) async fn start_node_directly(
         daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
         pairing: Arc::clone(&ctx.pairing),
+        observation: Arc::clone(&ctx.observation),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -265,6 +266,7 @@ pub(super) async fn validate_and_order_dependencies(
         Vec<NodeKey>,
         ResolvedSlotBindings,
         Vec<daemon_config::launcher::PlannedPairing>,
+        Vec<daemon_config::launcher::PlannedObservation>,
     ),
     LaunchResult,
 > {
@@ -341,9 +343,8 @@ pub(super) async fn validate_and_order_dependencies(
             arguments: Default::default(),
             env_vars: Default::default(),
             framework: Default::default(),
-            bindings: Default::default(),
-            pairings: Default::default(),
-            defer_pairings: Default::default(),
+            links: Default::default(),
+            defer_links: Default::default(),
         })
         .into_iter()
         .collect();
@@ -367,6 +368,19 @@ pub(super) async fn validate_and_order_dependencies(
             implements: &root_config.manifest.implements,
         });
     }
+    // Cross-family check first: every `links` key must name a declared slot
+    // in some family, and every `defer_links` entry must be a deferrable
+    // (pairing/observer) slot. This is the single pass that sees all slot
+    // kinds, so it owns unknown-key and structural-defer reporting; the
+    // per-mechanism validators below skip keys that are not theirs.
+    let link_slot_errors = daemon_config::launcher::validate_link_slots(&binding_items);
+    if !link_slot_errors.is_empty() {
+        let errors: Vec<String> = link_slot_errors.iter().map(|e| e.to_string()).collect();
+        let msg = daemon_config::format_bulleted(&errors);
+        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+
     // Stamp every resolved producer reference with this daemon's core_node:
     // stacks are daemon-scoped, so the launching daemon is where every
     // producer instance in the snapshot lives.
@@ -379,11 +393,14 @@ pub(super) async fn validate_and_order_dependencies(
     }
     let resolved_slot_bindings = validated.slot_bindings;
 
-    // Pairing plan: every `pairings:`/`defer_pairings:` map validated
-    // against the declared slots, coverage of required slots enforced, each
-    // target resolved to one concrete peer slot. A launch replaces the
-    // previous stack (torn down at the clear step), so there are no
-    // preexisting instances or already-claimed slots to fold in.
+    // Pairing plan: every participant-slot `links:` entry (and `defer_links:`)
+    // validated against the declared slots, coverage of required slots
+    // enforced, each target resolved to one concrete peer slot. Observer plan:
+    // every observer-slot `links:` entry resolved to its source participant
+    // slot. Both read the same per-node `depends_on.pairings`, so they share
+    // one item set. A launch replaces the previous stack (torn down at the
+    // clear step), so there are no preexisting instances or already-claimed
+    // slots to fold in.
     let pairing_items: Vec<daemon_config::launcher::PairingValidationItem<'_>> = planned
         .iter()
         .map(|p| daemon_config::launcher::PairingValidationItem {
@@ -404,17 +421,23 @@ pub(super) async fn validate_and_order_dependencies(
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
     );
-    if !validated_pairings.errors.is_empty() {
-        let errors: Vec<String> = validated_pairings
-            .errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect();
-        let msg = daemon_config::format_bulleted(&errors);
+    let validated_observations = daemon_config::launcher::validate_observations(
+        &pairing_items,
+        ctx.bound_core_node.as_str(),
+    );
+    let pairing_errors: Vec<String> = validated_pairings
+        .errors
+        .iter()
+        .chain(validated_observations.errors.iter())
+        .map(|e| e.to_string())
+        .collect();
+    if !pairing_errors.is_empty() {
+        let msg = daemon_config::format_bulleted(&pairing_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
     let planned_pairings = validated_pairings.planned;
+    let planned_observations = validated_observations.planned;
 
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
@@ -447,7 +470,12 @@ pub(super) async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok((ordered, resolved_slot_bindings, planned_pairings))
+    Ok((
+        ordered,
+        resolved_slot_bindings,
+        planned_pairings,
+        planned_observations,
+    ))
 }
 
 /// Perform a stable topological sort.

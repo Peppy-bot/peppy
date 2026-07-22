@@ -21,13 +21,13 @@
 
 use crate::error::{
     BindingContractNotImplemented, BindingSlotUnfulfilled, BindingTargetMismatch,
-    BindingUnknownSlot, DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
+    DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
 };
 use config::node::{Cardinality, DependsOn, ImplementsEntry};
 use config::runtime::{BoundProducers, ProducerRef, SlotBindings};
 use std::collections::BTreeMap;
 
-use super::types::{BindingValue, DeploymentInstance};
+use super::types::{DeploymentInstance, LinkValue};
 
 /// Minimal view of one planned deployment needed for binding
 /// validation. Built by the launcher with borrowed references to avoid
@@ -86,11 +86,15 @@ pub struct ValidatedBindings {
 /// cross-daemon stacks ever land, the launcher knows each instance's
 /// target daemon and the stamp generalizes to a per-instance input.
 ///
+/// This validator owns only the producer-binding slots
+/// (`depends_on.{nodes,contracts}`). A `links` key naming a pairing/observer
+/// slot, or naming no slot at all, is skipped here; pairing/observer
+/// resolution and the unified unknown-key report (`validate_link_slots`) own
+/// those.
+///
 /// Rules enforced:
-/// 1. Every binding `KEY` equals a declared `depends_on.{nodes,
-///    contracts}` `link_id`. A key naming a pairing slot gets the
-///    targeted [`ParsingError::BindingKeyIsPairingSlot`]; any other
-///    unknown key is [`ParsingError::BindingUnknownSlot`].
+/// 1. Only `links` keys equal to a declared `depends_on.{nodes,contracts}`
+///    `link_id` are processed; every other key is skipped.
 /// 2. The binding value matches the slot's declared cardinality. Launch
 ///    files carry shape: a `one` slot takes a scalar only (an array,
 ///    single-element and empty included, is
@@ -110,7 +114,7 @@ pub struct ValidatedBindings {
 ///    `manifest.implements`
 ///    ([`ParsingError::BindingContractNotImplemented`] otherwise).
 ///    Duplicate targets within one slot are unrepresentable
-///    ([`super::types::BindingTargets`] rejects them at construction);
+///    ([`super::types::LinkTargets`] rejects them at construction);
 ///    declaration order is preserved into the resolution.
 /// 4. Stack-wide `instance_id` uniqueness across every entry in
 ///    `items.instances` is enforced; collisions emit
@@ -131,38 +135,17 @@ pub fn validate_bindings(
 
     for item in items {
         let declared_slots = collect_declared_slots(item.depends_on);
-        let declared_csv = format_declared_keys(&declared_slots);
-        // Pairing slots are never binding slots: `collect_declared_slots`
-        // reads only `depends_on.{nodes,contracts}`, so a pairing link_id
-        // can never match a binding key. This set exists solely to turn a
-        // `--bind` on a pairing slot into a targeted "use --pair" error
-        // instead of a generic `BindingUnknownSlot`.
-        let pairing_link_ids: std::collections::BTreeSet<&str> = item
-            .depends_on
-            .map(|d| d.pairings.iter().map(|p| p.link_id()).collect())
-            .unwrap_or_default();
 
         for instance in item.instances {
             let mut resolved: SlotBindings = BTreeMap::new();
 
-            for (binding_key, value) in &instance.bindings {
-                if pairing_link_ids.contains(binding_key.as_str()) {
-                    out.errors.push(ParsingError::BindingKeyIsPairingSlot {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        binding: binding_key.clone(),
-                    });
-                    continue;
-                }
-
-                // Rule 1: KEY must name a declared slot.
+            for (binding_key, value) in &instance.links {
+                // Only producer-binding keys are ours. A key naming a
+                // pairing/observer slot is handled by its own validator, and a
+                // key naming no slot at all is reported once by
+                // `validate_link_slots`; both are skipped here rather than
+                // re-reported per mechanism.
                 let Some(slot) = declared_slots.get(binding_key.as_str()).copied() else {
-                    out.errors.push(ParsingError::BindingUnknownSlot(Box::new(
-                        BindingUnknownSlot {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding_key.clone(),
-                            declared_link_ids: declared_csv.clone(),
-                        },
-                    )));
                     continue;
                 };
 
@@ -176,7 +159,7 @@ pub fn validate_bindings(
                 }
 
                 // Rule 3: every target exists and satisfies the slot
-                // (uniqueness holds by `BindingTargets` construction).
+                // (uniqueness holds by `LinkTargets` construction).
                 // All-or-nothing: a slot with any bad target reports each
                 // offender and resolves nothing.
                 let mut producers: Vec<ProducerRef> = Vec::with_capacity(value.targets().len());
@@ -185,7 +168,7 @@ pub fn validate_bindings(
                     let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
                         out.errors.push(ParsingError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
-                            binding: binding_key.clone(),
+                            link: binding_key.clone(),
                             instance_id: target_id.clone(),
                         });
                         slot_failed = true;
@@ -209,7 +192,7 @@ pub fn validate_bindings(
                 }
 
                 let bound = BoundProducers::try_from(producers)
-                    .expect("targets are duplicate-free by BindingTargets construction");
+                    .expect("targets are duplicate-free by LinkTargets construction");
                 resolved.insert(binding_key.clone(), bound);
             }
 
@@ -219,7 +202,7 @@ pub fn validate_bindings(
             // not a bogus "add a binding" too. A `zero_or_more` slot with
             // no entry resolves to an explicit empty set.
             for (slot_link_id, slot) in &declared_slots {
-                if instance.bindings.contains_key(*slot_link_id) {
+                if instance.links.contains_key(*slot_link_id) {
                     continue;
                 }
                 if slot.cardinality.allows_empty() {
@@ -258,17 +241,17 @@ pub fn validate_bindings(
 /// an empty programmatic value on `one_or_more`.
 fn check_value_matches_cardinality(
     slot: &SlotMeta<'_>,
-    value: &BindingValue,
+    value: &LinkValue,
     binding_key: &str,
     instance: &DeploymentInstance,
 ) -> Result<(), ParsingError> {
     match (slot.cardinality, value) {
-        (Cardinality::One, BindingValue::Scalar(_)) => Ok(()),
-        (Cardinality::One, BindingValue::Array(_)) => Err(ParsingError::BindingArrayOnOneSlot {
+        (Cardinality::One, LinkValue::Scalar(_)) => Ok(()),
+        (Cardinality::One, LinkValue::Array(_)) => Err(ParsingError::BindingArrayOnOneSlot {
             owner_instance_id: instance.instance_id.to_string(),
             binding: binding_key.to_string(),
         }),
-        (Cardinality::One, BindingValue::Flags(targets)) => {
+        (Cardinality::One, LinkValue::Flags(targets)) => {
             if targets.len() == 1 {
                 Ok(())
             } else {
@@ -279,14 +262,14 @@ fn check_value_matches_cardinality(
                 })
             }
         }
-        (Cardinality::OneOrMore | Cardinality::ZeroOrMore, BindingValue::Scalar(_)) => {
+        (Cardinality::OneOrMore | Cardinality::ZeroOrMore, LinkValue::Scalar(_)) => {
             Err(ParsingError::BindingScalarOnMultiSlot {
                 owner_instance_id: instance.instance_id.to_string(),
                 binding: binding_key.to_string(),
                 cardinality: slot.cardinality,
             })
         }
-        (Cardinality::OneOrMore, BindingValue::Array(targets) | BindingValue::Flags(targets))
+        (Cardinality::OneOrMore, LinkValue::Array(targets) | LinkValue::Flags(targets))
             if targets.is_empty() =>
         {
             Err(ParsingError::BindingCardinalityUnmet {
@@ -296,7 +279,7 @@ fn check_value_matches_cardinality(
         }
         (
             Cardinality::OneOrMore | Cardinality::ZeroOrMore,
-            BindingValue::Array(_) | BindingValue::Flags(_),
+            LinkValue::Array(_) | LinkValue::Flags(_),
         ) => Ok(()),
     }
 }
@@ -442,11 +425,6 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
     }
 }
 
-fn format_declared_keys(slots: &DeclaredSlots<'_>) -> String {
-    let keys: Vec<&str> = slots.keys().copied().collect();
-    keys.join(", ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,9 +502,9 @@ mod tests {
 
     /// Test shorthand: a `Flags` binding value from unique literals, as
     /// the CLI's flag accumulation would build it.
-    fn flags(targets: &[&str]) -> BindingValue {
-        BindingValue::Flags(
-            super::super::types::BindingTargets::new(
+    fn flags(targets: &[&str]) -> LinkValue {
+        LinkValue::Flags(
+            super::super::types::LinkTargets::new(
                 targets.iter().map(|t| t.to_string()).collect(),
             )
             .expect("test targets are unique"),
@@ -551,13 +529,15 @@ mod tests {
         assert!(out.slot_bindings.is_empty());
     }
 
-    /// Rule 1: a binding whose KEY names no declared slot is rejected.
+    /// A link whose KEY names no producer slot is silently skipped by the
+    /// binding validator (unknown-key reporting is `validate_link_slots`'s
+    /// job); a valid sibling binding still resolves.
     #[test]
-    fn rule1_rejects_unknown_slot_key() {
+    fn unknown_key_is_skipped_here_not_reported() {
         let instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "prod1", stale_slot: "prod1" }
+                links: { main: "prod1", stale_slot: "prod1" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -571,18 +551,11 @@ mod tests {
             item("camera", "v1", &prod_instances, None),
         ];
         let out = validate_bindings(&items, TEST_CORE);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
-            out.errors.len(),
-            1,
-            "expected one error, got {:?}",
-            out.errors
+            slot_binding(&out, "cons1", "main"),
+            single(TEST_CORE, "prod1")
         );
-        let ParsingError::BindingUnknownSlot(info) = &out.errors[0] else {
-            panic!("expected BindingUnknownSlot, got {:?}", out.errors[0]);
-        };
-        assert_eq!(info.owner_instance_id, "cons1");
-        assert_eq!(info.binding, "stale_slot");
-        assert_eq!(info.declared_link_ids, "main");
     }
 
     /// Rule 5: a declared slot with no binding entry is rejected — there
@@ -626,7 +599,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { middle: "prod1" }
+                links: { middle: "prod1" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -672,7 +645,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "prod1" }
+                links: { main: "prod1" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -717,7 +690,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: {
+                links: {
                     main: "prod1",
                     cameras: ["prod2", "prod1"]
                 }
@@ -762,7 +735,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: {
+                links: {
                     main: "prod1",
                     cameras: ["prod1"],
                     spare_cameras: []
@@ -796,7 +769,7 @@ mod tests {
             let cons_json = format!(
                 r#"[{{
                     instance_id: "cons1",
-                    bindings: {{ main: {producers} }}
+                    links: {{ main: {producers} }}
                 }}]"#
             );
             let cons_instances = parse_instances(&cons_json);
@@ -845,7 +818,7 @@ mod tests {
                 Cardinality::OneOrMore,
                 r#"[{
                     instance_id: "cons1",
-                    bindings: { main: "prod1", cameras: "prod1", spare_cameras: [] }
+                    links: { main: "prod1", cameras: "prod1", spare_cameras: [] }
                 }]"#,
             ),
             (
@@ -853,7 +826,7 @@ mod tests {
                 Cardinality::ZeroOrMore,
                 r#"[{
                     instance_id: "cons1",
-                    bindings: { main: "prod1", cameras: ["prod1"], spare_cameras: "prod1" }
+                    links: { main: "prod1", cameras: ["prod1"], spare_cameras: "prod1" }
                 }]"#,
             ),
         ] {
@@ -890,7 +863,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "prod1", cameras: [], spare_cameras: [] }
+                links: { main: "prod1", cameras: [], spare_cameras: [] }
             }]"#,
         );
         let depends_on = all_cardinalities_depends_on();
@@ -946,7 +919,7 @@ mod tests {
         );
     }
 
-    /// CLI flag occurrences (shape-less `BindingValue::Flags`) accumulate
+    /// CLI flag occurrences (shape-less `LinkValue::Flags`) accumulate
     /// on a multi slot in flag order and stay a hard error on a `one`
     /// slot; a single occurrence is valid everywhere it meets the minimum.
     #[test]
@@ -961,9 +934,9 @@ mod tests {
 
         // Accumulated flags on the multi slot, one flag on the one slot.
         let mut valid = DeploymentInstance::empty(Name::new("cons1").unwrap());
-        valid.bindings.insert("main".to_string(), flags(&["prod1"]));
+        valid.links.insert("main".to_string(), flags(&["prod1"]));
         valid
-            .bindings
+            .links
             .insert("cameras".to_string(), flags(&["prod2", "prod1"]));
         let valid_instances = vec![valid];
         let items = vec![
@@ -988,10 +961,10 @@ mod tests {
         // Two flags on the `one` slot: hard error naming the count.
         let mut repeated = DeploymentInstance::empty(Name::new("cons1").unwrap());
         repeated
-            .bindings
+            .links
             .insert("main".to_string(), flags(&["prod1", "prod2"]));
         repeated
-            .bindings
+            .links
             .insert("cameras".to_string(), flags(&["prod1"]));
         let repeated_instances = vec![repeated];
         let items = vec![
@@ -1018,8 +991,8 @@ mod tests {
         // The CLI never constructs an empty Flags value, but programmatic
         // callers still go through the same cardinality check.
         let mut empty = DeploymentInstance::empty(Name::new("cons1").unwrap());
-        empty.bindings.insert("main".to_string(), flags(&["prod1"]));
-        empty.bindings.insert("cameras".to_string(), flags(&[]));
+        empty.links.insert("main".to_string(), flags(&["prod1"]));
+        empty.links.insert("cameras".to_string(), flags(&[]));
         let empty_instances = vec![empty];
         let items = vec![
             item("cons", "v1", &empty_instances, Some(&depends_on)),
@@ -1040,7 +1013,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: {
+                links: {
                     main: "prod1",
                     cameras: ["prod1", "actually_lidar", "ghost"]
                 }
@@ -1086,7 +1059,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { cameras: ["webcam_1", "not_a_camera"] }
+                links: { cameras: ["webcam_1", "not_a_camera"] }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1126,7 +1099,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "actually_lidar" }
+                links: { main: "actually_lidar" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1158,7 +1131,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { depth: "any_producer" }
+                links: { depth: "any_producer" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1201,7 +1174,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { depth: "webcam_inst_1" }
+                links: { depth: "webcam_inst_1" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1237,7 +1210,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "backbone_inst_1",
-                bindings: {
+                links: {
                     wrist_left_camera: "depth_cam_inst1",
                     wrist_right_camera: "depth_cam_inst1"
                 }
@@ -1292,7 +1265,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "backbone_inst_1",
-                bindings: {
+                links: {
                     wrist_left_camera: "depth_cam_inst1"
                 }
             }]"#,
@@ -1358,7 +1331,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { cam: "node_prod_inst", depth: "contract_prod_inst" }
+                links: { cam: "node_prod_inst", depth: "contract_prod_inst" }
             }]"#,
         );
         let cons_depends_on = parse_depends_on(
@@ -1408,7 +1381,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "ghost_producer" }
+                links: { main: "ghost_producer" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1421,14 +1394,14 @@ mod tests {
         assert_eq!(out.errors.len(), 1);
         let ParsingError::UnknownInstanceId {
             owner_instance_id,
-            binding,
+            link,
             instance_id,
         } = &out.errors[0]
         else {
             panic!("expected UnknownInstanceId, got {:?}", out.errors[0]);
         };
         assert_eq!(owner_instance_id, "cons1");
-        assert_eq!(binding, "main");
+        assert_eq!(link, "main");
         assert_eq!(instance_id, "ghost_producer");
     }
 
@@ -1489,19 +1462,25 @@ mod tests {
         assert_eq!(info.tag_b, "v1");
     }
 
-    /// Errors aggregate (no short-circuit): an unknown slot key and an
-    /// unknown target instance surface together.
+    /// Errors aggregate (no short-circuit) within `validate_bindings`: a bad
+    /// target on one binding slot does not stop a sibling slot from being
+    /// checked. An unknown-slot KEY is not this validator's concern (a link
+    /// key naming no producer slot is skipped here and reported once by
+    /// `validate_link_slots`), so only the target error surfaces.
     #[test]
     fn aggregates_multiple_errors() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { unknown_slot: "prod1", main: "ghost" }
+                links: { extra: "ghost", main: "also_ghost" }
             }]"#,
         );
         let depends_on = parse_depends_on(
             r#"{
-                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+                nodes: [
+                    { name: "camera", tag: "v1", link_id: "main" },
+                    { name: "camera", tag: "v1", link_id: "extra" }
+                ]
             }"#,
         );
         let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
@@ -1513,16 +1492,16 @@ mod tests {
         assert_eq!(
             out.errors.len(),
             2,
-            "expected two errors, got {:?}",
+            "expected two UnknownInstanceId errors, got {:?}",
             out.errors
         );
-        // Bindings iterate in key order: `main` errors first, then
-        // `unknown_slot`.
-        assert!(matches!(
-            out.errors[0],
-            ParsingError::UnknownInstanceId { .. }
-        ));
-        assert!(matches!(out.errors[1], ParsingError::BindingUnknownSlot(_)));
+        assert!(
+            out.errors
+                .iter()
+                .all(|e| matches!(e, ParsingError::UnknownInstanceId { .. })),
+            "both slots' bad targets should surface: {:?}",
+            out.errors
+        );
     }
 
     /// `implements` matching is strict on `(name, tag)`: a producer
@@ -1533,7 +1512,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { depth: "webcam_inst_1" }
+                links: { depth: "webcam_inst_1" }
             }]"#,
         );
         let depends_on = parse_depends_on(
@@ -1573,7 +1552,7 @@ mod tests {
         let depth_consumer = parse_instances(
             r#"[{
                 instance_id: "depth_cons",
-                bindings: { feed: "multi_prod" }
+                links: { feed: "multi_prod" }
             }]"#,
         );
         let depth_deps = parse_depends_on(
@@ -1589,7 +1568,7 @@ mod tests {
         let uvc_consumer = parse_instances(
             r#"[{
                 instance_id: "uvc_cons",
-                bindings: { feed: "multi_prod" }
+                links: { feed: "multi_prod" }
             }]"#,
         );
         let uvc_deps = parse_depends_on(
@@ -1632,45 +1611,6 @@ mod tests {
         );
     }
 
-    /// A `--bind` whose KEY names a pairing slot gets the targeted
-    /// "use --pair" error, not `BindingUnknownSlot`. Pairing slots are
-    /// established via `--pair`/`pairings:` only.
-    #[test]
-    fn binding_key_naming_a_pairing_slot_says_use_pair() {
-        let cons_instances = parse_instances(
-            r#"[{
-                instance_id: "ctrl_1",
-                bindings: { arm: "arm_inst" }
-            }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{
-                pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]
-            }"#,
-        );
-        let prod_instances = parse_instances(r#"[{ instance_id: "arm_inst" }]"#);
-        let items = vec![
-            item("arm_controller", "v1", &cons_instances, Some(&depends_on)),
-            item("robot_arm", "v1", &prod_instances, None),
-        ];
-        let out = validate_bindings(&items, TEST_CORE);
-        assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
-        let ParsingError::BindingKeyIsPairingSlot {
-            owner_instance_id,
-            binding,
-        } = &out.errors[0]
-        else {
-            panic!("expected BindingKeyIsPairingSlot, got {:?}", out.errors[0]);
-        };
-        assert_eq!(owner_instance_id, "ctrl_1");
-        assert_eq!(binding, "arm");
-        assert!(
-            out.errors[0].to_string().contains("--pair"),
-            "message should point at --pair: {}",
-            out.errors[0]
-        );
-    }
-
     /// Pairing slots are not binding slots: a required pairing slot with
     /// no binding produces no error and no slot entry here (the pairing
     /// validator owns that surface).
@@ -1702,7 +1642,7 @@ mod tests {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                bindings: { main: "prod1", extra: "prod2" }
+                links: { main: "prod1", extra: "prod2" }
             }]"#,
         );
         let depends_on = parse_depends_on(

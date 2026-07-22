@@ -129,9 +129,8 @@ async fn node_launch_command_succeed() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -372,9 +371,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -883,7 +881,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
                     source: {{ local: "{consumer_path}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
-                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                        links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
@@ -1097,7 +1095,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
                     source: {{ local: "{consumer_path}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
-                        bindings: {{ {link_id}: ["{rear_instance_id}", "{front_instance_id}"] }}
+                        links: {{ {link_id}: ["{rear_instance_id}", "{front_instance_id}"] }}
                     }}]
                 }}
             ]
@@ -1224,7 +1222,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
                     source: {{ local: "{consumer_path}" }},
                     instances: [{{
                         instance_id: "solo_cons",
-                        bindings: {{ main: ["solo_prod"] }}
+                        links: {{ main: ["solo_prod"] }}
                     }}]
                 }}
             ]
@@ -1257,7 +1255,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
 /// node_tag)` pairs, sharing an `instance_id` must fail at the parse
 /// stage, before any node is added, built, or spawned. The binding
 /// model addresses producers by raw `instance_id` so a duplicate
-/// would make `--bind KEY@id` ambiguous.
+/// would make `--link KEY@id` ambiguous.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1598,7 +1596,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
                     source: {{ local: "{consumer_path}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
-                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                        links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
@@ -1737,7 +1735,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
                     source: {{ local: "{consumer_path}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
-                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                        links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
@@ -1871,7 +1869,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
                     source: {{ local: "{consumer_path}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
-                        bindings: {{ {link_id}: "{producer_instance_id}" }}
+                        links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
@@ -1905,7 +1903,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
     );
 }
 
-/// Bidirectional contract communication under explicit bindings: two
+/// Bidirectional contract communication under explicit links: two
 /// nodes each emit one contract (`manifest.implements`) and consume the other
 /// through a contract dep, each slot bound to the other instance in the
 /// launcher (implements-matched, not node-identity-matched). The
@@ -2126,14 +2124,14 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
                     source: {{ local: "{controller_path}" }},
                     instances: [{{
                         instance_id: "{controller_instance_id}",
-                        bindings: {{ {controller_link_id}: "{arm_instance_id}" }}
+                        links: {{ {controller_link_id}: "{arm_instance_id}" }}
                     }}]
                 }},
                 {{
                     source: {{ local: "{arm_path}" }},
                     instances: [{{
                         instance_id: "{arm_instance_id}",
-                        bindings: {{ {arm_link_id}: "{controller_instance_id}" }}
+                        links: {{ {arm_link_id}: "{controller_instance_id}" }}
                     }}]
                 }}
             ]
@@ -2269,7 +2267,7 @@ async fn stack_launch_rejects_unbound_slot() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    // The consumer instance carries no `bindings:` map at all, so its
+    // The consumer instance carries no `links:` map at all, so its
     // declared `main_cam` slot is unfulfilled.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -2312,7 +2310,7 @@ async fn stack_launch_rejects_unbound_slot() {
         "error should name the owning instance and the unfulfilled slot. Got:\n{err_msg}"
     );
     assert!(
-        err_msg.contains("--bind main_cam@"),
+        err_msg.contains("--link main_cam@"),
         "error should show the exact bind syntax that fixes it. Got:\n{err_msg}"
     );
 
@@ -2465,7 +2463,7 @@ async fn stack_launch_establishes_launcher_pairings() {
                     source: {{ local: "{ctrl_path}" }},
                     instances: [{{
                         instance_id: "ctrl_1",
-                        pairings: {{ arm: "arm_1" }}
+                        links: {{ arm: "arm_1" }}
                     }}]
                 }}
             ]
@@ -2507,8 +2505,8 @@ async fn stack_launch_establishes_launcher_pairings() {
     }
 }
 
-/// A required pairing slot with neither a `pairings:` entry (on either
-/// side) nor a `defer_pairings:` opt-out fails the launch at validation,
+/// A required pairing slot with neither a `links:` entry (on either
+/// side) nor a `defer_links:` opt-out fails the launch at validation,
 /// before anything is added or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_uncovered_pairing_slot() {
@@ -2570,7 +2568,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     .expect_err("an uncovered required pairing slot must fail the launch");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && (msg.contains("pairings") || msg.contains("defer_pairings")),
+        msg.contains("controller") && (msg.contains("--link") || msg.contains("defer_links")),
         "the failure should name the uncovered slot and the launcher keys: {msg}"
     );
 }

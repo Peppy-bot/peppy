@@ -2,7 +2,7 @@ use config::node::NodeConfigParser;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeSource, PairTarget,
+    NodeInfoResponse, NodeSource,
 };
 use std::io::BufRead;
 use std::path::Path;
@@ -30,15 +30,14 @@ use peppylib::core_node::transport::{poll, send_goal};
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
-    /// `--bind KEY@VALUE` pairs to pin pinned `link_id`s to producer
-    /// `instance_id`s. Validated by the same launcher rules that gate
-    /// `peppy node run` via [`validate_and_run_instance`].
-    pub binds: Vec<(String, String)>,
-    /// `--pair LINK_ID@PEER_INSTANCE[/PEER_LINK]` pairing requests,
-    /// validated and established by the same rules as `peppy node run`.
-    pub pairs: Vec<(String, PairTarget)>,
-    /// `--defer-pair LINK_ID` slots explicitly starting unpaired.
-    pub defer_pairs: Vec<String>,
+    /// `--link KEY@TARGET` entries, unifying producer bindings, pairings, and
+    /// observer sources under one flag. Classified by slot kind and validated
+    /// by the same launcher rules that gate `peppy node run` via
+    /// [`validate_and_run_instance`].
+    pub links: Vec<(String, String)>,
+    /// `--defer-link LINK_ID` pairing/observer slots explicitly left
+    /// unresolved at launch.
+    pub defer_links: Vec<String>,
 }
 
 /// Parameters for adding a node.
@@ -253,9 +252,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         node_tag,
         &run_options.args,
         run_options.instance_id,
-        &run_options.binds,
-        &run_options.pairs,
-        &run_options.defer_pairs,
+        &run_options.links,
+        &run_options.defer_links,
         &timeouts,
     )
     .await?;

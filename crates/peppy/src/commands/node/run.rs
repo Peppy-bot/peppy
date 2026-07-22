@@ -8,8 +8,9 @@ use core_node_api::encoding::{
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
-    BindingTargets, BindingValidationItem, BindingValue, DeploymentInstance, PairingValidationItem,
-    validate_bindings, validate_pairings,
+    BindingValidationItem, DeploymentInstance, LinkTargets, LinkValue, PairingValidationItem,
+    split_pair_target, validate_bindings, validate_link_slots, validate_observations,
+    validate_pairings,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -272,14 +273,14 @@ fn parse_value(value: &str) -> AnyType {
 /// bound set, and `validate_bindings` checks the count against the slot's
 /// declared cardinality (more than one target on a `cardinality: "one"`
 /// slot fails there). Repeating the exact same `KEY@VALUE` pair is a hard
-/// error, rejected by [`BindingTargets`] like every other path that builds
+/// error, rejected by [`LinkTargets`] like every other path that builds
 /// a bound set.
-fn binds_to_map(
-    binds: &[(String, String)],
+fn links_to_map(
+    links: &[(String, String)],
     instance_id: &str,
-) -> Result<BTreeMap<String, BindingValue>> {
+) -> Result<BTreeMap<String, LinkValue>> {
     let mut accumulated: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (key, value) in binds {
+    for (key, value) in links {
         accumulated
             .entry(key.clone())
             .or_default()
@@ -288,33 +289,26 @@ fn binds_to_map(
     accumulated
         .into_iter()
         .map(|(key, targets)| {
-            let targets = BindingTargets::new(targets).map_err(|err| {
+            let targets = LinkTargets::new(targets).map_err(|err| {
                 Error::ExecutionFailed(format!(
-                    "`--bind {key}@{target}` on instance `{instance_id}`: {err}",
+                    "`--link {key}@{target}` on instance `{instance_id}`: {err}",
                     target = err.target
                 ))
             })?;
-            Ok((key, BindingValue::Flags(targets)))
+            Ok((key, LinkValue::Flags(targets)))
         })
         .collect()
 }
 
-/// `--pair LINK_ID@TARGET` entries as a map. A pairing slot is claimed at
-/// most once per invocation, so a repeated LINK_ID is a hard error: a
-/// plain `collect()` would silently keep the last target.
-fn pairs_to_map(
-    pairs: &[(String, PairTarget)],
-    instance_id: &str,
-) -> Result<BTreeMap<String, PairTarget>> {
-    let mut map = BTreeMap::new();
-    for (key, target) in pairs {
-        if map.insert(key.clone(), target.clone()).is_some() {
-            return Err(Error::ExecutionFailed(format!(
-                "duplicate pairing key `{key}` on instance `{instance_id}` (each --pair LINK_ID must be distinct)"
-            )));
-        }
-    }
-    Ok(map)
+/// The resolved preflight plan for one instance's `--link` flags: the
+/// producer-binding slots resolved to concrete producer sets, and the
+/// participant-pairing links extracted into the `PairTarget` map the daemon's
+/// `node_run` re-plans. Observer links are validated but carry no goal state
+/// (their source pins are delivered live by the daemon's observation
+/// coordinator once the stack is up), so they do not appear here.
+struct PreflightPlan {
+    slot_bindings: config::runtime::SlotBindings,
+    requested_pairs: BTreeMap<String, PairTarget>,
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
@@ -342,16 +336,15 @@ fn pairs_to_map(
 /// can swallow them and continue; an unreachable daemon should fail
 /// the actual `node_run` invocation, not the pre-flight.
 #[allow(clippy::too_many_arguments)]
-async fn validate_binds_against_stack(
+async fn validate_links_against_stack(
     messenger: &MessengerHandle,
     core_node_name: &str,
     target_name: &str,
     target_tag: &str,
     target_instance_id: &str,
-    binds: &BTreeMap<String, BindingValue>,
-    pairs: &BTreeMap<String, PairTarget>,
-    defer_pairs: &[String],
-) -> Result<Option<config::runtime::SlotBindings>> {
+    links: &BTreeMap<String, LinkValue>,
+    defer_links: &[String],
+) -> Result<Option<PreflightPlan>> {
     let stack_response = poll(
         &StackListRequest::new(),
         messenger,
@@ -499,15 +492,8 @@ async fn validate_binds_against_stack(
     // never inherits the inert `depends_on: None` of an existing target
     // group.
     let synthetic_instances = vec![DeploymentInstance {
-        bindings: binds.clone(),
-        // Rendered into the validator's launcher target grammar
-        // (`peer[/peer_link]`); lossless, since instance ids and link_ids
-        // are `/`-free names.
-        pairings: pairs
-            .iter()
-            .map(|(link_id, target)| (link_id.clone(), target.to_string()))
-            .collect(),
-        defer_pairings: defer_pairs.to_vec(),
+        links: links.clone(),
+        defer_links: defer_links.to_vec(),
         ..DeploymentInstance::empty(
             Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
         )
@@ -531,6 +517,18 @@ async fn validate_binds_against_stack(
         implements: &target_implements,
     });
 
+    // Cross-family check first: every `--link` key must name a declared slot
+    // in some family, and every `--defer-link` a deferrable (pairing/observer)
+    // slot. This owns the unknown-key / structural-defer reporting; the
+    // per-mechanism validators below skip keys that are not theirs.
+    let link_slot_errors = validate_link_slots(&items);
+    if !link_slot_errors.is_empty() {
+        let errors: Vec<String> = link_slot_errors.iter().map(|e| e.to_string()).collect();
+        return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
+            &errors,
+        )));
+    }
+
     // Stamp resolved producer references with the daemon's core_node; the
     // same daemon that will spawn the instance, so the CLI preflight and the
     // daemon's own materialization agree on every producer address.
@@ -540,12 +538,12 @@ async fn validate_binds_against_stack(
         return Err(Error::ExecutionFailed(msg));
     }
 
-    // Pairing preflight over the same snapshot: coverage of every required
-    // slot (naming the exact `--pair`/`--defer-pair` flags), target
+    // Pairing + observer preflight over the same snapshot: coverage of every
+    // required slot (naming the exact `--link`/`--defer-link` flags), target
     // resolution with the `/<peer_link>` ambiguity hint, and exclusivity
     // against `already_paired`. Running instances are `preexisting` items:
-    // valid pair targets, exempt from coverage (they were covered at their
-    // own start).
+    // valid pair/observation targets, exempt from coverage (they were covered
+    // at their own start).
     let target_pairing_deps: Vec<config::node::PairingDependency> = target_depends_on
         .as_ref()
         .map(|d| d.pairings.clone())
@@ -568,23 +566,52 @@ async fn validate_binds_against_stack(
         preexisting: false,
     });
     let validated_pairings = validate_pairings(&pairing_items, &already_paired);
-    if !validated_pairings.errors.is_empty() {
-        let errors: Vec<String> = validated_pairings
-            .errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect();
+    let validated_observations = validate_observations(&pairing_items, core_node_name);
+    let pairing_errors: Vec<String> = validated_pairings
+        .errors
+        .iter()
+        .chain(validated_observations.errors.iter())
+        .map(|e| e.to_string())
+        .collect();
+    if !pairing_errors.is_empty() {
         return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
-            &errors,
+            &pairing_errors,
         )));
     }
 
-    Ok(Some(
-        validated
+    // Extract the participant-pairing links into the `PairTarget` map the goal
+    // carries: the daemon's `node_run` re-plans them exactly as a launcher
+    // deployment would. A participant link's single scalar target parses into
+    // `<peer_instance>[/<peer_link_id>]`. Observer links produce no goal state.
+    let participant_link_ids: std::collections::BTreeSet<&str> = target_pairing_deps
+        .iter()
+        .filter(|d| d.is_participant())
+        .map(|d| d.link_id())
+        .collect();
+    let mut requested_pairs: BTreeMap<String, PairTarget> = BTreeMap::new();
+    for (link_id, value) in links {
+        if !participant_link_ids.contains(link_id.as_str()) {
+            continue;
+        }
+        // Scalar-ness was already enforced by `validate_pairings`; a
+        // participant link that survived it is a single target.
+        if let Some(target) = value.as_scalar() {
+            let (peer_instance, peer_link) = split_pair_target(target);
+            let pair_target = match peer_link {
+                Some(link) => PairTarget::pinned(peer_instance, link),
+                None => PairTarget::new(peer_instance),
+            };
+            requested_pairs.insert(link_id.clone(), pair_target);
+        }
+    }
+
+    Ok(Some(PreflightPlan {
+        slot_bindings: validated
             .slot_bindings
             .remove(target_instance_id)
             .unwrap_or_default(),
-    ))
+        requested_pairs,
+    }))
 }
 
 /// Validate the supplied `--bind` pairs against the running stack, resolve
@@ -607,32 +634,34 @@ pub async fn validate_and_run_instance(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    binds: &[(String, String)],
-    pairs: &[(String, PairTarget)],
-    defer_pairs: &[String],
+    links: &[(String, String)],
+    defer_links: &[String],
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
-    let binds_map = binds_to_map(binds, &prelaunch_instance_id)?;
-    let pairs_map = pairs_to_map(pairs, &prelaunch_instance_id)?;
-    let slot_bindings = match validate_binds_against_stack(
+    let links_map = links_to_map(links, &prelaunch_instance_id)?;
+    // A `None` plan means the preflight could not reach the daemon. We cannot
+    // classify links without the target's manifest, so nothing is pre-resolved
+    // and the goal carries no pairs. In practice this path is inert: a daemon
+    // unreachable at preflight also fails the `node_run` goal send below, so
+    // the user sees a clear transport error rather than a bad boot.
+    let (slot_bindings, requested_pairs) = match validate_links_against_stack(
         messenger,
         core_node_name,
         node_name,
         tag,
         &prelaunch_instance_id,
-        &binds_map,
-        &pairs_map,
-        defer_pairs,
+        &links_map,
+        defer_links,
     )
     .await
     {
-        Ok(Some(slot_bindings)) => slot_bindings,
-        Ok(None) => BTreeMap::new(),
+        Ok(Some(plan)) => (plan.slot_bindings, plan.requested_pairs),
+        Ok(None) => (BTreeMap::new(), BTreeMap::new()),
         Err(e @ Error::ExecutionFailed(_)) => return Err(e),
         Err(e) => {
-            debug!("skipping bind validation for {}:{}: {}", node_name, tag, e);
-            BTreeMap::new()
+            debug!("skipping link validation for {}:{}: {}", node_name, tag, e);
+            (BTreeMap::new(), BTreeMap::new())
         }
     };
 
@@ -644,8 +673,8 @@ pub async fn validate_and_run_instance(
         args,
         Some(prelaunch_instance_id),
         slot_bindings,
-        pairs_map,
-        defer_pairs.to_vec(),
+        requested_pairs,
+        defer_links.to_vec(),
         timeouts,
     )
     .await
@@ -763,9 +792,8 @@ pub fn run_node(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    binds: Vec<(String, String)>,
-    pairs: Vec<(String, PairTarget)>,
-    defer_pairs: Vec<String>,
+    links: Vec<(String, String)>,
+    defer_links: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -775,9 +803,8 @@ pub fn run_node(
         tag,
         args,
         instance_id,
-        binds,
-        pairs,
-        defer_pairs,
+        links,
+        defer_links,
         timeouts,
         build,
     ))
@@ -790,9 +817,8 @@ async fn run_node_async(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    binds: Vec<(String, String)>,
-    pairs: Vec<(String, PairTarget)>,
-    defer_pairs: Vec<String>,
+    links: Vec<(String, String)>,
+    defer_links: Vec<String>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -876,9 +902,8 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
-        &binds,
-        &pairs,
-        &defer_pairs,
+        &links,
+        &defer_links,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
@@ -891,9 +916,9 @@ mod tests {
     use super::*;
 
     /// Test shorthand: the `Flags` value accumulated from unique targets.
-    fn flags(targets: &[&str]) -> BindingValue {
-        BindingValue::Flags(
-            BindingTargets::new(targets.iter().map(|t| t.to_string()).collect())
+    fn flags(targets: &[&str]) -> LinkValue {
+        LinkValue::Flags(
+            LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
                 .expect("test targets are unique"),
         )
     }
@@ -935,17 +960,19 @@ mod tests {
         );
     }
 
-    /// Repeated `--bind KEY` occurrences accumulate the slot's target set
-    /// in flag order (the cardinality check against the manifest happens
-    /// later in `validate_bindings`); only the exact same `KEY@VALUE` pair
-    /// twice is a hard error here. `--pair` keys stay strictly unique.
+    /// Repeated `--link KEY` occurrences accumulate the slot's target set in
+    /// flag order (the check against the slot kind and cardinality happens
+    /// later in the validators); only the exact same `KEY@VALUE` pair twice is
+    /// a hard error here. A repeated key on a pairing/observer slot survives
+    /// this stage and is rejected downstream as a multi-target value, which is
+    /// why uniqueness is no longer enforced at map construction.
     #[test]
-    fn repeated_bind_keys_accumulate_and_duplicate_pairs_are_rejected() {
+    fn repeated_link_keys_accumulate_and_exact_duplicates_are_rejected() {
         let distinct = vec![
             ("arm".to_string(), "arm_1".to_string()),
             ("grip".to_string(), "grip_1".to_string()),
         ];
-        let map = binds_to_map(&distinct, "ctrl_1").expect("distinct keys should collect");
+        let map = links_to_map(&distinct, "ctrl_1").expect("distinct keys should collect");
         assert_eq!(map.get("arm"), Some(&flags(&["arm_1"])));
         assert_eq!(map.get("grip"), Some(&flags(&["grip_1"])));
 
@@ -954,7 +981,7 @@ mod tests {
             ("cameras".to_string(), "rear_camera".to_string()),
             ("cameras".to_string(), "front_camera".to_string()),
         ];
-        let map = binds_to_map(&accumulated, "ctrl_1").expect("repeated keys accumulate");
+        let map = links_to_map(&accumulated, "ctrl_1").expect("repeated keys accumulate");
         assert_eq!(
             map.get("cameras"),
             Some(&flags(&["rear_camera", "front_camera"])),
@@ -966,30 +993,12 @@ mod tests {
             ("arm".to_string(), "arm_1".to_string()),
             ("arm".to_string(), "arm_1".to_string()),
         ];
-        let err = binds_to_map(&duplicated, "ctrl_1").expect_err("duplicate pair rejected");
+        let err = links_to_map(&duplicated, "ctrl_1").expect_err("duplicate link rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("--bind arm@arm_1") && msg.contains("once"),
+            msg.contains("--link arm@arm_1") && msg.contains("once"),
             "unexpected error: {msg}"
         );
-
-        let pair_entries = vec![
-            ("arm".to_string(), PairTarget::new("arm_1")),
-            ("arm".to_string(), PairTarget::new("arm_2")),
-        ];
-        let err = pairs_to_map(&pair_entries, "ctrl_1").expect_err("duplicate --pair rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("duplicate pairing key `arm`") && msg.contains("--pair"),
-            "unexpected error: {msg}"
-        );
-
-        // Distinct keys pass through untouched.
-        let ok = vec![
-            ("left".to_string(), PairTarget::new("arm_1")),
-            ("right".to_string(), PairTarget::new("arm_2")),
-        ];
-        assert_eq!(pairs_to_map(&ok, "cmd_1").expect("distinct keys").len(), 2);
     }
 
     #[test]

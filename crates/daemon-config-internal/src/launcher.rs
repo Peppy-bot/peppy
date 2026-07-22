@@ -1,4 +1,6 @@
 mod bindings;
+mod links;
+mod observations;
 mod pairings;
 mod parse;
 mod types;
@@ -8,13 +10,15 @@ mod types;
 // but the parser is filename-agnostic; repository discovery accepts any
 // `.json5` file whose body declares the launcher schema.
 pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
+pub use links::validate_link_slots;
+pub use observations::{PlannedObservation, ValidatedObservations, validate_observations};
 pub use pairings::{
     AlreadyPairedSlots, PairingValidationItem, PlannedPairEndpoint, PlannedPairing,
     ValidatedPairings, validate_pairings,
 };
 pub use parse::PeppyLauncherParser;
 pub use types::{
-    BindingTargets, BindingValue, Deployment, DeploymentGitSource, DeploymentInstance,
-    DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-    DuplicateBindingTarget, FrameworkOverrides, PeppyLauncher, split_pair_target,
+    Deployment, DeploymentGitSource, DeploymentInstance, DeploymentLocalSource,
+    DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, DuplicateLinkTarget,
+    FrameworkOverrides, LinkTargets, LinkValue, PeppyLauncher, split_pair_target,
 };
