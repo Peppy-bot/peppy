@@ -241,7 +241,7 @@ The matching predicate at binding time is: *a producer satisfies a contract slot
 
 ### Binding a contract slot
 
-A contract slot is bound with `--bind link_id@producer_instance_id` (or a launcher `bindings:` entry) whose value points at an instance whose node implements the requested contract:
+A contract slot is bound with `--link link_id@producer_instance_id` (or a launcher `links:` entry) whose value points at an instance whose node implements the requested contract:
 
 ```json5
 // peppy_launcher.json5
@@ -256,7 +256,7 @@ A contract slot is bound with `--bind link_id@producer_instance_id` (or a launch
       source: { name: "video_reconstruction:v1" },
       instances: [{
         instance_id: "video_rec_1",
-        bindings: { rear_camera: "depth_cam_inst1" },
+        links: { rear_camera: "depth_cam_inst1" },
       }],
     },
   ],
@@ -267,7 +267,7 @@ The same example from the command line, launching the producer against an alread
 
 ```sh
 peppy node run --instance-id=depth_cam_inst1 realsense_d405:v1
-peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 video_reconstruction:v1
+peppy node run --instance-id=video_rec_1 --link=rear_camera@depth_cam_inst1 video_reconstruction:v1
 ```
 
 If `depth_cam_inst1` were instead an instance of a node with no `implements`, the launcher rejects the binding with a `BindingContractNotImplemented` error citing the expected contract and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `implements: [{ depth_camera, v1, link_id }]` is treated like any other non-implementing node.
@@ -383,7 +383,7 @@ Then the launcher binds each slot to its producer instance:
       instances: [
         {
           instance_id: "recon_1",
-          bindings: {
+          links: {
             front: "rs_front",
             back_left: "rs_back_left",
             back_right: "rs_back_right",
@@ -522,7 +522,7 @@ A launcher can wire the three slots to any mix of implementing producers:
       instances: [
         {
           instance_id: "recon_1",
-          bindings: {
+          links: {
             left_cam: "rs_left",
             right_cam: "rs_right",
             overhead_cam: "zed_overhead",
@@ -738,7 +738,7 @@ The same rejection applies however you wire it: directly through `depends_on.nod
 
 ### Two properties of the check
 
-- **It is conservative (type-level).** The check reasons about node identities and their declared `implements`, not about which producer a specific `--bind` resolves to. If a service or action contract has several implementing providers and only one of them closes a cycle, the configuration is still rejected, because *any* implementing provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
+- **It is conservative (type-level).** The check reasons about node identities and their declared `implements`, not about which producer a specific `--link` resolves to. If a service or action contract has several implementing providers and only one of them closes a cycle, the configuration is still rejected, because *any* implementing provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
 - **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing) relies on.
 
 ### How to fix it

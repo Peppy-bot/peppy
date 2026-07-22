@@ -521,7 +521,7 @@ In a launcher / stack config:
   source: { local: "./consumer" },
   instances: [{
     instance_id: "my_consumer",
-    bindings: { uvc_camera: "my-camera-instance" },
+    links: { uvc_camera: "my-camera-instance" },
   }],
 }
 ```
@@ -529,7 +529,7 @@ In a launcher / stack config:
 or, when launching a single node during development:
 
 ```sh
-peppy node run --bind uvc_camera@my-camera-instance .
+peppy node run --link uvc_camera@my-camera-instance .
 ```
 
 ### Worked example: `openarm01_backbone`
@@ -562,7 +562,7 @@ A consumer that wires two depth cameras to two dedicated slots:
       { instance_id: "right_cam" },
     ]},
     { source: { name: "openarm01_backbone:v1" }, instances: [
-      { instance_id: "backbone_inst_1", bindings: {
+      { instance_id: "backbone_inst_1", links: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
       }},
@@ -588,9 +588,9 @@ If the selected producer dies, the call surfaces `ServiceUnreachable` (a `Connec
 The launcher validator runs these checks before the stack starts:
 
 1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared `one` / `one_or_more` slot with no binding entry fails the launch before anything is spawned; a `zero_or_more` slot with no entry resolves to the empty set.
-2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--bind KEY@…` flags accumulate on a multi slot and are a hard error on a `one` slot.
+2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi slot and are a hard error on a `one` slot.
 3. **Every target must satisfy the slot, checked per bound instance.** A target `instance_id` that deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
-4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
+4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
 5. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.
 
 ## Error handling

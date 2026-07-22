@@ -219,9 +219,9 @@ Started node instance 'gifted-moser-9365' (pid: 76981)
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup. Note the producer's instance id in the output (`gifted-moser-9365` here): a consumer receives messages only from the producers explicitly bound to its slots, so we need that id to start the receiver.
-Now let's start the `hello_receiver` node, binding its `hello_world_param` slot to the producer instance with `--bind LINK_ID@INSTANCE_ID`:
+Now let's start the `hello_receiver` node, binding its `hello_world_param` slot to the producer instance with `--link LINK_ID@INSTANCE_ID`:
 ```sh
-❯ peppy node run hello_receiver:v1 --bind hello_world_param@gifted-moser-9365
+❯ peppy node run hello_receiver:v1 --link hello_world_param@gifted-moser-9365
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_start for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
@@ -229,7 +229,7 @@ Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A slot left without a `--bind` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
+A slot left without a `--link` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
 
 When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
@@ -259,7 +259,7 @@ The running receiver is still bound to `gifted-moser-9365` only, so it will not 
 ```sh
 ❯ peppy node stop vigorous-buck-8117
 ❯ peppy node run hello_receiver:v1 \
-    --bind hello_world_param@admiring-black-0614
+    --link hello_world_param@admiring-black-0614
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 ```

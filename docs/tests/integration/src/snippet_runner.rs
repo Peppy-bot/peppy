@@ -137,7 +137,7 @@ pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str])
 /// Run a snippet that depends on other snippets being added first.
 /// Each `(dep, dep_run_args)` entry is added, built, and started under
 /// the deterministic instance id `<dep>_1` (with `dep_run_args` appended,
-/// e.g. required `key=value` parameters), so the main node's `--bind`
+/// e.g. required `key=value` parameters), so the main node's `--link`
 /// lines (passed via `start_args`) can name it: every declared
 /// `depends_on` slot must be bound, so consumer snippets launch against
 /// live producers.
@@ -196,7 +196,7 @@ pub fn run_snippet_with_deps(
 /// workspace-relative directory of `contract/v1` / `pairing/v1` documents;
 /// it is registered as an fs repo and refreshed, then the snippet is synced
 /// with `-r`, added, built, and launched with `start_args`. The pairing
-/// snippets launch solo with `--defer-pair <slot>`: a required slot boots
+/// snippets launch solo with `--defer-link <slot>`: a required slot boots
 /// unpaired when explicitly deferred, with no peer present.
 pub fn run_snippet_with_contract_repo(
     snippets_root: &str,
