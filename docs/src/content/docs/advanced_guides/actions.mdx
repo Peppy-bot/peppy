@@ -496,19 +496,19 @@ Use `fire_goal` to send a goal, then listen for feedback and request the result:
 <Tabs>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm;
 use peppygen::{NodeBuilder, Parameters, QoSProfile, Result};
 use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         // `one`: the accessor returns the slot's sole producer directly.
-        let arm = brain_move_arm::bound_producer(&node_runner);
-        let request = brain_move_arm::GoalRequest {
+        let arm = move_arm::bound_producer(&node_runner);
+        let request = move_arm::GoalRequest {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let action_handle = brain_move_arm::ActionHandle::fire_goal(
+        let action_handle = move_arm::ActionHandle::fire_goal(
             &node_runner,
             arm,                    // which bound instance executes the goal
             Duration::from_secs(5), // timeout
@@ -529,14 +529,14 @@ fn main() -> Result<()> {
 import asyncio
 
 from peppygen import NodeBuilder, QoSProfile
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm
 
 
 async def run(node_runner):
     # `one`: the accessor returns the slot's sole producer directly.
-    arm = brain_move_arm.bound_producer(node_runner)
-    request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
-    action_handle = await brain_move_arm.ActionHandle.fire_goal(
+    arm = move_arm.bound_producer(node_runner)
+    request = move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
+    action_handle = await move_arm.ActionHandle.fire_goal(
         node_runner,
         arm,                    # which bound instance executes the goal
         request,
@@ -619,19 +619,19 @@ Use `get_result` on the handle to request the final result. The call is routed t
 let result = action_handle.get_result(Duration::from_secs(5)).await?;
 
 match result.outcome {
-    brain_move_arm::ResultOutcome::Completed(data) => println!(
+    move_arm::ResultOutcome::Completed(data) => println!(
         "completed: success={} error={:?} final_position={:?}",
         data.success,
         data.error_msg.as_deref(),
         data.final_position,
     ),
-    brain_move_arm::ResultOutcome::Cancelled(data) => {
+    move_arm::ResultOutcome::Cancelled(data) => {
         println!("cancelled at {:?}", data.final_position)
     }
-    brain_move_arm::ResultOutcome::Abandoned => {
+    move_arm::ResultOutcome::Abandoned => {
         println!("the worker abandoned the goal without producing a result")
     }
-    brain_move_arm::ResultOutcome::Expired => {
+    move_arm::ResultOutcome::Expired => {
         println!("the result expired before it was fetched")
     }
 }
@@ -641,17 +641,17 @@ match result.outcome {
 ```python
 result = await action_handle.get_result(5.0)
 
-if result.status == brain_move_arm.ResultStatus.COMPLETED:
+if result.status == move_arm.ResultStatus.COMPLETED:
     print(
         f"completed: success={result.data.success} error={result.data.error_msg} "
         f"final_position={result.data.final_position}",
         flush=True,
     )
-elif result.status == brain_move_arm.ResultStatus.CANCELLED:
+elif result.status == move_arm.ResultStatus.CANCELLED:
     print(f"cancelled at {result.data.final_position}", flush=True)
-elif result.status == brain_move_arm.ResultStatus.ABANDONED:
+elif result.status == move_arm.ResultStatus.ABANDONED:
     print("the worker abandoned the goal without producing a result", flush=True)
-elif result.status == brain_move_arm.ResultStatus.EXPIRED:
+elif result.status == move_arm.ResultStatus.EXPIRED:
     print("the result expired before it was fetched", flush=True)
 ```
   </TabItem>
@@ -675,9 +675,9 @@ Use `cancel_goal` on the handle to request cancellation of that specific goal. I
 let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
 
 match cancel_response.state {
-    brain_move_arm::CancelState::Signalled => println!("cancel delivered to a live goal"),
-    brain_move_arm::CancelState::AlreadyTerminal => println!("goal had already finished"),
-    brain_move_arm::CancelState::Unknown => println!("no goal with that id is known"),
+    move_arm::CancelState::Signalled => println!("cancel delivered to a live goal"),
+    move_arm::CancelState::AlreadyTerminal => println!("goal had already finished"),
+    move_arm::CancelState::Unknown => println!("no goal with that id is known"),
 }
 ```
   </TabItem>
@@ -685,11 +685,11 @@ match cancel_response.state {
 ```python
 cancel_response = await action_handle.cancel_goal(5.0)
 
-if cancel_response.state == brain_move_arm.CancelState.SIGNALLED:
+if cancel_response.state == move_arm.CancelState.SIGNALLED:
     print("cancel delivered to a live goal", flush=True)
-elif cancel_response.state == brain_move_arm.CancelState.ALREADY_TERMINAL:
+elif cancel_response.state == move_arm.CancelState.ALREADY_TERMINAL:
     print("goal had already finished", flush=True)
-elif cancel_response.state == brain_move_arm.CancelState.UNKNOWN:
+elif cancel_response.state == move_arm.CancelState.UNKNOWN:
     print("no goal with that id is known", flush=True)
 ```
   </TabItem>
@@ -768,8 +768,8 @@ A client that wires two depth cameras to two dedicated slots:
 
 Three contract statements follow from this manifest:
 
-1. `fire_goal` on the `wrist_left_camera_<action>` module reaches `left_cam`.
-2. `fire_goal` on the `wrist_right_camera_<action>` module reaches `right_cam`.
+1. `fire_goal` on the nested `wrist_left_camera.<action>` (Python) / `wrist_left_camera::<action>` (Rust) module reaches `left_cam`.
+2. `fire_goal` on the nested `wrist_right_camera.<action>` (Python) / `wrist_right_camera::<action>` (Rust) module reaches `right_cam`.
 3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared slot must have a binding): a goal cycle has no wildcard fallback.
 
 ### Why an explicit single target?

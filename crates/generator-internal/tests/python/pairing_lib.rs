@@ -1,6 +1,6 @@
 //! Generate-and-import fixture for pairing peer modules (Python) — twin of
 //! the Rust `pairing_lib` test: a synthetic two-role pairing (`arm_link/v1`,
-//! seen from the arm side) generates `pairings/<link_id>/<topic>` modules, and
+//! seen from the arm side) generates `paired_topics/<link_id>/<topic>` modules, and
 //! importing them from the project venv proves the generated code parses and
 //! its whole surface (slot consts, `paired()`/`wait_paired()`, publisher,
 //! subscription) resolves against the installed peppylib.
@@ -72,11 +72,11 @@ fn generated_peer_modules_import_from_venv() {
     );
 
     let peppygen_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("peppygen");
-    let pairings_dir = peppygen_dir.join("pairings");
+    let paired_topics_dir = peppygen_dir.join("paired_topics");
     for module in ["controller/joint_states.py", "controller/joint_commands.py"] {
         assert!(
-            pairings_dir.join(module).exists(),
-            "expected generated module pairings/{module}"
+            paired_topics_dir.join(module).exists(),
+            "expected generated module paired_topics/{module}"
         );
     }
     // Neither direction may leak into the flat consumed/emitted namespaces.
@@ -109,7 +109,7 @@ fn generated_peer_modules_import_from_venv() {
 
     let check = r#"
 import inspect
-from peppygen.pairings.controller import joint_states, joint_commands
+from peppygen.paired_topics.controller import joint_states, joint_commands
 
 # Slot consts shared by both directions of the slot.
 assert joint_states.LINK_ID == "controller"

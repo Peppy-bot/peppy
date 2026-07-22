@@ -121,7 +121,7 @@ async fn services_communication_no_target_instance_id(
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
-from peppygen.consumed_services import uvc_camera_enable_camera
+from peppygen.consumed_services.uvc_camera import enable_camera as uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
@@ -453,7 +453,7 @@ async fn services_communication_exposed_service_without_request_body(
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
-from peppygen.consumed_services import uvc_camera_get_system_status
+from peppygen.consumed_services.uvc_camera import get_system_status as uvc_camera_get_system_status
 
 async def poll_service(node_runner):
     camera = uvc_camera_get_system_status.bound_producer(node_runner)
@@ -768,7 +768,7 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
-from peppygen.consumed_services import uvc_camera_enable_camera
+from peppygen.consumed_services.uvc_camera import enable_camera as uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)

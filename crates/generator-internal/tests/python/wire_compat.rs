@@ -324,7 +324,7 @@ if __name__ == "__main__":
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import result_received
-from peppygen.consumed_actions import producer_perform_scan
+from peppygen.consumed_actions.producer import perform_scan as producer_perform_scan
 
 async def consume_action(node_runner, done):
     request = producer_perform_scan.GoalRequest(scan_id=7)
@@ -691,7 +691,7 @@ if __name__ == "__main__":
 import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import response_received
-from peppygen.consumed_services import producer_report_status
+from peppygen.consumed_services.producer import report_status as producer_report_status
 
 async def poll_service(node_runner, done):
     request = producer_report_status.Request(detail=True)
@@ -1043,7 +1043,7 @@ import os
 import sys
 from peppygen import NodeBuilder
 from peppygen.exposed_services import received_ack
-from peppygen.consumed_topics import producer_telemetry_feed
+from peppygen.consumed_topics.producer import telemetry_feed as producer_telemetry_feed
 
 async def receive_one(node_runner, msg_received):
     try:

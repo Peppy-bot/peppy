@@ -13,7 +13,7 @@ mod services;
 mod topics;
 mod type_mapping;
 
-use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
+use super::naming::{resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
     InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
@@ -247,13 +247,11 @@ impl LanguageGenerator for PythonGenerator {
         );
         let schema_info = self.register_schema(&schema_key, &arguments)?;
         let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
-        let module_label = module_name_from_components(&topic.link_id, &topic.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedTopic,
-            code,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![topic.link_id.clone(), topic.name.clone()],
+            kind: InterfaceKind::ConsumedTopic,
+            code_output: code,
+        });
         Ok(())
     }
 
@@ -288,13 +286,11 @@ impl LanguageGenerator for PythonGenerator {
             response_schema_info.as_ref(),
             dependency,
         )?;
-        let module_label = module_name_from_components(&service.link_id, &service.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedService,
-            code,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![service.link_id.clone(), service.name.clone()],
+            kind: InterfaceKind::ConsumedService,
+            code_output: code,
+        });
         Ok(())
     }
 
@@ -399,13 +395,11 @@ impl LanguageGenerator for PythonGenerator {
             },
             dependency,
         )?;
-        let module_label = module_name_from_components(&action.link_id, &action.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedAction,
-            code,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![action.link_id.clone(), action.name.clone()],
+            kind: InterfaceKind::ConsumedAction,
+            code_output: code,
+        });
         Ok(())
     }
 

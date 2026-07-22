@@ -219,8 +219,9 @@ fn build_topic_build_message(
 }
 
 /// Module-level constants + `paired()`/`wait_paired()` helpers shared by both
-/// directions of a peer topic module. Every `pairings/<link_id>/<topic>` module
-/// carries its slot identity as consts and exposes the slot's live pin state.
+/// directions of a peer topic module. Every `paired_topics/<link_id>/<topic>`
+/// module carries its slot identity as consts and exposes the slot's live pin
+/// state.
 pub fn build_peer_module_header(
     topic_name: &str,
     peer: &crate::generator::types::PeerContext,

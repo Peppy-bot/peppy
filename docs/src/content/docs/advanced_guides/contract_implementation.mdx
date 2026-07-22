@@ -129,7 +129,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
 
 A contract-backed entry is exactly `{link_id, name}`. The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
 
-The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the contract's identity (`emitted_topics/depth_camera/v1/video_stream`).
+The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the implements slot's `link_id` (`emitted_topics/cam/video_stream`), not the contract's name or tag.
 
 #### Full coverage is mandatory
 
@@ -395,7 +395,7 @@ Then the launcher binds each slot to its producer instance:
 }
 ```
 
-The three bindings feed the three slots, and the consumer receives the streams through the generated `front_video_stream`, `back_left_video_stream`, and `back_right_video_stream` modules. A fourth camera launched without a slot of its own would reach no consumer at all: only bound producers feed a slot.
+The three bindings feed the three slots, and the consumer receives the streams through the generated `video_stream` modules under the `front`, `back_left`, and `back_right` slots. A fourth camera launched without a slot of its own would reach no consumer at all: only bound producers feed a slot.
 
 Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.) when merging its slots into one aggregate, so the launcher can re-point a slot at a different implementing instance with no consumer code change.
 
@@ -405,11 +405,9 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
     import asyncio
 
     from peppylib import ProducerRef
-    from peppygen.consumed_topics import (
-        back_left_video_stream,
-        back_right_video_stream,
-        front_video_stream,
-    )
+    from peppygen.consumed_topics.front import video_stream as front_video_stream
+    from peppygen.consumed_topics.back_left import video_stream as back_left_video_stream
+    from peppygen.consumed_topics.back_right import video_stream as back_right_video_stream
 
     frames_by_producer: dict[ProducerRef, Frame] = {}
 
@@ -430,7 +428,9 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
   <TabItem label="Rust">
     ```rust
     use peppygen::consumed_topics::{
-        back_left_video_stream, back_right_video_stream, front_video_stream,
+        front::video_stream as front_video_stream,
+        back_left::video_stream as back_left_video_stream,
+        back_right::video_stream as back_right_video_stream,
     };
     use peppylib::messaging::ProducerRef;
     use std::collections::HashMap;

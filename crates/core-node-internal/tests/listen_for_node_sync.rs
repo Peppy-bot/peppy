@@ -642,10 +642,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     let consumed_topic_path = brain_peppygen_dir
         .join("src")
         .join("consumed_topics")
-        .join("uvc_camera_video_stream.rs");
+        .join("uvc_camera")
+        .join("video_stream.rs");
     assert!(
         consumed_topic_path.exists(),
-        "peppygen uvc_camera_video_stream.rs should exist at {}",
+        "peppygen uvc_camera/video_stream.rs should exist at {}",
         consumed_topic_path.display()
     );
 }
@@ -800,10 +801,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
     let consumed_service_path = brain_peppygen_dir
         .join("src")
         .join("consumed_services")
-        .join("uvc_camera_enable_camera.rs");
+        .join("uvc_camera")
+        .join("enable_camera.rs");
     assert!(
         consumed_service_path.exists(),
-        "peppygen uvc_camera_enable_camera.rs should exist at {}",
+        "peppygen uvc_camera/enable_camera.rs should exist at {}",
         consumed_service_path.display()
     );
 }
@@ -960,10 +962,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
     let consumed_topic_path = brain_peppygen_dir
         .join("src")
         .join("consumed_topics")
-        .join("uvc_camera_video_stream.rs");
+        .join("uvc_camera")
+        .join("video_stream.rs");
     assert!(
         consumed_topic_path.exists(),
-        "peppygen uvc_camera_video_stream.rs should exist at {}",
+        "peppygen uvc_camera/video_stream.rs should exist at {}",
         consumed_topic_path.display()
     );
 }
@@ -1126,10 +1129,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
     let consumed_action_path = controller_peppygen_dir
         .join("src")
         .join("consumed_actions")
-        .join("brain_move_arm.rs");
+        .join("brain")
+        .join("move_arm.rs");
     assert!(
         consumed_action_path.exists(),
-        "peppygen brain_move_arm.rs should exist at {}",
+        "peppygen brain/move_arm.rs should exist at {}",
         consumed_action_path.display()
     );
 }
@@ -1581,7 +1585,8 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
         .join(PEPPYGEN_OUTPUT_PATH)
         .join("src")
         .join("consumed_topics")
-        .join("uvc_camera_video_stream.rs");
+        .join("uvc_camera")
+        .join("video_stream.rs");
     assert!(
         consumed_topic_path.exists(),
         "expected peppygen file at {}",

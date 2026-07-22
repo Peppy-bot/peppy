@@ -108,38 +108,6 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
     result
 }
 
-/// Builds a sanitized module name from node and name components.
-///
-/// Returns a combined `node_name` string, or the non-empty component if the other is empty.
-pub(crate) fn module_name_from_components(node: &str, name: &str) -> String {
-    let node_component = sanitize_component(node);
-    let name_component = sanitize_component(name);
-
-    match (node_component.is_empty(), name_component.is_empty()) {
-        (false, false) => format!("{node_component}_{name_component}"),
-        (false, true) => node_component,
-        (true, false) => name_component,
-        (true, true) => String::new(),
-    }
-}
-
-/// Builds a raw (unsanitized) label from node and name components.
-///
-/// Unlike [`module_name_from_components`], this preserves the original characters
-/// so that names which differ only in separator style (e.g. `foo-bar` vs `foo_bar`)
-/// remain distinct.  Used as the grouping key for artifacts before sanitization.
-pub(crate) fn raw_module_label(node: &str, name: &str) -> String {
-    let node = node.trim();
-    let name = name.trim();
-
-    match (node.is_empty(), name.is_empty()) {
-        (false, false) => format!("{node}::{name}"),
-        (false, true) => node.to_string(),
-        (true, false) => name.to_string(),
-        (true, true) => String::new(),
-    }
-}
-
 /// Sanitizes a display name for use in generated comments and doc attributes.
 ///
 /// Trims whitespace, replaces control characters with spaces, and collapses
@@ -366,30 +334,10 @@ pub(crate) fn consumed_action_schema_keys(
     }
 }
 
-/// Generates a unique module name by appending a numeric suffix on collision.
-///
-/// `sanitize_fn` converts the raw name into a valid module name for the target language.
-/// On the first occurrence the name is used as-is; subsequent duplicates get `_1`, `_2`, etc.
-pub(crate) fn unique_module_name(
-    original: &str,
-    counts: &mut std::collections::HashMap<String, usize>,
-    sanitize_fn: fn(&str) -> String,
-) -> String {
-    let base = sanitize_fn(original);
-    let counter = counts.entry(base.clone()).or_insert(0);
-    let name = if *counter == 0 {
-        base
-    } else {
-        format!("{base}_{counter}")
-    };
-    *counter += 1;
-    name
-}
-
 /// Schema key for a pairing topic: `peer_<link_id>_<topic>`. Per-slot capnp
 /// duplication is accepted (same policy as consumed topics): two slots of the
-/// same pairing each get their own schema entry so the flattened
-/// `pairings.<link_id>.<topic>` namespace stays unambiguous.
+/// same pairing each get their own schema entry so the nested
+/// `paired_topics.<link_id>.<topic>` namespace stays unambiguous.
 pub fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
     format!("peer_{link_id}_{topic_name}")
 }
@@ -451,17 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn unique_module_name_deduplicates() {
-        fn identity(s: &str) -> String {
-            s.to_string()
-        }
-        let mut counts = std::collections::HashMap::new();
-        assert_eq!(unique_module_name("foo", &mut counts, identity), "foo");
-        assert_eq!(unique_module_name("foo", &mut counts, identity), "foo_1");
-        assert_eq!(unique_module_name("foo", &mut counts, identity), "foo_2");
-    }
-
-    #[test]
     fn resolve_schema_file_stem_appends_message_suffix() {
         let resolved = resolve_schema_file_stem("my_topic");
         assert_eq!(resolved.base_name, "my_topic");
@@ -509,24 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn raw_module_label_uses_unambiguous_separator() {
-        assert_eq!(raw_module_label("sensor", "temp"), "sensor::temp");
-        assert_ne!(
-            raw_module_label("foo_bar", "baz"),
-            raw_module_label("foo", "bar_baz"),
-            "different (node, name) pairs must produce different labels"
+    fn peer_schema_key_is_stable_and_link_id_keyed() {
+        // Pairing capnp schema keys are keyed on link_id + topic and computed
+        // independently of the module path, so relocating the category
+        // (pairings -> paired_topics) must not change them.
+        assert_eq!(
+            peer_schema_key("arm", "joint_states"),
+            "peer_arm_joint_states"
         );
-    }
-
-    #[test]
-    fn raw_module_label_handles_empty_components() {
-        assert_eq!(raw_module_label("", "name"), "name");
-        assert_eq!(raw_module_label("node", ""), "node");
-        assert_eq!(raw_module_label("", ""), "");
-    }
-
-    #[test]
-    fn raw_module_label_trims_whitespace() {
-        assert_eq!(raw_module_label("  node  ", "  name  "), "node::name");
     }
 }
