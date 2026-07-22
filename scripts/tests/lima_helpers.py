@@ -118,10 +118,15 @@ def lima_env() -> dict[str, str]:
     """Environment with LIMA_HOME pointing to a test-specific directory.
 
     When running under pytest-xdist, each worker gets its own LIMA_HOME
-    to avoid conflicts between parallel VM operations.
+    to avoid conflicts between parallel VM operations. The optional
+    PEPPY_TEST_LIMA_HOME sets a shorter base directory for environments whose
+    home path would make Lima's Unix socket path exceed UNIX_PATH_MAX.
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    lima_home = Path.home() / ".peppy" / f"lti-{worker}"
+    base_dir = Path(
+        os.environ.get("PEPPY_TEST_LIMA_HOME", Path.home() / ".peppy")
+    )
+    lima_home = base_dir / f"lti-{worker}"
     lima_home.mkdir(parents=True, exist_ok=True)
     return {**os.environ, "LIMA_HOME": str(lima_home)}
 

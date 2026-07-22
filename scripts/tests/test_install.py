@@ -487,10 +487,24 @@ cd /var/tmp
 rm -rf test-node
 peppy node init test-node
 
-# Add the node to the daemon (triggers peppylib .so and capnp extraction).
-# This may fail if uv is not installed — that's OK, we only need the
-# .so extraction which happens before build_cmd.
-peppy node add /var/tmp/test-node || true
+# Give the node a real message format so code generation exercises the bundled
+# capnp binary instead of only deploying the prebuilt peppylib extension.
+sed -i '/  interfaces: {{}},/c\
+  interfaces: {{\
+    topics: {{\
+      emits: [{{\
+        name: "architecture_probe",\
+        qos_profile: "sensor_data",\
+        message_format: {{ value: "u32" }}\
+      }}]\
+    }}\
+  }},' test-node/peppy.json5
+
+# Sync and add the node to the daemon, regenerating after the config edit and
+# triggering peppylib .so and capnp extraction.
+# This may fail if uv is not installed. Both architecture artifacts are
+# extracted before build_cmd, which is all this test needs.
+peppy node add --sync /var/tmp/test-node || true
 
 # Find .abi3.so — it may be in the node working dir, the daemon's data
 # directory (~/.peppy), or the custom PEPPY_HOME.

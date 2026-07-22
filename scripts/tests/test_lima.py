@@ -23,6 +23,7 @@ from functions.lima import (
     require_prebuilt_peppylib_so,
     stop_lima_vm,
 )
+from .lima_helpers import lima_env
 
 
 def _populate_so_dir(base: Path) -> Path:
@@ -32,6 +33,13 @@ def _populate_so_dir(base: Path) -> Path:
     for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER):
         (so_dir / name).write_bytes(b"x")
     return so_dir
+
+
+def test_lima_env_honours_short_base_override(tmp_path: Path) -> None:
+    with patch.dict(os.environ, {"PEPPY_TEST_LIMA_HOME": str(tmp_path)}):
+        env = lima_env()
+
+    assert env["LIMA_HOME"] == str(tmp_path / "lti-gw0")
 
 
 def test_find_limactl_from_build_output(tmp_path: Path) -> None:
