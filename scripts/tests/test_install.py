@@ -388,8 +388,8 @@ def test_reinstall_over_existing(lima_vm: VMConfig) -> None:
 def test_binary_architecture(lima_vm: VMConfig) -> None:
     """Verify installed binaries match the guest architecture.
 
-    Checks both the peppy binary and the apptainer binary via the ``file``
-    command to ensure ELF architecture matches what the guest expects.
+    Checks peppy, zenohd, and apptainer via the ``file`` command to ensure
+    their ELF architecture matches what the guest expects.
     This catches cross-architecture bundling bugs like the v0.5.6 issue
     where an aarch64 Apptainer binary was shipped in the x86_64 release.
     """
@@ -412,6 +412,13 @@ def test_binary_architecture(lima_vm: VMConfig) -> None:
     check = lima_shell(f"file {home}/bin/peppy", instance=config.instance_name)
     assert expected_arch in check.stdout, (
         f"peppy binary arch mismatch on {config.pytest_id()}: "
+        f"expected '{expected_arch}'{diagnostic(check)}"
+    )
+
+    # Check zenohd binary
+    check = lima_shell(f"file {home}/bin/zenohd", instance=config.instance_name)
+    assert expected_arch in check.stdout, (
+        f"zenohd binary arch mismatch on {config.pytest_id()}: "
         f"expected '{expected_arch}'{diagnostic(check)}"
     )
 
@@ -480,7 +487,7 @@ cd /var/tmp
 rm -rf test-node
 peppy node init test-node
 
-# Add the node to the daemon (triggers peppylib .so extraction).
+# Add the node to the daemon (triggers peppylib .so and capnp extraction).
 # This may fail if uv is not installed — that's OK, we only need the
 # .so extraction which happens before build_cmd.
 peppy node add /var/tmp/test-node || true
@@ -488,6 +495,7 @@ peppy node add /var/tmp/test-node || true
 # Find .abi3.so — it may be in the node working dir, the daemon's data
 # directory (~/.peppy), or the custom PEPPY_HOME.
 SO_FILE=$(find /var/tmp/test-node {home} $HOME/.peppy -name '*.abi3*.so' -type f 2>/dev/null | head -1)
+CAPNP_FILE={home}/bin/peppy_capnp_binary
 
 # Kill daemon before checking results to avoid SIGTERM exit codes
 kill $DAEMON_PID 2>/dev/null; wait $DAEMON_PID 2>/dev/null || true
@@ -497,7 +505,15 @@ if [ -z "$SO_FILE" ]; then
     exit 1
 fi
 echo "FOUND_SO=$SO_FILE"
-file "$SO_FILE"
+echo "SO_FILE_INFO=$(file -b "$SO_FILE")"
+
+if [ ! -x "$CAPNP_FILE" ]; then
+    echo "ERROR: No executable bundled capnp found at $CAPNP_FILE"
+    exit 1
+fi
+"$CAPNP_FILE" --version
+echo "FOUND_CAPNP=$CAPNP_FILE"
+echo "CAPNP_FILE_INFO=$(file -b "$CAPNP_FILE")"
 """
     result = lima_shell(script, instance=config.instance_name, timeout=timeout)
 
@@ -505,7 +521,23 @@ file "$SO_FILE"
     assert result.returncode == 0, (
         f"peppylib .so test failed on {config.pytest_id()}{diagnostic(result)}"
     )
-    assert expected_arch in result.stdout, (
+    so_info = next(
+        (line for line in result.stdout.splitlines() if line.startswith("SO_FILE_INFO=")),
+        "",
+    )
+    assert expected_arch in so_info, (
         f".abi3.so arch mismatch on {config.pytest_id()}: "
+        f"expected '{expected_arch}'{diagnostic(result)}"
+    )
+    capnp_info = next(
+        (
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("CAPNP_FILE_INFO=")
+        ),
+        "",
+    )
+    assert expected_arch in capnp_info, (
+        f"capnp binary arch mismatch on {config.pytest_id()}: "
         f"expected '{expected_arch}'{diagnostic(result)}"
     )

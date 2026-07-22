@@ -67,8 +67,10 @@ impl MessageFormatMapper {
     ///
     /// The binary is resolved as `CAPNP_BINARY_PATH` (an explicit override for
     /// development and testing) if set, otherwise the capnp that peppy ships and
-    /// extracts to `~/.peppy/bin` on first use. peppy never falls back to a
-    /// system capnp on `PATH`.
+    /// extracts to `$PEPPY_HOME/bin` on first use. This defaults to
+    /// `~/.peppy/bin` in production and is not affected by the installer's
+    /// optional `PEPPY_BIN_DIR`. peppy never falls back to a system capnp on
+    /// `PATH`.
     pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
         let mut generator = CapnpSchemaGenerator::default();
         let mut schema = String::new();

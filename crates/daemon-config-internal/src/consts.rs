@@ -126,13 +126,14 @@ impl PeppyDirs {
         self.root.join("tmp")
     }
 
-    /// Directory holding the peppy-provided binaries (`peppy`, `zenohd`,
-    /// `apptainer`, and the extracted `capnp`).
+    /// Directory holding peppy-managed runtime binaries.
     ///
-    /// This is the same `~/.peppy/bin` the installer populates as
-    /// `PEPPY_BIN_DIR` (see `scripts/install.sh`); exposing it here gives the
-    /// runtime code one source of truth for that location instead of the path
-    /// being known only to the shell installer.
+    /// This resolves to `$PEPPY_HOME/bin`, defaulting to `~/.peppy/bin` in a
+    /// production build. The installer places `peppy`, `zenohd`, and the
+    /// container tools there by default, and peppy extracts its bundled Cap'n
+    /// Proto compiler there on first use. A custom installer `PEPPY_BIN_DIR`
+    /// relocates the installer-managed tools only; it does not change this
+    /// runtime directory.
     pub fn bin_dir(&self) -> PathBuf {
         self.root.join("bin")
     }

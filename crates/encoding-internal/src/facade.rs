@@ -118,14 +118,17 @@ impl CapnpFacade {
     /// the real path and errno instead of the capnp compiler's later, generic
     /// "install capnp" message.
     fn verify_runs(path: &Path) -> Result<()> {
-        let output = Command::new(path).arg("--version").output().map_err(|err| {
-            Error::Encoding(format!(
-                "capnp binary at {} failed to execute on {}/{}: {err}",
-                path.display(),
-                env::consts::OS,
-                env::consts::ARCH
-            ))
-        })?;
+        let output = Command::new(path)
+            .arg("--version")
+            .output()
+            .map_err(|err| {
+                Error::Encoding(format!(
+                    "capnp binary at {} failed to execute on {}/{}: {err}",
+                    path.display(),
+                    env::consts::OS,
+                    env::consts::ARCH
+                ))
+            })?;
 
         if !output.status.success() {
             return Err(Error::Encoding(format!(
@@ -199,6 +202,73 @@ impl CapnpFacade {
         }
     }
 
+    fn accept_publication_result(
+        binary_path: &Path,
+        binary_bytes: &[u8],
+        result: std::io::Result<PathBuf>,
+    ) -> Result<()> {
+        if let Err(err) = result
+            && !Self::matches_embedded(binary_path, binary_bytes)
+        {
+            return Err(Error::Encoding(format!(
+                "failed to install bundled capnp binary at {}: {err}",
+                binary_path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn install_bundled_binary(binary_path: &Path, binary_bytes: &[u8]) -> Result<PathBuf> {
+        // Reuse an already-extracted binary only if it matches the bytes this
+        // build embeds and still runs. A stale file left by an earlier install
+        // (different capnp version, or a broken/wrong-arch binary) fails the
+        // content comparison or the run probe and is re-extracted rather than
+        // trusted, which replaces the old "never overwrite" guard.
+        if Self::matches_embedded(binary_path, binary_bytes)
+            && Self::verify_runs(binary_path).is_ok()
+        {
+            return Ok(binary_path.to_path_buf());
+        }
+
+        let result = daemon_config::atomic_write::publish_atomic(binary_path, |tmp_path| {
+            std::fs::write(tmp_path, binary_bytes)?;
+            #[cfg(unix)]
+            {
+                fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o755))?;
+            }
+            Ok(())
+        });
+        // A concurrent process may have published the same embedded bytes
+        // while this process was staging its file. Accept that one race only;
+        // every other publication failure must remain visible.
+        Self::accept_publication_result(binary_path, binary_bytes, result)?;
+
+        // Re-check after publication so a competing stale writer cannot make
+        // this process return a path whose contents differ from its embedded
+        // artifact.
+        if !Self::matches_embedded(binary_path, binary_bytes) {
+            return Err(Error::Encoding(format!(
+                "installed capnp binary at {} does not match the binary embedded in peppy",
+                binary_path.display()
+            )));
+        }
+
+        // Prove the freshly written binary runs on this host. This is where a
+        // wrong-arch embedded binary is caught, with guidance pointed at the
+        // real fix rather than at installing a system capnp peppy will not use.
+        Self::verify_runs(binary_path).map_err(|err| {
+            Error::Encoding(format!(
+                "{err}. This capnp is bundled with peppy (peppy does not use a \
+                 system capnp); the installed peppy build looks corrupt or was \
+                 built for a different architecture. Reinstall peppy with \
+                 `curl -fsSL https://peppy.bot/install.sh | bash` or report the \
+                 broken release at https://github.com/Peppy-bot/peppy/issues"
+            ))
+        })?;
+
+        Ok(binary_path.to_path_buf())
+    }
+
     fn ensure_bundled_binary() -> Result<PathBuf> {
         mod embedded {
             include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
@@ -212,61 +282,10 @@ impl CapnpFacade {
             ))
         })?;
 
-        let bin_dir = daemon_config::consts::PeppyDirs::default().bin_dir();
-        let binary_path = bin_dir.join("peppy_capnp_binary");
-
-        // Reuse an already-extracted binary only if it matches the bytes this
-        // build embeds and still runs. A stale file left by an earlier install
-        // (different capnp version, or a broken/wrong-arch binary) fails the
-        // content comparison or the run probe and is re-extracted rather than
-        // trusted, which replaces the old "never overwrite" guard.
-        if Self::matches_embedded(&binary_path, binary_bytes)
-            && Self::verify_runs(&binary_path).is_ok()
-        {
-            return Ok(binary_path);
-        }
-
-        std::fs::create_dir_all(&bin_dir).map_err(|err| {
-            Error::Encoding(format!(
-                "failed to create peppy bin directory {}: {err}",
-                bin_dir.display()
-            ))
-        })?;
-
-        let result = daemon_config::atomic_write::publish_atomic(&binary_path, |tmp_path| {
-            std::fs::write(tmp_path, binary_bytes)?;
-            #[cfg(unix)]
-            {
-                fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o755))?;
-            }
-            Ok(())
-        });
-        // Tolerate a lost rename race against another process; if the file is
-        // now in place, that is the outcome we wanted and the verification
-        // below still gates it.
-        if let Err(err) = result
-            && !binary_path.exists()
-        {
-            return Err(Error::Encoding(format!(
-                "failed to install bundled capnp binary at {}: {err}",
-                binary_path.display()
-            )));
-        }
-
-        // Prove the freshly written binary runs on this host. This is where a
-        // wrong-arch embedded binary is caught, with guidance pointed at the
-        // real fix rather than at installing a system capnp peppy will not use.
-        Self::verify_runs(&binary_path).map_err(|err| {
-            Error::Encoding(format!(
-                "{err}. This capnp is bundled with peppy (peppy does not use a \
-                 system capnp); the installed peppy build looks corrupt or was \
-                 built for a different architecture. Reinstall peppy with \
-                 `curl -fsSL https://peppy.bot/install.sh | bash` or report the \
-                 broken release at https://github.com/Peppy-bot/peppy/issues"
-            ))
-        })?;
-
-        Ok(binary_path)
+        let binary_path = daemon_config::consts::PeppyDirs::default()
+            .bin_dir()
+            .join("peppy_capnp_binary");
+        Self::install_bundled_binary(&binary_path, binary_bytes)
     }
 }
 
@@ -277,11 +296,16 @@ mod tests {
     #[test]
     fn bundled_capnp_exists() {
         let path = CapnpFacade::bundled_capnp_binary().expect("bundled capnp binary should exist");
+        let expected = daemon_config::consts::PeppyDirs::default()
+            .bin_dir()
+            .join("peppy_capnp_binary");
+        assert_eq!(path, expected);
         assert!(
             path.exists(),
             "expected bundled capnp binary at {}",
             path.display()
         );
+        CapnpFacade::verify_runs(&path).expect("installed bundled capnp binary should run");
     }
 
     #[test]
@@ -304,7 +328,10 @@ mod tests {
 
         let same_size_diff = dir.path().join("same_size_diff");
         std::fs::write(&same_size_diff, b"capnp X bytes!").expect("write");
-        assert_eq!(same_size_diff.metadata().unwrap().len(), embedded.len() as u64);
+        assert_eq!(
+            same_size_diff.metadata().unwrap().len(),
+            embedded.len() as u64
+        );
         assert!(
             !CapnpFacade::matches_embedded(&same_size_diff, embedded),
             "a same-length but differing file must be rejected"
@@ -335,7 +362,11 @@ mod tests {
         // platform this surfaces as an exec error (ENOEXEC) or, via the libc
         // execvp `/bin/sh` fallback, a non-zero exit. Both must be rejected and
         // must name the path, which is what we assert.
-        let path = write_executable(&dir.path(), "not_a_binary", b"\x00\x01\x02 definitely not exec");
+        let path = write_executable(
+            dir.path(),
+            "not_a_binary",
+            b"\x00\x01\x02 definitely not exec",
+        );
 
         let err = CapnpFacade::verify_runs(&path).expect_err("non-runnable file should fail");
         let message = err.to_string();
@@ -350,7 +381,7 @@ mod tests {
     #[test]
     fn verify_runs_accepts_a_binary_that_runs_successfully() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = write_executable(&dir.path(), "ok", b"#!/bin/sh\nexit 0\n");
+        let path = write_executable(dir.path(), "ok", b"#!/bin/sh\nexit 0\n");
 
         CapnpFacade::verify_runs(&path).expect("a script that exits 0 should verify");
     }
@@ -359,12 +390,128 @@ mod tests {
     #[test]
     fn verify_runs_rejects_a_binary_that_exits_nonzero() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = write_executable(&dir.path(), "boom", b"#!/bin/sh\nexit 3\n");
+        let path = write_executable(dir.path(), "boom", b"#!/bin/sh\nexit 3\n");
 
         let err = CapnpFacade::verify_runs(&path).expect_err("a failing exit should not verify");
         assert!(
             err.to_string().contains("exited with"),
             "error should report the unsuccessful exit, got: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_bundled_binary_creates_the_managed_executable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("capnp");
+        let expected = b"#!/bin/sh\nexit 0\n# bundled\n";
+
+        let installed =
+            CapnpFacade::install_bundled_binary(&path, expected).expect("install bundled binary");
+
+        assert_eq!(installed, path);
+        assert_eq!(
+            std::fs::read(&path).expect("read installed binary"),
+            expected
+        );
+        assert_ne!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o111,
+            0,
+            "installed binary must be executable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_bundled_binary_replaces_runnable_stale_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_executable(
+            dir.path(),
+            "capnp",
+            b"#!/bin/sh\nexit 0\n# stale but runnable\n",
+        );
+        let expected = b"#!/bin/sh\nexit 0\n# current bundled binary\n";
+
+        CapnpFacade::install_bundled_binary(&path, expected)
+            .expect("replace stale runnable binary");
+
+        assert_eq!(std::fs::read(path).expect("read replacement"), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_bundled_binary_repairs_non_executable_matching_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("capnp");
+        let expected = b"#!/bin/sh\nexit 0\n";
+        std::fs::write(&path, expected).expect("write non-executable binary");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod fixture");
+
+        CapnpFacade::install_bundled_binary(&path, expected)
+            .expect("repair executable permissions");
+
+        assert_ne!(
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o111,
+            0,
+            "matching bytes with broken permissions must be republished"
+        );
+    }
+
+    #[test]
+    fn install_bundled_binary_reports_an_unusable_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("capnp");
+        std::fs::create_dir(&path).expect("create conflicting destination directory");
+
+        let error = CapnpFacade::install_bundled_binary(&path, b"not published")
+            .expect_err("a destination directory cannot become the binary");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to install bundled capnp binary"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn publication_error_is_accepted_only_when_a_concurrent_writer_installed_exact_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("capnp");
+        let expected = b"expected bytes";
+        std::fs::write(&path, expected).expect("write concurrent result");
+
+        CapnpFacade::accept_publication_result(
+            &path,
+            expected,
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "simulated publication race",
+            )),
+        )
+        .expect("matching concurrent publication should be accepted");
+
+        std::fs::write(&path, b"different bytes").expect("write mismatched result");
+        let error = CapnpFacade::accept_publication_result(
+            &path,
+            expected,
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "simulated publication race",
+            )),
+        )
+        .expect_err("mismatched concurrent publication must be rejected");
+        assert!(
+            error.to_string().contains("simulated publication race"),
+            "original publication error should be preserved: {error}"
         );
     }
 }
