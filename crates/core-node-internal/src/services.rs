@@ -526,6 +526,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                Arc::clone(&ctx.pairing),
             )
             .boxed(),
             ServiceId::NodeSync => node::listen_for_node_sync(

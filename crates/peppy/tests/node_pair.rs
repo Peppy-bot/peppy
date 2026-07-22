@@ -6,7 +6,9 @@
 //! survivor), supports re-pairing the survivor, and enforces slot
 //! exclusivity. The "nodes" are `sleep` processes; their ready/health and
 //! `peer_update` services run in-process on the shared mock messenger,
-//! exactly the seams a real peppylib node exposes.
+//! exactly the seams a real peppylib node exposes. Removing a paired node with
+//! `--stop-instances` dissolves its pairs and notifies the survivor the same
+//! way `node stop` does.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -155,7 +157,7 @@ fn run_command(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pairing_establish_stop_repair_and_exclusivity() {
+async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -356,5 +358,26 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     assert_eq!(
         pin.producer.instance_id, "ctrl_3",
         "the survivor must be pinned to the NEW controller"
+    );
+
+    // ── Remove dissolves pairs and notifies the survivor ────────────────
+    // `node remove --stop-instances` must dissolve the removed node's pairs
+    // and live-notify each surviving peer Unpaired, exactly as `node stop`
+    // does. Removing arm_controller tears down its paired instance ctrl_3, so
+    // arm_1's slot must go Unpaired. Before the remove path threaded the
+    // PairingCoordinator, this notification never happened and the arm kept
+    // pinning a dead peer.
+    NodeCommand {
+        command: NodeCommands::Remove {
+            node_ref: ("arm_controller".to_string(), "v1".to_string()),
+            stop_instances: true,
+            force: true,
+        },
+    }
+    .execute(&ctx)
+    .expect("node remove --stop-instances should succeed");
+    assert!(
+        arm_rx.borrow_and_update().pin.is_none(),
+        "removing the paired controller must live-notify the surviving arm Unpaired"
     );
 }
