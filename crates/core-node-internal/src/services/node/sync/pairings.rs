@@ -165,7 +165,7 @@ struct SlotCoverage {
 }
 
 /// Resolves every `depends_on.pairings` slot into the generator inputs for the
-/// `pairings/<link_id>/<topic>` modules, driven by what the node declares:
+/// `paired_topics/<link_id>/<topic>` modules, driven by what the node declares:
 /// each pairing-backed `topics.emits` entry becomes peer-emitted and each
 /// pairing-backed `topics.consumes` entry becomes peer-consumed, with shape
 /// and QoS read from the pairing document.
@@ -441,7 +441,7 @@ mod tests {
     }
 
     /// The `(module_path, is_emitted)` of each produced interface, so tests
-    /// assert both the direction and the `pairings/<link_id>/<topic>` path.
+    /// assert both the direction and the `paired_topics/<link_id>/<topic>` path.
     fn peer_modules(out: &[generator::DeploymentInterface]) -> Vec<(Vec<String>, bool)> {
         out.iter()
             .map(|i| match i.interface() {

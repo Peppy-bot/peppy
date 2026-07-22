@@ -25,10 +25,16 @@ fn make_service(marker: &str) -> NativeExposedService {
     }
 }
 
-fn contract_backed(name: &str, tag: &str, service: NativeExposedService) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    service: NativeExposedService,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedService {
         service,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -71,14 +77,14 @@ const NODE_CONFIG: &str = r#"{
 ///      and `SenderTarget::node(...)` for the native leaf.
 ///   4. Per-interface marker fields land in the right file (no cross-wiring).
 #[test]
-fn nests_contract_backed_services_under_contract_name_and_tag() {
+fn nests_contract_backed_services_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("camera", "v1", make_service("camera_v1_marker")),
-        contract_backed("arm", "v2", make_service("arm_v2_marker")),
+        contract_backed("cam", "camera", "v1", make_service("camera_v1_marker")),
+        contract_backed("arm", "arm", "v2", make_service("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -99,8 +105,8 @@ fn nests_contract_backed_services_under_contract_name_and_tag() {
     let svc_dir = src.join("exposed_services");
 
     let native_path = svc_dir.join("control.rs");
-    let camera_v1 = svc_dir.join("camera/v1/control.rs");
-    let arm_v2 = svc_dir.join("arm/v2/control.rs");
+    let camera_v1 = svc_dir.join("cam/control.rs");
+    let arm_v2 = svc_dir.join("arm/control.rs");
 
     for path in [&native_path, &camera_v1, &arm_v2] {
         assert!(path.exists(), "expected service file at {path:?}");
@@ -108,7 +114,7 @@ fn nests_contract_backed_services_under_contract_name_and_tag() {
 
     let category_mod = fs::read_to_string(src.join("exposed_services.rs"))
         .expect("exposed_services.rs should exist");
-    for expected in ["pub mod control;", "pub mod camera;", "pub mod arm;"] {
+    for expected in ["pub mod control;", "pub mod cam;", "pub mod arm;"] {
         assert!(
             category_mod.contains(expected),
             "exposed_services.rs missing `{expected}`:\n{category_mod}",

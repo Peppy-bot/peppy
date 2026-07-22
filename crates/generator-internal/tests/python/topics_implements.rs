@@ -1,6 +1,6 @@
 //! Python mirror of `tests/rust/topics_implements.rs`: same realsense_d435
 //! scenario, but verifying the Python generator emits the corresponding
-//! `peppygen/emitted_topics/{contract_name}/{contract_tag}/{topic}.py` files
+//! `peppygen/emitted_topics/{link_id}/{topic}.py` files
 //! with the right `__init__.py` chains and the matching `contract_name` /
 //! `contract_tag` strings inside each declare_publisher call.
 
@@ -28,10 +28,16 @@ fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
     }
 }
 
-fn contract_backed(name: &str, tag: &str, topic: NativeEmittedTopic) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    topic: NativeEmittedTopic,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::EmittedTopic {
         topic,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -67,7 +73,7 @@ const NODE_CONFIG: &str = r#"{
 /// (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`) each shaped as
 /// `video_stream` with a distinguishing marker field. Verifies that:
 ///   1. Contract-backed artifacts nest under
-///      `emitted_topics/{contract_name}/{contract_tag}/{topic}.py` while the
+///      `emitted_topics/{link_id}/{topic}.py` while the
 ///      native artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
 ///   3. Each leaf's declare_publisher body passes the matching sender target to
@@ -76,15 +82,15 @@ const NODE_CONFIG: &str = r#"{
 ///   4. The per-interface marker fields land in their own files, proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
-fn nests_contract_backed_topics_under_contract_name_and_tag() {
+fn nests_contract_backed_topics_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("depth_camera", "v1", make_topic("depth_v1_marker")),
-        contract_backed("depth_camera", "v2", make_topic("depth_v2_marker")),
-        contract_backed("uvc_camera", "v1", make_topic("uvc_v1_marker")),
+        contract_backed("depth_v1", "depth_camera", "v1", make_topic("depth_v1_marker")),
+        contract_backed("depth_v2", "depth_camera", "v2", make_topic("depth_v2_marker")),
+        contract_backed("uvc_v1", "uvc_camera", "v1", make_topic("uvc_v1_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -111,11 +117,10 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
         "native video_stream.py should exist at {native_path:?}",
     );
 
-    // Contract-backed artifacts nest one level deeper than the rust scaffold:
-    // category dir, then contract_name, then contract_tag.
-    let depth_v1 = emit_dir.join("depth_camera/v1/video_stream.py");
-    let depth_v2 = emit_dir.join("depth_camera/v2/video_stream.py");
-    let uvc_v1 = emit_dir.join("uvc_camera/v1/video_stream.py");
+    // Contract-backed artifacts nest under `<link_id>/`.
+    let depth_v1 = emit_dir.join("depth_v1/video_stream.py");
+    let depth_v2 = emit_dir.join("depth_v2/video_stream.py");
+    let uvc_v1 = emit_dir.join("uvc_v1/video_stream.py");
     for path in [&depth_v1, &depth_v2, &uvc_v1] {
         assert!(path.exists(), "expected contract-backed topic at {path:?}");
     }
@@ -124,8 +129,9 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     let root_init = fs::read_to_string(emit_dir.join("__init__.py")).expect("root __init__.py");
     for expected in [
         "from . import video_stream",
-        "from . import depth_camera",
-        "from . import uvc_camera",
+        "from . import depth_v1",
+        "from . import depth_v2",
+        "from . import uvc_v1",
     ] {
         assert!(
             root_init.contains(expected),
@@ -133,11 +139,17 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
         );
     }
 
-    let depth_init = fs::read_to_string(emit_dir.join("depth_camera/__init__.py"))
-        .expect("depth_camera/__init__.py");
+    let depth_v1_init = fs::read_to_string(emit_dir.join("depth_v1/__init__.py"))
+        .expect("depth_v1/__init__.py");
     assert!(
-        depth_init.contains("from . import v1") && depth_init.contains("from . import v2"),
-        "depth_camera/__init__.py should import v1 and v2:\n{depth_init}",
+        depth_v1_init.contains("from . import video_stream"),
+        "depth_v1/__init__.py should import video_stream:\n{depth_v1_init}",
+    );
+    let depth_v2_init = fs::read_to_string(emit_dir.join("depth_v2/__init__.py"))
+        .expect("depth_v2/__init__.py");
+    assert!(
+        depth_v2_init.contains("from . import video_stream"),
+        "depth_v2/__init__.py should import video_stream:\n{depth_v2_init}",
     );
 
     // Each leaf's declare_publisher body passes a matching `peppylib.SenderTarget`
@@ -177,8 +189,8 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
     // which is independent of the calling file's depth. This regressed once
     // when the loader used `_PKG_DIR = Path(__file__).parent.parent` (fine
-    // for the flat native path but two levels short for nested contract-backed
-    // artifacts at `peppygen/<category>/<contract>/<tag>/<leaf>.py`), which made
+    // for the flat native path but one level short for nested contract-backed
+    // artifacts at `peppygen/<category>/<link_id>/<leaf>.py`), which made
     // `capnp.load()` raise silently inside the asyncio loop and hung the
     // consumer. All four files (native + three contract-backed) should now produce
     // the same loader form.
@@ -201,18 +213,19 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     }
 }
 
-/// Exercises hyphen-to-underscore normalization in the `contract_tag` for the
-/// Python generator: a tag `v1-beta` becomes the directory `v1_beta` (Python
-/// identifiers can't carry hyphens) while the literal `"v1-beta"` is still
-/// embedded in the declare_publisher body; the messaging layer normalizes hyphens
+/// Exercises hyphen-to-underscore normalization of the slot `link_id` for the
+/// Python generator: a link_id `depth-beta` becomes the directory `depth_beta`
+/// (Python identifiers can't carry hyphens) while the literal `"v1-beta"` tag is
+/// still embedded in the declare_publisher body; the messaging layer normalizes hyphens
 /// at the wire boundary, so the generator keeps the raw value.
 #[test]
-fn hyphenated_tag_lands_in_underscore_directory() {
+fn hyphenated_link_id_lands_in_underscore_directory() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![contract_backed(
+        "depth-beta",
         "depth_camera",
         "v1-beta",
         make_topic("hyphen_marker"),
@@ -234,10 +247,10 @@ fn hyphenated_tag_lands_in_underscore_directory() {
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
         .join("peppygen")
         .join("emitted_topics");
-    let leaf = emit_dir.join("depth_camera/v1_beta/video_stream.py");
+    let leaf = emit_dir.join("depth_beta/video_stream.py");
     assert!(
         leaf.exists(),
-        "hyphenated tag should land under underscored dir at {leaf:?}",
+        "hyphenated link_id should land in an underscored dir at {leaf:?}",
     );
     let src = fs::read_to_string(&leaf).expect("read leaf");
     assert!(

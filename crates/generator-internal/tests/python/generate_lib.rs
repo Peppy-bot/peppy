@@ -440,7 +440,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         consumer_peppygen_dir
-            .join("peppygen/consumed_topics/topic_exposer_test_topic.py")
+            .join("peppygen/consumed_topics/topic_exposer/test_topic.py")
             .exists(),
         "consumed topic module should exist in peppygen package at {}",
         consumer_peppygen_dir.display()
@@ -565,7 +565,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
 
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let consumed_service_module_path =
-        consumer_peppygen_dir.join("peppygen/consumed_services/service_exposer_test_service.py");
+        consumer_peppygen_dir.join("peppygen/consumed_services/service_exposer/test_service.py");
     assert!(
         consumed_service_module_path.exists(),
         "consumed service module should exist in peppygen package at {}",
@@ -715,7 +715,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         consumer_peppygen_dir
-            .join("peppygen/consumed_actions/action_exposer_test_action.py")
+            .join("peppygen/consumed_actions/action_exposer/test_action.py")
             .exists(),
         "consumed action module should exist in peppygen package at {}",
         consumer_peppygen_dir.display()

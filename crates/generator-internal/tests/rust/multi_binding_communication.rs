@@ -141,8 +141,8 @@ async fn one_or_more_slot_fans_in_topics_and_directs_services(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_services::cameras_enable_camera;
-use peppygen::consumed_topics::cameras_video_stream;
+use peppygen::consumed_services::cameras::enable_camera as cameras_enable_camera;
+use peppygen::consumed_topics::cameras::video_stream as cameras_video_stream;
 use peppygen::{NodeBuilder, ProducerRef, Result};
 use std::collections::HashSet;
 use std::time::Duration;

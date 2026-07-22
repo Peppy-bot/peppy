@@ -43,7 +43,7 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
     assert_eq!(
         artifact.module_path,
         vec!["arm".to_string(), "joint_commands".to_string()],
-        "peer artifacts nest flat under pairings/<link_id>/<topic>"
+        "peer artifacts nest under paired_topics/<link_id>/<topic>"
     );
 
     let rendered = &artifact.code_output;

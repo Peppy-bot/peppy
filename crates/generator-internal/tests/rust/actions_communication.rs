@@ -139,7 +139,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -490,7 +490,7 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -830,7 +830,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -1179,7 +1179,7 @@ async fn actions_communication_drain_loop_until_end_signal(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -1572,7 +1572,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -1949,7 +1949,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -2344,7 +2344,7 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;

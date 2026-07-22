@@ -21,8 +21,8 @@ use super::types::{
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
-    module_name_from_components, non_empty_str, raw_module_label, resolve_schema_file_stem,
-    sanitize_component, sanitize_node_display_name, to_camel_case,
+    non_empty_str, resolve_schema_file_stem, sanitize_component, sanitize_node_display_name,
+    to_camel_case,
 };
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -1081,11 +1081,6 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = format!("{}_{}", node_name, topic.name.as_str());
-        if module_label.trim().is_empty() {
-            module_label = String::from("topic");
-        }
-
         let schema_key =
             crate::generator::naming::consumed_topic_schema_key(node_name, topic.name.as_str());
 
@@ -1138,12 +1133,11 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
-            None,
-            InterfaceKind::ConsumedTopic,
-            rendered,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![topic.link_id.clone(), topic.name.clone()],
+            kind: InterfaceKind::ConsumedTopic,
+            code_output: rendered,
+        });
 
         Ok(())
     }
@@ -1402,26 +1396,16 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_label = raw_module_label(&service.link_id, &service.name);
-        if module_name_from_components(&service.link_id, &service.name).is_empty() {
-            module_label = method_label
-                .strip_prefix("poll_")
-                .map(|label| label.to_string())
-                .filter(|label| !label.is_empty())
-                .unwrap_or_else(|| method_label.clone());
-        }
-
         let tokens: TokenStream = quote! {
             #( #all_tokens )*
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
-            None,
-            InterfaceKind::ConsumedService,
-            rendered,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![service.link_id.clone(), service.name.clone()],
+            kind: InterfaceKind::ConsumedService,
+            code_output: rendered,
+        });
         Ok(())
     }
 
@@ -1678,13 +1662,11 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = raw_module_label(&action.link_id, &action.name);
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
-            None,
-            InterfaceKind::ConsumedAction,
-            rendered,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![action.link_id.clone(), action.name.clone()],
+            kind: InterfaceKind::ConsumedAction,
+            code_output: rendered,
+        });
         Ok(())
     }
 
