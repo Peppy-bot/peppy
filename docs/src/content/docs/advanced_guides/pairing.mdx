@@ -166,7 +166,7 @@ arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@cn-adoring-wiles (arm_li
 
 ## Using the generated API
 
-`peppy node sync` generates a module per declared slot topic under `peppygen.pairings.<link_id>.<topic>` (Python) / `peppygen::pairings::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. The modules follow the manifest's entries, not the document's full topic list, so a counterpart topic you left out of `consumes` simply has no module. Pairing topics never appear under `consumed_topics` or `emitted_topics`, whichever direction they travel. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
+`peppy node sync` generates a module per declared slot topic under `peppygen.paired_topics.<link_id>.<topic>` (Python) / `peppygen::paired_topics::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. The modules follow the manifest's entries, not the document's full topic list, so a counterpart topic you left out of `consumes` simply has no module. Pairing topics never appear under `consumed_topics` or `emitted_topics`, whichever direction they travel. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
 
 <Tabs>
   <TabItem label="Python">
@@ -251,7 +251,7 @@ peppy node run --instance-id cmd_1 two_arm_commander:v1 \
   --pair left_arm@arm_l --pair right_arm@arm_r
 ```
 
-The generated code addresses each arm through its slot module (`pairings.left_arm.joint_commands` vs `pairings.right_arm.joint_commands` in Python, `pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands` in Rust), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
+The generated code addresses each arm through its slot module (`paired_topics.left_arm.joint_commands` vs `paired_topics.right_arm.joint_commands` in Python, `paired_topics::left_arm::joint_commands` vs `paired_topics::right_arm::joint_commands` in Rust), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
 
 ## Why topics only?
 

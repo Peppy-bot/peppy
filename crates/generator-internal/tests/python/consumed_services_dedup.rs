@@ -75,13 +75,13 @@ def capnp_loaders(mod):
         if name.endswith("_capnp") and name.startswith("_") and callable(getattr(mod, name))
     ]
 
-front = importlib.import_module("peppygen.consumed_services.front_cam_enable")
-rear = importlib.import_module("peppygen.consumed_services.rear_cam_enable")
+front = importlib.import_module("peppygen.consumed_services.front_cam.enable")
+rear = importlib.import_module("peppygen.consumed_services.rear_cam.enable")
 
 front_loaders = capnp_loaders(front)
 rear_loaders = capnp_loaders(rear)
-assert front_loaders, "no capnp loaders found in front_cam_enable"
-assert rear_loaders, "no capnp loaders found in rear_cam_enable"
+assert front_loaders, "no capnp loaders found in front_cam/enable"
+assert rear_loaders, "no capnp loaders found in rear_cam/enable"
 
 # Per-producer scoping check: the loader functions in the two modules must
 # resolve to DIFFERENT pycapnp modules. If they returned the same object,
@@ -156,8 +156,8 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
     .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    let front_module = peppygen_dir.join("peppygen/consumed_services/front_cam_enable.py");
-    let rear_module = peppygen_dir.join("peppygen/consumed_services/rear_cam_enable.py");
+    let front_module = peppygen_dir.join("peppygen/consumed_services/front_cam/enable.py");
+    let rear_module = peppygen_dir.join("peppygen/consumed_services/rear_cam/enable.py");
     assert!(
         front_module.exists(),
         "front consumer module missing at {}",

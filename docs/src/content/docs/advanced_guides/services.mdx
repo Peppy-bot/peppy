@@ -355,7 +355,7 @@ import asyncio
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_services import uvc_camera_enable_camera
+from peppygen.consumed_services.uvc_camera import enable_camera
 
 
 async def call_service(node_runner: NodeRunner):
@@ -363,9 +363,9 @@ async def call_service(node_runner: NodeRunner):
     # accessor is singular and infallible; no emptiness handling exists.
     # The target is still passed explicitly, same discipline as the
     # multi cardinalities.
-    camera = uvc_camera_enable_camera.bound_producer(node_runner)
-    request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(
+    camera = enable_camera.bound_producer(node_runner)
+    request = enable_camera.Request(enable=True)
+    response = await enable_camera.poll(
         node_runner,
         camera,  # the slot's sole producer
         request,
@@ -393,7 +393,7 @@ if __name__ == "__main__":
   </TabItem>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera::enable_camera;
 use peppygen::{NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
@@ -403,9 +403,9 @@ fn main() -> Result<()> {
         // accessor is singular and infallible; no emptiness handling exists.
         // The target is still passed explicitly, same discipline as the
         // multi cardinalities.
-        let camera = uvc_camera_enable_camera::bound_producer(&node_runner);
-        let request = uvc_camera_enable_camera::Request::new(true);
-        let response = uvc_camera_enable_camera::poll(
+        let camera = enable_camera::bound_producer(&node_runner);
+        let request = enable_camera::Request::new(true);
+        let response = enable_camera::poll(
             &node_runner,
             camera,                 // the slot's sole producer
             Duration::from_secs(5), // timeout
@@ -438,20 +438,20 @@ For a service without a request body, `poll` simply takes no request:
 <Tabs>
   <TabItem label="Python">
 ```python
-from peppygen.consumed_services import uvc_camera_get_camera_info
+from peppygen.consumed_services.uvc_camera import get_camera_info
 
-camera = uvc_camera_get_camera_info.bound_producer(node_runner)
-response = await uvc_camera_get_camera_info.poll(node_runner, camera, 5.0)
+camera = get_camera_info.bound_producer(node_runner)
+response = await get_camera_info.poll(node_runner, camera, 5.0)
 
 print(f"Camera: {response.data.card_type} {response.data.size}")
 ```
   </TabItem>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_services::uvc_camera_get_camera_info;
+use peppygen::consumed_services::uvc_camera::get_camera_info;
 
-let camera = uvc_camera_get_camera_info::bound_producer(&node_runner);
-let response = uvc_camera_get_camera_info::poll(
+let camera = get_camera_info::bound_producer(&node_runner);
+let response = get_camera_info::poll(
     &node_runner,
     camera,
     Duration::from_secs(5),
@@ -472,9 +472,9 @@ Codegen provides only single-target operations; calling every member of a multi-
 # Runs once per bound producer, in binding declaration order.
 # `one_or_more`: the list is never empty, so the body runs at least once.
 # `zero_or_more`: an empty list makes the loop a no-op; no request is sent.
-for camera in camera_enable_camera.bound_producers(node_runner):
-    request = camera_enable_camera.Request(enable=True)
-    response = await camera_enable_camera.poll(node_runner, camera, request, 5.0)
+for camera in enable_camera.bound_producers(node_runner):
+    request = enable_camera.Request(enable=True)
+    response = await enable_camera.poll(node_runner, camera, request, 5.0)
     print(f"{response.instance_id}@{response.core_node}: enabled={response.data.enabled}")
 ```
   </TabItem>
@@ -483,10 +483,10 @@ for camera in camera_enable_camera.bound_producers(node_runner):
 // Runs once per bound producer, in binding declaration order.
 // `one_or_more`: the set is never empty, so the body runs at least once.
 // `zero_or_more`: an empty slice makes the loop a no-op; no request is sent.
-let cameras = camera_enable_camera::bound_producers(&node_runner);
+let cameras = enable_camera::bound_producers(&node_runner);
 for camera in cameras {
-    let request = camera_enable_camera::Request::new(true);
-    let response = camera_enable_camera::poll(
+    let request = enable_camera::Request::new(true);
+    let response = enable_camera::poll(
         &node_runner,
         camera,
         Duration::from_secs(5),
@@ -505,7 +505,7 @@ for camera in cameras {
 To address one member of a multi slot instead of all of them, pick it from the same set; on a `one_or_more` slot the set is never empty, so selecting the first member needs no unwrap:
 
 ```rust
-let camera = camera_enable_camera::bound_producers(&node_runner).first();
+let camera = enable_camera::bound_producers(&node_runner).first();
 ```
 
 ## Bindings and routing
@@ -573,8 +573,8 @@ A consumer that wires two depth cameras to two dedicated slots:
 
 Three contract statements follow from this manifest:
 
-1. `poll` on the `wrist_left_camera_<service>` module reaches `left_cam`.
-2. `poll` on the `wrist_right_camera_<service>` module reaches `right_cam`.
+1. `poll` on the nested `wrist_left_camera.<service>` (Python) / `wrist_left_camera::<service>` (Rust) module reaches `left_cam`.
+2. `poll` on the nested `wrist_right_camera.<service>` (Python) / `wrist_right_camera::<service>` (Rust) module reaches `right_cam`.
 3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared `one` / `one_or_more` slot must be bound): a service call has no wildcard fallback.
 
 ### Why an explicit single target?

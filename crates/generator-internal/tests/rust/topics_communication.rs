@@ -98,7 +98,7 @@ async fn topics_communication(#[case] topology: crate::helpers::LocalNodesTopolo
     // TODO: An exit signal should be sent to the receiver to terminate the process
     let receiver_main = r#"
 use peppygen::NodeBuilder;
-use peppygen::consumed_topics::uvc_camera_video_stream::subscribe;
+use peppygen::consumed_topics::uvc_camera::video_stream::subscribe;
 use peppygen::Result;
 
 fn main() -> Result<()> {

@@ -1,9 +1,9 @@
-use peppygen::pairings::controller::{joint_commands, joint_states};
+use peppygen::paired_topics::controller::{joint_commands, joint_states};
 use peppygen::{NodeBuilder, Parameters, Result};
 
 // `robot_arm` plays the `arm` role of the `arm_link` pairing. Both
 // directions of its `controller` slot live under
-// `peppygen::pairings::controller`: it consumes `joint_commands` from and
+// `peppygen::paired_topics::controller`: it consumes `joint_commands` from and
 // emits `joint_states` to whichever single controller instance is
 // currently paired on the slot. Unpaired, the subscription stays silent
 // and publishes go nowhere; the code does not change either way.

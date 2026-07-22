@@ -50,7 +50,8 @@ const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#
 /// the test is exercising and mirror the explicit-probe style of the Python
 /// counterpart.
 const USER_MAIN: &str = r#"
-use peppygen::consumed_topics::{left_arm_joint_states, right_arm_joint_states};
+use peppygen::consumed_topics::left_arm::joint_states as left_arm_joint_states;
+use peppygen::consumed_topics::right_arm::joint_states as right_arm_joint_states;
 
 #[allow(dead_code)]
 fn _references_both_link_keyed_modules() {
@@ -103,8 +104,8 @@ fn rust_handles_two_consumed_topics_sharing_topic_name() {
     .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    let left_module = peppygen_dir.join("src/consumed_topics/left_arm_joint_states.rs");
-    let right_module = peppygen_dir.join("src/consumed_topics/right_arm_joint_states.rs");
+    let left_module = peppygen_dir.join("src/consumed_topics/left_arm/joint_states.rs");
+    let right_module = peppygen_dir.join("src/consumed_topics/right_arm/joint_states.rs");
     assert!(
         left_module.exists(),
         "left consumer module missing at {}",

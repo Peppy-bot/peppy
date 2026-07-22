@@ -721,19 +721,19 @@ fn consumed_two_actions_same_node() {
         .map(|artifact| (artifact.leaf_name().to_string(), artifact.code_output))
         .collect();
 
-    let move_arm_module =
-        sanitize_node_display_name(&raw_module_label("brain", &move_arm_action.name));
-    let rotate_module = sanitize_node_display_name(&raw_module_label("brain", &rotate_action.name));
-
+    // Consumed artifacts nest as `[link_id, action_name]`, so the leaf segment
+    // is the raw action name.
     let move_arm = artifact_map
-        .get(&move_arm_module)
-        .unwrap_or_else(|| panic!("move_arm artifact `{}` is present", move_arm_module));
-    let rotate_servo = artifact_map.get(&rotate_module).unwrap_or_else(|| {
-        panic!(
-            "rotate_servo_clockwise artifact `{}` is present",
-            rotate_module
-        )
-    });
+        .get(move_arm_action.name.as_str())
+        .unwrap_or_else(|| panic!("move_arm artifact `{}` is present", move_arm_action.name));
+    let rotate_servo = artifact_map
+        .get(rotate_action.name.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "rotate_servo_clockwise artifact `{}` is present",
+                rotate_action.name
+            )
+        });
 
     // move_arm - constants and struct hierarchy
     assert_contains_all(
@@ -1036,8 +1036,8 @@ fn clippy_single_exposed_action_empty_goal_request() {
     assert_contains_all(
         &consumed_actions_contents,
         &[
-            "pub mod brain_move_arm;",
-            "pub mod controller_rotate_servo_clockwise;",
+            "pub mod brain;",
+            "pub mod controller;",
         ],
     );
 }
@@ -1138,8 +1138,8 @@ fn compile_lib_with_exposed_and_consumed_actions() {
     assert_contains_all(
         &consumed_actions_contents,
         &[
-            "pub mod brain_move_arm;",
-            "pub mod controller_rotate_servo_clockwise;",
+            "pub mod brain;",
+            "pub mod controller;",
         ],
     );
 
@@ -1155,17 +1155,17 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         "Expected generated rotate_servo_clockwise action module at {:?}",
         expose_rotate_path
     );
-    let subscribed_brain_path = output_dir.join("src/consumed_actions/brain_move_arm.rs");
+    let subscribed_brain_path = output_dir.join("src/consumed_actions/brain/move_arm.rs");
     assert!(
         subscribed_brain_path.exists(),
-        "Expected brain_move_arm consumed action module at {:?}",
+        "Expected brain/move_arm consumed action module at {:?}",
         subscribed_brain_path
     );
     let subscribed_controller_path =
-        output_dir.join("src/consumed_actions/controller_rotate_servo_clockwise.rs");
+        output_dir.join("src/consumed_actions/controller/rotate_servo_clockwise.rs");
     assert!(
         subscribed_controller_path.exists(),
-        "Expected controller_rotate_servo_clockwise consumed action module at {:?}",
+        "Expected controller/rotate_servo_clockwise consumed action module at {:?}",
         subscribed_controller_path
     );
 }

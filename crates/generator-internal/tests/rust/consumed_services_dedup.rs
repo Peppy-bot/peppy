@@ -62,7 +62,8 @@ const REAR_REQUEST_FORMAT: &str = r#"{ enabled: "bool", intensity: "u32" }"#;
 const REAR_RESPONSE_FORMAT: &str = r#"{ status_code: "i32" }"#;
 
 const USER_MAIN: &str = r#"
-use peppygen::consumed_services::{front_cam_enable, rear_cam_enable};
+use peppygen::consumed_services::front_cam::enable as front_cam_enable;
+use peppygen::consumed_services::rear_cam::enable as rear_cam_enable;
 
 #[allow(dead_code)]
 fn _references_both_link_keyed_modules() {
@@ -118,8 +119,8 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
     .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    let front_module = peppygen_dir.join("src/consumed_services/front_cam_enable.rs");
-    let rear_module = peppygen_dir.join("src/consumed_services/rear_cam_enable.rs");
+    let front_module = peppygen_dir.join("src/consumed_services/front_cam/enable.rs");
+    let rear_module = peppygen_dir.join("src/consumed_services/rear_cam/enable.rs");
     assert!(
         front_module.exists(),
         "front consumer module missing at {}",

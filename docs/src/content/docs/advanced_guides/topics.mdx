@@ -323,7 +323,8 @@ To depend on a contract instead of a specific producer node, so any implementing
 ### Receiving messages
 
 The code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust).
-The module name is `<link_id>_<topic_name>` based on the `link_id` field; in this case `uvc_camera_video_stream`.
+Every slot-backed module lives at `<category>/<link_id>/<member>`, keyed on the author's `link_id`.
+The consumed module is therefore `consumed_topics/<link_id>/<topic_name>`, imported as `from peppygen.consumed_topics.uvc_camera import video_stream` (Python) / `peppygen::consumed_topics::uvc_camera::video_stream` (Rust); here the `link_id` is `uvc_camera` and the topic is `video_stream`.
 Call `subscribe` once to obtain a held `Subscription`, then await `next` for each message:
 
 <Tabs>
@@ -333,14 +334,14 @@ import asyncio
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_topics import uvc_camera_video_stream
+from peppygen.consumed_topics.uvc_camera import video_stream
 
 
 async def receive_frames(node_runner: NodeRunner):
     # Same subscribe() as every cardinality: it covers the slot's complete
     # bound set, which for `one` is exactly one producer. The yielded
     # ProducerRef is constant here, so the loop ignores it.
-    subscription = await uvc_camera_video_stream.subscribe(node_runner)
+    subscription = await video_stream.subscribe(node_runner)
 
     async for _producer, frame in subscription:
         print(f"frame: {frame.width}x{frame.height}")
@@ -360,7 +361,7 @@ if __name__ == "__main__":
   </TabItem>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_topics::uvc_camera_video_stream;
+use peppygen::consumed_topics::uvc_camera::video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
@@ -368,7 +369,7 @@ fn main() -> Result<()> {
         // Same subscribe() as every cardinality: it covers the slot's complete
         // bound set, which for `one` is exactly one producer. The yielded
         // ProducerRef is constant here, so the loop ignores it.
-        let mut subscription = uvc_camera_video_stream::subscribe(&node_runner).await?;
+        let mut subscription = video_stream::subscribe(&node_runner).await?;
 
         while let Some((_, frame)) = subscription.next().await? {
             println!("frame: {}x{}", frame.width, frame.height);
@@ -429,7 +430,7 @@ import sys
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_topics import uvc_camera_video_stream
+from peppygen.consumed_topics.uvc_camera import video_stream
 
 
 async def process_frame(producer, frame):
@@ -441,7 +442,7 @@ async def process_frame(producer, frame):
 
 async def receive_frames(node_runner: NodeRunner):
     try:
-        subscription = await uvc_camera_video_stream.subscribe(node_runner)
+        subscription = await video_stream.subscribe(node_runner)
     except Exception as e:
         print(f"Failed to subscribe: {e}", file=sys.stderr)
         return
@@ -471,7 +472,7 @@ if __name__ == "__main__":
   <TabItem label="Rust">
 ```rust
 use std::sync::Arc;
-use peppygen::consumed_topics::uvc_camera_video_stream;
+use peppygen::consumed_topics::uvc_camera::video_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
 fn main() -> Result<()> {
@@ -482,7 +483,7 @@ fn main() -> Result<()> {
 }
 
 async fn receive_frames(node_runner: Arc<NodeRunner>) {
-    let mut subscription = match uvc_camera_video_stream::subscribe(&node_runner).await {
+    let mut subscription = match video_stream::subscribe(&node_runner).await {
         Ok(subscription) => subscription,
         Err(e) => {
             eprintln!("Failed to subscribe: {e}");
@@ -521,7 +522,7 @@ Nothing changes at the call site when the slot's [cardinality](#dependency-cardi
 <Tabs>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_topics::camera_video_stream;
+use peppygen::consumed_topics::camera::video_stream;
 use peppygen::{NodeBuilder, Parameters, ProducerRef, Result};
 use std::collections::HashMap;
 
@@ -534,7 +535,7 @@ fn main() -> Result<()> {
         // `one_or_more`: the merged subscription covers at least one producer.
         // `zero_or_more`: the slot may be empty; the subscription then
         // yields nothing until the node stops.
-        let mut subscription = camera_video_stream::subscribe(&node_runner).await?;
+        let mut subscription = video_stream::subscribe(&node_runner).await?;
 
         let mut frames_per_camera: HashMap<ProducerRef, u64> = HashMap::new();
         while let Some((producer, frame)) = subscription.next().await? {
@@ -555,13 +556,13 @@ fn main() -> Result<()> {
   </TabItem>
   <TabItem label="Python">
 ```python
-from peppygen.consumed_topics import camera_video_stream
+from peppygen.consumed_topics.camera import video_stream
 
 
 async def count_frames(node_runner):
     # One subscription covering every producer bound to the `camera`
     # slot; the yielded producer tells per-camera streams apart.
-    subscription = await camera_video_stream.subscribe(node_runner)
+    subscription = await video_stream.subscribe(node_runner)
 
     frames_per_camera: dict = {}
     async for producer, frame in subscription:
@@ -684,8 +685,8 @@ And the launcher that binds it:
 
 Three contract statements follow from this manifest:
 
-1. A frame from `left_cam` arrives only on the `wrist_left_camera_video_stream` slot.
-2. A frame from `right_cam` arrives only on the `wrist_right_camera_video_stream` slot.
+1. A frame from `left_cam` arrives only on the `wrist_left_camera` slot.
+2. A frame from `right_cam` arrives only on the `wrist_right_camera` slot.
 3. If the `wrist_right_camera` binding line were removed, the launch would be rejected: every declared slot except `zero_or_more` must be bound. A producer named by no binding is simply ignored, but a declared `one` or `one_or_more` slot with no binding is an error, not a silent gap.
 
 Dedicated slots (one `link_id` per camera, as here) and one multi-cardinality slot (`cameras: ["left_cam", "right_cam"]`) are both valid designs. Dedicated slots give each producer a distinct role in code; a multi slot treats the producers as an N-of-a-kind set behind one API.

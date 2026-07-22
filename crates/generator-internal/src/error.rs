@@ -90,4 +90,18 @@ needs a decodable payload"
 (pairing topic names must be unique across the whole document)"
     )]
     PeerTopicNameCollision { link_id: String, topic: String },
+    /// Two sibling module segments at the same tree level sanitize to the same
+    /// on-disk name. Nesting is meant to make a name collision unrepresentable,
+    /// so this is a hard error naming both raw segments rather than a silent
+    /// numeric-suffix rename.
+    #[error(
+        "module name collision in `{category}`: `{first}` and `{second}` both \
+sanitize to the module name `{sanitized}`"
+    )]
+    ModuleNameCollision {
+        category: String,
+        first: String,
+        second: String,
+        sanitized: String,
+    },
 }

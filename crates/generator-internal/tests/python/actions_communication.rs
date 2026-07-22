@@ -150,7 +150,7 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_flow_done
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -493,7 +493,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_cancel_flow_done
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -820,7 +820,7 @@ async fn actions_communication_async_goal_decider(
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_in_handler_flow_done
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -1174,7 +1174,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_cancel_accept_flow_done
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -1539,7 +1539,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_cancel_reject_flow_done
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -1926,7 +1926,7 @@ async fn actions_communication_drain_loop_until_end_signal(
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_drain_loop_flow_done
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -2280,7 +2280,7 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
 import asyncio
 import time
 from peppygen import NodeBuilder, QoSProfile
-from peppygen.consumed_actions import brain_move_arm
+from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])

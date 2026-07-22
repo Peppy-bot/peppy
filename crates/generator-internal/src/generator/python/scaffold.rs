@@ -213,7 +213,7 @@ pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -
         let artifacts = grouped.remove(&category).unwrap_or_default();
         let tree = build_module_tree(artifacts);
         let mut writer = PythonTreeWriter;
-        write_module_tree(&category_dir, &tree, &mut writer)?;
+        write_module_tree(&category_dir, &tree, category, &mut writer)?;
     }
 
     Ok(())
@@ -221,7 +221,7 @@ pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -
 
 /// [`TreeWriter`] mirroring the Rust scaffold layout: one `.py` file per leaf
 /// and an `__init__.py` per directory that imports every sub-module so
-/// `from peppygen.emitted_topics.depth_camera.v1 import video_stream` resolves.
+/// `from peppygen.emitted_topics.depth_cam import video_stream` resolves.
 /// Traversal and sibling de-duplication live in the shared [`write_module_tree`]
 /// walker.
 struct PythonTreeWriter;
@@ -297,8 +297,13 @@ mod tests {
         );
 
         let tree = build_module_tree(vec![artifact]);
-        write_module_tree(temp_dir.path(), &tree, &mut PythonTreeWriter)
-            .expect("tree should be written");
+        write_module_tree(
+            temp_dir.path(),
+            &tree,
+            ModuleCategory::EmittedTopics,
+            &mut PythonTreeWriter,
+        )
+        .expect("tree should be written");
 
         let module_file = temp_dir.path().join("class_.py");
         assert!(module_file.exists(), "expected escaped module filename");
@@ -317,9 +322,10 @@ mod tests {
             InterfaceKind::EmittedTopic,
             String::from("NATIVE = True\n"),
         );
-        // A contract origin nests the leaf under `{contract_name}/{contract_tag}/`,
-        // i.e. module_path == ["depth_camera", "v1", "video_stream"].
+        // A contract origin nests the leaf under `{link_id}/`, i.e.
+        // module_path == ["depth_cam", "video_stream"].
         let contract_origin = ContractOrigin {
+            link_id: "depth_cam".to_string(),
             contract_name: "depth_camera".to_string(),
             contract_tag: "v1".to_string(),
         };
@@ -331,26 +337,25 @@ mod tests {
         );
 
         let tree = build_module_tree(vec![native, contract_backed]);
-        write_module_tree(temp_dir.path(), &tree, &mut PythonTreeWriter)
-            .expect("tree should be written");
+        write_module_tree(
+            temp_dir.path(),
+            &tree,
+            ModuleCategory::EmittedTopics,
+            &mut PythonTreeWriter,
+        )
+        .expect("tree should be written");
 
         assert!(temp_dir.path().join("video_stream.py").exists());
-        assert!(
-            temp_dir
-                .path()
-                .join("depth_camera/v1/video_stream.py")
-                .exists()
-        );
-        let contract_code =
-            fs::read_to_string(temp_dir.path().join("depth_camera/v1/video_stream.py"))
-                .expect("contract-backed file should be readable");
+        assert!(temp_dir.path().join("depth_cam/video_stream.py").exists());
+        let contract_code = fs::read_to_string(temp_dir.path().join("depth_cam/video_stream.py"))
+            .expect("contract-backed file should be readable");
         assert!(contract_code.contains("CONFORMED"));
         let root_init = fs::read_to_string(temp_dir.path().join("__init__.py")).unwrap();
         assert!(root_init.contains("from . import video_stream"));
-        assert!(root_init.contains("from . import depth_camera"));
-        let depth_init = fs::read_to_string(temp_dir.path().join("depth_camera/__init__.py"))
-            .expect("depth_camera __init__.py should exist");
-        assert_eq!(depth_init, "from . import v1\n");
+        assert!(root_init.contains("from . import depth_cam"));
+        let depth_init = fs::read_to_string(temp_dir.path().join("depth_cam/__init__.py"))
+            .expect("depth_cam __init__.py should exist");
+        assert_eq!(depth_init, "from . import video_stream\n");
     }
 
     /// The generated `.so` table is what the scaffolder deploys, so it must hold

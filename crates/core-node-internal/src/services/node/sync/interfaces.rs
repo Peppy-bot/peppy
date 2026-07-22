@@ -55,7 +55,7 @@ pub fn collect_all_deployment_interfaces(
 
 /// The `depends_on.pairings` slot link_ids of a manifest. Entries naming one
 /// are resolved by `collect_pairing_interfaces` against the pairing document
-/// and generated under `pairings/<link_id>/<topic>`, so both the consumed
+/// and generated under `paired_topics/<link_id>/<topic>`, so both the consumed
 /// collector and the implements resolver must step over them: neither knows
 /// the pairing kind, and collecting an entry twice would either drop it
 /// silently or land it in the wrong module category.
@@ -419,8 +419,8 @@ struct SlotCoverage {
 ///
 /// entry -> implements slot -> contract document -> member (by name and
 /// kind) -> shape/qos, stamped with a [`ContractOrigin`] so the generator
-/// nests the artifact under `{contract_name}/{contract_tag}/{leaf}` and
-/// embeds the matching wire segments.
+/// nests the artifact under `{link_id}/{leaf}` and embeds the matching wire
+/// segments.
 ///
 /// After resolution, the Tier B coverage check runs per (slot x kind): the
 /// contract-backed entries referencing a slot must cover every member of
@@ -485,6 +485,7 @@ pub fn resolve_implements(
             )));
         };
         let origin = ContractOrigin {
+            link_id: slot.link_id.as_str().to_string(),
             contract_name: slot.name.as_str().to_string(),
             contract_tag: slot.tag.clone(),
         };
