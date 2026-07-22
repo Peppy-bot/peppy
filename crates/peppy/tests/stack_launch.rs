@@ -2505,6 +2505,193 @@ async fn stack_launch_establishes_launcher_pairings() {
     }
 }
 
+/// An observer slot is delivered its source pin live. A recorder observing the
+/// `arm` role of `arm_link/v1` links to `arm_1` (a `robot_arm` whose own
+/// participant slot is deferred, so it boots unpaired but still publishes its
+/// role's topics). When the launch is up, the daemon's observation coordinator
+/// has pushed the source pin — `arm_1`'s producer-side `controller` slot, at a
+/// live generation — to the recorder's `observation_update` service. This is
+/// the observer analogue of `stack_launch_establishes_launcher_pairings`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_delivers_observer_source_pin() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let run_cmd = vec!["sleep".to_string(), "30".to_string()];
+    // The source plays the `arm` role through its participant slot `controller`.
+    let arm_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "robot_arm",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#),
+        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "controller", name: "joint_states" }],
+                consumes: [{ link_id: "controller", name: "joint_commands" }]
+            } }"#,
+        ),
+    );
+    // The recorder observes the `arm` role through observer slot `watch`,
+    // consuming the topic that role emits (`joint_states`).
+    let recorder_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "recorder",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }] }"#,
+        ),
+        None,
+        Some(r#"{ topics: { consumes: [{ link_id: "watch", name: "joint_states" }] } }"#),
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    // Source instance services: ready/health/shutdown, no peer_update (its slot
+    // is deferred, so it is never paired).
+    for (node_name, instance_id) in [("robot_arm", "arm_1")] {
+        let _ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let _health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (_shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+    }
+    // Recorder services, including the `observation_update` endpoint whose watch
+    // observes the delivered source pin.
+    let _rec_ready = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        "rec_1",
+        test_node_target("recorder"),
+    )
+    .await
+    .expect("ready service should start");
+    let _rec_health = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        "rec_1",
+        test_node_target("recorder"),
+    )
+    .await
+    .expect("health service should start");
+    let (_rec_shutdown, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        "rec_1",
+        test_node_target("recorder"),
+    )
+    .await
+    .expect("shutdown service should start");
+    let (obs_tx, obs_rx) =
+        tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
+    let obs_slots = Arc::new(std::collections::BTreeMap::from([(
+        "watch".to_string(),
+        obs_tx,
+    )]));
+    peppylib::services::observation_update::listen_for_observation_update(
+        &node_messenger,
+        &core_node_name,
+        "rec_1",
+        test_node_target("recorder"),
+        obs_slots,
+    )
+    .await
+    .expect("observation_update service should start");
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ local: "{arm_path}" }},
+                    instances: [{{ instance_id: "arm_1", defer_links: ["controller"] }}]
+                }},
+                {{
+                    source: {{ local: "{recorder_path}" }},
+                    instances: [{{
+                        instance_id: "rec_1",
+                        links: {{ watch: "arm_1" }}
+                    }}]
+                }}
+            ]
+        }}"#,
+        arm_path = arm_path.display(),
+        recorder_path = recorder_path.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch with an observer should succeed");
+
+    // By the time launch returns, the recorder's observer slot is pinned to the
+    // source's producer-side `controller` slot at a live generation.
+    let state = obs_rx.borrow().clone();
+    let source = state
+        .source
+        .expect("rec_1's observer slot should have a resolved source");
+    assert_eq!(source.producer.instance_id, "arm_1");
+    assert_eq!(source.source_link_id, "controller");
+    assert!(state.source_live, "the source is Running, so it is live");
+    assert!(
+        state.source_generation >= 1,
+        "a live source carries a bumped incarnation generation, got {}",
+        state.source_generation
+    );
+
+    for instance_id in ["rec_1", "arm_1"] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+}
+
 /// A required pairing slot with neither a `links:` entry (on either
 /// side) nor a `defer_links:` opt-out fails the launch at validation,
 /// before anything is added or spawned.
