@@ -36,7 +36,10 @@ def _populate_so_dir(base: Path) -> Path:
 
 
 def test_lima_env_honours_short_base_override(tmp_path: Path) -> None:
-    with patch.dict(os.environ, {"PEPPY_TEST_LIMA_HOME": str(tmp_path)}):
+    with patch.dict(
+        os.environ,
+        {"PEPPY_TEST_LIMA_HOME": str(tmp_path), "PYTEST_XDIST_WORKER": "gw0"},
+    ):
         env = lima_env()
 
     assert env["LIMA_HOME"] == str(tmp_path / "lti-gw0")
