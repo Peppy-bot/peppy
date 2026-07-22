@@ -14,10 +14,21 @@ use crate::error::{
     PairingConflict, PairingDeadKey, PairingSha256Mismatch, PairingSlotAlreadyPaired,
     PairingSlotUncovered, PairingTargetAmbiguous, PairingTargetNotComplementary, ParsingError,
 };
-use config::node::PairingDependency;
+use config::node::{PairingDependency, PairingParticipantDependency};
 use std::collections::BTreeMap;
 
 use super::types::{DeploymentInstance, split_pair_target};
+
+/// The participant slots of a pairing-dep list, in declaration order. Observer
+/// slots (`observes_role`) never participate in pairing establishment,
+/// exclusivity, or required-slot coverage, so pairing validation steps over
+/// them; an observer is linked to its source through `links`, not `pairings`.
+fn participants(deps: &[PairingDependency]) -> impl Iterator<Item = &PairingParticipantDependency> {
+    deps.iter().filter_map(|dep| match dep {
+        PairingDependency::Participant(participant) => Some(participant),
+        PairingDependency::Observer(_) => None,
+    })
+}
 
 /// Minimal view of one node's planned (or already-running) instances needed
 /// for pairing validation. Mirrors `BindingValidationItem` for the pairing
@@ -166,10 +177,8 @@ fn resolve_pair_declaration(
     claims: &BTreeMap<(String, String), (String, String)>,
     already_paired: &AlreadyPairedSlots,
 ) -> Result<Option<PlannedPairing>, ParsingError> {
-    let Some(own_dep) = item.pairing_deps.iter().find(|d| d.link_id == key) else {
-        let declared: Vec<&str> = item
-            .pairing_deps
-            .iter()
+    let Some(own_dep) = participants(item.pairing_deps).find(|d| d.link_id == key) else {
+        let declared: Vec<&str> = participants(item.pairing_deps)
             .map(|d| d.link_id.as_str())
             .collect();
         return Err(ParsingError::PairingDeadKey(Box::new(PairingDeadKey {
@@ -239,9 +248,7 @@ fn resolve_pair_declaration(
     }
 
     // Candidate peer slots: same pairing (name, tag), opposite role.
-    let complementary: Vec<&PairingDependency> = target_item
-        .pairing_deps
-        .iter()
+    let complementary: Vec<&PairingParticipantDependency> = participants(target_item.pairing_deps)
         .filter(|d| d.name == own_dep.name && d.tag == own_dep.tag && d.role != own_dep.role)
         .collect();
 
@@ -255,7 +262,7 @@ fn resolve_pair_declaration(
     } else {
         // No explicit slot: exactly one AVAILABLE complementary slot
         // must remain (in-plan claim tracking).
-        let available: Vec<&&PairingDependency> = complementary
+        let available: Vec<&&PairingParticipantDependency> = complementary
             .iter()
             .filter(|d| {
                 let slot = (target_instance.to_string(), d.link_id.clone());
@@ -337,9 +344,7 @@ fn resolve_pair_declaration(
     }
 
     // Rule 6: both-pinned sha256 must match.
-    let peer_dep = target_item
-        .pairing_deps
-        .iter()
+    let peer_dep = participants(target_item.pairing_deps)
         .find(|d| d.link_id == resolved_peer_link)
         .expect("resolved peer slot comes from target_item.pairing_deps");
     if let (Some(sha_own), Some(sha_peer)) = (&own_dep.sha256, &peer_dep.sha256)
@@ -386,7 +391,7 @@ fn validate_coverage_and_defers(
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
             for link_id in &instance.defer_pairings {
-                let dep = item.pairing_deps.iter().find(|d| &d.link_id == link_id);
+                let dep = participants(item.pairing_deps).find(|d| &d.link_id == link_id);
                 let reason = match dep {
                     None => Some("no such pairing slot is declared".to_string()),
                     Some(_) if claims.contains_key(&(owner_id.to_string(), link_id.clone())) => {
@@ -405,7 +410,7 @@ fn validate_coverage_and_defers(
                     });
                 }
             }
-            for dep in item.pairing_deps {
+            for dep in participants(item.pairing_deps) {
                 if dep.optional {
                     continue;
                 }

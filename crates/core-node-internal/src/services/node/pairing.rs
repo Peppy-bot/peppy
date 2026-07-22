@@ -357,9 +357,15 @@ pub fn plan_requested_pairs(
     let defer_like: Vec<String> = deferred
         .iter()
         .chain(covered.keys().filter(|link| {
-            !pairing_deps
-                .iter()
-                .any(|d| d.link_id == **link && d.optional)
+            // Only a required (non-optional) participant slot needs a
+            // defer-like entry; observer slots are not participants.
+            !pairing_deps.iter().any(|d| {
+                matches!(
+                    d,
+                    config::node::PairingDependency::Participant(p)
+                        if p.link_id == **link && p.optional
+                )
+            })
         }))
         .cloned()
         .collect();

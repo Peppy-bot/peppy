@@ -15,8 +15,8 @@ pub use pairing::{PairEndpoint, Pairing, SlotAddr};
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    NodeConfig, collect_contract_implementation_edges, collect_dependency_specs,
-    validate_dependency_specs,
+    NodeConfig, PairingDependency, PairingParticipantDependency,
+    collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
 use core_node_api::{
@@ -622,20 +622,25 @@ impl NodeStackInner {
     /// Resolves a slot to its manifest declaration plus the instance's
     /// current state. Errors when the instance is unknown/terminal or its
     /// manifest declares no such pairing slot.
-    fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<config::node::PairingDependency> {
+    fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<PairingParticipantDependency> {
         let found = self.find_map_entity(false, |_, entity| {
             entity
                 .instances()
                 .iter()
                 .find(|inst| inst.instance_id().as_str() == slot.instance_id)
                 .map(|inst| {
+                    // Only a participant slot can be paired; an observer slot
+                    // with this link_id is treated as not a pair slot.
                     let dep = entity
                         .config()
                         .manifest
                         .depends_on
                         .as_ref()
-                        .and_then(|d| d.pairings.iter().find(|p| p.link_id == slot.link_id))
-                        .cloned();
+                        .and_then(|d| d.pairings.iter().find(|p| p.link_id() == slot.link_id))
+                        .and_then(|p| match p {
+                            PairingDependency::Participant(participant) => Some(participant.clone()),
+                            PairingDependency::Observer(_) => None,
+                        });
                     (dep, inst.state())
                 })
         });
@@ -743,9 +748,10 @@ impl NodeStackInner {
         self.pairing_registry.pairs().to_vec()
     }
 
-    /// Every declared pairing slot of every live instance that is not
-    /// currently paired, with its manifest declaration.
-    fn unpaired_pairing_slots_impl(&mut self) -> Vec<(SlotAddr, config::node::PairingDependency)> {
+    /// Every declared participant pairing slot of every live instance that is
+    /// not currently paired, with its manifest declaration. Observer slots are
+    /// excluded: they hold no peer and are never "paired".
+    fn unpaired_pairing_slots_impl(&mut self) -> Vec<(SlotAddr, PairingParticipantDependency)> {
         self.prune_dead_pairs();
         let mut out = Vec::new();
         for handle in self.graph.node_weights() {
@@ -761,6 +767,9 @@ impl NodeStackInner {
                     continue;
                 }
                 for dep in &deps.pairings {
+                    let PairingDependency::Participant(dep) = dep else {
+                        continue;
+                    };
                     let slot = SlotAddr::new(inst.instance_id().as_str(), &dep.link_id);
                     if self.pairing_registry.find_by_slot(&slot).is_none() {
                         out.push((slot, dep.clone()));
@@ -1206,7 +1215,7 @@ impl NodeStack {
 
     /// Every declared pairing slot of every live instance that is not
     /// currently paired.
-    pub fn unpaired_pairing_slots(&self) -> Vec<(SlotAddr, config::node::PairingDependency)> {
+    pub fn unpaired_pairing_slots(&self) -> Vec<(SlotAddr, PairingParticipantDependency)> {
         let mut guard = self.shared.write();
         guard.unpaired_pairing_slots_impl()
     }
@@ -1297,6 +1306,11 @@ pub fn pairing_slot_view(
 ) -> std::collections::BTreeMap<String, SerializedPairingSlot> {
     let mut out = std::collections::BTreeMap::new();
     for dep in deps {
+        // Observer slots are not pairing slots (no role, no peer, never
+        // paired), so they do not appear in the pairing-slot view.
+        let PairingDependency::Participant(dep) = dep else {
+            continue;
+        };
         let slot = SlotAddr::new(instance_id, &dep.link_id);
         let binding = live_pairs
             .iter()

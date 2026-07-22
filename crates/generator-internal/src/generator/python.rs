@@ -352,6 +352,38 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
+    fn add_observed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        observer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        // Observer slot link_ids are unique across the node, so the peer
+        // schema-key scheme yields a collision-free key for an observer too.
+        let schema_key = crate::generator::naming::peer_schema_key(&observer.link_id, &topic.name);
+        let arguments = topic.message_format.clone().ok_or_else(|| {
+            crate::error::Error::PeerTopicMissingMessageFormat {
+                link_id: observer.link_id.clone(),
+                topic: topic.name.clone(),
+            }
+        })?;
+        let schema_info = self.register_schema(&schema_key, &arguments)?;
+
+        let code = topics::build_observed_topic(topic, &arguments, &schema_info, observer)?;
+        let module_path = observer.module_path_for(&topic.name);
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            observer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: InterfaceKind::ObservedTopic,
+            code_output: code,
+        });
+        Ok(())
+    }
+
     fn add_consumed_action(
         &mut self,
         action: &ConsumedAction,

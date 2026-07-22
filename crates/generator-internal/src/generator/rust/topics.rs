@@ -255,6 +255,115 @@ pub fn build_peer_module_header(
     }
 }
 
+/// Header for an observer topic module: same slot-identity consts as a peer
+/// module, but it exposes the resolved `source()` instead of the peer helpers.
+/// An observer plays no role, so there is no `paired()`/`wait_paired()`.
+pub fn build_observed_module_header(
+    topic_name: &str,
+    observer: &crate::generator::types::PeerContext,
+) -> TokenStream {
+    let topic_literal = Literal::string(topic_name);
+    let link_id_literal = Literal::string(&observer.link_id);
+    let pairing_name_literal = Literal::string(&observer.pairing_name);
+    let pairing_tag_literal = Literal::string(&observer.pairing_tag);
+
+    quote! {
+        pub const TOPIC_NAME: &str = #topic_literal;
+        /// This node's own observer-slot link_id.
+        pub const LINK_ID: &str = #link_id_literal;
+        pub const PAIRING_NAME: &str = #pairing_name_literal;
+        pub const PAIRING_TAG: &str = #pairing_tag_literal;
+
+        /// The resolved source of this observer slot, or `None` before the
+        /// daemon has delivered it. Purely local configuration state; there is
+        /// no health-derived helper (a third node's health is not knowable).
+        pub fn source(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<Option<peppylib::messaging::ObservedSource>> {
+            Ok(node_runner.observation_slot(LINK_ID)?.source())
+        }
+    }
+}
+
+/// Consume side of an observer topic: a subscription backed by
+/// `peppylib::runtime::subscribe_observed`, which follows the observed source
+/// instance's lifecycle (fully pinned to the source triple, held across the
+/// source's peer transitions, drop-before-redeclare on a source-generation
+/// change). There is no publisher: an observer only reads.
+pub fn build_observed_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Result<TokenStream> {
+    let PeerTopicSubscriptionSpec {
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        qos_profile,
+        struct_prefix,
+    } = spec;
+    let qos_tokens = qos_profile_tokens(qos_profile);
+    let helper_fn_tokens = build_topic_deserialize_helper(
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        struct_prefix,
+    )?;
+
+    let subscription_tokens = build_subscription_struct(
+        quote! {
+            /// A held subscription to an observed pairing topic. Yields nothing
+            /// while the source is unresolved or not emitting; while the source
+            /// is live, only its messages surface (triple wire pin +
+            /// generation-tagged delivery check). A pairing is a live stream,
+            /// not a mailbox: messages published before observation are never
+            /// delivered.
+        },
+        quote!(peppylib::runtime::ObservedTopicSubscription),
+        quote! {
+            /// Awaits the next message from the currently observed source.
+            ///
+            /// Returns `Ok(Some((producer, message)))` for each message,
+            /// `Ok(None)` once the runtime shuts down, and `Err(..)` if a
+            /// received payload fails to deserialize. `producer` is always the
+            /// observed source instance.
+        },
+        quote! {
+            let Some((producer, message)) = self.inner.next().await else {
+                return Ok(None);
+            };
+        },
+        helper_fn_ident,
+        args_struct_ident,
+    );
+
+    Ok(quote! {
+        #subscription_tokens
+
+        /// Subscribes to this observed pairing topic and returns a held
+        /// `Subscription` pinned to the observer slot's source. Legal before
+        /// the source is resolved or live: the subscription stays silent until
+        /// the source emits.
+        pub async fn subscribe(
+            node_runner: &crate::NodeRunner,
+        ) -> crate::Result<Subscription> {
+            let qos = #qos_tokens;
+            let inner = peppylib::runtime::subscribe_observed(
+                node_runner,
+                LINK_ID,
+                PAIRING_NAME,
+                PAIRING_TAG,
+                TOPIC_NAME,
+                qos,
+            )
+            .await?;
+            Ok(Subscription { inner })
+        }
+
+        #helper_fn_tokens
+    })
+}
+
 /// Publish side of a peer-emitted topic: `build_message` (same shape as
 /// emitted topics) plus a slot-scoped `declare_publisher` — the wire target
 /// is `SenderTarget::pairing(...)` and the producer-side link_id segment

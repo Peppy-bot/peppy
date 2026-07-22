@@ -139,7 +139,7 @@ pub fn validate_bindings(
         // instead of a generic `BindingUnknownSlot`.
         let pairing_link_ids: std::collections::BTreeSet<&str> = item
             .depends_on
-            .map(|d| d.pairings.iter().map(|p| p.link_id.as_str()).collect())
+            .map(|d| d.pairings.iter().map(|p| p.link_id()).collect())
             .unwrap_or_default();
 
         for instance in item.instances {
