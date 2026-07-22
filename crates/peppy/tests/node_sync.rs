@@ -492,7 +492,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     );
 }
 
-/// A node declaring `depends_on.pairings` syncs into `pairings/<link_id>/<topic>`
+/// A node declaring `depends_on.pairings` syncs into `paired_topics/<link_id>/<topic>`
 /// modules once the pairing doc is in the daemon's pairing cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_sync_generates_peer_modules_for_pairing_slots() {
