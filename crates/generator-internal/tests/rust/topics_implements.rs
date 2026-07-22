@@ -103,8 +103,18 @@ fn nests_contract_backed_topics_under_link_id() {
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("depth_v1", "depth_camera", "v1", make_topic("depth_v1_marker")),
-        contract_backed("depth_v2", "depth_camera", "v2", make_topic("depth_v2_marker")),
+        contract_backed(
+            "depth_v1",
+            "depth_camera",
+            "v1",
+            make_topic("depth_v1_marker"),
+        ),
+        contract_backed(
+            "depth_v2",
+            "depth_camera",
+            "v2",
+            make_topic("depth_v2_marker"),
+        ),
         contract_backed("uvc_v1", "uvc_camera", "v1", make_topic("uvc_v1_marker")),
     ];
 
@@ -141,14 +151,14 @@ fn nests_contract_backed_topics_under_link_id() {
     }
 
     // Each slot's `mod.rs` declares its leaf module.
-    let depth_v1_mod = fs::read_to_string(emit_dir.join("depth_v1/mod.rs"))
-        .expect("depth_v1/mod.rs should exist");
+    let depth_v1_mod =
+        fs::read_to_string(emit_dir.join("depth_v1/mod.rs")).expect("depth_v1/mod.rs should exist");
     assert!(
         depth_v1_mod.contains("pub mod video_stream;"),
         "depth_v1/mod.rs missing video_stream: {depth_v1_mod}",
     );
-    let depth_v2_mod = fs::read_to_string(emit_dir.join("depth_v2/mod.rs"))
-        .expect("depth_v2/mod.rs should exist");
+    let depth_v2_mod =
+        fs::read_to_string(emit_dir.join("depth_v2/mod.rs")).expect("depth_v2/mod.rs should exist");
     assert!(
         depth_v2_mod.contains("pub mod video_stream;"),
         "depth_v2/mod.rs missing video_stream: {depth_v2_mod}",

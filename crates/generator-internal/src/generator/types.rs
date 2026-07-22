@@ -828,7 +828,11 @@ mod tests {
             origin.scoped_schema_key("video_stream"),
             "depth_camera_v1_video_stream"
         );
-        assert!(!origin.scoped_schema_key("video_stream").contains("cam_left"));
+        assert!(
+            !origin
+                .scoped_schema_key("video_stream")
+                .contains("cam_left")
+        );
     }
 
     #[test]
@@ -1112,7 +1116,9 @@ impl ModuleCategory {
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
             InterfaceKind::ConsumedAction => Self::ConsumedActions,
-            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => Self::PairedTopics,
+            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => {
+                Self::PairedTopics
+            }
         }
     }
 

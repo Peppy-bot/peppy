@@ -3,6 +3,7 @@ use capnpc::CompilerCommand;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::fs;
@@ -113,22 +114,36 @@ impl CapnpFacade {
     }
 
     /// Runs `<path> --version` to prove the binary is actually executable on
-    /// this host before it is handed to the capnp compiler. A wrong-architecture
+    /// this host before it is handed to the capnp compiler. Transient `ETXTBSY`
+    /// errors are retried because another thread can fork while the freshly
+    /// extracted executable is briefly open for writing. A wrong-architecture
     /// binary is rejected by the kernel with `ENOEXEC` here, which lets us report
     /// the real path and errno instead of the capnp compiler's later, generic
     /// "install capnp" message.
     fn verify_runs(path: &Path) -> Result<()> {
-        let output = Command::new(path)
-            .arg("--version")
-            .output()
-            .map_err(|err| {
-                Error::Encoding(format!(
-                    "capnp binary at {} failed to execute on {}/{}: {err}",
-                    path.display(),
-                    env::consts::OS,
-                    env::consts::ARCH
-                ))
-            })?;
+        const MAX_TRANSIENT_RETRIES: u32 = 50;
+
+        let mut attempt = 0;
+        let output = loop {
+            match Command::new(path).arg("--version").output() {
+                Ok(output) => break output,
+                Err(err)
+                    if Self::is_transient_exec_error(&err) && attempt < MAX_TRANSIENT_RETRIES =>
+                {
+                    attempt += 1;
+                    let backoff = Duration::from_millis((10 * attempt as u64).min(100));
+                    std::thread::sleep(backoff);
+                }
+                Err(err) => {
+                    return Err(Error::Encoding(format!(
+                        "capnp binary at {} failed to execute on {}/{}: {err}",
+                        path.display(),
+                        env::consts::OS,
+                        env::consts::ARCH
+                    )));
+                }
+            }
+        };
 
         if !output.status.success() {
             return Err(Error::Encoding(format!(
@@ -139,6 +154,12 @@ impl CapnpFacade {
         }
 
         Ok(())
+    }
+
+    /// `ETXTBSY` has no stable [`std::io::ErrorKind`] variant. Its errno is 26
+    /// on the Unix targets peppy supports.
+    fn is_transient_exec_error(error: &std::io::Error) -> bool {
+        cfg!(unix) && error.raw_os_error() == Some(26)
     }
 
     fn ensure_executable(path: &Path) -> Result<()> {
@@ -397,6 +418,27 @@ mod tests {
             err.to_string().contains("exited with"),
             "error should report the unsuccessful exit, got: {err}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_runs_retries_a_temporarily_busy_executable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_executable(dir.path(), "busy", b"#!/bin/sh\nexit 0\n");
+        let writable = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("hold executable open for writing");
+        let verify_path = path.clone();
+
+        let verifier = std::thread::spawn(move || CapnpFacade::verify_runs(&verify_path));
+        std::thread::sleep(Duration::from_millis(100));
+        drop(writable);
+
+        verifier
+            .join()
+            .expect("verification thread should not panic")
+            .expect("verification should retry after ETXTBSY");
     }
 
     #[cfg(unix)]
