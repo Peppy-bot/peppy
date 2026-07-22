@@ -78,6 +78,27 @@ pub(crate) async fn resolve_node_config(
     info::resolve_node_config(source, peppy_dirs).await
 }
 
+/// Tear down every cross-instance relationship an instance holds, in one place,
+/// so a node that is stopped, removed, or exits on its own always leaves the
+/// pairing registry and the observation registry the same way no matter which
+/// path stopped it. Both teardowns are no-ops for an instance that participates
+/// in neither, so this is safe (and correct) to call for every stopped node.
+///
+/// This is the single teardown seam: the stop, remove, add-overwrite, and
+/// process-exit paths all funnel through it, which is what guarantees they
+/// behave identically for pairing and observation alike. Pairing is dissolved
+/// first (it may notify a live peer), then observation (it notifies a source's
+/// live observers that it went down and drops this instance's own observer
+/// records).
+pub(crate) async fn tear_down_instance(
+    pairing: &PairingCoordinator,
+    observation: &ObservationCoordinator,
+    instance_id: &str,
+) {
+    pairing.dissolve_for_instance(instance_id).await;
+    observation.on_instance_down(instance_id).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -666,6 +666,7 @@ async fn process_node_run(
         requested_pairs,
         deferred_pairs,
         covered_pairs,
+        planned_observations,
         ..
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
@@ -1155,6 +1156,20 @@ async fn process_node_run(
                         shutdown_token: ctx.action.shutdown_token.clone(),
                         instance_done,
                     });
+
+                    // Register this instance's own observer slots before the
+                    // lifecycle notify below, so the `on_instance_running`
+                    // observer branch finds them and delivers each source pin
+                    // whose source is already live. Empty for a non-observer.
+                    // This is the `node run` analogue of the launcher's
+                    // `register_planned`, but additive: it merges one instance
+                    // into the live registry instead of replacing the stack.
+                    if !planned_observations.is_empty() {
+                        ctx.action
+                            .observation
+                            .register_instance(instance_id_str, &planned_observations)
+                            .await;
+                    }
 
                     // The instance is Running: notify the observation
                     // coordinator. If this instance is a source, every live
@@ -1765,16 +1780,14 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
             return;
         };
 
-        // Death auto-clears pairs. The eager half of cleanup: dissolve this
-        // instance's pairs and live-notify each survivor that its slot is
-        // Unpaired (the registry's lazy prune-on-read is the backstop for
-        // paths that never reach here).
-        pairing
-            .dissolve_for_instance(instance_id_str.as_str())
-            .await;
-        observation
-            .on_instance_down(instance_id_str.as_str())
-            .await;
+        // Death auto-clears pairs and observations. The eager half of cleanup,
+        // through the same teardown seam the stop, remove, and add-overwrite
+        // paths use: dissolve this instance's pairs and live-notify each
+        // survivor its slot is Unpaired, and drop its observations while
+        // telling any live observer of this (now-dead) source it went down.
+        // The registry's lazy prune-on-read is the backstop for paths that
+        // never reach here.
+        super::tear_down_instance(&pairing, &observation, instance_id_str.as_str()).await;
 
         match new_state {
             InstanceState::Finished => {

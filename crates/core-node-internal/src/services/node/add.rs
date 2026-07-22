@@ -51,6 +51,7 @@ pub async fn listen_for_node_add(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     pairing: Arc<super::pairing::PairingCoordinator>,
+    observation: Arc<super::observation::ObservationCoordinator>,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -70,6 +71,7 @@ pub async fn listen_for_node_add(
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
             pairing,
+            observation,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -250,6 +252,10 @@ pub(crate) struct NodeAddActionContext {
     /// The daemon's single pairing authority; the overwrite path stops the
     /// entity's old instances, which must dissolve their pairs eagerly.
     pub(crate) pairing: Arc<super::pairing::PairingCoordinator>,
+    /// The daemon's observation authority, torn down alongside pairing for
+    /// every instance the overwrite path stops, so a stopped node is cleaned
+    /// up identically here as on the stop and remove paths.
+    pub(crate) observation: Arc<super::observation::ObservationCoordinator>,
 }
 
 struct ProcessNodeAddContext {
@@ -1294,10 +1300,12 @@ async fn shutdown_existing_instances(
     .await;
 
     for instance_id in &instances {
-        ctx.action
-            .pairing
-            .dissolve_for_instance(instance_id.as_str())
-            .await;
+        super::tear_down_instance(
+            &ctx.action.pairing,
+            &ctx.action.observation,
+            instance_id.as_str(),
+        )
+        .await;
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
             line: format!("{} has been stopped", instance_id.as_str()),

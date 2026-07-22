@@ -18,6 +18,7 @@
 //! discriminator between old-source and new-source messages on the wire.
 
 use config::runtime::Name;
+use core_node_api::encoding::ObservationTarget;
 use daemon_config::launcher::PlannedObservation;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
@@ -107,28 +108,86 @@ impl ObservationCoordinator {
     /// source that comes up first still finds its waiting observers. A launch
     /// replaces the whole stack, so this replaces the registry too (the
     /// previous stack's observers are gone); passing an empty slice clears it.
+    /// Drops the entire observer registry. The observation twin of
+    /// `node_stack.reset()` clearing the pairing registry: `stack reset` tears
+    /// the whole stack down at once, so without this a re-run of the same
+    /// instance ids inherits stale observations and a source coming back up
+    /// would deliver a pin the user never linked this time. `stack launch` does
+    /// not need it because [`register_planned`] already replaces the registry.
+    pub async fn clear(&self) {
+        *self.registry.lock().unwrap() = Registry::default();
+    }
+
     pub async fn register_planned(&self, planned: &[PlannedObservation]) {
         let mut registry = self.registry.lock().unwrap();
         *registry = Registry::default();
         for obs in planned {
-            registry
-                .observers_of_source
-                .entry(obs.source.instance_id.clone())
-                .or_default()
-                .insert(obs.observer_instance_id.clone());
-            registry
-                .by_observer
-                .entry(obs.observer_instance_id.clone())
-                .or_default()
-                .push(ObserverRecord {
+            Self::insert_record(
+                &mut registry,
+                &obs.observer_instance_id,
+                ObserverRecord {
                     observer_link_id: obs.observer_link_id.clone(),
                     source_instance_id: obs.source.instance_id.clone(),
                     pin: ObservationPin {
                         producer: obs.source.clone(),
                         source_link_id: obs.source_link_id.clone(),
                     },
-                });
+                },
+            );
         }
+    }
+
+    /// Registers ONE `node run` instance's observer slots into the live
+    /// registry without disturbing the rest of it. Unlike [`register_planned`]
+    /// (which replaces the whole stack at launch), a `node run` adds a single
+    /// instance to an already-running stack, so any prior records for this same
+    /// observer id (a re-run) are cleared and its new ones merged in. The
+    /// source always lives on this daemon (a stack is daemon-scoped), so its
+    /// [`ProducerRef`] is stamped with this coordinator's `core_node`, exactly
+    /// as the launcher stamps a stack-launch observation.
+    ///
+    /// Register BEFORE the instance reaches Running: the daemon's
+    /// `on_instance_running` hook then finds these records and delivers each
+    /// source pin whose source is already live, matching the launcher path.
+    pub async fn register_instance(
+        &self,
+        observer_instance_id: &str,
+        observations: &BTreeMap<String, ObservationTarget>,
+    ) {
+        let mut registry = self.registry.lock().unwrap();
+        Self::unregister_observer_locked(&mut registry, observer_instance_id);
+        for (observer_link_id, target) in observations {
+            Self::insert_record(
+                &mut registry,
+                observer_instance_id,
+                ObserverRecord {
+                    observer_link_id: observer_link_id.clone(),
+                    source_instance_id: target.source_instance_id.clone(),
+                    pin: ObservationPin {
+                        producer: ProducerRef::new(
+                            &self.core_node_name,
+                            &target.source_instance_id,
+                        ),
+                        source_link_id: target.source_link_id.clone(),
+                    },
+                },
+            );
+        }
+    }
+
+    /// Inserts one resolved observer record into both directions of the
+    /// registry. Shared by [`register_planned`] and [`register_instance`].
+    fn insert_record(registry: &mut Registry, observer_instance_id: &str, record: ObserverRecord) {
+        registry
+            .observers_of_source
+            .entry(record.source_instance_id.clone())
+            .or_default()
+            .insert(observer_instance_id.to_string());
+        registry
+            .by_observer
+            .entry(observer_instance_id.to_string())
+            .or_default()
+            .push(record);
     }
 
     /// An instance reached Running. If it is a source, its incarnation
@@ -138,20 +197,32 @@ impl ObservationCoordinator {
     pub async fn on_instance_running(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
 
-        // As a source: bump generation and fan out to live observers.
+        // As a source: every time an instance reaches Running is a new
+        // incarnation, so advance its generation unconditionally, the documented
+        // "incarnation counter" semantics. Bumping even when no observer is
+        // registered yet is what lets a source that started BEFORE its observer
+        // (the `node run` ordering, where the source is an already-live instance
+        // and the observer registers itself later) still hand that observer a
+        // generation >= 1, distinct from the boot sentinel 0, when the observer
+        // comes up and reads it. Under `stack launch` observers are registered
+        // first, so this already held; making it unconditional makes the two
+        // paths deliver identically regardless of start order.
         let (source_observers, generation) = {
             let mut registry = self.registry.lock().unwrap();
-            match registry.observers_of_source.get(instance_id).cloned() {
-                Some(observers) if !observers.is_empty() => {
-                    let generation = registry
-                        .source_generation
-                        .entry(instance_id.to_string())
-                        .or_insert(0);
-                    *generation += 1;
-                    (observers, *generation)
-                }
-                _ => (BTreeSet::new(), 0),
-            }
+            let generation = {
+                let counter = registry
+                    .source_generation
+                    .entry(instance_id.to_string())
+                    .or_insert(0);
+                *counter += 1;
+                *counter
+            };
+            let observers = registry
+                .observers_of_source
+                .get(instance_id)
+                .cloned()
+                .unwrap_or_default();
+            (observers, generation)
         };
         for observer_id in &source_observers {
             for record in self.records_for_source(observer_id, instance_id) {
@@ -200,6 +271,25 @@ impl ObservationCoordinator {
 
         // Drop this instance's own observer registrations.
         self.unregister_observer(instance_id);
+
+        // Prune this instance's incarnation counter once nothing observes it:
+        // an unobserved source's generation is meaningless, and now that every
+        // instance reaching Running bumps a generation, keeping one entry per
+        // instance that ever ran would grow the registry unbounded on a churny
+        // `node run` daemon. If observers remain (they may reconnect when the
+        // source restarts) the counter is retained so that restart is a
+        // strictly newer incarnation than what those observers last saw.
+        {
+            let mut registry = self.registry.lock().unwrap();
+            let still_observed = registry
+                .observers_of_source
+                .get(instance_id)
+                .is_some_and(|observers| !observers.is_empty());
+            if !still_observed {
+                registry.observers_of_source.remove(instance_id);
+                registry.source_generation.remove(instance_id);
+            }
+        }
     }
 
     fn generation_of(&self, source_instance_id: &str) -> u64 {
@@ -233,6 +323,12 @@ impl ObservationCoordinator {
 
     fn unregister_observer(&self, observer_id: &str) {
         let mut registry = self.registry.lock().unwrap();
+        Self::unregister_observer_locked(&mut registry, observer_id);
+    }
+
+    /// Body of [`unregister_observer`] for callers that already hold the
+    /// registry lock (e.g. [`register_instance`] clearing a re-run's records).
+    fn unregister_observer_locked(registry: &mut Registry, observer_id: &str) {
         if let Some(records) = registry.by_observer.remove(observer_id) {
             for record in records {
                 if let Some(observers) = registry

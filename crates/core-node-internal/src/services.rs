@@ -506,6 +506,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                Arc::clone(&ctx.observation),
             )
             .boxed(),
             ServiceId::StackList => stack::listen_for_stack_list(
@@ -531,6 +532,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 Arc::clone(&ctx.pairing),
+                Arc::clone(&ctx.observation),
             )
             .boxed(),
             ServiceId::NodeSync => node::listen_for_node_sync(
@@ -559,6 +561,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 Arc::clone(&ctx.pairing),
+                Arc::clone(&ctx.observation),
             )
             .boxed(),
             ServiceId::RepoAdd => repo::listen_for_repo_add(
@@ -644,6 +647,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
                 Arc::clone(&ctx.pairing),
+                Arc::clone(&ctx.observation),
             )
             .boxed(),
             ActionId::NodeBuild => node::listen_for_node_build(

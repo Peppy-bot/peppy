@@ -25,6 +25,7 @@ pub async fn listen_for_node_remove(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     pairing: Arc<super::pairing::PairingCoordinator>,
+    observation: Arc<super::observation::ObservationCoordinator>,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -49,6 +50,7 @@ pub async fn listen_for_node_remove(
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     Arc::clone(&pairing),
+                    Arc::clone(&observation),
                 )
             })
             .await
@@ -58,6 +60,7 @@ pub async fn listen_for_node_remove(
     Ok(handle)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_node_remove_request(
     context: ServiceRequestContext,
     messenger: MessengerHandle,
@@ -65,6 +68,7 @@ async fn handle_node_remove_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
     pairing: Arc<super::pairing::PairingCoordinator>,
+    observation: Arc<super::observation::ObservationCoordinator>,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -75,11 +79,13 @@ async fn handle_node_remove_request(
             &core_instance_id,
             node_stack,
             &pairing,
+            &observation,
         )
         .await,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_node_remove_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
@@ -87,6 +93,7 @@ async fn handle_node_remove_request_inner(
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
     pairing: &super::pairing::PairingCoordinator,
+    observation: &super::observation::ObservationCoordinator,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -328,18 +335,16 @@ async fn handle_node_remove_request_inner(
         }
     }
 
-    // Dissolve every removed instance's pairs and live-notify each surviving
-    // peer that its slot is now Unpaired, exactly as the stop path does. The
-    // remove path previously skipped this, so a survivor kept pinning a dead
-    // peer (and any observer of a removed source was never told the source went
-    // away). `dissolve_for_instance` is idempotent, so re-dissolving a terminal
-    // instance the exit watcher already cleared is a harmless no-op. It is keyed
-    // on instance_id and independent of entity presence, so it runs even when
-    // the entity was concurrently removed above.
+    // Run the single teardown seam for every removed instance, exactly as the
+    // stop path does: dissolve its pairs and live-notify each surviving peer
+    // its slot is now Unpaired, and drop its observations while telling any
+    // live observer of a removed source that the source went down. Both halves
+    // are idempotent, so re-tearing-down a terminal instance the exit watcher
+    // already cleared is a harmless no-op. Keyed on instance_id and independent
+    // of entity presence, so it runs even when the entity was concurrently
+    // removed above.
     for target in targets.iter().chain(terminal_targets.iter()) {
-        pairing
-            .dissolve_for_instance(target.instance_id.as_str())
-            .await;
+        super::tear_down_instance(pairing, observation, target.instance_id.as_str()).await;
     }
 
     for target in &config_targets {

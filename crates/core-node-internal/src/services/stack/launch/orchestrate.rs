@@ -48,6 +48,7 @@ pub(super) async fn add_node_directly(
         core_instance_id: ctx.core_instance_id.clone(),
         peppy_dirs: ctx.peppy_dirs.clone(),
         pairing: Arc::clone(&ctx.pairing),
+        observation: Arc::clone(&ctx.observation),
     };
 
     let log_file_for_timeout = log_file.clone();

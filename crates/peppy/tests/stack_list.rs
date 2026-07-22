@@ -410,6 +410,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         BTreeMap::new(),
         BTreeMap::new(),
         Vec::new(),
+        BTreeMap::new(),
         &timeouts,
     )
     .await
@@ -438,6 +439,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         slot_bindings,
         BTreeMap::new(),
         Vec::new(),
+        BTreeMap::new(),
         &timeouts,
     )
     .await

@@ -34,6 +34,7 @@ pub async fn listen_for_node_stop(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     pairing: Arc<super::pairing::PairingCoordinator>,
+    observation: Arc<super::observation::ObservationCoordinator>,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -58,6 +59,7 @@ pub async fn listen_for_node_stop(
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     Arc::clone(&pairing),
+                    Arc::clone(&observation),
                 )
             })
             .await
@@ -67,6 +69,7 @@ pub async fn listen_for_node_stop(
     Ok(handle)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_node_stop_request(
     context: ServiceRequestContext,
     messenger: MessengerHandle,
@@ -74,6 +77,7 @@ async fn handle_node_stop_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
     pairing: Arc<super::pairing::PairingCoordinator>,
+    observation: Arc<super::observation::ObservationCoordinator>,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -84,11 +88,13 @@ async fn handle_node_stop_request(
             &core_instance_id,
             node_stack,
             &pairing,
+            &observation,
         )
         .await,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_node_stop_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
@@ -96,6 +102,7 @@ async fn handle_node_stop_request_inner(
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
     pairing: &super::pairing::PairingCoordinator,
+    observation: &super::observation::ObservationCoordinator,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -195,10 +202,13 @@ async fn handle_node_stop_request_inner(
     .await;
 
     // Process is gone (properly or improperly). Finalize the registry removal,
-    // then eagerly dissolve its pairs and live-notify each surviving peer that
-    // its slot is Unpaired (death auto-clears; re-pairing is explicit).
+    // then run the single teardown seam: dissolve its pairs and live-notify
+    // each surviving peer that its slot is Unpaired, and drop its observations
+    // and notify any live observers a source went down (death auto-clears;
+    // re-pairing is explicit). A stopped node is torn down identically whether
+    // it paired, observed, both, or neither.
     remove_instance_from_registry(&node_stack, &node_name, &node_tag, &instance_id);
-    pairing.dissolve_for_instance(instance_id.as_str()).await;
+    super::tear_down_instance(pairing, observation, instance_id.as_str()).await;
 
     // Tell the caller whether the node exited gracefully or had to be
     // force-killed, so the CLI can warn the user about the latter.

@@ -4,7 +4,7 @@ use config::runtime::PairingSlotBinding;
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult, PairTarget, StackListRequest,
+    NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
@@ -301,14 +301,17 @@ fn links_to_map(
 }
 
 /// The resolved preflight plan for one instance's `--link` flags: the
-/// producer-binding slots resolved to concrete producer sets, and the
+/// producer-binding slots resolved to concrete producer sets, the
 /// participant-pairing links extracted into the `PairTarget` map the daemon's
-/// `node_run` re-plans. Observer links are validated but carry no goal state
-/// (their source pins are delivered live by the daemon's observation
-/// coordinator once the stack is up), so they do not appear here.
+/// `node_run` re-plans, and the observer links resolved into the
+/// `ObservationTarget` map the daemon registers with its observation
+/// coordinator. Carrying observations on the goal is what makes a lone
+/// `node run` observer receive its source pin exactly like a launcher would;
+/// without it the observer would boot validated but silent.
 struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
+    requested_observations: BTreeMap<String, ObservationTarget>,
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
@@ -605,12 +608,30 @@ async fn validate_links_against_stack(
         }
     }
 
+    // Extract the observer links into the `ObservationTarget` map the goal
+    // carries, keyed by the observer's own slot link_id. Only observations for
+    // THIS instance go on its goal (a preexisting instance's observers were
+    // registered at its own start); the daemon re-stamps the source core_node,
+    // so it is dropped here exactly as a pair target drops it.
+    let requested_observations: BTreeMap<String, ObservationTarget> = validated_observations
+        .planned
+        .iter()
+        .filter(|obs| obs.observer_instance_id == target_instance_id)
+        .map(|obs| {
+            (
+                obs.observer_link_id.clone(),
+                ObservationTarget::new(&obs.source.instance_id, &obs.source_link_id),
+            )
+        })
+        .collect();
+
     Ok(Some(PreflightPlan {
         slot_bindings: validated
             .slot_bindings
             .remove(target_instance_id)
             .unwrap_or_default(),
         requested_pairs,
+        requested_observations,
     }))
 }
 
@@ -645,7 +666,7 @@ pub async fn validate_and_run_instance(
     // and the goal carries no pairs. In practice this path is inert: a daemon
     // unreachable at preflight also fails the `node_run` goal send below, so
     // the user sees a clear transport error rather than a bad boot.
-    let (slot_bindings, requested_pairs) = match validate_links_against_stack(
+    let (slot_bindings, requested_pairs, requested_observations) = match validate_links_against_stack(
         messenger,
         core_node_name,
         node_name,
@@ -656,12 +677,16 @@ pub async fn validate_and_run_instance(
     )
     .await
     {
-        Ok(Some(plan)) => (plan.slot_bindings, plan.requested_pairs),
-        Ok(None) => (BTreeMap::new(), BTreeMap::new()),
+        Ok(Some(plan)) => (
+            plan.slot_bindings,
+            plan.requested_pairs,
+            plan.requested_observations,
+        ),
+        Ok(None) => (BTreeMap::new(), BTreeMap::new(), BTreeMap::new()),
         Err(e @ Error::ExecutionFailed(_)) => return Err(e),
         Err(e) => {
             debug!("skipping link validation for {}:{}: {}", node_name, tag, e);
-            (BTreeMap::new(), BTreeMap::new())
+            (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
         }
     };
 
@@ -675,6 +700,7 @@ pub async fn validate_and_run_instance(
         slot_bindings,
         requested_pairs,
         defer_links.to_vec(),
+        requested_observations,
         timeouts,
     )
     .await
@@ -702,6 +728,7 @@ pub async fn run_instance_async(
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
+    requested_observations: BTreeMap<String, ObservationTarget>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -753,7 +780,8 @@ pub async fn run_instance_async(
     )
     .with_env_vars(caller_env_overrides())
     .with_requested_pairs(requested_pairs)
-    .with_deferred_pairs(deferred_pairs);
+    .with_deferred_pairs(deferred_pairs)
+    .with_planned_observations(requested_observations);
     let mut action_handle = send_goal(
         &start_goal,
         messenger_handle,
