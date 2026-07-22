@@ -27,13 +27,13 @@ use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
 use peppylib::messaging::ObservationState;
-use peppylib::services::health::listen_for_node_health;
 use peppylib::services::observation_update::listen_for_observation_update;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use tokio::sync::watch;
 
-use super::common::{seed_pairing_repo, test_node_target};
+use super::common::{
+    add_built_node, emulate_startup_services, node_run_command, seed_pairing_repo, test_node_target,
+};
 
 /// The source: plays the `arm` role of `arm_link/v1` through participant slot
 /// `controller`, emitting that role's `joint_states`. It boots standalone by
@@ -151,79 +151,6 @@ async fn emulate_cooperative_source(
     });
 }
 
-/// Writes a node dir with the given config and `node add --build`s it (no
-/// `build_cmd`, so "build" just marks the entity Ready).
-fn add_node(ctx: &Arc<AppContext>, dir: &Path, config: &str) {
-    std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
-    NodeCommand {
-        command: NodeCommands::Add {
-            source: Some(dir.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            defer_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(ctx)
-    .expect("node add should succeed");
-}
-
-fn run_command(
-    instance_id: &str,
-    node: &str,
-    links: Vec<(String, String)>,
-    defer: Vec<String>,
-) -> NodeCommand {
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(node.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links,
-            defer_links: defer,
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-}
-
-/// Emulates the startup services (`ready`, `health`) every spawned instance
-/// exposes. The returned join handles are intentionally dropped: tokio detaches
-/// the tasks, which keep serving on the shared messenger until the test ends.
-async fn emulate_startup_services(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    node_name: &str,
-    instance_id: &str,
-) {
-    listen_for_node_ready(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("ready service should start");
-    listen_for_node_health(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("health service should start");
-}
-
 /// Emulates an observer instance's services (ready, health, observation_update)
 /// and hands back the observer slot's absolute-state watch.
 async fn emulate_observer_services(
@@ -280,9 +207,9 @@ async fn setup() -> Fixture {
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
     let source_dir = tempfile::tempdir().expect("source node dir");
-    add_node(&ctx, source_dir.path(), source_config());
+    add_built_node(&ctx, source_dir.path(), source_config());
     let observer_dir = tempfile::tempdir().expect("observer node dir");
-    add_node(&ctx, observer_dir.path(), observer_config());
+    add_built_node(&ctx, observer_dir.path(), observer_config());
 
     Fixture {
         _serve: serve,
@@ -301,7 +228,7 @@ async fn setup() -> Fixture {
 /// watch already advanced past the initial live delivery.
 async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
     emulate_startup_services(&fx.messenger, &fx.core_node_name, "robot_arm", "arm_1").await;
-    run_command(
+    node_run_command(
         "arm_1",
         "robot_arm",
         Vec::new(),
@@ -310,10 +237,15 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     .execute(&fx.ctx)
     .expect("source run (participant slot deferred) should succeed");
 
-    let mut obs_rx =
-        emulate_observer_services(&fx.messenger, &fx.core_node_name, "recorder", "rec_1", "watch")
-            .await;
-    run_command(
+    let mut obs_rx = emulate_observer_services(
+        &fx.messenger,
+        &fx.core_node_name,
+        "recorder",
+        "rec_1",
+        "watch",
+    )
+    .await;
+    node_run_command(
         "rec_1",
         "recorder",
         vec![("watch".to_string(), "arm_1".to_string())],
@@ -353,7 +285,7 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
 
     // Coverage is enforced loudly on the observer's own slot: no `--link` and no
     // `--defer-link` fails at preflight, naming the slot and the opt-out flag.
-    let err = run_command("rec_1", "recorder", Vec::new(), Vec::new())
+    let err = node_run_command("rec_1", "recorder", Vec::new(), Vec::new())
         .execute(&fx.ctx)
         .expect_err("a required observer slot without --link/--defer-link must fail");
     let msg = err.to_string();
@@ -361,6 +293,25 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
         msg.contains("watch") && msg.contains("--defer-link"),
         "coverage failure should name the observer slot and its opt-out: {msg}"
     );
+
+    // An observer defer belongs only to observation coverage. It must not ride
+    // the pair-specific goal field and be rejected later as a non-participant
+    // pairing slot.
+    emulate_startup_services(
+        &fx.messenger,
+        &fx.core_node_name,
+        "recorder",
+        "rec_deferred",
+    )
+    .await;
+    node_run_command(
+        "rec_deferred",
+        "recorder",
+        Vec::new(),
+        vec!["watch".to_string()],
+    )
+    .execute(&fx.ctx)
+    .expect("an observer slot deferred with --defer-link should boot");
 
     let mut obs_rx = run_source_then_observer(&fx).await;
 
@@ -455,7 +406,7 @@ async fn service_reset_clears_the_observation_registry() {
     // Phase 1: run the source so it reaches Running and bumps its incarnation
     // generation to 1. It stays running (killable on cooperative shutdown) until
     // the reset below.
-    add_node(&ctx, arm_dir.path(), &arm_config);
+    add_built_node(&ctx, arm_dir.path(), &arm_config);
     emulate_cooperative_source(
         &messenger,
         &core_node_name,
@@ -464,7 +415,7 @@ async fn service_reset_clears_the_observation_registry() {
         arm_pidfile.clone(),
     )
     .await;
-    run_command(
+    node_run_command(
         "arm_1",
         "robot_arm",
         Vec::new(),
@@ -485,8 +436,8 @@ async fn service_reset_clears_the_observation_registry() {
     // Phase 2: reset dropped the nodes; re-add (identical config) and re-run the
     // source with the SAME id. It is not stopped again, so its kill hook never
     // fires. Its ready/health services from phase 1 still answer.
-    add_node(&ctx, arm_dir.path(), &arm_config);
-    run_command(
+    add_built_node(&ctx, arm_dir.path(), &arm_config);
+    node_run_command(
         "arm_1",
         "robot_arm",
         Vec::new(),
@@ -499,10 +450,10 @@ async fn service_reset_clears_the_observation_registry() {
     // reset left the registry stale, arm_1 would resume at generation 2; a
     // cleared registry makes it a clean first incarnation at generation 1.
     let obs_dir = tempfile::tempdir().expect("observer node dir");
-    add_node(&ctx, obs_dir.path(), observer_config());
+    add_built_node(&ctx, obs_dir.path(), observer_config());
     let mut obs_rx =
         emulate_observer_services(&messenger, &core_node_name, "recorder", "rec_2", "watch").await;
-    run_command(
+    node_run_command(
         "rec_2",
         "recorder",
         vec![("watch".to_string(), "arm_1".to_string())],

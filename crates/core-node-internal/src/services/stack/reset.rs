@@ -105,6 +105,6 @@ async fn handle_node_reset_request_inner(
     // before the per-instance teardown seam runs; clearing here is the seam for
     // the whole-stack case.
     node_stack.reset();
-    observation.clear().await;
+    observation.clear();
     NodeResetResponse::success().encode().map_err(Into::into)
 }

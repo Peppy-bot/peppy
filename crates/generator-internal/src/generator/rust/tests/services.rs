@@ -555,10 +555,7 @@ fn clippy_single_exposed_service_without_request_body() {
             .expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain;",
-            "pub mod controller;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 }
 

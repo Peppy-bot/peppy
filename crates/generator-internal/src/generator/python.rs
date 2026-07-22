@@ -128,6 +128,56 @@ impl PythonGenerator {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PairTopicConsumerKind {
+    Peer,
+    Observed,
+}
+
+impl PythonGenerator {
+    /// Shared schema registration and artifact plumbing for both kinds of
+    /// consume-side pairing topic.
+    fn add_pair_topic_consumer(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+        kind: PairTopicConsumerKind,
+    ) -> Result<()> {
+        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let arguments = topic.message_format.clone().ok_or_else(|| {
+            crate::error::Error::PeerTopicMissingMessageFormat {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            }
+        })?;
+        let schema_info = self.register_schema(&schema_key, &arguments)?;
+        let (code, artifact_kind) = match kind {
+            PairTopicConsumerKind::Peer => (
+                topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?,
+                InterfaceKind::PeerConsumedTopic,
+            ),
+            PairTopicConsumerKind::Observed => (
+                topics::build_observed_topic(topic, &arguments, &schema_info, peer)?,
+                InterfaceKind::ObservedTopic,
+            ),
+        };
+
+        let module_path = peer.module_path_for(&topic.name);
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: artifact_kind,
+            code_output: code,
+        });
+        Ok(())
+    }
+}
+
 impl LanguageGenerator for PythonGenerator {
     fn add_emitted_topic(
         &mut self,
@@ -327,29 +377,7 @@ impl LanguageGenerator for PythonGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
-        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
-        let arguments = topic.message_format.clone().ok_or_else(|| {
-            crate::error::Error::PeerTopicMissingMessageFormat {
-                link_id: peer.link_id.clone(),
-                topic: topic.name.clone(),
-            }
-        })?;
-        let schema_info = self.register_schema(&schema_key, &arguments)?;
-
-        let code = topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?;
-        let module_path = peer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerConsumedTopic,
-            code_output: code,
-        });
-        Ok(())
+        self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
     }
 
     fn add_observed_topic(
@@ -357,31 +385,7 @@ impl LanguageGenerator for PythonGenerator {
         topic: &NativeEmittedTopic,
         observer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
-        // Observer slot link_ids are unique across the node, so the peer
-        // schema-key scheme yields a collision-free key for an observer too.
-        let schema_key = crate::generator::naming::peer_schema_key(&observer.link_id, &topic.name);
-        let arguments = topic.message_format.clone().ok_or_else(|| {
-            crate::error::Error::PeerTopicMissingMessageFormat {
-                link_id: observer.link_id.clone(),
-                topic: topic.name.clone(),
-            }
-        })?;
-        let schema_info = self.register_schema(&schema_key, &arguments)?;
-
-        let code = topics::build_observed_topic(topic, &arguments, &schema_info, observer)?;
-        let module_path = observer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            observer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::ObservedTopic,
-            code_output: code,
-        });
-        Ok(())
+        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
     }
 
     fn add_consumed_action(

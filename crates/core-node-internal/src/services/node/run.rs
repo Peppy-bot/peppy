@@ -1167,8 +1167,7 @@ async fn process_node_run(
                     if !planned_observations.is_empty() {
                         ctx.action
                             .observation
-                            .register_instance(instance_id_str, &planned_observations)
-                            .await;
+                            .register_instance(instance_id_str, &planned_observations);
                     }
 
                     // The instance is Running: notify the observation

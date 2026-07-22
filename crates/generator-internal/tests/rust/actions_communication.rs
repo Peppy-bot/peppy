@@ -115,7 +115,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
 
     // Bind the consumer's pinned slot to the LEFT arm with the full
     // (core_node, instance_id) pair, exactly what the validator stamps
-    // when a stack launches with `--bind brain@left_arm_instance`.
+    // when a stack launches with `--link brain@left_arm_instance`.
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,

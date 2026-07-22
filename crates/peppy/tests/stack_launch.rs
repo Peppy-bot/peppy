@@ -2537,7 +2537,9 @@ async fn stack_launch_delivers_observer_source_pin() {
         "v1",
         &git_hash,
         &run_cmd,
-        Some(r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#),
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
+        ),
         None,
         Some(
             r#"{ topics: {

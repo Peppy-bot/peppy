@@ -330,59 +330,13 @@ pub fn build_peer_consumed_topic(
     schema_info: &PythonSchemaInfo,
     peer: &crate::generator::types::PeerContext,
 ) -> Result<String> {
-    let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
-
-    builder.add_import("from typing import Optional, Tuple");
-    emit_capnp_schema_loader(&mut builder, schema_info);
-    emit_nested_classes(&mut builder, &nested_classes);
-
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.dataclass("Message", &field_refs);
-
-    let loader_fn_name = capnp_loader_fn_name(schema_info);
-    deserialization::build_deserialize_fn(
-        &mut builder,
-        schema_info,
+    build_pair_topic_consumer(
+        topic,
         arguments,
-        "Message",
-        &format!("{loader_fn_name}()"),
-        "_deserialize_payload",
-    );
-
-    let qos = qos_profile_python(&topic.qos_profile);
-    emit_peer_module_header(&mut builder, &topic.name, qos, peer);
-
-    emit_subscription_class(
-        &mut builder,
-        "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.",
-        SubscriptionYield::RawMessage,
-    );
-
-    builder.blank_line();
-    builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.\"\"\"",
-    );
-    builder.line("inner = await node_runner.subscribe_peer(");
-    builder.indent();
-    builder.line("LINK_ID,");
-    builder.line("PAIRING_NAME,");
-    builder.line("PAIRING_TAG,");
-    builder.line("TOPIC_NAME,");
-    builder.line("QOS,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return Subscription(inner)");
-    builder.dedent();
-
-    Ok(builder.build())
+        schema_info,
+        peer,
+        PairTopicConsumerKind::Peer,
+    )
 }
 
 /// Emits the module-level slot constants plus `source()` for an observer topic
@@ -423,6 +377,28 @@ pub fn build_observed_topic(
     schema_info: &PythonSchemaInfo,
     observer: &crate::generator::types::PeerContext,
 ) -> Result<String> {
+    build_pair_topic_consumer(
+        topic,
+        arguments,
+        schema_info,
+        observer,
+        PairTopicConsumerKind::Observed,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PairTopicConsumerKind {
+    Peer,
+    Observed,
+}
+
+fn build_pair_topic_consumer(
+    topic: &NativeEmittedTopic,
+    arguments: &MessageFormat,
+    schema_info: &PythonSchemaInfo,
+    peer: &crate::generator::types::PeerContext,
+    kind: PairTopicConsumerKind,
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 
@@ -449,21 +425,34 @@ pub fn build_observed_topic(
     );
 
     let qos = qos_profile_python(&topic.qos_profile);
-    emit_observer_module_header(&mut builder, &topic.name, qos, observer);
+    let (subscription_doc, subscription_yield, subscribe_doc, subscribe_method) = match kind {
+        PairTopicConsumerKind::Peer => {
+            emit_peer_module_header(&mut builder, &topic.name, qos, peer);
+            (
+                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.",
+                SubscriptionYield::RawMessage,
+                "\"\"\"Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.\"\"\"",
+                "subscribe_peer",
+            )
+        }
+        PairTopicConsumerKind::Observed => {
+            emit_observer_module_header(&mut builder, &topic.name, qos, peer);
+            (
+                "A held subscription pinned to the observer slot's source: silent until the source is live and emitting; a live stream, not a mailbox.",
+                SubscriptionYield::TaggedPair,
+                "\"\"\"Subscribe to this observed pairing topic. Legal before the source is resolved or live: the subscription stays silent until the source emits.\"\"\"",
+                "subscribe_observed",
+            )
+        }
+    };
 
-    emit_subscription_class(
-        &mut builder,
-        "A held subscription pinned to the observer slot's source: silent until the source is live and emitting; a live stream, not a mailbox.",
-        SubscriptionYield::TaggedPair,
-    );
+    emit_subscription_class(&mut builder, subscription_doc, subscription_yield);
 
     builder.blank_line();
     builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
     builder.indent();
-    builder.line(
-        "\"\"\"Subscribe to this observed pairing topic. Legal before the source is resolved or live: the subscription stays silent until the source emits.\"\"\"",
-    );
-    builder.line("inner = await node_runner.subscribe_observed(");
+    builder.line(subscribe_doc);
+    builder.line(&format!("inner = await node_runner.{subscribe_method}("));
     builder.indent();
     builder.line("LINK_ID,");
     builder.line("PAIRING_NAME,");

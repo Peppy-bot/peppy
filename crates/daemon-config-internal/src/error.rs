@@ -103,7 +103,7 @@ pub struct BindingTargetMismatch {
 }
 
 /// Payload for [`ParsingError::BindingContractNotImplemented`]. Raised when a
-/// `--bind` targets a contract slot but the producer's `manifest.implements`
+/// `--link` targets a contract slot but the producer's `manifest.implements`
 /// list does not include the requested `(contract_name, contract_tag)`.
 ///
 /// Boxed in the variant for the same `clippy::result_large_err` reason as the
@@ -132,7 +132,7 @@ pub struct BindingContractNotImplemented {
 /// Two instances anywhere in the running stack (any `(node_name,
 /// node_tag)`) share an `instance_id`. The binding model addresses
 /// producers by `instance_id` only, so a stack-wide duplicate would make
-/// `--bind KEY@id` ambiguous.
+/// `--link KEY@id` ambiguous.
 #[derive(Debug, Clone, Error)]
 #[error(
     "duplicate instance_id `{instance_id}`: used by both `{name_a}:{tag_a}` \
@@ -444,11 +444,11 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
-    /// Repeated `--bind KEY@…` occurrences on a `cardinality: "one"` slot.
+    /// Repeated `--link KEY@…` occurrences on a `cardinality: "one"` slot.
     /// Flag repetition accumulates a multi slot's set and stays a hard
     /// error on a `one` slot.
     #[error(
-        "{target_count} `--bind {binding}@…` occurrences on instance `{owner_instance_id}`, \
+        "{target_count} `--link {binding}@…` occurrences on instance `{owner_instance_id}`, \
          but the slot's cardinality is `one`: pass exactly one, or declare \
          `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency"
     )]
@@ -464,7 +464,7 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
-    /// A `--bind` targets a contract slot but the producer doesn't
+    /// A `--link` targets a contract slot but the producer doesn't
     /// declare the requested contract in `manifest.implements`. Boxed for
     /// the same `result_large_err` reason as the other binding variants.
     #[error(transparent)]
@@ -502,9 +502,7 @@ pub enum ParsingError {
     /// be deferred) and stateful reasons (an `optional: true` participant slot
     /// where deferring is redundant, or a slot that is also linked in the same
     /// plan) both surface here with a specific `reason`.
-    #[error(
-        "defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}"
-    )]
+    #[error("defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}")]
     LinkDeferInvalid {
         owner_instance_id: String,
         link_id: String,

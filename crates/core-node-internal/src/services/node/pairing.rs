@@ -24,14 +24,12 @@ use daemon_config::launcher::{
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
-use peppylib::encoding::slot_update::SlotUpdateResponse;
-use peppylib::messaging::{
-    PEER_UPDATE_SERVICE, PeerPin, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
-};
+use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerPin, ProducerRef};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::{debug, warn};
+
+use super::common::SlotUpdateClient;
 
 /// How long a single `peer_update` delivery may take before the operation is
 /// treated as failed and reverted. The service is pre-setup (registered
@@ -39,21 +37,10 @@ use tracing::{debug, warn};
 const PEER_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct PairingCoordinator {
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    /// This daemon's core node name: both the identity `peer_update` calls
-    /// are sent under and the `core_node` stamped into every delivered pin
-    /// (stacks are daemon-scoped, so every pair endpoint lives here).
-    core_node_name: String,
-    /// The daemon's own instance id, used as the caller identity on
-    /// `peer_update` service calls.
-    caller_instance_id: String,
+    updates: SlotUpdateClient,
     /// Serializes every pairing operation end-to-end (registry commit AND
     /// delivery), so reverts can trust that no other operation interleaved.
     op_lock: tokio::sync::Mutex<()>,
-    /// Monotonic `peer_update` sequence, seeded from unix-millis at daemon
-    /// start so sequences stay strictly increasing across daemon restarts.
-    seq: AtomicU64,
 }
 
 impl PairingCoordinator {
@@ -63,22 +50,15 @@ impl PairingCoordinator {
         core_node_name: impl Into<String>,
         caller_instance_id: impl Into<String>,
     ) -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(1);
         Self {
-            node_stack,
-            messenger,
-            core_node_name: core_node_name.into(),
-            caller_instance_id: caller_instance_id.into(),
+            updates: SlotUpdateClient::new(
+                node_stack,
+                messenger,
+                core_node_name,
+                caller_instance_id,
+            ),
             op_lock: tokio::sync::Mutex::new(()),
-            seq: AtomicU64::new(seed),
         }
-    }
-
-    fn next_seq(&self) -> u64 {
-        self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Commits a pair to the registry WITHOUT delivering it (the
@@ -88,7 +68,8 @@ impl PairingCoordinator {
     /// same-pairing, complementary roles, sha pins, exclusivity.
     pub async fn reserve(&self, a: &SlotAddr, b: &SlotAddr) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
-        self.node_stack
+        self.updates
+            .node_stack()
             .pair_slots(a, b)
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -118,7 +99,8 @@ impl PairingCoordinator {
     ) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
         let pairs: Vec<Pairing> = self
-            .node_stack
+            .updates
+            .node_stack()
             .pairs()
             .into_iter()
             .filter(|p| p.involves_instance(instance_id))
@@ -142,7 +124,11 @@ impl PairingCoordinator {
     /// branches (death auto-clears; re-pairing is explicit).
     pub async fn dissolve_for_instance(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
-        for pairing in self.node_stack.dissolve_pairs_for_instance(instance_id) {
+        for pairing in self
+            .updates
+            .node_stack()
+            .dissolve_pairs_for_instance(instance_id)
+        {
             debug!(
                 "Dissolved pair `{}` ({}:{}) — instance '{}' is gone",
                 pairing_label(&pairing),
@@ -165,19 +151,20 @@ impl PairingCoordinator {
         let sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
         for (idx, (endpoint, peer)) in sides.into_iter().enumerate() {
             if !self
-                .node_stack
+                .updates
+                .node_stack()
                 .instance_is_live_for_pairing(&endpoint.slot.instance_id)
             {
                 continue;
             }
             let pin = PeerPin {
-                producer: ProducerRef::new(&self.core_node_name, &peer.slot.instance_id),
+                producer: ProducerRef::new(self.updates.core_node_name(), &peer.slot.instance_id),
                 peer_link_id: peer.slot.link_id.clone(),
             };
             if let Err(reason) = self.send_peer_update(&endpoint.slot, Some(pin)).await {
                 // Revert the commit; if the OTHER side already acked its pin,
                 // best-effort roll it back to Unpaired.
-                self.node_stack.clear_pair(&endpoint.slot);
+                self.updates.node_stack().clear_pair(&endpoint.slot);
                 if idx == 1 {
                     self.notify_unpaired_best_effort(&peer.slot).await;
                 }
@@ -196,7 +183,8 @@ impl PairingCoordinator {
     /// lazy registry pruning make the unpaired state eventually consistent).
     async fn notify_unpaired_best_effort(&self, slot: &SlotAddr) {
         if !self
-            .node_stack
+            .updates
+            .node_stack()
             .instance_is_live_for_pairing(&slot.instance_id)
         {
             return;
@@ -218,44 +206,22 @@ impl PairingCoordinator {
         slot: &SlotAddr,
         pin: Option<PeerPin>,
     ) -> std::result::Result<(), String> {
-        let instance_name = Name::new(slot.instance_id.as_str())
-            .map_err(|e| format!("invalid instance id: {e}"))?;
-        let (node_name, node_tag) = self
-            .node_stack
-            .find_entity_label_for_instance_id_any_state(&instance_name)
-            .ok_or_else(|| "instance is no longer tracked".to_string())?;
-
         let request = PeerUpdateRequest {
             link_id: slot.link_id.clone(),
-            sequence: self.next_seq(),
+            sequence: self.updates.next_sequence(),
             pin,
         };
         let payload = request.encode().map_err(|e| e.to_string())?;
 
-        let reply = ServiceMessenger::poll(
-            &self.messenger,
-            &self.core_node_name,
-            &self.caller_instance_id,
-            SenderTarget::node(&node_name, &node_tag).map_err(|e| e.to_string())?,
-            PEER_UPDATE_SERVICE,
-            ServiceTarget::Producer(&ProducerRef::new(&self.core_node_name, &slot.instance_id)),
-            payload,
-            PEER_UPDATE_TIMEOUT,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let response =
-            SlotUpdateResponse::decode(&reply.payload_bytes()).map_err(|e| e.to_string())?;
-        if response.accepted || response.stale_sequence {
-            Ok(())
-        } else {
-            Err(if response.message.is_empty() {
-                "peer_update rejected".to_string()
-            } else {
-                response.message
-            })
-        }
+        self.updates
+            .send(
+                &slot.instance_id,
+                PEER_UPDATE_SERVICE,
+                payload,
+                PEER_UPDATE_TIMEOUT,
+                "peer_update rejected",
+            )
+            .await
     }
 }
 
@@ -279,7 +245,7 @@ fn find_missing_planned_pair<'a>(
     })
 }
 
-/// One resolved `--pair` request: this instance's slot and the concrete peer
+/// One resolved `--link` request: this instance's slot and the concrete peer
 /// slot it will be paired with (ready for [`PairingCoordinator::reserve`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedPair {
@@ -294,9 +260,9 @@ pub struct PairingRequest<'a> {
     pub node_tag: &'a str,
     pub instance_id: &'a str,
     pub pairing_deps: &'a [config::node::PairingDependency],
-    /// `link_id -> peer target` from `--pair` / a launch plan.
+    /// `link_id -> peer target` from `--link` / a launch plan.
     pub requested: &'a std::collections::BTreeMap<String, PairTarget>,
-    /// Slots deliberately starting unpaired (`--defer-pair` / the
+    /// Slots deliberately starting unpaired (`--defer-link` / the
     /// launcher's `defer_links:`).
     pub deferred: &'a [String],
     /// Launch-mechanism markers: slots a later-starting instance of the
@@ -363,17 +329,23 @@ pub fn plan_requested_pairs(
     // the old dead-key rejection that the by-validator classification dropped.
     let participant_slots: std::collections::BTreeSet<&str> = pairing_deps
         .iter()
-        .filter_map(|d| match d {
-            config::node::PairingDependency::Participant(p) => Some(p.link_id.as_str()),
-            config::node::PairingDependency::Observer(_) => None,
-        })
+        .filter(|dependency| dependency.is_participant())
+        .map(|dependency| dependency.link_id())
         .collect();
-    for link_id in requested.keys().chain(covered.keys()).chain(deferred.iter()) {
+    for link_id in requested
+        .keys()
+        .chain(covered.keys())
+        .chain(deferred.iter())
+    {
         if !participant_slots.contains(link_id.as_str()) {
             return Err(format!(
                 "pairing slot `{link_id}` on instance '{instance_id}' matches no declared \
                  participant pairing slot; declared: [{}]",
-                participant_slots.iter().copied().collect::<Vec<_>>().join(", ")
+                participant_slots
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -664,7 +636,7 @@ mod tests {
         assert!(err.contains("ghost"), "{err}");
     }
 
-    /// A user `--defer-pair` on an OPTIONAL slot is now flagged by the
+    /// A user `--defer-link` on an OPTIONAL slot is now flagged by the
     /// daemon too: launch-mechanism markers ride `covered_pairs`, so the
     /// defer list carries only user intent and gets the same strict rule
     /// as the CLI preflight and the launcher validator.

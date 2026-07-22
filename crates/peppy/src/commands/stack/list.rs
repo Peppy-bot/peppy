@@ -446,7 +446,7 @@ fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
 /// (the `@core_node` suffix matches the bindings table's `instance@node`
 /// producer style), `link_id ⇌ (unpaired) [role r of pairing:tag]` while
 /// not; the role makes an unpaired row self-describing when composing a
-/// `--pair` for it, and an `optional: true` slot is labelled
+/// `--link` for it, and an `optional: true` slot is labelled
 /// `(unpaired, optional)` so it never reads as a missing required peer.
 fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
     instance

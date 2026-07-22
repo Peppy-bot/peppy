@@ -108,7 +108,7 @@ fn parse_link_kv(raw: &str) -> Result<(String, String), String> {
         ));
     }
     pmi::Segment::try_from(key).map_err(|e| format!("invalid --link KEY '{key}': {e}"))?;
-    let (instance, link) = daemon_config::launcher::split_pair_target(value);
+    let (instance, link) = daemon_config::launcher::split_link_target(value);
     if instance.is_empty() {
         return Err(format!(
             "invalid --link value '{raw}': target instance cannot be empty"
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_repeated() {
+    fn link_repeated() {
         assert_eq!(
             parse_run_links(&["foo:v1", "--link", "feed@cam_a", "--link", "ctl@cam_b"]),
             vec![
@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_comma_delimited() {
+    fn link_comma_delimited() {
         assert_eq!(
             parse_run_links(&["foo:v1", "--link", "feed@cam_a,ctl@cam_b"]),
             vec![
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_missing_at_separator_rejected() {
+    fn link_missing_at_separator_rejected() {
         let err = try_parse_run(&["foo:v1", "--link", "noseparator"])
             .err()
             .expect("missing @ should be rejected");
@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_reserved_sentinel_key_rejected() {
+    fn link_reserved_sentinel_key_rejected() {
         let err = try_parse_run(&["foo:v1", "--link", "_@cam_a"])
             .err()
             .expect("`_` should be rejected");
@@ -810,21 +810,21 @@ mod tests {
         assert!(msg.contains("reserved"), "msg: {msg}");
     }
 
-    // ─── `peppy node add` --bind / requires=run parse-time enforcement ───
+    // ─── `peppy node add` --link / requires=run parse-time enforcement ───
 
-    /// `--bind` on `node add` requires `--run`; the binds parser is the same
-    /// as `node run`'s, so a `KEY@VALUE` pair lands on the `binds` field as
+    /// `--link` on `node add` requires `--run`; the links parser is the same
+    /// as `node run`'s, so a `KEY@VALUE` pair lands on the `links` field as
     /// a tuple.
     #[test]
-    fn add_with_run_accepts_bind() {
-        let binds = parse_add_links(&[".", "-r", "--link", "feed@cam_a"]);
-        assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+    fn add_with_run_accepts_link() {
+        let links = parse_add_links(&[".", "-r", "--link", "feed@cam_a"]);
+        assert_eq!(links, vec![("feed".to_string(), "cam_a".to_string())]);
     }
 
-    /// Comma-delimited form and repeated `--bind` both feed the same `binds`
+    /// Comma-delimited form and repeated `--link` both feed the same `links`
     /// vector on `node add -r`, exactly like on `node run`.
     #[test]
-    fn add_with_run_bind_repeated_and_comma_delimited() {
+    fn add_with_run_link_repeated_and_comma_delimited() {
         let repeated = parse_add_links(&[".", "-r", "--link", "feed@cam_a", "--link", "ctl@cam_b"]);
         let comma = parse_add_links(&[".", "-r", "--link", "feed@cam_a,ctl@cam_b"]);
         let expected = vec![
@@ -835,14 +835,14 @@ mod tests {
         assert_eq!(comma, expected);
     }
 
-    /// `-sbr` plus `--bind` is the bug-replication shape from the report:
+    /// `-sbr` plus `--link` is the bug-replication shape from the report:
     /// the previous CLI accepted `add . -sbr` and ran an instance with no
-    /// bindings. Now `--bind` must parse on that same invocation so the
+    /// bindings. Now `--link` must parse on that same invocation so the
     /// user can supply them in one shot.
     #[test]
-    fn add_sbr_with_bind_parses() {
+    fn add_sbr_with_link_parses() {
         let cli = try_parse_add(&[".", "-sbr", "--link", "feed@cam_a"])
-            .expect("`add . -sbr --bind feed@cam_a` should parse");
+            .expect("`add . -sbr --link feed@cam_a` should parse");
         match cli.command {
             NodeCommands::Add {
                 sync,
@@ -858,13 +858,13 @@ mod tests {
         }
     }
 
-    /// Core fix: `--bind` without `--run` is meaningless (nothing to apply
+    /// Core fix: `--link` without `--run` is meaningless (nothing to apply
     /// the bindings to), so clap rejects it at parse time.
     #[test]
-    fn add_bind_without_run_rejected_at_parse_time() {
+    fn add_link_without_run_rejected_at_parse_time() {
         let err = try_parse_add(&[".", "--link", "feed@cam_a"])
             .err()
-            .expect("--bind without --run must be a parse error");
+            .expect("--link without --run must be a parse error");
         let msg = err.to_string();
         assert!(
             msg.contains("--run") || msg.contains("<RUN>"),
@@ -873,12 +873,12 @@ mod tests {
     }
 
     /// Same enforcement when sync+build are present but `--run` isn't:
-    /// `-sb` is "stop at built", and `--bind` doesn't belong there either.
+    /// `-sb` is "stop at built", and `--link` doesn't belong there either.
     #[test]
-    fn add_sb_with_bind_rejected_at_parse_time() {
+    fn add_sb_with_link_rejected_at_parse_time() {
         let err = try_parse_add(&[".", "-sb", "--link", "feed@cam_a"])
             .err()
-            .expect("`-sb --bind` (no `r`) must error");
+            .expect("`-sb --link` (no `r`) must error");
         let msg = err.to_string();
         assert!(
             msg.contains("--run") || msg.contains("<RUN>"),

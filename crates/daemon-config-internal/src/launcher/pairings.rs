@@ -19,13 +19,15 @@ use crate::error::{
 use config::node::{PairingDependency, PairingParticipantDependency};
 use std::collections::BTreeMap;
 
-use super::types::{DeploymentInstance, split_pair_target};
+use super::types::{DeploymentInstance, split_link_target};
 
 /// The participant slots of a pairing-dep list, in declaration order. Observer
 /// slots (`observes_role`) never participate in pairing establishment,
 /// exclusivity, or required-slot coverage, so pairing validation steps over
 /// them; an observer is linked to its source through `links`, not `pairings`.
-fn participants(deps: &[PairingDependency]) -> impl Iterator<Item = &PairingParticipantDependency> {
+pub(super) fn participants(
+    deps: &[PairingDependency],
+) -> impl Iterator<Item = &PairingParticipantDependency> {
     deps.iter().filter_map(|dep| match dep {
         PairingDependency::Participant(participant) => Some(participant),
         PairingDependency::Observer(_) => None,
@@ -127,21 +129,26 @@ pub fn validate_pairings(
     // instance_id, then key (BTreeMap iteration gives key order; items are
     // walked in slice order, instances in slice order — sort explicitly so
     // the resolution never depends on caller ordering).
-    let mut declarations: Vec<(&DeploymentInstance, &PairingValidationItem<'_>, &str, &str)> =
-        Vec::new();
+    let mut declarations: Vec<(
+        &DeploymentInstance,
+        &PairingParticipantDependency,
+        &str,
+        &str,
+    )> = Vec::new();
     for item in items.iter().filter(|i| !i.preexisting) {
-        let participant_link_ids: std::collections::BTreeSet<&str> = participants(item.pairing_deps)
-            .map(|d| d.link_id.as_str())
-            .collect();
+        let participants_by_link: BTreeMap<&str, &PairingParticipantDependency> =
+            participants(item.pairing_deps)
+                .map(|dependency| (dependency.link_id.as_str(), dependency))
+                .collect();
         for instance in item.instances {
             for (key, value) in &instance.links {
                 // Only this node's participant slots establish pairs. Observer
                 // slots and producer-binding slots share the `links` namespace
                 // but are resolved by their own validators; a key naming no
                 // slot at all is reported once by `validate_link_slots`.
-                if !participant_link_ids.contains(key.as_str()) {
+                let Some(own_dep) = participants_by_link.get(key.as_str()).copied() else {
                     continue;
-                }
+                };
                 let Some(target) = value.as_scalar() else {
                     out.errors.push(ParsingError::LinkTargetNotScalar {
                         owner_instance_id: instance.instance_id.to_string(),
@@ -149,17 +156,17 @@ pub fn validate_pairings(
                     });
                     continue;
                 };
-                declarations.push((instance, item, key.as_str(), target));
+                declarations.push((instance, own_dep, key.as_str(), target));
             }
         }
     }
     declarations
         .sort_by(|a, b| (a.0.instance_id.as_str(), a.2).cmp(&(b.0.instance_id.as_str(), b.2)));
 
-    for (instance, item, key, target) in declarations {
+    for (instance, own_dep, key, target) in declarations {
         match resolve_pair_declaration(
             instance.instance_id.as_str(),
-            item,
+            own_dep,
             key,
             target,
             &lookup,
@@ -192,20 +199,14 @@ pub fn validate_pairings(
 /// (nothing to add); `Err(_)` the rule violation this declaration hit.
 fn resolve_pair_declaration(
     owner_id: &str,
-    item: &PairingValidationItem<'_>,
+    own_dep: &PairingParticipantDependency,
     key: &str,
     target: &str,
     lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
     claims: &BTreeMap<(String, String), (String, String)>,
     already_paired: &AlreadyPairedSlots,
 ) -> Result<Option<PlannedPairing>, ParsingError> {
-    // The caller only enqueues declarations whose key is one of this node's
-    // participant slots, so this lookup always resolves.
-    let own_dep = participants(item.pairing_deps)
-        .find(|d| d.link_id == key)
-        .expect("declaration key is a participant slot of this item");
-
-    let (target_instance, requested_peer_link) = split_pair_target(target);
+    let (target_instance, requested_peer_link) = split_link_target(target);
     let Some(target_item) = lookup.get(target_instance) else {
         return Err(ParsingError::UnknownInstanceId {
             owner_instance_id: owner_id.to_string(),
@@ -728,9 +729,8 @@ mod tests {
         // controller); a new controller naming it explicitly must be told.
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps(true);
-        let ctrl_instances = parse_instances(
-            r#"[{ instance_id: "ctrl_2", links: { arm: "arm_1/controller" } }]"#,
-        );
+        let ctrl_instances =
+            parse_instances(r#"[{ instance_id: "ctrl_2", links: { arm: "arm_1/controller" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             preexisting("robot_arm", &arm_instances, &arm_pairing_deps),

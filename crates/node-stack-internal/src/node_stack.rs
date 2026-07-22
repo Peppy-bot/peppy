@@ -636,10 +636,19 @@ impl NodeStackInner {
                         .manifest
                         .depends_on
                         .as_ref()
-                        .and_then(|d| d.pairings.iter().find(|p| p.link_id() == slot.link_id))
-                        .and_then(|p| match p {
-                            PairingDependency::Participant(participant) => Some(participant.clone()),
-                            PairingDependency::Observer(_) => None,
+                        .and_then(|depends_on| {
+                            depends_on
+                                .pairings
+                                .iter()
+                                .find_map(|dependency| match dependency {
+                                    PairingDependency::Participant(participant)
+                                        if participant.link_id == slot.link_id =>
+                                    {
+                                        Some(participant.clone())
+                                    }
+                                    PairingDependency::Participant(_)
+                                    | PairingDependency::Observer(_) => None,
+                                })
                         });
                     (dep, inst.state())
                 })
@@ -1235,6 +1244,14 @@ impl NodeStack {
     pub fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
         let guard = self.shared.read();
         guard.instance_is_live_for_pairing(instance_id)
+    }
+
+    /// Every instance id live for pairing/observation delivery, collected in
+    /// one graph pass. Lifecycle fan-out should prefer this over repeatedly
+    /// calling [`Self::instance_is_live_for_pairing`].
+    pub fn live_instance_ids_for_pairing(&self) -> std::collections::HashSet<String> {
+        let guard = self.shared.read();
+        guard.live_instance_ids_for_pairing()
     }
 
     /// Snapshot for plan-phase pairing validation: every non-root entity

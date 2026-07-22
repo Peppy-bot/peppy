@@ -16,12 +16,12 @@ use crate::error::{
     ObservationSlotUncovered, ObservationTargetAmbiguous, ObservationTargetNotObservable,
     PairingSha256Mismatch, ParsingError,
 };
-use config::node::{PairingDependency, PairingObserverDependency, PairingParticipantDependency};
+use config::node::{PairingDependency, PairingObserverDependency};
 use config::runtime::ProducerRef;
 use std::collections::BTreeMap;
 
-use super::pairings::PairingValidationItem;
-use super::types::split_pair_target;
+use super::pairings::{PairingValidationItem, participants};
+use super::types::split_link_target;
 
 /// The observer slots of a pairing-dep list, in declaration order. Participant
 /// slots are handled by `pairings`; observation validation steps over them.
@@ -29,16 +29,6 @@ fn observers(deps: &[PairingDependency]) -> impl Iterator<Item = &PairingObserve
     deps.iter().filter_map(|dep| match dep {
         PairingDependency::Observer(observer) => Some(observer),
         PairingDependency::Participant(_) => None,
-    })
-}
-
-/// The participant slots of a pairing-dep list. Duplicated from `pairings`
-/// (private there) because observation resolves an observer's source against
-/// the source instance's participant slots.
-fn participants(deps: &[PairingDependency]) -> impl Iterator<Item = &PairingParticipantDependency> {
-    deps.iter().filter_map(|dep| match dep {
-        PairingDependency::Participant(participant) => Some(participant),
-        PairingDependency::Observer(_) => None,
     })
 }
 
@@ -105,16 +95,18 @@ pub fn validate_observations(
     }
 
     for item in items.iter().filter(|i| !i.preexisting) {
-        let observer_link_ids: std::collections::BTreeSet<&str> =
-            observers(item.pairing_deps).map(|o| o.link_id.as_str()).collect();
+        let observers_by_link: BTreeMap<&str, &PairingObserverDependency> =
+            observers(item.pairing_deps)
+                .map(|observer| (observer.link_id.as_str(), observer))
+                .collect();
 
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
 
             for (key, value) in &instance.links {
-                if !observer_link_ids.contains(key.as_str()) {
+                let Some(own_dep) = observers_by_link.get(key.as_str()).copied() else {
                     continue;
-                }
+                };
                 let Some(target) = value.as_scalar() else {
                     out.errors.push(ParsingError::LinkTargetNotScalar {
                         owner_instance_id: owner_id.to_string(),
@@ -122,7 +114,14 @@ pub fn validate_observations(
                     });
                     continue;
                 };
-                match resolve_observation(owner_id, item, key, target, &lookup, producer_core_node) {
+                match resolve_observation(
+                    owner_id,
+                    own_dep,
+                    key,
+                    target,
+                    &lookup,
+                    producer_core_node,
+                ) {
                     Ok(planned) => out.planned.push(planned),
                     Err(error) => out.errors.push(error),
                 }
@@ -139,17 +138,13 @@ pub fn validate_observations(
 /// be an observer slot of `item` because the caller filters on that.
 fn resolve_observation(
     owner_id: &str,
-    item: &PairingValidationItem<'_>,
+    own_dep: &PairingObserverDependency,
     key: &str,
     target: &str,
     lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
     producer_core_node: &str,
 ) -> Result<PlannedObservation, ParsingError> {
-    let own_dep = observers(item.pairing_deps)
-        .find(|o| o.link_id == key)
-        .expect("link key is an observer slot of this item");
-
-    let (source_instance, requested_source_link) = split_pair_target(target);
+    let (source_instance, requested_source_link) = split_link_target(target);
     let Some(source_item) = lookup.get(source_instance) else {
         return Err(ParsingError::UnknownInstanceId {
             owner_instance_id: owner_id.to_string(),
@@ -161,7 +156,7 @@ fn resolve_observation(
     // Candidate source slots: participant slots on the source instance playing
     // the observed role for the observer's pairing (name, tag). Observation is
     // not exclusive, so no claim filtering: every match is a candidate.
-    let candidates: Vec<&PairingParticipantDependency> = participants(source_item.pairing_deps)
+    let candidates: Vec<_> = participants(source_item.pairing_deps)
         .filter(|p| {
             p.name == own_dep.name && p.tag == own_dep.tag && p.role == own_dep.observes_role
         })
@@ -211,7 +206,8 @@ fn resolve_observation(
     };
 
     // Rule 4: both-pinned sha256 must match.
-    if let (Some(sha_own), Some(sha_source)) = (own_dep.sha256.as_deref(), source_dep.sha256.as_deref())
+    if let (Some(sha_own), Some(sha_source)) =
+        (own_dep.sha256.as_deref(), source_dep.sha256.as_deref())
         && sha_own != sha_source
     {
         return Err(ParsingError::PairingSha256Mismatch(Box::new(
@@ -264,8 +260,8 @@ fn validate_coverage(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::DeploymentInstance;
+    use super::*;
 
     const TEST_CORE: &str = "core_a";
 
@@ -310,9 +306,8 @@ mod tests {
     fn observer_resolves_against_the_participant_source() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_deps = arm_deps();
-        let rec_instances = parse_instances(
-            r#"[{ instance_id: "rec_1", links: { observed_arm: "arm_1" } }]"#,
-        );
+        let rec_instances =
+            parse_instances(r#"[{ instance_id: "rec_1", links: { observed_arm: "arm_1" } }]"#);
         let rec_deps = recorder_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_deps),
@@ -456,9 +451,8 @@ mod tests {
     fn observer_value_as_array_is_rejected() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_deps = arm_deps();
-        let rec_instances = parse_instances(
-            r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_1"] } }]"#,
-        );
+        let rec_instances =
+            parse_instances(r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_1"] } }]"#);
         let rec_deps = recorder_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_deps),

@@ -9,8 +9,7 @@ use core_node_api::encoding::{
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, LinkTargets, LinkValue, PairingValidationItem,
-    split_pair_target, validate_bindings, validate_link_slots, validate_observations,
-    validate_pairings,
+    split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -267,7 +266,7 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// `--bind KEY@VALUE` entries as a map of `KEY` (a declared slot link_id)
+/// `--link KEY@VALUE` entries as a map of `KEY` (a declared slot link_id)
 /// to its accumulated producer targets, in flag occurrence order. Repeating
 /// a `KEY` mirrors the launcher's array form: it accumulates the slot's
 /// bound set, and `validate_bindings` checks the count against the slot's
@@ -308,9 +307,11 @@ fn links_to_map(
 /// coordinator. Carrying observations on the goal is what makes a lone
 /// `node run` observer receive its source pin exactly like a launcher would;
 /// without it the observer would boot validated but silent.
+#[derive(Default)]
 struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
+    deferred_pairs: Vec<String>,
     requested_observations: BTreeMap<String, ObservationTarget>,
 }
 
@@ -409,7 +410,7 @@ async fn validate_links_against_stack(
     let mut target_seen_in_stack = false;
 
     // Pairing slots of running instances that are exclusively claimed right
-    // now, fed to `validate_pairings` so a `--pair` at a taken slot fails
+    // now, fed to `validate_pairings` so a `--link` at a taken slot fails
     // in the preflight with the existing peer named.
     let mut already_paired = daemon_config::launcher::AlreadyPairedSlots::new();
 
@@ -520,33 +521,9 @@ async fn validate_links_against_stack(
         implements: &target_implements,
     });
 
-    // Cross-family check first: every `--link` key must name a declared slot
-    // in some family, and every `--defer-link` a deferrable (pairing/observer)
-    // slot. This owns the unknown-key / structural-defer reporting; the
-    // per-mechanism validators below skip keys that are not theirs.
-    let link_slot_errors = validate_link_slots(&items);
-    if !link_slot_errors.is_empty() {
-        let errors: Vec<String> = link_slot_errors.iter().map(|e| e.to_string()).collect();
-        return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
-            &errors,
-        )));
-    }
-
-    // Stamp resolved producer references with the daemon's core_node; the
-    // same daemon that will spawn the instance, so the CLI preflight and the
-    // daemon's own materialization agree on every producer address.
-    let mut validated = validate_bindings(&items, core_node_name);
-    if !validated.errors.is_empty() {
-        let msg = daemon_config::format_bulleted(&validated.errors);
-        return Err(Error::ExecutionFailed(msg));
-    }
-
-    // Pairing + observer preflight over the same snapshot: coverage of every
-    // required slot (naming the exact `--link`/`--defer-link` flags), target
-    // resolution with the `/<peer_link>` ambiguity hint, and exclusivity
-    // against `already_paired`. Running instances are `preexisting` items:
-    // valid pair/observation targets, exempt from coverage (they were covered
-    // at their own start).
+    // Build the pairing/observation view over the same snapshot. Running
+    // instances are valid targets but exempt from coverage (their slots were
+    // covered at their own start).
     let target_pairing_deps: Vec<config::node::PairingDependency> = target_depends_on
         .as_ref()
         .map(|d| d.pairings.clone())
@@ -568,17 +545,11 @@ async fn validate_links_against_stack(
         pairing_deps: &target_pairing_deps,
         preexisting: false,
     });
-    let validated_pairings = validate_pairings(&pairing_items, &already_paired);
-    let validated_observations = validate_observations(&pairing_items, core_node_name);
-    let pairing_errors: Vec<String> = validated_pairings
-        .errors
-        .iter()
-        .chain(validated_observations.errors.iter())
-        .map(|e| e.to_string())
-        .collect();
-    if !pairing_errors.is_empty() {
+    let mut validated = validate_link_plan(&items, &pairing_items, &already_paired, core_node_name);
+    if !validated.errors.is_empty() {
+        let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
         return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
-            &pairing_errors,
+            &errors,
         )));
     }
 
@@ -591,6 +562,11 @@ async fn validate_links_against_stack(
         .filter(|d| d.is_participant())
         .map(|d| d.link_id())
         .collect();
+    let deferred_pairs = defer_links
+        .iter()
+        .filter(|link_id| participant_link_ids.contains(link_id.as_str()))
+        .cloned()
+        .collect();
     let mut requested_pairs: BTreeMap<String, PairTarget> = BTreeMap::new();
     for (link_id, value) in links {
         if !participant_link_ids.contains(link_id.as_str()) {
@@ -599,7 +575,7 @@ async fn validate_links_against_stack(
         // Scalar-ness was already enforced by `validate_pairings`; a
         // participant link that survived it is a single target.
         if let Some(target) = value.as_scalar() {
-            let (peer_instance, peer_link) = split_pair_target(target);
+            let (peer_instance, peer_link) = split_link_target(target);
             let pair_target = match peer_link {
                 Some(link) => PairTarget::pinned(peer_instance, link),
                 None => PairTarget::new(peer_instance),
@@ -613,8 +589,8 @@ async fn validate_links_against_stack(
     // THIS instance go on its goal (a preexisting instance's observers were
     // registered at its own start); the daemon re-stamps the source core_node,
     // so it is dropped here exactly as a pair target drops it.
-    let requested_observations: BTreeMap<String, ObservationTarget> = validated_observations
-        .planned
+    let requested_observations: BTreeMap<String, ObservationTarget> = validated
+        .planned_observations
         .iter()
         .filter(|obs| obs.observer_instance_id == target_instance_id)
         .map(|obs| {
@@ -631,14 +607,15 @@ async fn validate_links_against_stack(
             .remove(target_instance_id)
             .unwrap_or_default(),
         requested_pairs,
+        deferred_pairs,
         requested_observations,
     }))
 }
 
-/// Validate the supplied `--bind` pairs against the running stack, resolve
+/// Validate the supplied `--link` entries against the running stack, resolve
 /// them to per-slot producer lists, then spawn the instance. This is the
 /// single entry point shared between `peppy node run` and `peppy node add
-/// --run`: both surfaces must accept `--bind` and enforce the same binding
+/// --run`: both surfaces must accept `--link` and enforce the same binding
 /// rules, so there is exactly one code path responsible for materializing
 /// the instance_id, running `validate_bindings`, and calling
 /// [`run_instance_async`].
@@ -666,7 +643,7 @@ pub async fn validate_and_run_instance(
     // and the goal carries no pairs. In practice this path is inert: a daemon
     // unreachable at preflight also fails the `node_run` goal send below, so
     // the user sees a clear transport error rather than a bad boot.
-    let (slot_bindings, requested_pairs, requested_observations) = match validate_links_against_stack(
+    let plan = match validate_links_against_stack(
         messenger,
         core_node_name,
         node_name,
@@ -677,16 +654,12 @@ pub async fn validate_and_run_instance(
     )
     .await
     {
-        Ok(Some(plan)) => (
-            plan.slot_bindings,
-            plan.requested_pairs,
-            plan.requested_observations,
-        ),
-        Ok(None) => (BTreeMap::new(), BTreeMap::new(), BTreeMap::new()),
+        Ok(Some(plan)) => plan,
+        Ok(None) => PreflightPlan::default(),
         Err(e @ Error::ExecutionFailed(_)) => return Err(e),
         Err(e) => {
             debug!("skipping link validation for {}:{}: {}", node_name, tag, e);
-            (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+            PreflightPlan::default()
         }
     };
 
@@ -697,10 +670,10 @@ pub async fn validate_and_run_instance(
         tag,
         args,
         Some(prelaunch_instance_id),
-        slot_bindings,
-        requested_pairs,
-        defer_links.to_vec(),
-        requested_observations,
+        plan.slot_bindings,
+        plan.requested_pairs,
+        plan.deferred_pairs,
+        plan.requested_observations,
         timeouts,
     )
     .await

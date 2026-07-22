@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                     // `/<link_id>` suffix selects a slot on that instance and
                     // is resolved (against the manifest) at plan time.
                     for target in value.targets() {
-                        let (target_instance, _link_suffix) = split_pair_target(target);
+                        let (target_instance, _link_suffix) = split_link_target(target);
                         if !known_ids.contains(target_instance) {
                             let err = StructuredError::UnknownInstanceId {
                                 owner_instance_id: instance.instance_id.to_string(),
@@ -245,9 +245,7 @@ impl Serialize for LinkValue {
     {
         match self {
             LinkValue::Scalar(target) => serializer.serialize_str(target),
-            LinkValue::Array(targets) | LinkValue::Flags(targets) => {
-                targets.serialize(serializer)
-            }
+            LinkValue::Array(targets) | LinkValue::Flags(targets) => targets.serialize(serializer),
         }
     }
 }
@@ -309,6 +307,7 @@ pub struct DeploymentInstance {
     ///     endpoints' slots;
     ///   - an observer slot takes a single source target
     ///     (`"<source_instance>"` or `"<source_instance>/<source_link_id>"`).
+    ///
     /// The launch parser has no manifest knowledge, so shape is validated
     /// against slot kind at plan time; only shape-local rules (empty targets,
     /// duplicates within one array, malformed `/` grammar) fail at parse.
@@ -361,7 +360,7 @@ where
             // producer targets never carry a suffix, pairing/observer
             // targets carry at most one). A bad suffix here would otherwise
             // surface later as a confusing "no complementary slot" error.
-            let (instance, link_suffix) = split_pair_target(target);
+            let (instance, link_suffix) = split_link_target(target);
             if instance.is_empty() || link_suffix.is_some_and(|l| l.is_empty() || l.contains('/')) {
                 return Err(de::Error::custom(format!(
                     "link target `{target}` for key `{key}` is malformed: expected \
@@ -377,7 +376,7 @@ where
 /// Splits a launcher `links` scalar target (or CLI `--link` right-hand side)
 /// into `(instance_id, Option<link_id>)`. The `/` separator cannot appear
 /// inside wire segments, so the split is unambiguous.
-pub fn split_pair_target(value: &str) -> (&str, Option<&str>) {
+pub fn split_link_target(value: &str) -> (&str, Option<&str>) {
     match value.split_once('/') {
         Some((instance, link)) => (instance, Some(link)),
         None => (value, None),
@@ -784,7 +783,7 @@ mod tests {
     /// the `/<peer_link_id>` disambiguation suffix; `defer_links` rides
     /// alongside.
     #[test]
-    fn pairings_and_defer_pairings_parse() {
+    fn links_and_defer_links_parse() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
             deployments: [
@@ -835,10 +834,10 @@ mod tests {
             Some("arm_1/controller")
         );
         assert_eq!(
-            split_pair_target("arm_1/controller"),
+            split_link_target("arm_1/controller"),
             ("arm_1", Some("controller"))
         );
-        assert_eq!(split_pair_target("arm_1"), ("arm_1", None));
+        assert_eq!(split_link_target("arm_1"), ("arm_1", None));
     }
 
     /// A pairing value naming an unknown instance is a structured error,
@@ -873,7 +872,6 @@ mod tests {
         assert_eq!(link, "arm");
         assert_eq!(instance_id, "ghost");
     }
-
 
     #[test]
     fn pairings_reject_duplicate_and_empty_entries() {

@@ -7,7 +7,7 @@
 //! producer set: the KEY must equal a `depends_on.{nodes,contracts}`
 //! `link_id`, the value's shape must mirror the slot's declared
 //! cardinality (a scalar for `one`, an array for `one_or_more` /
-//! `zero_or_more`; repeated `--bind` flags are checked by count instead),
+//! `zero_or_more`; repeated `--link` flags are checked by count instead),
 //! and every target must deploy the slot's node (node slots) or implement
 //! the slot's contract (contract slots); conformance runs per bound
 //! instance. Every declared slot must resolve: `one` to exactly one
@@ -77,7 +77,7 @@ pub struct ValidatedBindings {
 /// resolved per-slot bindings for each consumer instance.
 ///
 /// `producer_core_node` is the core_node of the daemon this stack
-/// deploys under. The raw `--bind KEY@instance_id` syntax names
+/// deploys under. The raw `--link KEY@instance_id` syntax names
 /// producers by `instance_id` alone (unique within one stack); the wire
 /// addresses producers by the `(core_node, instance_id)` pair, so this
 /// validator is the single point where every resolved binding is
@@ -337,7 +337,7 @@ fn build_instance_lookup<'a>(
 
 /// Stack-wide `instance_id` uniqueness (rule 4). Two entries anywhere
 /// in `items.instances` (across any `(node_name, node_tag)`) sharing
-/// an `instance_id` is a hard error: `--bind KEY@id` would be
+/// an `instance_id` is a hard error: `--link KEY@id` would be
 /// ambiguous.
 fn check_stack_wide_instance_id_uniqueness(
     items: &[BindingValidationItem<'_>],
@@ -357,7 +357,7 @@ fn check_stack_wide_instance_id_uniqueness(
                 // can each hold the same `instance_id` and slip past that
                 // check. If we skipped them here, `build_instance_lookup`
                 // would silently resolve the collision by first
-                // insertion, making `--bind KEY@id` ambiguous.
+                // insertion, making `--link KEY@id` ambiguous.
                 errors.push(ParsingError::DuplicateInstanceIdAcrossStack(Box::new(
                     DuplicateInstanceIdAcrossStack {
                         instance_id: id.to_string(),
@@ -504,10 +504,8 @@ mod tests {
     /// the CLI's flag accumulation would build it.
     fn flags(targets: &[&str]) -> LinkValue {
         LinkValue::Flags(
-            super::super::types::LinkTargets::new(
-                targets.iter().map(|t| t.to_string()).collect(),
-            )
-            .expect("test targets are unique"),
+            super::super::types::LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
+                .expect("test targets are unique"),
         )
     }
 
@@ -1636,7 +1634,7 @@ mod tests {
     /// Stamping: every producer reference the validator emits carries
     /// exactly the `producer_core_node` passed by the caller (the
     /// launching daemon). This is the single point where the
-    /// instance-only `--bind` syntax becomes a wire-complete address.
+    /// instance-only `--link` syntax becomes a wire-complete address.
     #[test]
     fn every_resolved_binding_is_stamped_with_the_launching_core_node() {
         let cons_instances = parse_instances(

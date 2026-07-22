@@ -22,10 +22,10 @@ use peppylib::core_node::transport::{poll, send_goal};
 /// Options that only apply when `peppy node add` chains a run after the add
 /// (`--run` / `-r`). Grouping them into an `Option<RunAfterAddOptions>` on
 /// [`AddNodeParams`] makes the invariant explicit in the type: positional
-/// `args`, `--instance-id`, and `--bind` simply do not exist on an add that
+/// `args`, `--instance-id`, and `--link` simply do not exist on an add that
 /// stops at "added" (or at "added + built"). The clap surface enforces the
 /// same rule with `requires = "run"` so an invocation like `peppy node add .
-/// --bind feed@cam_a` is rejected at parse time rather than silently
+/// --link feed@cam_a` is rejected at parse time rather than silently
 /// dropped.
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,

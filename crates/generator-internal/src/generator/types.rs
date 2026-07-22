@@ -860,7 +860,11 @@ mod tests {
             origin.scoped_schema_key("video_stream"),
             "depth_camera_v1_video_stream"
         );
-        assert!(!origin.scoped_schema_key("video_stream").contains("cam_left"));
+        assert!(
+            !origin
+                .scoped_schema_key("video_stream")
+                .contains("cam_left")
+        );
     }
 
     #[test]

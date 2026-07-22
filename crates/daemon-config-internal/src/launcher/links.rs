@@ -17,8 +17,58 @@
 
 use crate::error::{LinkUnknownSlot, ParsingError};
 use config::node::DependsOn;
+use std::collections::BTreeMap;
 
-use super::bindings::BindingValidationItem;
+use super::bindings::{BindingValidationItem, validate_bindings};
+use super::observations::{PlannedObservation, validate_observations};
+use super::pairings::{
+    AlreadyPairedSlots, PairingValidationItem, PlannedPairing, validate_pairings,
+};
+
+/// Fully resolved output of the unified link-validation pipeline.
+#[derive(Debug, Default)]
+pub struct ValidatedLinkPlan {
+    pub errors: Vec<ParsingError>,
+    pub slot_bindings: BTreeMap<String, config::runtime::SlotBindings>,
+    pub planned_pairings: Vec<PlannedPairing>,
+    pub planned_observations: Vec<PlannedObservation>,
+}
+
+/// Runs cross-family validation, producer binding resolution, then pairing
+/// and observation resolution in the one required order. Both stack launch
+/// and CLI preflight use this entry point so a new rule cannot be wired into
+/// one path but omitted from the other.
+pub fn validate_link_plan(
+    binding_items: &[BindingValidationItem<'_>],
+    pairing_items: &[PairingValidationItem<'_>],
+    already_paired: &AlreadyPairedSlots,
+    producer_core_node: &str,
+) -> ValidatedLinkPlan {
+    let mut out = ValidatedLinkPlan {
+        errors: validate_link_slots(binding_items),
+        ..ValidatedLinkPlan::default()
+    };
+    if !out.errors.is_empty() {
+        return out;
+    }
+
+    let bindings = validate_bindings(binding_items, producer_core_node);
+    if !bindings.errors.is_empty() {
+        out.errors = bindings.errors;
+        return out;
+    }
+    out.slot_bindings = bindings.slot_bindings;
+
+    let pairings = validate_pairings(pairing_items, already_paired);
+    let observations = validate_observations(pairing_items, producer_core_node);
+    out.errors.extend(pairings.errors);
+    out.errors.extend(observations.errors);
+    if out.errors.is_empty() {
+        out.planned_pairings = pairings.planned;
+        out.planned_observations = observations.planned;
+    }
+    out
+}
 
 /// Run the cross-family key/defer checks over the plan. Returns aggregated
 /// errors only; the per-mechanism validators produce the resolved plans.
@@ -49,14 +99,14 @@ pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingEr
             for link_id in &instance.defer_links {
                 let reason = match slots.kind_of(link_id) {
                     None => Some("no such link slot is declared".to_string()),
-                    Some(SlotKind::Binding) => Some(
+                    Some(LinkSlotKind::Binding) => Some(
                         "it names a producer-binding slot; only pairing or observer slots \
                          can be deferred"
                             .to_string(),
                     ),
                     // Participant / observer defers are structurally valid; any
                     // remaining problem is stateful and judged elsewhere.
-                    Some(SlotKind::Participant | SlotKind::Observer) => None,
+                    Some(LinkSlotKind::Participant | LinkSlotKind::Observer) => None,
                 };
                 if let Some(reason) = reason {
                     errors.push(ParsingError::LinkDeferInvalid {
@@ -72,77 +122,63 @@ pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingEr
     errors
 }
 
-enum SlotKind {
+#[derive(Clone, Copy)]
+enum LinkSlotKind {
     Binding,
     Participant,
     Observer,
 }
 
-/// The declared link_ids of one node, tagged by family, for O(1) kind lookup
+/// The declared link_ids of one node, tagged by family, for logarithmic lookup
 /// and a stable declared-keys listing in error messages.
 struct DeclaredLinkSlots<'a> {
-    binding: Vec<&'a str>,
-    participant: Vec<&'a str>,
-    observer: Vec<&'a str>,
+    by_id: BTreeMap<&'a str, LinkSlotKind>,
 }
 
 impl<'a> From<&'a DependsOn> for DeclaredLinkSlots<'a> {
     fn from(depends_on: &'a DependsOn) -> Self {
-        let binding = depends_on
+        let mut by_id = BTreeMap::new();
+        for link_id in depends_on
             .nodes
             .iter()
-            .map(|d| d.link_id.as_str())
-            .chain(depends_on.contracts.iter().map(|d| d.link_id.as_str()))
-            .collect();
-        let mut participant = Vec::new();
-        let mut observer = Vec::new();
+            .map(|dependency| dependency.link_id.as_str())
+            .chain(
+                depends_on
+                    .contracts
+                    .iter()
+                    .map(|dependency| dependency.link_id.as_str()),
+            )
+        {
+            by_id.insert(link_id, LinkSlotKind::Binding);
+        }
         for dep in &depends_on.pairings {
-            if dep.is_observer() {
-                observer.push(dep.link_id());
+            let kind = if dep.is_observer() {
+                LinkSlotKind::Observer
             } else {
-                participant.push(dep.link_id());
-            }
+                LinkSlotKind::Participant
+            };
+            by_id.insert(dep.link_id(), kind);
         }
-        Self {
-            binding,
-            participant,
-            observer,
-        }
+        Self { by_id }
     }
 }
 
 impl DeclaredLinkSlots<'_> {
-    fn kind_of(&self, link: &str) -> Option<SlotKind> {
-        if self.binding.contains(&link) {
-            Some(SlotKind::Binding)
-        } else if self.participant.contains(&link) {
-            Some(SlotKind::Participant)
-        } else if self.observer.contains(&link) {
-            Some(SlotKind::Observer)
-        } else {
-            None
-        }
+    fn kind_of(&self, link: &str) -> Option<LinkSlotKind> {
+        self.by_id.get(link).copied()
     }
 
     /// Every declared link_id across all families, sorted for a deterministic
     /// message.
     fn declared_csv(&self) -> String {
-        let mut all: Vec<&str> = self
-            .binding
-            .iter()
-            .chain(self.participant.iter())
-            .chain(self.observer.iter())
-            .copied()
-            .collect();
-        all.sort_unstable();
-        all.join(", ")
+        self.by_id.keys().copied().collect::<Vec<_>>().join(", ")
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::DeploymentInstance;
+    use super::*;
     use config::node::ImplementsEntry;
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
@@ -226,9 +262,8 @@ mod tests {
                 defer_links: ["main"]
             }]"#,
         );
-        let depends_on = parse_depends_on(
-            r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#,
-        );
+        let depends_on =
+            parse_depends_on(r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#);
         let errors = validate_link_slots(&[item(&instances, Some(&depends_on))]);
         assert!(
             errors.iter().any(|e| matches!(
@@ -241,9 +276,7 @@ mod tests {
 
     #[test]
     fn deferring_an_unknown_slot_is_invalid() {
-        let instances = parse_instances(
-            r#"[{ instance_id: "cons1", defer_links: ["ghost"] }]"#,
-        );
+        let instances = parse_instances(r#"[{ instance_id: "cons1", defer_links: ["ghost"] }]"#);
         let depends_on = parse_depends_on(
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
         );
@@ -260,9 +293,8 @@ mod tests {
 
     #[test]
     fn deferring_a_pairing_or_observer_slot_is_structurally_valid() {
-        let instances = parse_instances(
-            r#"[{ instance_id: "cons1", defer_links: ["arm", "watch"] }]"#,
-        );
+        let instances =
+            parse_instances(r#"[{ instance_id: "cons1", defer_links: ["arm", "watch"] }]"#);
         let depends_on = parse_depends_on(
             r#"{
                 pairings: [

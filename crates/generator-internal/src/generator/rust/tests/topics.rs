@@ -791,10 +791,7 @@ fn clippy_single_emitted_topic_empty_format() {
             .expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain;",
-            "pub mod controller;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 }
 

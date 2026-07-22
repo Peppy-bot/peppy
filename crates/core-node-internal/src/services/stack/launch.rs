@@ -532,7 +532,7 @@ async fn start_node_instances(
     // observers of a source when that source reaches Running). Registering
     // before any instance starts means a source that comes up first still
     // finds its observers waiting.
-    ctx.observation.register_planned(planned_observations).await;
+    ctx.observation.register_planned(planned_observations);
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
     // Each planned pair is established by the LATER-started endpoint's
@@ -548,22 +548,34 @@ async fn start_node_instances(
     let mut covered_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
         HashMap::new();
     let mut deferred_by_instance: HashMap<&str, Vec<String>> = HashMap::new();
-    for instance in ordered
-        .iter()
-        .filter_map(|key| planned_by_key.get(key))
-        .flat_map(|item| &item.deployment.instances)
-    {
-        start_index.insert(instance.instance_id.as_str(), start_index.len());
-        // Explicit `defer_links:` entries for participant slots start unpaired
-        // on purpose. Non-participant defers (observer slots) are validated
-        // separately and never ride `deferred_pairs`; a `defer_links` entry
-        // that reaches here but names no participant slot is simply ignored by
-        // the pairing coverage check the daemon re-runs.
-        if !instance.defer_links.is_empty() {
+    for key in ordered {
+        let Some(item) = planned_by_key.get(key) else {
+            continue;
+        };
+        let participant_links: std::collections::BTreeSet<&str> = item
+            .config
+            .manifest
+            .depends_on
+            .as_ref()
+            .into_iter()
+            .flat_map(|depends_on| &depends_on.pairings)
+            .filter(|dependency| dependency.is_participant())
+            .map(|dependency| dependency.link_id())
+            .collect();
+        for instance in &item.deployment.instances {
+            start_index.insert(instance.instance_id.as_str(), start_index.len());
+            // Only participant slots ride the pair-specific goal field;
+            // observer defers were already validated by their own family.
             deferred_by_instance
                 .entry(instance.instance_id.as_str())
                 .or_default()
-                .extend(instance.defer_links.iter().cloned());
+                .extend(
+                    instance
+                        .defer_links
+                        .iter()
+                        .filter(|link_id| participant_links.contains(link_id.as_str()))
+                        .cloned(),
+                );
         }
     }
     for pairing in planned_pairings {

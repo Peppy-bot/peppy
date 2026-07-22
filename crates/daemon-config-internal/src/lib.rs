@@ -72,9 +72,9 @@ pub mod launcher {
         DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
         DeploymentUrlSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
         PairingValidationItem, PeppyLauncher, PeppyLauncherParser, PlannedObservation,
-        PlannedPairEndpoint, PlannedPairing, ValidatedBindings, ValidatedObservations,
-        ValidatedPairings, split_pair_target, validate_bindings, validate_link_slots,
-        validate_observations, validate_pairings,
+        PlannedPairEndpoint, PlannedPairing, ValidatedBindings, ValidatedLinkPlan,
+        ValidatedObservations, ValidatedPairings, split_link_target, validate_bindings,
+        validate_link_plan, validate_link_slots, validate_observations, validate_pairings,
     };
 }
 
