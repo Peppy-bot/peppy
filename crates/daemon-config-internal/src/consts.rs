@@ -126,6 +126,18 @@ impl PeppyDirs {
         self.root.join("tmp")
     }
 
+    /// Directory holding peppy-managed runtime binaries.
+    ///
+    /// This resolves to `$PEPPY_HOME/bin`, defaulting to `~/.peppy/bin` in a
+    /// production build. The installer places `peppy`, `zenohd`, and the
+    /// container tools there by default, and peppy extracts its bundled Cap'n
+    /// Proto compiler there on first use. A custom installer `PEPPY_BIN_DIR`
+    /// relocates the installer-managed tools only; it does not change this
+    /// runtime directory.
+    pub fn bin_dir(&self) -> PathBuf {
+        self.root.join("bin")
+    }
+
     /// Path to the stack operations log file.
     ///
     /// Records daemon-initiated lifecycle events (e.g. automatic instance

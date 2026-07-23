@@ -62,9 +62,15 @@ impl MessageFormatMapper {
     /// Despite the `map_` name this is **not** a pure transform: resolving the
     /// Rust type mapping shells out to the Cap'n Proto compiler. The call
     /// creates a temporary directory, writes the generated schema into it,
-    /// invokes the bundled `capnp` binary (locating/extracting it on first
-    /// use), and reads back the code-generator request. Expect filesystem I/O
-    /// and a subprocess, not just in-memory work.
+    /// invokes the `capnp` binary, and reads back the code-generator request.
+    /// Expect filesystem I/O and a subprocess, not just in-memory work.
+    ///
+    /// The binary is resolved as `CAPNP_BINARY_PATH` (an explicit override for
+    /// development and testing) if set, otherwise the capnp that peppy ships and
+    /// extracts to `$PEPPY_HOME/bin` on first use. This defaults to
+    /// `~/.peppy/bin` in production and is not affected by the installer's
+    /// optional `PEPPY_BIN_DIR`. peppy never falls back to a system capnp on
+    /// `PATH`.
     pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
         let mut generator = CapnpSchemaGenerator::default();
         let mut schema = String::new();
