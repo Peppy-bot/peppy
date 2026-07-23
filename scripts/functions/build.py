@@ -254,10 +254,11 @@ def build_and_package(
     # cold build.
     #
     # The isolated tree must stay under `target_root`. The Lima cross build
-    # exports this host path into the guest, which only sees what is inside the
-    # repo mount; the default `repo_root/target` satisfies that automatically,
-    # and an operator who points CARGO_TARGET_DIR at an absolute path elsewhere
-    # owns keeping it visible to the VM.
+    # compiles on the guest's own disk but copies its artifacts back into this
+    # host path, which the guest reaches through the repo mount; the default
+    # `repo_root/target` satisfies that automatically, and an operator who
+    # points CARGO_TARGET_DIR at an absolute path elsewhere owns keeping it
+    # visible to the VM.
     with tempfile.TemporaryDirectory(
         prefix=f".peppy-release-{target_triple}-",
         dir=target_root,
