@@ -88,8 +88,18 @@ fn nests_contract_backed_topics_under_link_id() {
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("depth_v1", "depth_camera", "v1", make_topic("depth_v1_marker")),
-        contract_backed("depth_v2", "depth_camera", "v2", make_topic("depth_v2_marker")),
+        contract_backed(
+            "depth_v1",
+            "depth_camera",
+            "v1",
+            make_topic("depth_v1_marker"),
+        ),
+        contract_backed(
+            "depth_v2",
+            "depth_camera",
+            "v2",
+            make_topic("depth_v2_marker"),
+        ),
         contract_backed("uvc_v1", "uvc_camera", "v1", make_topic("uvc_v1_marker")),
     ];
 
@@ -139,14 +149,14 @@ fn nests_contract_backed_topics_under_link_id() {
         );
     }
 
-    let depth_v1_init = fs::read_to_string(emit_dir.join("depth_v1/__init__.py"))
-        .expect("depth_v1/__init__.py");
+    let depth_v1_init =
+        fs::read_to_string(emit_dir.join("depth_v1/__init__.py")).expect("depth_v1/__init__.py");
     assert!(
         depth_v1_init.contains("from . import video_stream"),
         "depth_v1/__init__.py should import video_stream:\n{depth_v1_init}",
     );
-    let depth_v2_init = fs::read_to_string(emit_dir.join("depth_v2/__init__.py"))
-        .expect("depth_v2/__init__.py");
+    let depth_v2_init =
+        fs::read_to_string(emit_dir.join("depth_v2/__init__.py")).expect("depth_v2/__init__.py");
     assert!(
         depth_v2_init.contains("from . import video_stream"),
         "depth_v2/__init__.py should import video_stream:\n{depth_v2_init}",

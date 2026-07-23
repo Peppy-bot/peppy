@@ -1035,10 +1035,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain;",
-            "pub mod controller;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 }
 
@@ -1137,10 +1134,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain;",
-            "pub mod controller;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 
     let expose_move_arm_path = output_dir.join("src/exposed_actions/move_arm.rs");

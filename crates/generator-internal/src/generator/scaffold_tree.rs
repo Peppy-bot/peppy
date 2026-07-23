@@ -128,7 +128,8 @@ fn write_tree_level<W: TreeWriter>(
     // Leaves first, then sub-directories. `BTreeMap` already gives deterministic
     // alphabetical ordering inside each bucket.
     for (raw_leaf, artifacts) in &tree.leaves {
-        let module_name = claim_module_name(raw_leaf, category, &mut seen, W::sanitize_module_name)?;
+        let module_name =
+            claim_module_name(raw_leaf, category, &mut seen, W::sanitize_module_name)?;
         writer.write_leaf(dir, &module_name, raw_leaf, artifacts)?;
         entries.push(ModuleEntry {
             module_name,
