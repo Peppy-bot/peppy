@@ -20,6 +20,7 @@ pub enum InterfaceKind {
     ConsumedAction,
     PeerEmittedTopic,
     PeerConsumedTopic,
+    ObservedTopic,
 }
 
 /// The message formats a consumer needs to talk to a producer's action: the goal request, the
@@ -108,7 +109,9 @@ pub fn ensure_no_peer_collision(
     let collides = sections.iter().any(|s| {
         matches!(
             s.kind,
-            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
+            InterfaceKind::PeerEmittedTopic
+                | InterfaceKind::PeerConsumedTopic
+                | InterfaceKind::ObservedTopic
         ) && s.module_path == module_path
     });
     if collides {
@@ -311,6 +314,17 @@ pub enum InterfaceVariant {
         topic: NativeEmittedTopic,
         peer: PeerContext,
     },
+    /// A pairing topic emitted by an observed role that this node passively
+    /// taps as an observer (never a pairing participant). Lands in the same
+    /// `paired_topics/<link_id>/<topic>` namespace as peer topics, but the
+    /// generated module exposes `source()` instead of `paired()`/`wait_paired()`
+    /// and subscribes via `subscribe_observed` rather than `subscribe_peer`.
+    /// `observer` reuses `PeerContext`'s slot-identity fields (link_id, pairing
+    /// name, pairing tag), which are exactly what an observer module needs.
+    ObservedTopic {
+        topic: NativeEmittedTopic,
+        observer: PeerContext,
+    },
 }
 
 /// Maps a deployment interface to the message format required to bind it.
@@ -388,6 +402,12 @@ impl DeploymentInterface {
     /// A pairing topic emitted by the counterpart role (consumed here).
     pub fn peer_consumed_topic(topic: NativeEmittedTopic, peer: PeerContext) -> Self {
         Self::new(InterfaceVariant::PeerConsumedTopic { topic, peer })
+    }
+
+    /// A pairing topic emitted by an observed role that this node taps as an
+    /// observer.
+    pub fn observed_topic(topic: NativeEmittedTopic, observer: PeerContext) -> Self {
+        Self::new(InterfaceVariant::ObservedTopic { topic, observer })
     }
 
     pub fn interface(&self) -> &InterfaceVariant {
@@ -502,6 +522,15 @@ pub trait LanguageGenerator {
         topic: &NativeEmittedTopic,
         peer: &PeerContext,
     ) -> Result<()>;
+    /// A pairing topic an observed role emits, tapped passively: a
+    /// `subscribe_observed`-backed subscription that follows the source
+    /// instance's lifecycle. The module exposes `source()` and never a
+    /// publisher.
+    fn add_observed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        observer: &PeerContext,
+    ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
         self,
@@ -544,6 +573,9 @@ impl DeploymentInterface {
             }
             InterfaceVariant::PeerConsumedTopic { topic, peer } => {
                 backend.add_peer_consumed_topic(topic, peer)
+            }
+            InterfaceVariant::ObservedTopic { topic, observer } => {
+                backend.add_observed_topic(topic, observer)
             }
         }
     }
@@ -1116,9 +1148,9 @@ impl ModuleCategory {
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
             InterfaceKind::ConsumedAction => Self::ConsumedActions,
-            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => {
-                Self::PairedTopics
-            }
+            InterfaceKind::PeerEmittedTopic
+            | InterfaceKind::PeerConsumedTopic
+            | InterfaceKind::ObservedTopic => Self::PairedTopics,
         }
     }
 

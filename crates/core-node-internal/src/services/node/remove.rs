@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use super::RelationshipCoordinators;
+
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_remove(
@@ -24,6 +26,7 @@ pub async fn listen_for_node_remove(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    relationships: RelationshipCoordinators,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -47,6 +50,7 @@ pub async fn listen_for_node_remove(
                     core_node_node.clone(),
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
+                    relationships.clone(),
                 )
             })
             .await
@@ -62,6 +66,7 @@ async fn handle_node_remove_request(
     core_node_node: String,
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
+    relationships: RelationshipCoordinators,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -71,6 +76,7 @@ async fn handle_node_remove_request(
             &core_node_node,
             &core_instance_id,
             node_stack,
+            &relationships,
         )
         .await,
     )
@@ -82,6 +88,7 @@ async fn handle_node_remove_request_inner(
     core_node_node: &str,
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
+    relationships: &RelationshipCoordinators,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -321,6 +328,20 @@ async fn handle_node_remove_request_inner(
                 target.instance_id.as_str()
             );
         }
+    }
+
+    // Run the single teardown seam for every removed instance, exactly as the
+    // stop path does: dissolve its pairs and live-notify each surviving peer
+    // its slot is now Unpaired, and drop its observations while telling any
+    // live observer of a removed source that the source went down. Both halves
+    // are idempotent, so re-tearing-down a terminal instance the exit watcher
+    // already cleared is a harmless no-op. Keyed on instance_id and independent
+    // of entity presence, so it runs even when the entity was concurrently
+    // removed above.
+    for target in targets.iter().chain(terminal_targets.iter()) {
+        relationships
+            .tear_down_instance(target.instance_id.as_str())
+            .await;
     }
 
     for target in &config_targets {

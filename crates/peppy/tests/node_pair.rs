@@ -1,30 +1,30 @@
 //! End-to-end pairing flow over an in-process daemon (mock messaging):
 //! `repo refresh` discovers the pairing doc, `node add` resolves
 //! `depends_on.pairings` through the pairing cache, and `node run` enforces
-//! coverage, establishes pairs via `--pair`, delivers live `peer_update`
+//! coverage, establishes pairs via `--link`, delivers live `peer_update`
 //! pins to both endpoints, auto-clears on `node stop` (notifying the
 //! survivor), supports re-pairing the survivor, and enforces slot
 //! exclusivity. The "nodes" are `sleep` processes; their ready/health and
 //! `peer_update` services run in-process on the shared mock messenger,
-//! exactly the seams a real peppylib node exposes.
+//! exactly the seams a real peppylib node exposes. Removing a paired node with
+//! `--stop-instances` dissolves its pairs and notifies the survivor the same
+//! way `node stop` does.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 
-use core_node_api::encoding::PairTarget;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
 use peppylib::messaging::PeerPinState;
-use peppylib::services::health::listen_for_node_health;
 use peppylib::services::peer_update::listen_for_peer_update;
-use peppylib::services::ready::listen_for_node_ready;
 use tokio::sync::watch;
 
-use super::common::{seed_pairing_repo, test_node_target};
+use super::common::{
+    add_built_node, emulate_startup_services, node_run_command, seed_pairing_repo, test_node_target,
+};
 
 /// A node declaring one pairing slot, with the `interfaces.topics` entries
 /// the role owes: `emits` must cover the role's topics exactly, `consumes`
@@ -66,31 +66,6 @@ fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Writes a node dir with the given config and `node add --build`s it (no
-/// `build_cmd`, so "build" just marks the entity Ready).
-fn add_node(ctx: &Arc<AppContext>, dir: &Path, config: &str) {
-    std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
-    NodeCommand {
-        command: NodeCommands::Add {
-            source: Some(dir.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(ctx)
-    .expect("node add should succeed");
-}
-
 /// Emulates a spawned instance's in-process services (ready, health,
 /// peer_update) and hands back the pairing slot's pin-state watch.
 async fn emulate_instance_services(
@@ -100,22 +75,7 @@ async fn emulate_instance_services(
     instance_id: &str,
     link_id: &str,
 ) -> watch::Receiver<PeerPinState> {
-    listen_for_node_ready(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("ready service should start");
-    listen_for_node_health(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("health service should start");
+    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
 
     let (tx, rx) = watch::channel(PeerPinState::unpaired());
     let slots = Arc::new(BTreeMap::from([(link_id.to_string(), tx)]));
@@ -131,31 +91,8 @@ async fn emulate_instance_services(
     rx
 }
 
-fn run_command(
-    instance_id: &str,
-    node: &str,
-    pairs: Vec<(String, PairTarget)>,
-    defer: Vec<String>,
-) -> NodeCommand {
-    NodeCommand {
-        command: NodeCommands::Run {
-            node_ref: None,
-            node_name: Some(node.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs,
-            defer_pairs: defer,
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pairing_establish_stop_repair_and_exclusivity() {
+async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -173,25 +110,25 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
     let arm_dir = tempfile::tempdir().expect("arm node dir");
-    add_node(
+    add_built_node(
         &ctx,
         arm_dir.path(),
         &node_config("robot_arm", "arm", "controller"),
     );
     let ctrl_dir = tempfile::tempdir().expect("controller node dir");
-    add_node(
+    add_built_node(
         &ctx,
         ctrl_dir.path(),
         &node_config("arm_controller", "controller", "arm"),
     );
 
     // ── Coverage is enforced loudly ─────────────────────────────────────
-    let err = run_command("arm_0", "robot_arm", Vec::new(), Vec::new())
+    let err = node_run_command("arm_0", "robot_arm", Vec::new(), Vec::new())
         .execute(&ctx)
-        .expect_err("a required pairing slot without --pair/--defer-pair must fail");
+        .expect_err("a required pairing slot without --link/--defer-link must fail");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && msg.contains("--pair") && msg.contains("--defer-pair"),
+        msg.contains("controller") && msg.contains("--link") && msg.contains("--defer-link"),
         "coverage failure should name the slot and both flags: {msg}"
     );
 
@@ -204,14 +141,14 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
         "controller",
     )
     .await;
-    run_command(
+    node_run_command(
         "arm_1",
         "robot_arm",
         Vec::new(),
         vec!["controller".to_string()],
     )
     .execute(&ctx)
-    .expect("run with --defer-pair should succeed");
+    .expect("run with --defer-link should succeed");
     assert!(
         arm_rx.borrow().pin.is_none(),
         "a deferred slot must boot unpaired"
@@ -226,14 +163,14 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
         "arm",
     )
     .await;
-    run_command(
+    node_run_command(
         "ctrl_1",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
-    .expect("run with --pair should succeed");
+    .expect("run with --link should succeed");
 
     // Both endpoints received their absolute pin state live.
     let arm_pin = arm_rx.borrow_and_update().clone();
@@ -267,10 +204,10 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
         "arm",
     )
     .await;
-    let err = run_command(
+    let err = node_run_command(
         "ctrl_2",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
@@ -304,26 +241,11 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     // ── Delivery failure unwinds: ready+health but NO peer_update ───────
     // The instance passes startup, but the daemon cannot deliver its pin;
     // the pair is reverted and the run fails loudly.
-    listen_for_node_ready(
-        &messenger,
-        &core_node_name,
-        "ctrl_2b",
-        test_node_target("arm_controller"),
-    )
-    .await
-    .expect("ready service should start");
-    listen_for_node_health(
-        &messenger,
-        &core_node_name,
-        "ctrl_2b",
-        test_node_target("arm_controller"),
-    )
-    .await
-    .expect("health service should start");
-    let err = run_command(
+    emulate_startup_services(&messenger, &core_node_name, "arm_controller", "ctrl_2b").await;
+    let err = node_run_command(
         "ctrl_2b",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
@@ -343,10 +265,10 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
         "arm",
     )
     .await;
-    run_command(
+    node_run_command(
         "ctrl_3",
         "arm_controller",
-        vec![("arm".to_string(), PairTarget::new("arm_1"))],
+        vec![("arm".to_string(), "arm_1".to_string())],
         Vec::new(),
     )
     .execute(&ctx)
@@ -356,5 +278,26 @@ async fn pairing_establish_stop_repair_and_exclusivity() {
     assert_eq!(
         pin.producer.instance_id, "ctrl_3",
         "the survivor must be pinned to the NEW controller"
+    );
+
+    // ── Remove dissolves pairs and notifies the survivor ────────────────
+    // `node remove --stop-instances` must dissolve the removed node's pairs
+    // and live-notify each surviving peer Unpaired, exactly as `node stop`
+    // does. Removing arm_controller tears down its paired instance ctrl_3, so
+    // arm_1's slot must go Unpaired. Before the remove path threaded the
+    // PairingCoordinator, this notification never happened and the arm kept
+    // pinning a dead peer.
+    NodeCommand {
+        command: NodeCommands::Remove {
+            node_ref: ("arm_controller".to_string(), "v1".to_string()),
+            stop_instances: true,
+            force: true,
+        },
+    }
+    .execute(&ctx)
+    .expect("node remove --stop-instances should succeed");
+    assert!(
+        arm_rx.borrow_and_update().pin.is_none(),
+        "removing the paired controller must live-notify the surviving arm Unpaired"
     );
 }

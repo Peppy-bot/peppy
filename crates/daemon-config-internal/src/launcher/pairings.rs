@@ -1,6 +1,8 @@
-//! Plan-phase validation for the launcher's per-instance `pairings` /
-//! `defer_pairings` fields (and the CLI's `--pair` / `--defer-pair`, which
-//! feed the same validator through the daemon).
+//! Plan-phase validation for the participant-slot entries of the launcher's
+//! per-instance `links` map and its `defer_links` field (and the CLI's
+//! `--link` / `--defer-link`, which feed the same validator through the
+//! daemon). Producer-binding and observer entries of the same `links` map are
+//! owned by `bindings` / `observations`; this validator steps over them.
 //!
 //! A pair is strictly 1:1 between two complementary slots (slot = instance ×
 //! link_id): same pairing `(name, tag)`, opposite roles, both unclaimed.
@@ -11,13 +13,26 @@
 //! `optional: true` slots are exempt: they boot unpaired without ceremony.
 
 use crate::error::{
-    PairingConflict, PairingDeadKey, PairingSha256Mismatch, PairingSlotAlreadyPaired,
-    PairingSlotUncovered, PairingTargetAmbiguous, PairingTargetNotComplementary, ParsingError,
+    PairingConflict, PairingSha256Mismatch, PairingSlotAlreadyPaired, PairingSlotUncovered,
+    PairingTargetAmbiguous, PairingTargetNotComplementary, ParsingError,
 };
-use config::node::PairingDependency;
+use config::node::{PairingDependency, PairingParticipantDependency};
 use std::collections::BTreeMap;
 
-use super::types::{DeploymentInstance, split_pair_target};
+use super::types::{DeploymentInstance, split_link_target};
+
+/// The participant slots of a pairing-dep list, in declaration order. Observer
+/// slots (`observes_role`) never participate in pairing establishment,
+/// exclusivity, or required-slot coverage, so pairing validation steps over
+/// them; an observer is linked to its source through `links`, not `pairings`.
+pub(super) fn participants(
+    deps: &[PairingDependency],
+) -> impl Iterator<Item = &PairingParticipantDependency> {
+    deps.iter().filter_map(|dep| match dep {
+        PairingDependency::Participant(participant) => Some(participant),
+        PairingDependency::Observer(_) => None,
+    })
+}
 
 /// Minimal view of one node's planned (or already-running) instances needed
 /// for pairing validation. Mirrors `BindingValidationItem` for the pairing
@@ -72,8 +87,10 @@ pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 /// Run all pairing validator rules over the plan.
 ///
 /// Rules:
-/// 1. Every `pairings` key matches a declared pairing slot link_id
-///    (`PairingDeadKey`).
+/// 1. Only `links` keys that name one of this node's participant slots are
+///    processed; every other key is skipped (a key naming no slot at all is
+///    reported once by `validate_link_slots`). A participant entry whose value
+///    is an array instead of a single target is `LinkTargetNotScalar`.
 /// 2. The target instance exists in the plan/stack (`UnknownInstanceId`).
 /// 3. The target has exactly one available complementary slot — same
 ///    pairing `(name, tag)`, opposite role, unclaimed — or the declaration
@@ -84,11 +101,12 @@ pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 /// 5. Both-sides declarations must agree (`PairingConflict`).
 /// 6. When both endpoints pin a `sha256` for the pairing document, the pins
 ///    must match (`PairingSha256Mismatch`).
-/// 7. Coverage: every required slot of every planned instance is paired or
-///    listed in `defer_pairings` (`PairingSlotUncovered`); a
-///    `defer_pairings` entry naming an unknown slot, a slot that is also
-///    paired, or an optional slot (those boot unpaired without ceremony)
-///    is `PairingDeferInvalid`.
+/// 7. Coverage: every required participant slot of every planned instance is
+///    paired or listed in `defer_links` (`PairingSlotUncovered`); a
+///    `defer_links` entry naming a participant slot that is also paired, or an
+///    optional slot (those boot unpaired without ceremony), is
+///    `LinkDeferInvalid`. Defers naming a non-participant slot are left to
+///    `validate_observations` / `validate_link_slots`.
 pub fn validate_pairings(
     items: &[PairingValidationItem<'_>],
     already_paired: &AlreadyPairedSlots,
@@ -111,22 +129,44 @@ pub fn validate_pairings(
     // instance_id, then key (BTreeMap iteration gives key order; items are
     // walked in slice order, instances in slice order — sort explicitly so
     // the resolution never depends on caller ordering).
-    let mut declarations: Vec<(&DeploymentInstance, &PairingValidationItem<'_>, &str, &str)> =
-        Vec::new();
+    let mut declarations: Vec<(
+        &DeploymentInstance,
+        &PairingParticipantDependency,
+        &str,
+        &str,
+    )> = Vec::new();
     for item in items.iter().filter(|i| !i.preexisting) {
+        let participants_by_link: BTreeMap<&str, &PairingParticipantDependency> =
+            participants(item.pairing_deps)
+                .map(|dependency| (dependency.link_id.as_str(), dependency))
+                .collect();
         for instance in item.instances {
-            for (key, target) in &instance.pairings {
-                declarations.push((instance, item, key.as_str(), target.as_str()));
+            for (key, value) in &instance.links {
+                // Only this node's participant slots establish pairs. Observer
+                // slots and producer-binding slots share the `links` namespace
+                // but are resolved by their own validators; a key naming no
+                // slot at all is reported once by `validate_link_slots`.
+                let Some(own_dep) = participants_by_link.get(key.as_str()).copied() else {
+                    continue;
+                };
+                let Some(target) = value.as_scalar() else {
+                    out.errors.push(ParsingError::LinkTargetNotScalar {
+                        owner_instance_id: instance.instance_id.to_string(),
+                        link: key.clone(),
+                    });
+                    continue;
+                };
+                declarations.push((instance, own_dep, key.as_str(), target));
             }
         }
     }
     declarations
         .sort_by(|a, b| (a.0.instance_id.as_str(), a.2).cmp(&(b.0.instance_id.as_str(), b.2)));
 
-    for (instance, item, key, target) in declarations {
+    for (instance, own_dep, key, target) in declarations {
         match resolve_pair_declaration(
             instance.instance_id.as_str(),
-            item,
+            own_dep,
             key,
             target,
             &lookup,
@@ -159,31 +199,18 @@ pub fn validate_pairings(
 /// (nothing to add); `Err(_)` the rule violation this declaration hit.
 fn resolve_pair_declaration(
     owner_id: &str,
-    item: &PairingValidationItem<'_>,
+    own_dep: &PairingParticipantDependency,
     key: &str,
     target: &str,
     lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
     claims: &BTreeMap<(String, String), (String, String)>,
     already_paired: &AlreadyPairedSlots,
 ) -> Result<Option<PlannedPairing>, ParsingError> {
-    let Some(own_dep) = item.pairing_deps.iter().find(|d| d.link_id == key) else {
-        let declared: Vec<&str> = item
-            .pairing_deps
-            .iter()
-            .map(|d| d.link_id.as_str())
-            .collect();
-        return Err(ParsingError::PairingDeadKey(Box::new(PairingDeadKey {
-            owner_instance_id: owner_id.to_string(),
-            key: key.to_string(),
-            declared_link_ids: declared.join(", "),
-        })));
-    };
-
-    let (target_instance, requested_peer_link) = split_pair_target(target);
+    let (target_instance, requested_peer_link) = split_link_target(target);
     let Some(target_item) = lookup.get(target_instance) else {
         return Err(ParsingError::UnknownInstanceId {
             owner_instance_id: owner_id.to_string(),
-            binding: key.to_string(),
+            link: key.to_string(),
             instance_id: target_instance.to_string(),
         });
     };
@@ -239,9 +266,7 @@ fn resolve_pair_declaration(
     }
 
     // Candidate peer slots: same pairing (name, tag), opposite role.
-    let complementary: Vec<&PairingDependency> = target_item
-        .pairing_deps
-        .iter()
+    let complementary: Vec<&PairingParticipantDependency> = participants(target_item.pairing_deps)
         .filter(|d| d.name == own_dep.name && d.tag == own_dep.tag && d.role != own_dep.role)
         .collect();
 
@@ -255,7 +280,7 @@ fn resolve_pair_declaration(
     } else {
         // No explicit slot: exactly one AVAILABLE complementary slot
         // must remain (in-plan claim tracking).
-        let available: Vec<&&PairingDependency> = complementary
+        let available: Vec<&&PairingParticipantDependency> = complementary
             .iter()
             .filter(|d| {
                 let slot = (target_instance.to_string(), d.link_id.clone());
@@ -337,9 +362,7 @@ fn resolve_pair_declaration(
     }
 
     // Rule 6: both-pinned sha256 must match.
-    let peer_dep = target_item
-        .pairing_deps
-        .iter()
+    let peer_dep = participants(target_item.pairing_deps)
         .find(|d| d.link_id == resolved_peer_link)
         .expect("resolved peer slot comes from target_item.pairing_deps");
     if let (Some(sha_own), Some(sha_peer)) = (&own_dep.sha256, &peer_dep.sha256)
@@ -375,7 +398,7 @@ fn resolve_pair_declaration(
 
 /// Rule 7 of [`validate_pairings`], over every planned (non-preexisting)
 /// instance: each required slot must be paired or deferred, and each
-/// `defer_pairings` entry must name a known, non-optional slot that is not
+/// `defer_links` entry must name a known, non-optional slot that is not
 /// also paired in the same plan.
 fn validate_coverage_and_defers(
     items: &[PairingValidationItem<'_>],
@@ -385,32 +408,37 @@ fn validate_coverage_and_defers(
     for item in items.iter().filter(|i| !i.preexisting) {
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
-            for link_id in &instance.defer_pairings {
-                let dep = item.pairing_deps.iter().find(|d| &d.link_id == link_id);
-                let reason = match dep {
-                    None => Some("no such pairing slot is declared".to_string()),
-                    Some(_) if claims.contains_key(&(owner_id.to_string(), link_id.clone())) => {
-                        Some("the slot is also paired in this plan".to_string())
-                    }
-                    Some(dep) if dep.optional => {
-                        Some("the slot is optional and boots unpaired without deferral".to_string())
-                    }
-                    Some(_) => None,
+            for link_id in &instance.defer_links {
+                // Only participant-slot defers are this validator's concern.
+                // An observer-slot defer is validated by `validate_observations`
+                // and a defer naming a producer-binding or unknown slot by
+                // `validate_link_slots`; skip both here so each defer is judged
+                // exactly once.
+                let Some(dep) = participants(item.pairing_deps).find(|d| &d.link_id == link_id)
+                else {
+                    continue;
+                };
+                let reason = if claims.contains_key(&(owner_id.to_string(), link_id.clone())) {
+                    Some("the slot is also paired in this plan".to_string())
+                } else if dep.optional {
+                    Some("the slot is optional and boots unpaired without deferral".to_string())
+                } else {
+                    None
                 };
                 if let Some(reason) = reason {
-                    errors.push(ParsingError::PairingDeferInvalid {
+                    errors.push(ParsingError::LinkDeferInvalid {
                         owner_instance_id: owner_id.to_string(),
                         link_id: link_id.clone(),
                         reason,
                     });
                 }
             }
-            for dep in item.pairing_deps {
+            for dep in participants(item.pairing_deps) {
                 if dep.optional {
                     continue;
                 }
                 let covered = claims.contains_key(&(owner_id.to_string(), dep.link_id.clone()))
-                    || instance.defer_pairings.contains(&dep.link_id);
+                    || instance.defer_links.contains(&dep.link_id);
                 if !covered {
                     errors.push(ParsingError::PairingSlotUncovered(Box::new(
                         PairingSlotUncovered {
@@ -481,7 +509,7 @@ mod tests {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps(true);
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "arm_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_pairing_deps),
@@ -503,10 +531,10 @@ mod tests {
     #[test]
     fn both_sides_declared_and_agreeing_dedupes_to_one_pair() {
         let arm_instances =
-            parse_instances(r#"[{ instance_id: "arm_1", pairings: { controller: "ctrl_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "arm_1", links: { controller: "ctrl_1" } }]"#);
         let arm_pairing_deps = arm_deps(true);
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "arm_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_pairing_deps),
@@ -521,14 +549,14 @@ mod tests {
     fn both_sides_disagreeing_is_a_conflict() {
         let arm_instances = parse_instances(
             r#"[
-                { instance_id: "arm_1", pairings: { controller: "ctrl_2" } },
+                { instance_id: "arm_1", links: { controller: "ctrl_2" } },
                 { instance_id: "arm_2" }
             ]"#,
         );
         let arm_pairing_deps = arm_deps(true);
         let ctrl_instances = parse_instances(
             r#"[
-                { instance_id: "ctrl_1", pairings: { arm: "arm_1" } },
+                { instance_id: "ctrl_1", links: { arm: "arm_1" } },
                 { instance_id: "ctrl_2" }
             ]"#,
         );
@@ -547,35 +575,42 @@ mod tests {
         );
     }
 
+    /// A `links` key that names no participant slot is not this validator's
+    /// concern: it is silently skipped (the unified `validate_link_slots`
+    /// reports an unknown key). The instance's own required slot stays
+    /// uncovered, which is the error that surfaces here.
     #[test]
-    fn dead_key_is_rejected() {
+    fn non_participant_key_is_skipped() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps(true);
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { ghost_slot: "arm_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { ghost_slot: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
         let out = validate_pairings(&items, &BTreeMap::new());
-        let dead = out
-            .errors
-            .iter()
-            .find_map(|e| match e {
-                ParsingError::PairingDeadKey(info) => Some(info),
-                _ => None,
-            })
-            .expect("expected PairingDeadKey");
-        assert_eq!(dead.owner_instance_id, "ctrl_1");
-        assert_eq!(dead.key, "ghost_slot");
-        assert_eq!(dead.declared_link_ids, "arm");
+        assert!(
+            out.errors
+                .iter()
+                .all(|e| !matches!(e, ParsingError::PairingConflict(_))),
+            "a non-participant key must not be treated as a pairing declaration: {:?}",
+            out.errors
+        );
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::PairingSlotUncovered(_))),
+            "ctrl_1's required `arm` slot stays uncovered: {:?}",
+            out.errors
+        );
     }
 
     #[test]
     fn unknown_target_instance_is_rejected() {
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "ghost" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "ghost" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
         let out = validate_pairings(&items, &BTreeMap::new());
@@ -594,7 +629,7 @@ mod tests {
         let other_ctrl_instances = parse_instances(r#"[{ instance_id: "other_ctrl" }]"#);
         let other_ctrl_deps = controller_deps();
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "other_ctrl" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "other_ctrl" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
@@ -625,7 +660,7 @@ mod tests {
             ]"#,
         );
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "dual_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "dual_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
@@ -648,7 +683,7 @@ mod tests {
 
         // Explicit disambiguation resolves it.
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "dual_1/left_ctl" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "dual_1/left_ctl" } }]"#);
         let items = vec![
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("dual_arm", &dual_arm_instances, &dual_arm_deps),
@@ -665,8 +700,8 @@ mod tests {
         let arm_pairing_deps = arm_deps(true);
         let ctrl_instances = parse_instances(
             r#"[
-                { instance_id: "ctrl_1", pairings: { arm: "arm_1" } },
-                { instance_id: "ctrl_2", pairings: { arm: "arm_1" } }
+                { instance_id: "ctrl_1", links: { arm: "arm_1" } },
+                { instance_id: "ctrl_2", links: { arm: "arm_1" } }
             ]"#,
         );
         let ctrl_pairing_deps = controller_deps();
@@ -694,9 +729,8 @@ mod tests {
         // controller); a new controller naming it explicitly must be told.
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps(true);
-        let ctrl_instances = parse_instances(
-            r#"[{ instance_id: "ctrl_2", pairings: { arm: "arm_1/controller" } }]"#,
-        );
+        let ctrl_instances =
+            parse_instances(r#"[{ instance_id: "ctrl_2", links: { arm: "arm_1/controller" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             preexisting("robot_arm", &arm_instances, &arm_pairing_deps),
@@ -741,11 +775,11 @@ mod tests {
         assert_eq!(info.role, "controller");
         let msg = info.to_string();
         assert!(
-            msg.contains("--pair arm@"),
+            msg.contains("--link arm@"),
             "message should show the fix: {msg}"
         );
         assert!(
-            msg.contains("--defer-pair arm"),
+            msg.contains("--defer-link arm"),
             "message should show the defer: {msg}"
         );
     }
@@ -762,7 +796,7 @@ mod tests {
     #[test]
     fn deferred_required_slot_is_covered() {
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", defer_pairings: ["arm"] }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", defer_links: ["arm"] }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
         let out = validate_pairings(&items, &BTreeMap::new());
@@ -770,40 +804,32 @@ mod tests {
         assert!(out.planned.is_empty());
     }
 
+    /// Participant-slot defers with a stateful problem surface as
+    /// `LinkDeferInvalid`: deferring an optional slot is redundant, and
+    /// deferring a slot that is also paired in the same plan is contradictory.
+    /// (Structural problems — a defer naming an unknown or producer-binding
+    /// slot — are `validate_link_slots`'s concern, not this validator's.)
     #[test]
-    fn defer_on_unknown_optional_or_paired_slot_is_invalid() {
+    fn defer_on_optional_or_paired_slot_is_invalid() {
         let arm_instances =
-            parse_instances(r#"[{ instance_id: "arm_1", defer_pairings: ["controller"] }]"#);
+            parse_instances(r#"[{ instance_id: "arm_1", defer_links: ["controller"] }]"#);
         let arm_pairing_deps = arm_deps(true); // optional slot: deferring is redundant
         let items = vec![item("robot_arm", &arm_instances, &arm_pairing_deps)];
         let out = validate_pairings(&items, &BTreeMap::new());
         assert!(
             out.errors
                 .iter()
-                .any(|e| matches!(e, ParsingError::PairingDeferInvalid { .. })),
-            "expected PairingDeferInvalid for optional slot, got {:?}",
-            out.errors
-        );
-
-        let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", defer_pairings: ["ghost"] }]"#);
-        let ctrl_pairing_deps = controller_deps();
-        let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
-        assert!(
-            out.errors.iter().any(|e| matches!(
-                e,
-                ParsingError::PairingDeferInvalid { link_id, .. } if link_id == "ghost"
-            )),
-            "expected PairingDeferInvalid for unknown slot, got {:?}",
+                .any(|e| matches!(e, ParsingError::LinkDeferInvalid { .. })),
+            "expected LinkDeferInvalid for optional slot, got {:?}",
             out.errors
         );
 
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = arm_deps(true);
         let ctrl_instances = parse_instances(
-            r#"[{ instance_id: "ctrl_1", pairings: { arm: "arm_1" }, defer_pairings: ["arm"] }]"#,
+            r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" }, defer_links: ["arm"] }]"#,
         );
+        let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
@@ -812,9 +838,9 @@ mod tests {
         assert!(
             out.errors.iter().any(|e| matches!(
                 e,
-                ParsingError::PairingDeferInvalid { reason, .. } if reason.contains("also paired")
+                ParsingError::LinkDeferInvalid { reason, .. } if reason.contains("also paired")
             )),
-            "expected PairingDeferInvalid for paired+deferred slot, got {:?}",
+            "expected LinkDeferInvalid for paired+deferred slot, got {:?}",
             out.errors
         );
     }
@@ -826,7 +852,7 @@ mod tests {
             r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true, sha256: "aaa" }]"#,
         );
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "arm_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", sha256: "bbb" }]"#,
         );
@@ -854,7 +880,7 @@ mod tests {
             r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true, sha256: "aaa" }]"#,
         );
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "arm_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_pairing_deps),
@@ -876,7 +902,7 @@ mod tests {
         let commander_instances = parse_instances(
             r#"[{
                 instance_id: "commander",
-                pairings: { left_arm: "left_arm_inst", right_arm: "right_arm_inst" }
+                links: { left_arm: "left_arm_inst", right_arm: "right_arm_inst" }
             }]"#,
         );
         let commander_deps = parse_pairing_deps(
@@ -916,7 +942,7 @@ mod tests {
         // trigger coverage (it was covered at its own launch).
         let arm_pairing_deps = arm_deps(false);
         let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", pairings: { arm: "arm_1" } }]"#);
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             preexisting("robot_arm", &arm_instances, &arm_pairing_deps),

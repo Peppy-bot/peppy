@@ -63,7 +63,7 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairings.iter().map(|p| p.link_id.as_str()))
+        .flat_map(|d| d.pairings.iter().map(|p| p.link_id()))
         .collect()
 }
 

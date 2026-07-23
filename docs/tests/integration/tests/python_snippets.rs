@@ -31,14 +31,14 @@ fn hello_world_param_and_hello_receiver() {
     run_snippet_with_deps(
         SNIPPETS_ROOT,
         "hello_receiver",
-        &["--bind", "hello_world_param@hello_world_param_1"],
+        &["--link", "hello_world_param@hello_world_param_1"],
         &[("hello_world_param", &["name=planet"])],
     );
 }
 
 // The paired duo from the "Pairing" guide. Each side declares one required
 // pairing slot of `arm_link/v1`. Running each node on its own (the other
-// absent entirely) with `--defer-pair <slot>` proves the documented solo
+// absent entirely) with `--defer-link <slot>` proves the documented solo
 // boot: the slot starts unpaired and silent, and the node still launches.
 
 #[test]
@@ -46,7 +46,7 @@ fn pairing_robot_arm() {
     run_snippet_with_contract_repo(
         SNIPPETS_ROOT,
         "robot_arm",
-        &["--defer-pair", "controller"],
+        &["--defer-link", "controller"],
         PAIRINGS_ROOT,
     );
 }
@@ -56,7 +56,7 @@ fn pairing_arm_controller() {
     run_snippet_with_contract_repo(
         SNIPPETS_ROOT,
         "arm_controller",
-        &["--defer-pair", "arm"],
+        &["--defer-link", "arm"],
         PAIRINGS_ROOT,
     );
 }

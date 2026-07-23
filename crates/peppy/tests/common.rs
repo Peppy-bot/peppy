@@ -1,5 +1,6 @@
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
+use peppylib::MessengerHandle;
 use peppylib::messaging::SenderTarget;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -70,6 +71,78 @@ pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::Exit
 /// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
+/// Writes a node config and adds/builds it without running an instance.
+pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
+    use peppy::commands::Command;
+    std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
+    peppy::commands::node::NodeCommand {
+        command: peppy::commands::node::NodeCommands::Add {
+            source: Some(dir.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            links: Vec::new(),
+            defer_links: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(ctx)
+    .expect("node add should succeed");
+}
+
+/// Builds the standard `node run` command used by pairing/observer e2e tests.
+pub fn node_run_command(
+    instance_id: &str,
+    node: &str,
+    links: Vec<(String, String)>,
+    defer_links: Vec<String>,
+) -> peppy::commands::node::NodeCommand {
+    peppy::commands::node::NodeCommand {
+        command: peppy::commands::node::NodeCommands::Run {
+            node_ref: None,
+            node_name: Some(node.to_string()),
+            tag: Some(TEST_NODE_TAG.to_string()),
+            args: Vec::new(),
+            instance_id: Some(instance_id.to_string()),
+            links,
+            defer_links,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+}
+
+/// Starts the ready and health services every emulated test instance exposes.
+pub async fn emulate_startup_services(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+) {
+    peppylib::services::ready::listen_for_node_ready(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("ready service should start");
+    peppylib::services::health::listen_for_node_health(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("health service should start");
 }
 
 /// A minimal two-role pairing document, shared by the pairing e2e tests

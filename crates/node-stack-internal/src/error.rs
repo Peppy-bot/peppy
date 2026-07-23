@@ -77,7 +77,7 @@ pub enum Error {
     /// is already tracked by a *different* `(node_name, node_tag)` than
     /// the one being spawned. Bindings address producers by raw
     /// `instance_id` so duplicates across the stack would make
-    /// `--bind KEY@id` ambiguous. The validator catches this at plan
+    /// `--link KEY@id` ambiguous. The validator catches this at plan
     /// time; this is the daemon's defensive backstop at the trust
     /// boundary.
     #[error(

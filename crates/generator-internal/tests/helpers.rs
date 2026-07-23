@@ -137,7 +137,7 @@ fn consumer_stub_node_config_with_execution(
 
 /// Binds `link_id` to a single producer on the runtime config, exactly
 /// what the launcher's binding validator materializes for
-/// `--bind link_id@instance` on a `cardinality: "one"` slot.
+/// `--link link_id@instance` on a `cardinality: "one"` slot.
 pub fn bind_slot(
     mut config: config::runtime::RuntimeConfig,
     link_id: &str,

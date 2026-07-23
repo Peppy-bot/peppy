@@ -279,11 +279,9 @@ struct ListenerCtx<'a> {
     /// In-memory key/value store shared by the four datastore endpoints
     /// (store, get, list, remove).
     datastore: Arc<datastore::Datastore>,
-    /// The daemon's single pairing authority. ONE instance shared by every
-    /// establishment hook (node run, stack launch) and clear path (node
-    /// stop, node add overwrite, exit watchers): its op lock serializes all
-    /// pairing operations daemon-wide.
-    pairing: Arc<node::PairingCoordinator>,
+    /// The daemon's single pairing and observation authorities, shared by every
+    /// establishment hook and lifecycle teardown path.
+    relationships: node::RelationshipCoordinators,
 }
 
 /// Why a daemon-side registration for a registry method deliberately does
@@ -502,6 +500,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                Arc::clone(ctx.relationships.observation()),
             )
             .boxed(),
             ServiceId::StackList => stack::listen_for_stack_list(
@@ -526,6 +525,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                ctx.relationships.clone(),
             )
             .boxed(),
             ServiceId::NodeSync => node::listen_for_node_sync(
@@ -553,7 +553,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                Arc::clone(&ctx.pairing),
+                ctx.relationships.clone(),
             )
             .boxed(),
             ServiceId::RepoAdd => repo::listen_for_repo_add(
@@ -618,7 +618,7 @@ impl CoreNode {
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                 },
-                Arc::clone(&ctx.pairing),
+                ctx.relationships.clone(),
             )
             .boxed(),
             ActionId::StackBenchmark => stack::listen_for_stack_benchmark(
@@ -637,7 +637,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
-                Arc::clone(&ctx.pairing),
+                ctx.relationships.clone(),
             )
             .boxed(),
             ActionId::NodeBuild => node::listen_for_node_build(
@@ -666,7 +666,7 @@ impl CoreNode {
                         self.namespace.clone(),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
-                    pairing: Arc::clone(&ctx.pairing),
+                    relationships: ctx.relationships.clone(),
                 },
             )
             .boxed(),
@@ -790,17 +790,26 @@ impl CoreNode {
         } else {
             Arc::new(WallClockSource)
         };
-        let ctx = ListenerCtx {
-            core_node_name,
-            clock_cache,
-            clock_source,
-            datastore: Arc::new(datastore::Datastore::new()),
-            pairing: Arc::new(node::PairingCoordinator::new(
+        let relationships = node::RelationshipCoordinators::new(
+            Arc::new(node::PairingCoordinator::new(
                 Arc::clone(&self.node_stack),
                 self.messenger.clone(),
                 core_node_name,
                 self.instance_id(),
             )),
+            Arc::new(node::ObservationCoordinator::new(
+                Arc::clone(&self.node_stack),
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+            )),
+        );
+        let ctx = ListenerCtx {
+            core_node_name,
+            clock_cache,
+            clock_source,
+            datastore: Arc::new(datastore::Datastore::new()),
+            relationships,
         };
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all of them. They're

@@ -83,9 +83,8 @@ async fn node_run_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -156,9 +155,8 @@ async fn node_run_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -310,9 +308,8 @@ async fn node_run_command_with_args_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -389,9 +386,8 @@ async fn node_run_command_with_args_succeeds() {
             tag: Some("v1".to_string()),
             args,
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -512,9 +508,8 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -585,9 +580,8 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(custom_instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -700,9 +694,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -768,9 +761,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -875,9 +867,8 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -942,9 +933,8 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -1063,9 +1053,8 @@ async fn add_built_producer(
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1093,9 +1082,8 @@ async fn add_built_consumer_with_pins(
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1137,10 +1125,10 @@ async fn install_node_services(
     (ready, health)
 }
 
-// ─── --bind binding-driven-routing integration tests ───────────────────────
+// ─── --link binding-driven-routing integration tests ───────────────────────
 
 /// Consumer manifest declares two `link_id` slots. Running the consumer
-/// without `--bind` for either of them fails the preflight: every
+/// without `--link` for either of them fails the preflight: every
 /// declared slot must be bound, and the error names each unfulfilled
 /// slot before any spawn side-effect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1185,9 +1173,8 @@ async fn node_run_rejects_unbound_slots() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1212,7 +1199,7 @@ async fn node_run_rejects_unbound_slots() {
     );
 }
 
-/// `--bind` with a KEY that isn't declared in the consumer's
+/// `--link` with a KEY that isn't declared in the consumer's
 /// `depends_on` is a hard error. The launcher's `validate_bindings`
 /// raises it as `BindingUnknownSlot`; the CLI surfaces the message and
 /// aborts the run before any spawn side-effect.
@@ -1260,9 +1247,8 @@ async fn node_run_bind_rejects_dead_key() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(producer_instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1278,9 +1264,8 @@ async fn node_run_bind_rejects_dead_key() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
-            binds: vec![("ghost".to_string(), producer_instance_id.to_string())],
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: vec![("ghost".to_string(), producer_instance_id.to_string())],
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1289,7 +1274,7 @@ async fn node_run_bind_rejects_dead_key() {
     .execute(&node_ctx);
     let err = match result {
         Err(e) => e,
-        Ok(()) => panic!("--bind ghost@<id> should have been rejected as a dead-key"),
+        Ok(()) => panic!("--link ghost@<id> should have been rejected as a dead-key"),
     };
     let msg = err.to_string();
     assert!(
@@ -1299,7 +1284,7 @@ async fn node_run_bind_rejects_dead_key() {
 }
 
 /// Positive control: a consumer with two pinned `depends_on` entries, run
-/// with `--bind` satisfying both, produces no warning and the run
+/// with `--link` satisfying both, produces no warning and the run
 /// completes normally. Guards against the warning regressing from
 /// "missing pin" into "always fires" or "fires when satisfied".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1355,9 +1340,8 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
                 tag: Some("v1".to_string()),
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
-                binds: Vec::new(),
-                pairs: Vec::new(),
-                defer_pairs: Vec::new(),
+                links: Vec::new(),
+                defer_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1388,14 +1372,13 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
 
     NodeCommand {
         command: NodeCommands::Run {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
-            binds: vec![
+            links: vec![
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
@@ -1414,7 +1397,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     );
 }
 
-/// `--bind KEY@VALUE` where VALUE is an `instance_id` that belongs to a
+/// `--link KEY@VALUE` where VALUE is an `instance_id` that belongs to a
 /// node of a different `(name, tag)` than the consumer's `depends_on`
 /// declared is a hard error (target mismatch). Catches a misrouting class
 /// the dead-key check doesn't cover: KEY *is* declared, the target
@@ -1465,9 +1448,8 @@ async fn node_run_bind_rejects_target_mismatch() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(wrong_instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1483,9 +1465,8 @@ async fn node_run_bind_rejects_target_mismatch() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
-            binds: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1494,7 +1475,7 @@ async fn node_run_bind_rejects_target_mismatch() {
     .execute(&node_ctx);
     let err = match result {
         Err(e) => e,
-        Ok(()) => panic!("--bind to wrong-node instance should have been rejected"),
+        Ok(()) => panic!("--link to wrong-node instance should have been rejected"),
     };
     let msg = err.to_string();
     assert!(
@@ -1516,7 +1497,7 @@ async fn node_run_bind_rejects_target_mismatch() {
 ///
 /// Setup: producer `cam` is built, plus a built consumer `cons_a` with
 /// two pinned `link_id`s on `cam`. Spawn two `cam` instances and
-/// `cons_a` with valid `--bind`s satisfying both pins. Then spawn a
+/// `cons_a` with valid `--link`s satisfying both pins. Then spawn a
 /// THIRD `cam` instance: `cons_a` is running clean, the new
 /// invocation has no binds at all, and Rule 1 must NOT fire against
 /// `cons_a`.
@@ -1574,9 +1555,8 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
                 tag: Some("v1".to_string()),
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
-                binds: Vec::new(),
-                pairs: Vec::new(),
-                defer_pairs: Vec::new(),
+                links: Vec::new(),
+                defer_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1595,14 +1575,13 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
-            binds: vec![
+            links: vec![
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
@@ -1632,9 +1611,8 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(producer_extra_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1656,7 +1634,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     );
 }
 
-/// A new instance launched with no `--bind` fails on ITS OWN declared
+/// A new instance launched with no `--link` fails on ITS OWN declared
 /// slot only: inert items for already-running consumers participate in
 /// producer lookup and stack-wide `instance_id` uniqueness without
 /// contributing slots of their own, so the unfulfilled-slot error names
@@ -1664,7 +1642,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
 ///
 /// Setup: producer `cam` is built, plus consumer `cons_a` (running
 /// with both slots bound) and consumer `cons_b` (a second consumer
-/// with one declared `link_id`). Launching `cons_b` with no `--bind`
+/// with one declared `link_id`). Launching `cons_b` with no `--link`
 /// must fail naming `second_consumer_pin`, without dragging `cons_a`'s
 /// already-satisfied slots into the error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1730,9 +1708,8 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
                 tag: Some("v1".to_string()),
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
-                binds: Vec::new(),
-                pairs: Vec::new(),
-                defer_pairs: Vec::new(),
+                links: Vec::new(),
+                defer_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1751,14 +1728,13 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_a_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_a_instance_id.to_string()),
-            binds: vec![
+            links: vec![
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
@@ -1770,7 +1746,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     .execute(&node_ctx)
     .expect("consumer_a run with both pins bound should succeed");
 
-    // cons_b has a declared slot but we deliberately omit --bind: the
+    // cons_b has a declared slot but we deliberately omit --link: the
     // preflight must reject the run naming cons_b's own slot, and only
     // that slot — cons_a's bound slots are inert items here.
     let result = NodeCommand {
@@ -1780,9 +1756,8 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_b_instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1791,7 +1766,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     .execute(&node_ctx);
 
     let msg = result
-        .expect_err("cons_b with no --bind must fail its unfulfilled-slot preflight")
+        .expect_err("cons_b with no --link must fail its unfulfilled-slot preflight")
         .to_string();
     assert!(
         msg.contains("leaves slot `second_consumer_pin`") && msg.contains(consumer_b_instance_id),
@@ -1807,8 +1782,8 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
 /// splits the synthesized new instance into its own validator group:
 /// existing instances of the same node are inert under per-instance
 /// rules, and only the new instance's bindings are checked. A second
-/// instance launched with valid `--bind`s succeeds; one launched with a
-/// mismatched `--bind` target fails naming only itself.
+/// instance launched with valid `--link`s succeeds; one launched with a
+/// mismatched `--link` target fails naming only itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_target_already_in_stack_validates_only_new_instance() {
     let serve = ServeCommandEmulation::with_mock()
@@ -1864,9 +1839,8 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
                 tag: Some("v1".to_string()),
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
-                binds: Vec::new(),
-                pairs: Vec::new(),
-                defer_pairs: Vec::new(),
+                links: Vec::new(),
+                defer_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1886,14 +1860,13 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_inst_1.to_string()),
-            binds: vec![
+            links: vec![
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
@@ -1918,14 +1891,13 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_inst_2.to_string()),
-            binds: vec![
+            links: vec![
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
@@ -1949,9 +1921,8 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(consumer_inst_3_bad.to_string()),
-            binds: vec![("wrist_left".to_string(), consumer_inst_1.to_string())],
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: vec![("wrist_left".to_string(), consumer_inst_1.to_string())],
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1960,7 +1931,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .execute(&node_ctx);
 
     let err =
-        result.expect_err("third consumer instance with a mismatched --bind must be rejected");
+        result.expect_err("third consumer instance with a mismatched --link must be rejected");
     let msg = err.to_string();
     assert!(
         msg.contains(consumer_inst_3_bad),

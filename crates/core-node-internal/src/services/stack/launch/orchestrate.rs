@@ -47,7 +47,7 @@ pub(super) async fn add_node_directly(
         bound_core_node: ctx.bound_core_node.clone(),
         core_instance_id: ctx.core_instance_id.clone(),
         peppy_dirs: ctx.peppy_dirs.clone(),
-        pairing: Arc::clone(&ctx.pairing),
+        relationships: ctx.relationships.clone(),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -180,7 +180,7 @@ pub(super) async fn start_node_directly(
         health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
         daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
-        pairing: Arc::clone(&ctx.pairing),
+        relationships: ctx.relationships.clone(),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -265,6 +265,7 @@ pub(super) async fn validate_and_order_dependencies(
         Vec<NodeKey>,
         ResolvedSlotBindings,
         Vec<daemon_config::launcher::PlannedPairing>,
+        Vec<daemon_config::launcher::PlannedObservation>,
     ),
     LaunchResult,
 > {
@@ -341,9 +342,8 @@ pub(super) async fn validate_and_order_dependencies(
             arguments: Default::default(),
             env_vars: Default::default(),
             framework: Default::default(),
-            bindings: Default::default(),
-            pairings: Default::default(),
-            defer_pairings: Default::default(),
+            links: Default::default(),
+            defer_links: Default::default(),
         })
         .into_iter()
         .collect();
@@ -367,23 +367,9 @@ pub(super) async fn validate_and_order_dependencies(
             implements: &root_config.manifest.implements,
         });
     }
-    // Stamp every resolved producer reference with this daemon's core_node:
-    // stacks are daemon-scoped, so the launching daemon is where every
-    // producer instance in the snapshot lives.
-    let validated =
-        daemon_config::launcher::validate_bindings(&binding_items, ctx.bound_core_node.as_str());
-    if !validated.errors.is_empty() {
-        let msg = daemon_config::format_bulleted(&validated.errors);
-        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-    let resolved_slot_bindings = validated.slot_bindings;
-
-    // Pairing plan: every `pairings:`/`defer_pairings:` map validated
-    // against the declared slots, coverage of required slots enforced, each
-    // target resolved to one concrete peer slot. A launch replaces the
-    // previous stack (torn down at the clear step), so there are no
-    // preexisting instances or already-claimed slots to fold in.
+    // Pairing and observation share one view over `depends_on.pairings`. A
+    // launch replaces the previous stack, so there are no preexisting
+    // instances or already-claimed slots to fold in.
     let pairing_items: Vec<daemon_config::launcher::PairingValidationItem<'_>> = planned
         .iter()
         .map(|p| daemon_config::launcher::PairingValidationItem {
@@ -400,21 +386,21 @@ pub(super) async fn validate_and_order_dependencies(
             preexisting: false,
         })
         .collect();
-    let validated_pairings = daemon_config::launcher::validate_pairings(
+    let validated = daemon_config::launcher::validate_link_plan(
+        &binding_items,
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
+        ctx.bound_core_node.as_str(),
     );
-    if !validated_pairings.errors.is_empty() {
-        let errors: Vec<String> = validated_pairings
-            .errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect();
+    if !validated.errors.is_empty() {
+        let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
         let msg = daemon_config::format_bulleted(&errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
-    let planned_pairings = validated_pairings.planned;
+    let resolved_slot_bindings = validated.slot_bindings;
+    let planned_pairings = validated.planned_pairings;
+    let planned_observations = validated.planned_observations;
 
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
@@ -447,7 +433,12 @@ pub(super) async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok((ordered, resolved_slot_bindings, planned_pairings))
+    Ok((
+        ordered,
+        resolved_slot_bindings,
+        planned_pairings,
+        planned_observations,
+    ))
 }
 
 /// Perform a stable topological sort.
@@ -550,4 +541,5 @@ pub(super) async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
     )
     .await;
     ctx.node_stack.reset();
+    ctx.relationships.observation().clear();
 }

@@ -54,8 +54,9 @@ use services::{
 };
 use topics::{
     ConsumedTopicSubscriptionSpec, PeerTopicSubscriptionSpec, build_consumed_topic_subscription,
-    build_peer_module_header, build_peer_topic_publisher, build_peer_topic_subscription,
-    build_topic_publisher, consumed_to_target_expression,
+    build_observed_module_header, build_observed_topic_subscription, build_peer_module_header,
+    build_peer_topic_publisher, build_peer_topic_subscription, build_topic_publisher,
+    consumed_to_target_expression,
 };
 use type_mapping::{render_tokens, unused_params_stmt};
 
@@ -646,6 +647,104 @@ impl SchemaInfo {
         let module_ident = Ident::new(&format!("{}_capnp", self.file_stem), Span::call_site());
         let struct_module_ident = Ident::new(&self.struct_module, Span::call_site());
         quote!(crate::capnp::#module_ident::#struct_module_ident::Reader)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PairTopicConsumerKind {
+    Peer,
+    Observed,
+}
+
+impl RustGenerator {
+    /// Shared consume-side scaffold for peer and observer pairing topics. The
+    /// two modes differ only in their module header, subscription runtime, and
+    /// artifact classification.
+    fn add_pair_topic_consumer(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+        kind: PairTopicConsumerKind,
+    ) -> Result<()> {
+        let topic_component = sanitize_component(topic.name.as_str());
+        let schema_key =
+            crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
+        let struct_prefix = to_camel_case(&schema_key);
+
+        let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?
+            .ok_or_else(|| Error::PeerTopicMissingMessageFormat {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            })?;
+
+        let mut context = GenerationContext::default();
+        let message_struct_name = String::from("Message");
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+            None,
+        )?;
+        let encoding_params = params.clone();
+
+        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let args_fields = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(args_struct_ident.clone(), args_fields);
+
+        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
+        let encoding = self
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &encoding_params,
+            )?
+            .expect("message encoding spec should exist when message format is provided");
+        let spec = PeerTopicSubscriptionSpec {
+            helper_fn_ident: &helper_fn_ident,
+            args_struct_ident: &args_struct_ident,
+            params: &params,
+            artifacts: &format_artifacts,
+            encoding: &encoding,
+            qos_profile: &topic.qos_profile,
+            struct_prefix: &message_struct_name,
+        };
+        let (header_tokens, method_tokens, artifact_kind) = match kind {
+            PairTopicConsumerKind::Peer => (
+                build_peer_module_header(topic.name.as_str(), peer),
+                build_peer_topic_subscription(spec)?,
+                InterfaceKind::PeerConsumedTopic,
+            ),
+            PairTopicConsumerKind::Observed => (
+                build_observed_module_header(topic.name.as_str(), peer),
+                build_observed_topic_subscription(spec)?,
+                InterfaceKind::ObservedTopic,
+            ),
+        };
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
+        let rendered = render_tokens(quote! {
+            #header_tokens
+            #( #items )*
+        });
+
+        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: artifact_kind,
+            code_output: rendered,
+        });
+        Ok(())
     }
 }
 
@@ -1467,77 +1566,15 @@ impl LanguageGenerator for RustGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
-        let topic_component = sanitize_component(topic.name.as_str());
-        let schema_key =
-            crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
-        let struct_prefix = to_camel_case(&schema_key);
+        self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
+    }
 
-        let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?
-            .ok_or_else(|| Error::PeerTopicMissingMessageFormat {
-                link_id: peer.link_id.clone(),
-                topic: topic.name.clone(),
-            })?;
-
-        let mut context = GenerationContext::default();
-        let message_struct_name = String::from("Message");
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
-        let encoding_params = params.clone();
-
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
-
-        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &encoding_params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
-
-        let header_tokens = build_peer_module_header(topic.name.as_str(), peer);
-        let method_tokens = build_peer_topic_subscription(PeerTopicSubscriptionSpec {
-            helper_fn_ident: &helper_fn_ident,
-            args_struct_ident: &args_struct_ident,
-            params: &params,
-            artifacts: &format_artifacts,
-            encoding: &encoding,
-            qos_profile: &topic.qos_profile,
-            struct_prefix: &message_struct_name,
-        })?;
-        let mut items = context.into_tokens();
-        items.push(method_tokens);
-
-        let tokens: TokenStream = quote! {
-            #header_tokens
-            #( #items )*
-        };
-        let rendered = render_tokens(tokens);
-
-        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerConsumedTopic,
-            code_output: rendered,
-        });
-        Ok(())
+    fn add_observed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        observer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
     }
 
     fn add_consumed_action(

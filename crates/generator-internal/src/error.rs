@@ -78,8 +78,8 @@ both produce the type name `{type_name}`"
         second_field: String,
     },
     #[error(
-        "pairing topic `{topic}` on slot `{link_id}` has no message_format; a consumed peer topic \
-needs a decodable payload"
+        "pairing topic `{topic}` on slot `{link_id}` has no message_format; it needs a decodable \
+payload to generate typed bindings"
     )]
     PeerTopicMissingMessageFormat { link_id: String, topic: String },
     /// Backstop: the parse-time flat topic-name uniqueness check on the

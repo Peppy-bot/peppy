@@ -146,7 +146,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
         {
           instance_id: "main_robot_brain",
           arguments: {},
-          bindings: {
+          links: {
             front_camera: "camera_front",
           },
         }

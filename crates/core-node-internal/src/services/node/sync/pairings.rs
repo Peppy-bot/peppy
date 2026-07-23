@@ -90,30 +90,38 @@ pub(crate) fn validate_pairing_specs(
     let mut resolved: HashMap<(&str, &str, Option<&str>), PeppyPairing> = HashMap::new();
     let mut out = HashMap::new();
     for dep in pairing_deps {
-        let name = dep.name.as_str();
-        let doc = match resolved.entry((name, dep.tag.as_str(), dep.sha256.as_deref())) {
+        let name = dep.name().as_str();
+        let doc = match resolved.entry((name, dep.tag(), dep.sha256())) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => v.insert(resolve_pairing_doc_cached(
                 &cache,
                 peppy_dirs,
                 name,
-                &dep.tag,
-                dep.sha256.as_deref(),
+                dep.tag(),
+                dep.sha256(),
                 on_feedback,
             )?),
         };
-        if !doc.has_role(&dep.role) {
+        // A participant's `role` and an observer's `observes_role` each name
+        // one of the document's two roles; the field name only changes the
+        // error label.
+        let (role_label, role) = match dep {
+            config::node::PairingDependency::Participant(p) => ("role", p.role.as_str()),
+            config::node::PairingDependency::Observer(o) => {
+                ("observes_role", o.observes_role.as_str())
+            }
+        };
+        if !doc.has_role(role) {
             let declared: Vec<&str> = doc.roles.iter().map(|r| r.as_str()).collect();
             return Err(format!(
-                "pairing slot `{}`: role `{}` is not declared by pairing `{name}:{}` \
+                "pairing slot `{}`: {role_label} `{role}` is not declared by pairing `{name}:{}` \
                  (declared roles: [{}])",
-                dep.link_id,
-                dep.role,
-                dep.tag,
+                dep.link_id(),
+                dep.tag(),
                 declared.join(", "),
             ));
         }
-        out.insert(dep.link_id.clone(), doc.clone());
+        out.insert(dep.link_id().to_string(), doc.clone());
     }
     Ok(out)
 }
@@ -199,55 +207,21 @@ pub fn collect_pairing_interfaces(
     let mut broken = Vec::new();
     for dep in pairing_deps {
         let doc = docs
-            .get(&dep.link_id)
+            .get(dep.link_id())
             .expect("validate_pairing_specs returns a doc per declared slot");
-        let peer = generator::PeerContext {
-            link_id: dep.link_id.clone(),
-            pairing_name: dep.name.as_str().to_string(),
-            pairing_tag: dep.tag.clone(),
+        let context = generator::PeerContext {
+            link_id: dep.link_id().to_string(),
+            pairing_name: dep.name().as_str().to_string(),
+            pairing_tag: dep.tag().to_string(),
         };
-        let mut coverage = SlotCoverage::default();
-
-        for name in declared_topic_names(interfaces_cfg, &dep.link_id, Direction::Emits) {
-            let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
-                coverage.unknown_emits.push(name.to_string());
-                continue;
-            };
-            if topic.emitted_by != dep.role {
-                coverage
-                    .wrong_role_emits
-                    .push(format!("{name} (emitted by {})", topic.emitted_by));
-                continue;
+        let mismatch = match dep {
+            config::node::PairingDependency::Participant(participant) => {
+                collect_participant_slot(participant, doc, interfaces_cfg, &context, &mut out)
             }
-            *coverage.visited_emits.entry(name.to_string()).or_insert(0) += 1;
-            out.push(generator::DeploymentInterface::peer_emitted_topic(
-                native_topic(topic),
-                peer.clone(),
-            ));
-        }
-
-        for name in declared_topic_names(interfaces_cfg, &dep.link_id, Direction::Consumes) {
-            let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
-                coverage.unknown_consumes.push(name.to_string());
-                continue;
-            };
-            if topic.emitted_by == dep.role {
-                coverage
-                    .wrong_role_consumes
-                    .push(format!("{name} (emitted by this node's role {})", dep.role));
-                continue;
+            config::node::PairingDependency::Observer(observer) => {
+                collect_observer_slot(observer, doc, interfaces_cfg, &context, &mut out)
             }
-            *coverage
-                .visited_consumes
-                .entry(name.to_string())
-                .or_insert(0) += 1;
-            out.push(generator::DeploymentInterface::peer_consumed_topic(
-                native_topic(topic),
-                peer.clone(),
-            ));
-        }
-
-        let mismatch = build_mismatch(dep, doc, coverage);
+        };
         if !mismatch.is_empty() {
             broken.push(mismatch);
         }
@@ -257,6 +231,110 @@ pub fn collect_pairing_interfaces(
         return Err(PairingError::Coverage(broken));
     }
     Ok(out)
+}
+
+/// Resolves a participant slot: `topics.emits` become peer-emitted (exact
+/// coverage against the role's topics), `topics.consumes` become peer-consumed
+/// (partial coverage against the counterpart role's topics).
+fn collect_participant_slot(
+    participant: &config::node::PairingParticipantDependency,
+    doc: &PeppyPairing,
+    interfaces_cfg: &config::node::Interfaces,
+    context: &generator::PeerContext,
+    out: &mut Vec<generator::DeploymentInterface>,
+) -> PairingCoverageMismatch {
+    let role = participant.role.as_str();
+    let mut coverage = SlotCoverage::default();
+
+    for name in declared_topic_names(interfaces_cfg, &participant.link_id, Direction::Emits) {
+        let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
+            coverage.unknown_emits.push(name.to_string());
+            continue;
+        };
+        if topic.emitted_by != role {
+            coverage
+                .wrong_role_emits
+                .push(format!("{name} (emitted by {})", topic.emitted_by));
+            continue;
+        }
+        *coverage.visited_emits.entry(name.to_string()).or_insert(0) += 1;
+        out.push(generator::DeploymentInterface::peer_emitted_topic(
+            native_topic(topic),
+            context.clone(),
+        ));
+    }
+
+    for name in declared_topic_names(interfaces_cfg, &participant.link_id, Direction::Consumes) {
+        let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
+            coverage.unknown_consumes.push(name.to_string());
+            continue;
+        };
+        if topic.emitted_by == role {
+            coverage
+                .wrong_role_consumes
+                .push(format!("{name} (emitted by this node's role {role})"));
+            continue;
+        }
+        *coverage
+            .visited_consumes
+            .entry(name.to_string())
+            .or_insert(0) += 1;
+        out.push(generator::DeploymentInterface::peer_consumed_topic(
+            native_topic(topic),
+            context.clone(),
+        ));
+    }
+
+    build_participant_mismatch(participant, doc, coverage)
+}
+
+/// Resolves an observer slot: it emits nothing (any `topics.emits` entry is an
+/// error), and each `topics.consumes` entry taps a topic emitted BY the
+/// observed role, becoming an observed topic. Consume coverage is partial, like
+/// a participant's.
+fn collect_observer_slot(
+    observer: &config::node::PairingObserverDependency,
+    doc: &PeppyPairing,
+    interfaces_cfg: &config::node::Interfaces,
+    context: &generator::PeerContext,
+    out: &mut Vec<generator::DeploymentInterface>,
+) -> PairingCoverageMismatch {
+    let observed_role = observer.observes_role.as_str();
+    let mut coverage = SlotCoverage::default();
+
+    // An observer produces nothing; a stray emit entry naming its slot is a
+    // hard error rather than a role mismatch.
+    for name in declared_topic_names(interfaces_cfg, &observer.link_id, Direction::Emits) {
+        coverage
+            .wrong_role_emits
+            .push(format!("{name} (an observer slot emits nothing)"));
+    }
+
+    for name in declared_topic_names(interfaces_cfg, &observer.link_id, Direction::Consumes) {
+        let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
+            coverage.unknown_consumes.push(name.to_string());
+            continue;
+        };
+        // An observer consumes the OBSERVED role's own topics, the opposite
+        // direction from a participant.
+        if topic.emitted_by != observed_role {
+            coverage.wrong_role_consumes.push(format!(
+                "{name} (emitted by {}, not the observed role {observed_role})",
+                topic.emitted_by
+            ));
+            continue;
+        }
+        *coverage
+            .visited_consumes
+            .entry(name.to_string())
+            .or_insert(0) += 1;
+        out.push(generator::DeploymentInterface::observed_topic(
+            native_topic(topic),
+            context.clone(),
+        ));
+    }
+
+    build_observer_mismatch(observer, coverage)
 }
 
 /// Which direction of `interfaces.topics` an entry walk is reading.
@@ -311,8 +389,8 @@ fn native_topic(topic: &daemon_config::pairing::PairingTopic) -> config::node::N
 /// contributes `missing`/`duplicated` against the document: consume coverage
 /// is free, so an unlisted counterpart topic is not a defect, but naming one
 /// twice still is.
-fn build_mismatch(
-    dep: &config::node::PairingDependency,
+fn build_participant_mismatch(
+    dep: &config::node::PairingParticipantDependency,
     doc: &PeppyPairing,
     coverage: SlotCoverage,
 ) -> PairingCoverageMismatch {
@@ -330,13 +408,7 @@ fn build_mismatch(
             _ => duplicated_emits.push(topic.name.clone()),
         }
     }
-    let mut duplicated_consumes: Vec<String> = coverage
-        .visited_consumes
-        .iter()
-        .filter(|(_, visits)| **visits > 1)
-        .map(|(name, _)| name.clone())
-        .collect();
-    duplicated_consumes.sort();
+    let duplicated_consumes = duplicated_consumes(&coverage);
 
     PairingCoverageMismatch {
         pairing_name: dep.name.as_str().to_string(),
@@ -351,6 +423,43 @@ fn build_mismatch(
         duplicated_consumes,
         wrong_role_consumes: coverage.wrong_role_consumes,
     }
+}
+
+/// An observer has no emit coverage (it emits nothing), so the only defects are
+/// stray emit entries (surfaced as `wrong_role_emits`) and consume-side
+/// unknown / wrong-role / duplicate entries. The `role` field carries the
+/// observed role for the report.
+fn build_observer_mismatch(
+    dep: &config::node::PairingObserverDependency,
+    coverage: SlotCoverage,
+) -> PairingCoverageMismatch {
+    let duplicated_consumes = duplicated_consumes(&coverage);
+
+    PairingCoverageMismatch {
+        pairing_name: dep.name.as_str().to_string(),
+        pairing_tag: dep.tag.clone(),
+        link_id: dep.link_id.clone(),
+        role: dep.observes_role.clone(),
+        missing_emits: Vec::new(),
+        unknown_emits: coverage.unknown_emits,
+        duplicated_emits: Vec::new(),
+        wrong_role_emits: coverage.wrong_role_emits,
+        unknown_consumes: coverage.unknown_consumes,
+        duplicated_consumes,
+        wrong_role_consumes: coverage.wrong_role_consumes,
+    }
+}
+
+/// The counterpart topics named more than once in `topics.consumes`, sorted.
+fn duplicated_consumes(coverage: &SlotCoverage) -> Vec<String> {
+    let mut out: Vec<String> = coverage
+        .visited_consumes
+        .iter()
+        .filter(|(_, visits)| **visits > 1)
+        .map(|(name, _)| name.clone())
+        .collect();
+    out.sort();
+    out
 }
 
 #[cfg(test)]
