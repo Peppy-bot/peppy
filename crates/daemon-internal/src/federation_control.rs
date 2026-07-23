@@ -1,4 +1,4 @@
-//! Daemon control socket that turns a `peppy auth login`/`logout` poke into an
+//! Daemon control socket that turns a `peppy platform login`/`logout` poke into an
 //! *immediate* router (de)federation.
 //!
 //! A [`ServeAsyncCommand`] that binds the per-user Unix-domain socket

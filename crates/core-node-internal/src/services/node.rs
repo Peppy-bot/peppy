@@ -11,6 +11,7 @@ mod git_utils;
 mod info;
 mod init;
 mod logging;
+pub(crate) mod observation;
 pub(crate) mod pairing;
 mod remove;
 mod run;
@@ -20,6 +21,7 @@ mod sync;
 use config::node::NodeConfig;
 use core_node_api::encoding::NodeSource;
 use daemon_config::consts::PeppyDirs;
+use std::sync::Arc;
 
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).
@@ -27,6 +29,7 @@ pub use add::listen_for_node_add;
 pub use builder::listen_for_node_build;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+pub use observation::ObservationCoordinator;
 pub use pairing::PairingCoordinator;
 pub use remove::listen_for_node_remove;
 pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
@@ -74,6 +77,45 @@ pub(crate) async fn resolve_node_config(
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeConfig, String> {
     info::resolve_node_config(source, peppy_dirs).await
+}
+
+/// The daemon authorities responsible for relationships between node instances.
+///
+/// Keeping them together gives every lifecycle path one complete dependency for
+/// teardown while still exposing each authority to flows that operate on one
+/// relationship type directly.
+#[derive(Clone)]
+pub(crate) struct RelationshipCoordinators {
+    pairing: Arc<PairingCoordinator>,
+    observation: Arc<ObservationCoordinator>,
+}
+
+impl RelationshipCoordinators {
+    pub(crate) fn new(
+        pairing: Arc<PairingCoordinator>,
+        observation: Arc<ObservationCoordinator>,
+    ) -> Self {
+        Self {
+            pairing,
+            observation,
+        }
+    }
+
+    pub(crate) fn pairing(&self) -> &Arc<PairingCoordinator> {
+        &self.pairing
+    }
+
+    pub(crate) fn observation(&self) -> &Arc<ObservationCoordinator> {
+        &self.observation
+    }
+
+    /// Tears down every cross-instance relationship held by `instance_id`.
+    /// Pairing is dissolved first because it may notify a live peer, then
+    /// observation notifies live observers and drops the instance's records.
+    pub(crate) async fn tear_down_instance(&self, instance_id: &str) {
+        self.pairing.dissolve_for_instance(instance_id).await;
+        self.observation.on_instance_down(instance_id).await;
+    }
 }
 
 #[cfg(test)]

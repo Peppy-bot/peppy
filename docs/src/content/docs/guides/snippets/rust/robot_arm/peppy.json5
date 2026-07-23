@@ -12,6 +12,20 @@
       ],
     },
   },
+  interfaces: {
+    topics: {
+      // The `arm` role's side of the conversation, declared the same way a
+      // contract implementer declares its contract members. The pairing
+      // document stays the source of shape and QoS; these entries only say
+      // which of its topics this node uses.
+      emits: [
+        { link_id: "controller", name: "joint_states" },
+      ],
+      consumes: [
+        { link_id: "controller", name: "joint_commands" },
+      ],
+    },
+  },
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],

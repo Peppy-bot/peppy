@@ -87,9 +87,8 @@ fn node_add_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -125,7 +124,7 @@ fn node_add_command_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -243,9 +242,8 @@ fn node_add_command_with_run_arg_succeeds() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -274,7 +272,7 @@ fn node_add_command_with_run_arg_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -378,9 +376,8 @@ fn node_add_after_failed_sync_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -425,9 +422,8 @@ fn node_add_after_failed_sync_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -451,7 +447,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -577,9 +573,8 @@ fn node_add_same_node_shutdown_existing_instances() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -595,7 +590,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -634,9 +629,8 @@ fn node_add_same_node_shutdown_existing_instances() {
             run: false, // Don't run a new instance this time
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: true, // Bypass confirmation prompt
@@ -648,7 +642,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     // Verify the instance was stopped and node was re-added with 0 instances
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -764,9 +758,8 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -782,7 +775,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -868,7 +861,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     // Step 5: Verify the existing instance was stopped and node was re-added
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -951,9 +944,8 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -982,9 +974,8 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1033,7 +1024,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         .expect("messenger handle should be available");
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -1076,9 +1067,8 @@ fn node_add_with_sync_flag_rejects_remote_source() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1150,7 +1140,7 @@ fn write_consumer_with_pinned_depends_on(
 }
 
 /// `peppy node add . -sbr` (sync + build + run) runs the chained spawn
-/// through the same binding validation as `node run`: a `--bind` whose
+/// through the same binding validation as `node run`: a `--link` whose
 /// KEY names no declared slot MUST fail before any spawn side-effect.
 /// Before the fix the chained-run path called `run_instance_async`
 /// directly, bypassing validation entirely; the fix routes both `node
@@ -1205,9 +1195,8 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1216,7 +1205,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     .execute(&node_ctx)
     .expect("producer node add should succeed");
 
-    // Consumer with a single declared link_id. A `--bind` on a key that
+    // Consumer with a single declared link_id. A `--link` on a key that
     // names no declared slot must be rejected by the chained run.
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
@@ -1227,8 +1216,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
 
     let result = NodeCommand {
         command: NodeCommands::Add {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1237,7 +1225,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
             args: Vec::new(),
             instance_id: None,
             // A binding on an undeclared slot must be rejected.
-            binds: vec![("stale_slot".to_string(), "ghost_producer".to_string())],
+            links: vec![("stale_slot".to_string(), "ghost_producer".to_string())],
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1269,7 +1257,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     );
 }
 
-/// Positive control: `peppy node add -r --bind KEY@VALUE` (where KEY is a
+/// Positive control: `peppy node add -r --link KEY@VALUE` (where KEY is a
 /// declared link_id and VALUE is the producer's instance_id) is the
 /// supported path. The same producer/consumer scaffolding as the
 /// rejection test above, but with the binding supplied; the consumer
@@ -1324,9 +1312,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1361,9 +1348,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(producer_instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1396,7 +1382,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         ))
         .expect("consumer health service should start");
 
-    // `node add -r --bind wrist_left@cam_a`, exactly the invocation the
+    // `node add -r --link wrist_left@cam_a`, exactly the invocation the
     // reproducer at the top of this file wanted to work.
     NodeCommand {
         command: NodeCommands::Add {
@@ -1407,16 +1393,15 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
             run: true,
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
-            binds: vec![("wrist_left".to_string(), producer_instance_id.to_string())],
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: vec![("wrist_left".to_string(), producer_instance_id.to_string())],
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
         },
     }
     .execute(&node_ctx)
-    .expect("node add -r --bind on a satisfied pinned dep must succeed");
+    .expect("node add -r --link on a satisfied pinned dep must succeed");
 
     let logs = log_capture.logs();
     // Match the consumer's specific instance_id so this stays a real
@@ -1428,7 +1413,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     );
 }
 
-/// `--bind KEY@VALUE` on `node add -r` where KEY is NOT in the consumer's
+/// `--link KEY@VALUE` on `node add -r` where KEY is NOT in the consumer's
 /// `depends_on` is a dead-binding. The launcher's `validate_bindings`
 /// flags it on `node run`; chaining the run from `node add` must surface
 /// the same rejection (same code path now). Catches the symmetric
@@ -1488,9 +1473,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1523,9 +1507,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(producer_instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1552,9 +1535,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
             instance_id: Some(consumer_instance_id.to_string()),
             // `ghost` is not declared in the consumer's depends_on:
             // dead-binding.
-            binds: vec![("ghost".to_string(), producer_instance_id.to_string())],
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: vec![("ghost".to_string(), producer_instance_id.to_string())],
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1576,7 +1558,7 @@ fn node_add_with_run_rejects_dead_binding_key() {
     );
 }
 
-/// `peppy node add . -sbr --instance-id=<new> --bind <slot>@<id>` for
+/// `peppy node add . -sbr --instance-id=<new> --link <slot>@<id>` for
 /// a consumer whose pinned deps are satisfied must succeed even when
 /// ANOTHER consumer (with its own pinned deps satisfied) is already
 /// running in the stack. The chained-run pre-flight scopes binding
@@ -1635,9 +1617,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1687,9 +1668,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
                 tag: Some("v1".to_string()),
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
-                binds: Vec::new(),
-                pairs: Vec::new(),
-                defer_pairs: Vec::new(),
+                links: Vec::new(),
+                defer_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1724,8 +1704,7 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         .expect("bystander health service should start");
     NodeCommand {
         command: NodeCommands::Add {
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            defer_links: Vec::new(),
             source: Some(bystander_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1733,7 +1712,7 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
             run: true,
             args: Vec::new(),
             instance_id: Some(bystander_instance_id.to_string()),
-            binds: vec![
+            links: vec![
                 ("wrist_left".to_string(), producer_left_id.to_string()),
                 ("wrist_right".to_string(), producer_right_id.to_string()),
             ],
@@ -1780,9 +1759,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
             run: true,
             args: Vec::new(),
             instance_id: Some(new_consumer_instance_id.to_string()),
-            binds: vec![("only_pin".to_string(), producer_left_id.to_string())],
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: vec![("only_pin".to_string(), producer_left_id.to_string())],
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1888,9 +1866,8 @@ fn node_add_build_force_supersedes_inflight_build() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1953,9 +1930,8 @@ fn node_add_build_force_supersedes_inflight_build() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: true,

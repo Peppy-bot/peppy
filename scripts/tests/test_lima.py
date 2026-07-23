@@ -14,6 +14,7 @@ from functions.lima import (
     GUEST_RUSTUP_HOME,
     LIMA_INSTANCE,
     LIMA_TEMPLATE,
+    LIMA_VERSION,
     RELEASE_PLATFORM_SO,
     SO_BUILD_STATE_MARKER,
     cargo_build_in_lima,
@@ -22,6 +23,7 @@ from functions.lima import (
     require_prebuilt_peppylib_so,
     stop_lima_vm,
 )
+from .lima_helpers import lima_env
 
 
 def _populate_so_dir(base: Path) -> Path:
@@ -31,6 +33,16 @@ def _populate_so_dir(base: Path) -> Path:
     for name in (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER):
         (so_dir / name).write_bytes(b"x")
     return so_dir
+
+
+def test_lima_env_honours_short_base_override(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"PEPPY_TEST_LIMA_HOME": str(tmp_path), "PYTEST_XDIST_WORKER": "gw0"},
+    ):
+        env = lima_env()
+
+    assert env["LIMA_HOME"] == str(tmp_path / "lti-gw0")
 
 
 def test_find_limactl_from_build_output(tmp_path: Path) -> None:
@@ -50,21 +62,50 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
     limactl.parent.mkdir(parents=True)
     limactl.write_bytes(b"fake limactl")
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
+    # An empty home, so the cache pin (now checked first) cannot shadow the
+    # build-output case this test is about.
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
+         patch("functions.lima.Path.home", return_value=home):
         result = find_limactl(tmp_path)
     assert result == limactl
 
 
 def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
-    # No build output, but cache exists
-    cache_dir = tmp_path / ".peppy" / "tmp" / "lima-2.1.3-Darwin-arm64" / "bin"
+    """The exact pinned cache entry wins over a lexicographic sort.
+
+    Two distractors are planted: a higher-sorting cache directory that the old
+    `sorted(...)[-1]` glob would have selected, and a stale build output that
+    the old build-output-first ordering would have selected.
+    """
+    home = tmp_path / "home"
+    cache_dir = home / ".peppy" / "tmp" / f"lima-{LIMA_VERSION}-Darwin-arm64" / "bin"
     cache_dir.mkdir(parents=True)
     limactl = cache_dir / "limactl"
     limactl.write_bytes(b"cached limactl")
 
-    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}), \
-         patch("functions.lima.Path.home", return_value=tmp_path):
-        (tmp_path / "target").mkdir()
+    distractor = home / ".peppy" / "tmp" / "lima-99.0.0-Darwin-arm64" / "bin"
+    distractor.mkdir(parents=True)
+    (distractor / "limactl").write_bytes(b"lexicographically later limactl")
+
+    target_dir = tmp_path / "target"
+    stale = (
+        target_dir
+        / "aarch64-apple-darwin"
+        / "release"
+        / "build"
+        / "containers-old"
+        / "out"
+        / "lima-install"
+        / "bin"
+    )
+    stale.mkdir(parents=True)
+    (stale / "limactl").write_bytes(b"stale build output limactl")
+
+    with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}), \
+         patch("functions.lima.Path.home", return_value=home):
         result = find_limactl(tmp_path)
     assert result == limactl
 

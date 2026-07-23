@@ -1,0 +1,93 @@
+---
+/**
+ * Overrides Starlight's SiteTitle to match the landing page header: the logo
+ * mark plus the all-caps "PEPPY" wordmark whose E is drawn as three stripes
+ * with a cyan middle bar. The mark swaps by theme via data-theme. Markup,
+ * assets, and proportions are ported 1:1 from
+ * landing-page/src/components/Header.astro (which uses astro:assets Image for
+ * optimized, responsive output).
+ */
+import { Image } from 'astro:assets';
+import logoDark from '../assets/logo-dark-512.webp';
+import logoLight from '../assets/logo-light-512.webp';
+
+const { siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="site-title sl-flex" aria-label="Peppy home">
+	<Image
+		class="peppy-mark peppy-mark--dark"
+		src={logoDark}
+		alt=""
+		width={30}
+		height={30}
+		densities={[1, 2]}
+		loading="eager"
+	/>
+	<Image
+		class="peppy-mark peppy-mark--light"
+		src={logoLight}
+		alt=""
+		width={30}
+		height={30}
+		densities={[1, 2]}
+		loading="eager"
+	/>
+	<b class="peppy-wm" aria-hidden="true"
+		>P<svg class="peppy-e" viewBox="0 3 15 18" fill="none"
+			><rect x="0" y="4" width="15" height="4.4" rx="2.2" fill="currentColor"></rect><rect
+				class="peppy-e-mid"
+				x="0"
+				y="10"
+				width="11.5"
+				height="4.4"
+				rx="2.2"></rect><rect x="0" y="16" width="15" height="4.4" rx="2.2" fill="currentColor"
+			></rect></svg
+		>PPY</b
+	>
+	<span class="sr-only">Peppy</span>
+</a>
+
+<style>
+	.site-title {
+		align-items: center;
+		gap: 8px;
+		color: var(--sl-color-white);
+		text-decoration: none;
+	}
+	.peppy-mark {
+		width: 30px;
+		height: 30px;
+	}
+	/* Swap the mark by theme, mirroring the landing page header. Dark is the
+	   default (no data-theme attribute), so the dark mark shows unless light. */
+	.peppy-mark--dark {
+		display: block;
+	}
+	.peppy-mark--light {
+		display: none;
+	}
+	:global([data-theme='light']) .peppy-mark--dark {
+		display: none;
+	}
+	:global([data-theme='light']) .peppy-mark--light {
+		display: block;
+	}
+	.peppy-wm {
+		display: inline-flex;
+		align-items: center;
+		font-family: var(--sl-font);
+		font-size: 21px;
+		font-weight: 700;
+		letter-spacing: 0.5px;
+		color: var(--sl-color-white);
+	}
+	.peppy-e {
+		height: 0.72em;
+		width: auto;
+		margin: 0 1.5px;
+	}
+	.peppy-e-mid {
+		fill: var(--peppy-cy);
+	}
+</style>

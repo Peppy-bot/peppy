@@ -54,19 +54,19 @@ pub fn test_tmp_root() -> PathBuf {
 
 pub const TEST_NODE_TAG: &str = "v1";
 
-/// Re-exported so the communication test files can name the messaging mode for
-/// their `#[case]` parameterization without reaching into the internal path.
-pub use daemon_config::peppy_config::Mode;
+/// Re-exported so the communication test files can name the messaging topology
+/// for their `#[case]` parameterization without reaching into the internal path.
+pub use daemon_config::peppy_config::LocalNodesTopology;
 
-/// Applies a messaging mode to a node's runtime config before it is written and
-/// handed to a spawned node. This is the single seam the dual-mode communication
-/// tests use to run the same body under both peer (gossip on) and router (gossip
-/// off) mode without duplicating the body.
-pub fn apply_mode(
+/// Applies a messaging topology to a node's runtime config before it is written
+/// and handed to a spawned node. This is the single seam the dual-topology
+/// communication tests use to run the same body under both the peer (gossip on)
+/// and router (gossip off) topology without duplicating the body.
+pub fn apply_topology(
     mut config: config::runtime::RuntimeConfig,
-    mode: Mode,
+    topology: LocalNodesTopology,
 ) -> config::runtime::RuntimeConfig {
-    config.discovery.gossip = mode.gossip();
+    config.discovery.gossip = topology.gossip();
     config
 }
 
@@ -137,7 +137,7 @@ fn consumer_stub_node_config_with_execution(
 
 /// Binds `link_id` to a single producer on the runtime config, exactly
 /// what the launcher's binding validator materializes for
-/// `--bind link_id@instance` on a `cardinality: "one"` slot.
+/// `--link link_id@instance` on a `cardinality: "one"` slot.
 pub fn bind_slot(
     mut config: config::runtime::RuntimeConfig,
     link_id: &str,

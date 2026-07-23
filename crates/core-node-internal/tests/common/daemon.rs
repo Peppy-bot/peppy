@@ -63,6 +63,9 @@ fn default_node_arguments() -> CoreNodeArguments {
         // quickly without flaking.
         heartbeat_interval: Duration::from_millis(200),
         daemon_use_sim_time: false,
+        // These daemons run standalone routers (no federation links), where
+        // production also settles for zero.
+        name_claim_settle: Duration::ZERO,
     }
 }
 
@@ -148,15 +151,16 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
     .await
 }
 
-/// Convenience wrapper over [`start_core_node_with_real_messenger_in_mode`] with
-/// the default timeouts, for the dual-mode e2e tests parameterized over the mode.
-pub async fn start_core_node_with_real_messenger_mode(
-    mode: daemon_config::peppy_config::Mode,
+/// Convenience wrapper over [`start_core_node_with_real_messenger_in_topology`]
+/// with the default timeouts, for the dual-topology e2e tests parameterized
+/// over the topology.
+pub async fn start_core_node_with_real_messenger_topology(
+    topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
-    start_core_node_with_real_messenger_in_mode(
+    start_core_node_with_real_messenger_in_topology(
         Duration::from_secs(10),
         Duration::from_secs(30),
-        mode,
+        topology,
     )
     .await
 }
@@ -165,35 +169,36 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> StartedCoreNode {
-    start_core_node_with_real_messenger_in_mode(
+    start_core_node_with_real_messenger_in_topology(
         node_startup_timeout,
         node_start_health_timeout,
-        daemon_config::peppy_config::Mode::Peer,
+        daemon_config::peppy_config::LocalNodesTopology::Peer,
     )
     .await
 }
 
 /// Like [`start_core_node_with_real_messenger_and_timeouts`] but the messaging
-/// `mode` (peer vs router) is explicit. The core node's own session is built in
-/// that mode, and its `PeppyConfig` carries it so spawned nodes are injected with
-/// the same mode (faithful to production). Used by the dual-mode e2e tests.
-pub async fn start_core_node_with_real_messenger_in_mode(
+/// `topology` (peer vs router) is explicit. The core node's own session is
+/// built in that topology, and its `PeppyConfig` carries it so spawned nodes
+/// are injected with the same topology (faithful to production). Used by the
+/// dual-topology e2e tests.
+pub async fn start_core_node_with_real_messenger_in_topology(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
-    mode: daemon_config::peppy_config::Mode,
+    topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(
         DEFAULT_MESSAGING_HOST,
         None,
-        mode.gossip(),
+        topology.gossip(),
         pmi::SubscriberBufferSizes::default(),
-        // The core node stamps the `local` org namespace onto every node it
-        // spawns (see `organization_namespace` below); its own session must open
+        // The core node stamps the `local` workspace namespace onto every node it
+        // spawns (see `namespace` below); its own session must open
         // under the same namespace or it cannot reach a spawned node's
         // node_ready/health services. Mirrors the daemon's
         // `with_router(...).with_namespace(...)` pairing in production.
-        Some(config::org::OrgNamespace::local()),
+        Some(config::namespace::Namespace::local()),
     )
     .await
     .expect("failed to start zenoh router for test");
@@ -207,7 +212,12 @@ pub async fn start_core_node_with_real_messenger_in_mode(
     args.node_startup_timeout = node_startup_timeout;
     args.node_start_health_timeout = node_start_health_timeout;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
-        mode,
+        zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
+            daemon_config::peppy_config::ManagedZenohConfig {
+                local_nodes_topology: topology,
+                ..Default::default()
+            },
+        ),
         ..Default::default()
     };
     start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await
@@ -291,7 +301,7 @@ async fn start_core_node_with_messenger(
         root_dir,
         peppy_dirs: peppy_dirs.clone(),
         peppy_config,
-        organization_namespace: "local".to_string(),
+        namespace: config::namespace::Namespace::local(),
         shutdown_token: shutdown_token.clone(),
     });
     let core_node_name = core_node.node_name().to_string();

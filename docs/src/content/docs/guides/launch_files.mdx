@@ -39,7 +39,7 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `bindings` (filling `depends_on` slots with producer instances: a scalar for a `one` slot, an array for a multi-cardinality slot), and, for nodes declaring [pairing](/advanced_guides/pairing) slots, `pairings` (pairing a slot with a peer instance at launch) and `defer_pairings` (explicitly starting a required slot unpaired)
+ 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `links` (one map filling every kind of `depends_on` slot, keyed by `link_id`), and `defer_links` (explicitly starting a required pairing or observer slot unresolved). A `links` value is interpreted against the slot it names: a producer slot (`depends_on.{nodes,contracts}`) takes a producer instance — a scalar for a `one` slot, an array for a multi-cardinality slot; a [pairing](/advanced_guides/pairing) participant slot takes a single peer instance (`"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate); and an observer slot takes a single source instance to observe (`"<source>"` or `"<source>/<source_link_id>"`)
 
 The `source` attribute supports four formats:
  - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
@@ -113,40 +113,44 @@ Running the `peppy stack launch` command clears the existing node stack and stop
 Verify that the node stack was configured correctly:
 ```
 $ peppy stack list
-Node stack
-
-┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐
-│ NODE                                 │ STAGE │ INSTANCES │ PATH                                                      │
-├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤
-│ core-node-adoring-wiles-7286:v0.10.0 │ Root  │ 1 running │ ~/workspace/peppy                                         │
-│ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │
-│ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │
-│ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │
-│ fake_video_reconstruction:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │
-└──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘
-
-Instance bindings
-
-┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬───────────────────────────────────┐
-│ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                          │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────────────┤
-│ core-node-adoring-wiles-7286:v0.10.0 │ core-node-adoring-wiles-7286 │ running │ healthy │ (none)                            │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────────────┤
-│ fake_openarm01_controller:v1         │ vibrant-keller-2310          │ running │ healthy │ (none)                            │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────────────┤
-│ fake_robot_brain:v1                  │ zealous-bohr-5512            │ running │ healthy │ fake_openarm01_controller → (any) │
-│                                      │                              │         │         │ fake_uvc_camera → (any)           │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────────────┤
-│ fake_uvc_camera:v1                   │ mystic-galois-7701           │ running │ healthy │ (none)                            │
-│                                      │ brave-noether-3098           │ running │ healthy │ (none)                            │
-├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────────────┤
-│ fake_video_reconstruction:v1         │ gallant-curie-4417           │ running │ healthy │ fake_uvc_camera → (any)           │
-└──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴───────────────────────────────────┘
-
-Dependencies
-  fake_robot_brain:v1 ➔ fake_openarm01_controller:v1
-  fake_robot_brain:v1 ➔ fake_uvc_camera:v1
-  fake_video_reconstruction:v1 ➔ fake_uvc_camera:v1
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-adoring-wiles (host: robot-host)                                                                                                                             │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                                                                                 │
+│                                                                                                                                                                            │
+│ ┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐                                                   │
+│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                      │                                                   │
+│ ├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤                                                   │
+│ │ cn-adoring-wiles:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                         │                                                   │
+│ │ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │                                                   │
+│ │ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │                                                   │
+│ │ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │                                                   │
+│ │ fake_video_reconstruction:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │                                                   │
+│ └──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘                                                   │
+│                                                                                                                                                                            │
+│ Instance bindings                                                                                                                                                          │
+│                                                                                                                                                                            │
+│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────────────────────────────────────────────────────────────────────────┐ │
+│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                                                                     │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ cn-adoring-wiles:v0.10.0             │ cn-adoring-wiles             │ running │ healthy │ (none)                                                                       │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_openarm01_controller:v1         │ vibrant-keller-2310          │ running │ healthy │ (none)                                                                       │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_robot_brain:v1                  │ zealous-bohr-5512            │ running │ healthy │ fake_openarm01_controller → vibrant-keller-2310@cn-adoring-wiles             │ │
+│ │                                      │                              │         │         │ fake_uvc_camera → mystic-galois-7701@cn-adoring-wiles                        │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_uvc_camera:v1                   │ mystic-galois-7701           │ running │ healthy │ (none)                                                                       │ │
+│ │                                      │ brave-noether-3098           │ running │ healthy │ (none)                                                                       │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_video_reconstruction:v1         │ gallant-curie-4417           │ running │ healthy │ fake_uvc_camera → brave-noether-3098@cn-adoring-wiles                        │ │
+│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                                                                            │
+│ Dependencies                                                                                                                                                               │
+│   fake_robot_brain:v1 ➔ fake_openarm01_controller:v1                                                                                                                       │
+│   fake_robot_brain:v1 ➔ fake_uvc_camera:v1                                                                                                                                 │
+│   fake_video_reconstruction:v1 ➔ fake_uvc_camera:v1                                                                                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, in binding declaration order; a multi-cardinality slot lists every bound member, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics#dependency-cardinality).
+The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics#dependency-cardinality).

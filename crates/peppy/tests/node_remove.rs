@@ -78,9 +78,8 @@ fn node_remove_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -96,7 +95,7 @@ fn node_remove_command_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -138,7 +137,7 @@ fn node_remove_command_succeeds() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -251,9 +250,8 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -283,7 +281,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
@@ -398,9 +396,8 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -436,7 +433,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let response = rt
         .block_on(poll(
-            &StackListRequest::new(false),
+            &StackListRequest::new(),
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,

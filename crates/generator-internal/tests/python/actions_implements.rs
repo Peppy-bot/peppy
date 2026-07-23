@@ -29,10 +29,16 @@ fn make_action(marker: &str) -> NativeExposedAction {
     }
 }
 
-fn contract_backed(name: &str, tag: &str, action: NativeExposedAction) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    action: NativeExposedAction,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedAction {
         action,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -66,14 +72,14 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 #[test]
-fn nests_contract_backed_actions_under_contract_name_and_tag() {
+fn nests_contract_backed_actions_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("arm", "v1", make_action("arm_v1_marker")),
-        contract_backed("arm", "v2", make_action("arm_v2_marker")),
+        contract_backed("arm_v1", "arm", "v1", make_action("arm_v1_marker")),
+        contract_backed("arm_v2", "arm", "v2", make_action("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -94,8 +100,8 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
     let act_dir = pkg.join("exposed_actions");
 
     let native_path = act_dir.join("move_arm.py");
-    let arm_v1 = act_dir.join("arm/v1/move_arm.py");
-    let arm_v2 = act_dir.join("arm/v2/move_arm.py");
+    let arm_v1 = act_dir.join("arm_v1/move_arm.py");
+    let arm_v2 = act_dir.join("arm_v2/move_arm.py");
 
     for path in [&native_path, &arm_v1, &arm_v2] {
         assert!(path.exists(), "expected action file at {path:?}");

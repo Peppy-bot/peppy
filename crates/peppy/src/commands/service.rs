@@ -80,6 +80,7 @@ impl Command for ServiceCommand {
                 core_node_name,
                 clock_source,
                 shutdown_token: None,
+                peppy_dirs: daemon_config::consts::PeppyDirs::default(),
             }
             .execute(app_ctx),
             ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),

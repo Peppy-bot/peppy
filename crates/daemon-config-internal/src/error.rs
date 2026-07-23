@@ -103,7 +103,7 @@ pub struct BindingTargetMismatch {
 }
 
 /// Payload for [`ParsingError::BindingContractNotImplemented`]. Raised when a
-/// `--bind` targets a contract slot but the producer's `manifest.implements`
+/// `--link` targets a contract slot but the producer's `manifest.implements`
 /// list does not include the requested `(contract_name, contract_tag)`.
 ///
 /// Boxed in the variant for the same `clippy::result_large_err` reason as the
@@ -132,7 +132,7 @@ pub struct BindingContractNotImplemented {
 /// Two instances anywhere in the running stack (any `(node_name,
 /// node_tag)`) share an `instance_id`. The binding model addresses
 /// producers by `instance_id` only, so a stack-wide duplicate would make
-/// `--bind KEY@id` ambiguous.
+/// `--link KEY@id` ambiguous.
 #[derive(Debug, Clone, Error)]
 #[error(
     "duplicate instance_id `{instance_id}`: used by both `{name_a}:{tag_a}` \
@@ -146,18 +146,19 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
-/// Payload for [`ParsingError::BindingUnknownSlot`]. A `bindings:` key (or
-/// `--bind KEY`) that names no declared `depends_on.{nodes,interfaces}`
-/// slot of the instance's node. Every binding key must be a declared slot
-/// link_id; there are no free-form keys.
+/// Payload for [`ParsingError::LinkUnknownSlot`]. A `links:` key (or
+/// `--link KEY`) that names no declared slot of the instance's node across
+/// any family: `depends_on.{nodes,contracts}` producer slots or
+/// `depends_on.pairings` participant/observer slots. Every link key must be a
+/// declared slot link_id; there are no free-form keys.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "binding `{binding}` on instance `{owner_instance_id}` names no \
+    "link `{link}` on instance `{owner_instance_id}` names no \
      declared slot; declared link_ids: [{declared_link_ids}]"
 )]
-pub struct BindingUnknownSlot {
+pub struct LinkUnknownSlot {
     pub owner_instance_id: String,
-    pub binding: String,
+    pub link: String,
     pub declared_link_ids: String,
 }
 
@@ -170,7 +171,7 @@ pub struct BindingUnknownSlot {
     "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
      `{slot_name}:{slot_tag}`, cardinality `{cardinality}`) unfulfilled: every \
      declared depends_on slot except `zero_or_more` must be bound; add a \
-     `bindings:` entry for `{link_id}` (or `--bind {link_id}@<producer_instance_id>`, \
+     `links:` entry for `{link_id}` (or `--link {link_id}@<producer_instance_id>`, \
      repeatable on a multi slot) or remove the dependency from the node manifest"
 )]
 pub struct BindingSlotUnfulfilled {
@@ -180,20 +181,6 @@ pub struct BindingSlotUnfulfilled {
     pub slot_name: String,
     pub slot_tag: String,
     pub cardinality: Cardinality,
-}
-
-/// Payload for [`ParsingError::PairingDeadKey`]. A `pairings:` key (or
-/// `--pair` link_id) that matches no declared `depends_on.pairings` slot of
-/// the instance's node.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "pairing key `{key}` on instance `{owner_instance_id}` matches no declared \
-     pairing slot; declared pairing link_ids: [{declared_link_ids}]"
-)]
-pub struct PairingDeadKey {
-    pub owner_instance_id: String,
-    pub key: String,
-    pub declared_link_ids: String,
 }
 
 /// Payload for [`ParsingError::PairingTargetNotComplementary`]. The target
@@ -287,8 +274,8 @@ pub struct PairingSha256Mismatch {
 #[error(
     "instance `{instance_id}` declares required pairing slot `{link_id}` (pairing \
      `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
-     `pairings: {{ {link_id}: \"<peer_instance>\" }}` / `--pair {link_id}@<peer_instance>`), \
-     or defer it deliberately (`defer_pairings: [\"{link_id}\"]` / `--defer-pair {link_id}`)"
+     `links: {{ {link_id}: \"<peer_instance>\" }}` / `--link {link_id}@<peer_instance>`), \
+     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
 )]
 pub struct PairingSlotUncovered {
     pub instance_id: String,
@@ -296,6 +283,69 @@ pub struct PairingSlotUncovered {
     pub pairing_name: String,
     pub pairing_tag: String,
     pub role: String,
+}
+
+/// Payload for [`ParsingError::ObservationTargetNotObservable`]. The observer
+/// slot's source instance declares no participant slot playing the observed
+/// role for the referenced pairing document. Mirror of
+/// [`PairingTargetNotComplementary`] for the observer mechanism (an observer
+/// taps a participant's role output, so the source must actually play that
+/// role).
+#[derive(Debug, Clone, Error)]
+#[error(
+    "observer link `{key}` on instance `{owner_instance_id}`: source `{source_instance_id}` \
+     (deploys `{source_name}:{source_tag}`) declares no participant slot playing role \
+     `{observed_role}` for pairing `{pairing_name}:{pairing_tag}`"
+)]
+pub struct ObservationTargetNotObservable {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub source_instance_id: String,
+    pub source_name: String,
+    pub source_tag: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub observed_role: String,
+}
+
+/// Payload for [`ParsingError::ObservationTargetAmbiguous`]. The observer's
+/// source instance plays the observed role through more than one participant
+/// slot and the observer spec did not name one. Mirror of
+/// [`PairingTargetAmbiguous`]; unlike pairing there is no exclusivity, so
+/// every candidate is available, but the observer must still pick which
+/// producer-side link_id to pin.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "observer link `{key}` on instance `{owner_instance_id}`: source `{source_instance_id}` \
+     plays role `{observed_role}` for `{pairing_name}:{pairing_tag}` through multiple slots \
+     ([{candidate_link_ids}]) — disambiguate with `{key}@{source_instance_id}/<source_link_id>`"
+)]
+pub struct ObservationTargetAmbiguous {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub source_instance_id: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub observed_role: String,
+    pub candidate_link_ids: String,
+}
+
+/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared observer
+/// slot (observer slots are always required) was neither linked to a source nor
+/// explicitly deferred. Mirror of [`PairingSlotUncovered`] for observers.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instance `{instance_id}` declares observer slot `{link_id}` (observes role \
+     `{observed_role}` of pairing `{pairing_name}:{pairing_tag}`) with no source. Link it \
+     (launcher `links: {{ {link_id}: \"<source_instance>\" }}` / `--link {link_id}@<source_instance>`), \
+     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
+)]
+pub struct ObservationSlotUncovered {
+    pub instance_id: String,
+    pub link_id: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub observed_role: String,
 }
 
 #[derive(Debug, Error, Clone)]
@@ -316,26 +366,39 @@ pub enum ParsingError {
     #[error("Invalid deployment source: {0}")]
     InvalidDeploymentSource(String),
 
-    // -- launcher: interface bindings
+    // -- launcher: links
     #[error(
-        "interface binding `{binding}` on instance `{owner_instance_id}` refers to unknown instance_id `{instance_id}`"
+        "link `{link}` on instance `{owner_instance_id}` refers to unknown instance_id `{instance_id}`"
     )]
     UnknownInstanceId {
         owner_instance_id: String,
-        binding: String,
+        link: String,
         instance_id: String,
     },
     #[error(
-        "binding key `{binding}` on instance `{owner_instance_id}` is the reserved producer-default sentinel and cannot be used as a binding slot"
+        "link key `{link}` on instance `{owner_instance_id}` is the reserved producer-default sentinel and cannot be used as a link id"
     )]
-    BindingSentinelKey {
+    LinkSentinelKey {
         owner_instance_id: String,
-        binding: String,
+        link: String,
     },
-    /// A `--bind KEY@VALUE` / `bindings:` key that names no declared
-    /// `depends_on.{nodes,interfaces}` slot link_id.
+    /// A `--link KEY@VALUE` / `links:` key that names no declared slot across
+    /// any family (`depends_on.{nodes,contracts,pairings}`, participant or
+    /// observer). The unified replacement for the old per-mechanism
+    /// "unknown binding slot" / "dead pairing key" errors.
     #[error(transparent)]
-    BindingUnknownSlot(Box<BindingUnknownSlot>),
+    LinkUnknownSlot(Box<LinkUnknownSlot>),
+    /// A `links:` value on a pairing/observer slot arrived in array (or
+    /// repeated-flag) shape. Pairing and observer slots take exactly one
+    /// target (`<peer_instance>[/<link_id>]`), never a set.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` names a pairing or observer slot but \
+         its value is an array; those slots take a single `<instance>[/<link_id>]` target"
+    )]
+    LinkTargetNotScalar {
+        owner_instance_id: String,
+        link: String,
+    },
     /// A declared `one` / `one_or_more` slot with no binding entry. Only a
     /// `zero_or_more` slot may be left unbound; there is no wildcard
     /// fallback for the others. Boxed for the same `result_large_err`
@@ -381,11 +444,11 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
-    /// Repeated `--bind KEY@…` occurrences on a `cardinality: "one"` slot.
+    /// Repeated `--link KEY@…` occurrences on a `cardinality: "one"` slot.
     /// Flag repetition accumulates a multi slot's set and stays a hard
     /// error on a `one` slot.
     #[error(
-        "{target_count} `--bind {binding}@…` occurrences on instance `{owner_instance_id}`, \
+        "{target_count} `--link {binding}@…` occurrences on instance `{owner_instance_id}`, \
          but the slot's cardinality is `one`: pass exactly one, or declare \
          `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency"
     )]
@@ -401,7 +464,7 @@ pub enum ParsingError {
     /// `peppylib::PeppyError`).
     #[error(transparent)]
     BindingTargetMismatch(Box<BindingTargetMismatch>),
-    /// A `--bind` targets a contract slot but the producer doesn't
+    /// A `--link` targets a contract slot but the producer doesn't
     /// declare the requested contract in `manifest.implements`. Boxed for
     /// the same `result_large_err` reason as the other binding variants.
     #[error(transparent)]
@@ -413,29 +476,6 @@ pub enum ParsingError {
     DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
 
     // -- launcher/CLI: pairings
-    /// A `--bind`/`bindings:` key that names a pairing slot. Pairing slots
-    /// are never binding slots; the establishment surface is `--pair` /
-    /// launcher `pairings:`.
-    #[error(
-        "binding key `{binding}` on instance `{owner_instance_id}` names a pairing slot; \
-         pair it with `--pair {binding}@<peer_instance>` (or launcher `pairings:`) instead of --bind"
-    )]
-    BindingKeyIsPairingSlot {
-        owner_instance_id: String,
-        binding: String,
-    },
-    /// A `pairings:` key that is the reserved producer-default sentinel.
-    /// Mirror of [`ParsingError::BindingSentinelKey`] with pairing wording.
-    #[error(
-        "pairing key `{key}` on instance `{owner_instance_id}` is the reserved \
-         default-link_id sentinel and cannot be used as a pairing slot"
-    )]
-    PairingSentinelKey {
-        owner_instance_id: String,
-        key: String,
-    },
-    #[error(transparent)]
-    PairingDeadKey(Box<PairingDeadKey>),
     #[error(transparent)]
     PairingTargetNotComplementary(Box<PairingTargetNotComplementary>),
     #[error(transparent)]
@@ -448,14 +488,22 @@ pub enum ParsingError {
     PairingSha256Mismatch(Box<PairingSha256Mismatch>),
     #[error(transparent)]
     PairingSlotUncovered(Box<PairingSlotUncovered>),
-    /// A `defer_pairings` entry that is invalid: it names an unknown slot,
-    /// an `optional: true` slot (deferring is redundant — optional slots
-    /// boot unpaired without ceremony), or a slot that is also paired in
-    /// the same plan.
-    #[error(
-        "defer_pairings entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}"
-    )]
-    PairingDeferInvalid {
+
+    // -- launcher/CLI: observers
+    #[error(transparent)]
+    ObservationTargetNotObservable(Box<ObservationTargetNotObservable>),
+    #[error(transparent)]
+    ObservationTargetAmbiguous(Box<ObservationTargetAmbiguous>),
+    #[error(transparent)]
+    ObservationSlotUncovered(Box<ObservationSlotUncovered>),
+
+    /// A `defer_links` entry that is invalid. Structural reasons (the entry
+    /// names no declared slot, or names a producer-binding slot, which cannot
+    /// be deferred) and stateful reasons (an `optional: true` participant slot
+    /// where deferring is redundant, or a slot that is also linked in the same
+    /// plan) both surface here with a specific `reason`.
+    #[error("defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}")]
+    LinkDeferInvalid {
         owner_instance_id: String,
         link_id: String,
         reason: String,
@@ -468,16 +516,12 @@ pub enum StructuredError {
     DuplicateName(String),
     UnknownInstanceId {
         owner_instance_id: String,
-        binding: String,
+        link: String,
         instance_id: String,
     },
-    BindingSentinelKey {
+    LinkSentinelKey {
         owner_instance_id: String,
-        binding: String,
-    },
-    PairingSentinelKey {
-        owner_instance_id: String,
-        key: String,
+        link: String,
     },
 }
 
@@ -496,26 +540,19 @@ impl From<StructuredError> for ParsingError {
             StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
             StructuredError::UnknownInstanceId {
                 owner_instance_id,
-                binding,
+                link,
                 instance_id,
             } => ParsingError::UnknownInstanceId {
                 owner_instance_id,
-                binding,
+                link,
                 instance_id,
             },
-            StructuredError::BindingSentinelKey {
+            StructuredError::LinkSentinelKey {
                 owner_instance_id,
-                binding,
-            } => ParsingError::BindingSentinelKey {
+                link,
+            } => ParsingError::LinkSentinelKey {
                 owner_instance_id,
-                binding,
-            },
-            StructuredError::PairingSentinelKey {
-                owner_instance_id,
-                key,
-            } => ParsingError::PairingSentinelKey {
-                owner_instance_id,
-                key,
+                link,
             },
         }
     }

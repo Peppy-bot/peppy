@@ -5,6 +5,7 @@
 //! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
 //! distinct messages so an ops problem isn't mistaken for a bad token.
 
+use config::namespace::Namespace;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, de::DeserializeOwned};
 
@@ -67,12 +68,11 @@ pub struct ZenohRouterConfig {
     /// still-fresh config (rather than re-pulling) never risks the router being torn
     /// down.
     pub reconnect_after_secs: u64,
-    /// The caller's organization id (the platform's stable per-user `Uuid`, as a
-    /// string). Becomes the daemon's session namespace so robots of the same org
-    /// interoperate across the federation while different orgs stay routing-isolated.
-    /// Required: a backend that predates this field fails to parse, which is the
-    /// intended clean break (re-run `peppy auth login`).
-    pub organization_id: String,
+    /// The daemon's session namespace, deserialized directly from the backend's
+    /// `workspace_id`. Typed at the HTTP boundary: an invalid workspace id fails
+    /// the pull before anything can be cached or reach a live session.
+    #[serde(rename = "workspace_id")]
+    pub namespace: Namespace,
 }
 
 impl ZenohRouterConfig {
@@ -118,7 +118,8 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
 /// body always carries the daemon's core-node name — the backend requires it and
 /// upserts the name into its per-principal core-node registry (its `last_seen_at`
 /// tracks config pulls, not liveness). The daemon dials the returned endpoint
-/// over mTLS, presenting its client certificate.
+/// over one-way TLS, verifying the router's certificate and presenting none of
+/// its own.
 pub fn establish_federation(
     http: &HttpClient,
     api_url: &str,
@@ -281,7 +282,7 @@ mod tests {
             endpoint: endpoint.to_string(),
             protocol: "tls".to_string(),
             reconnect_after_secs: 3000,
-            organization_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            namespace: Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
         }
     }
 
@@ -326,16 +327,30 @@ mod tests {
             "protocol": "tls",
             "mode": "client",
             "reconnect_after_secs": 3000,
-            "organization_id": "550e8400-e29b-41d4-a716-446655440000",
+            "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
             "some_future_field": "ignored"
         }"#;
         let cfg: ZenohRouterConfig = serde_json::from_str(json).expect("tolerant parse");
         assert_eq!(cfg.protocol, "tls");
         assert_eq!(cfg.reconnect_after_secs, 3000);
-        assert_eq!(cfg.organization_id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            cfg.namespace.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
         assert_eq!(
             cfg.host_port().unwrap(),
             ("abc.zenoh.localhost".to_string(), 7443)
         );
+    }
+
+    #[test]
+    fn router_config_rejects_an_invalid_workspace_id() {
+        let json = r#"{
+            "endpoint": "tls/abc.zenoh.localhost:7443",
+            "protocol": "tls",
+            "reconnect_after_secs": 3000,
+            "workspace_id": "**"
+        }"#;
+        assert!(serde_json::from_str::<ZenohRouterConfig>(json).is_err());
     }
 }

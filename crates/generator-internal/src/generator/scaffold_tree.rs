@@ -5,9 +5,8 @@
 //! shape: directories keyed by raw segment, leaves keyed by their final
 //! segment. Only the per-file/per-`__init__` rendering differs.
 
-use super::naming::unique_module_name;
 use super::types::{InterfaceArtifact, ModuleCategory};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -98,31 +97,39 @@ pub(crate) trait TreeWriter {
 }
 
 /// Walks `tree`, writing one leaf file per leaf and one index file per
-/// directory via `writer`. Sibling module names are de-duplicated independently
-/// at each level (via [`unique_module_name`]) so a leaf `foo` can coexist with a
-/// child directory of the same name.
+/// directory via `writer`. Sibling module names must be unique after
+/// per-language sanitization at each level: two raw segments that sanitize to
+/// the same name are a hard [`Error::ModuleNameCollision`] naming both, not a
+/// silent rename, so a module can never become reachable under a name the
+/// author did not write.
 pub(crate) fn write_module_tree<W: TreeWriter>(
     dir: &Path,
     tree: &ModuleTree,
+    category: ModuleCategory,
     writer: &mut W,
 ) -> Result<()> {
-    write_tree_level(dir, tree, writer, true)
+    write_tree_level(dir, tree, category, writer, true)
 }
 
 fn write_tree_level<W: TreeWriter>(
     dir: &Path,
     tree: &ModuleTree,
+    category: ModuleCategory,
     writer: &mut W,
     is_root: bool,
 ) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    // Sanitized module name -> the raw segment that first claimed it, shared
+    // across leaves and sub-directories at this level so a leaf and a sibling
+    // directory that sanitize alike also collide.
+    let mut seen: HashMap<String, String> = HashMap::new();
     let mut entries: Vec<ModuleEntry> = Vec::new();
 
     // Leaves first, then sub-directories. `BTreeMap` already gives deterministic
     // alphabetical ordering inside each bucket.
     for (raw_leaf, artifacts) in &tree.leaves {
-        let module_name = unique_module_name(raw_leaf, &mut counts, W::sanitize_module_name);
+        let module_name =
+            claim_module_name(raw_leaf, category, &mut seen, W::sanitize_module_name)?;
         writer.write_leaf(dir, &module_name, raw_leaf, artifacts)?;
         entries.push(ModuleEntry {
             module_name,
@@ -132,9 +139,10 @@ fn write_tree_level<W: TreeWriter>(
     }
 
     for (raw_segment, child) in &tree.children {
-        let module_name = unique_module_name(raw_segment, &mut counts, W::sanitize_module_name);
+        let module_name =
+            claim_module_name(raw_segment, category, &mut seen, W::sanitize_module_name)?;
         let child_dir = dir.join(&module_name);
-        write_tree_level(&child_dir, child, writer, false)?;
+        write_tree_level(&child_dir, child, category, writer, false)?;
         entries.push(ModuleEntry {
             module_name,
             raw_name: raw_segment.clone(),
@@ -143,4 +151,125 @@ fn write_tree_level<W: TreeWriter>(
     }
 
     writer.write_index(dir, &entries, is_root)
+}
+
+/// Sanitizes `raw` for the target language and records the result in `seen`.
+/// Returns a hard [`Error::ModuleNameCollision`] if a different raw segment at
+/// this level already claimed the same sanitized name.
+fn claim_module_name(
+    raw: &str,
+    category: ModuleCategory,
+    seen: &mut HashMap<String, String>,
+    sanitize_fn: fn(&str) -> String,
+) -> Result<String> {
+    let sanitized = sanitize_fn(raw);
+    if let Some(first) = seen.get(&sanitized) {
+        return Err(Error::ModuleNameCollision {
+            category: category.dir_name().to_string(),
+            first: first.clone(),
+            second: raw.to_string(),
+            sanitized,
+        });
+    }
+    seen.insert(sanitized.clone(), raw.to_string());
+    Ok(sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generator::naming::sanitize_component;
+    use crate::generator::types::InterfaceKind;
+    use tempfile::TempDir;
+
+    /// Minimal writer: sanitizes like the real backends and writes nothing, so
+    /// the collision check in `claim_module_name` is exercised in isolation.
+    struct NoopWriter;
+    impl TreeWriter for NoopWriter {
+        fn sanitize_module_name(raw: &str) -> String {
+            sanitize_component(raw)
+        }
+        fn write_leaf(
+            &mut self,
+            _dir: &Path,
+            _module_name: &str,
+            _raw_name: &str,
+            _artifacts: &[InterfaceArtifact],
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn write_index(
+            &mut self,
+            _dir: &Path,
+            _entries: &[ModuleEntry],
+            _is_root: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn leaf(path: &[&str]) -> InterfaceArtifact {
+        InterfaceArtifact {
+            module_path: path.iter().map(|s| s.to_string()).collect(),
+            kind: InterfaceKind::ConsumedTopic,
+            code_output: "x\n".to_string(),
+        }
+    }
+
+    #[test]
+    fn colliding_slot_directories_are_a_hard_error() {
+        // Two slots whose link_ids differ only by separator (`arm-1` vs `arm_1`)
+        // sanitize to the same directory name; nesting makes that
+        // unrepresentable, so it must be a hard error, not a silent rename.
+        let tree = build_module_tree(vec![leaf(&["arm-1", "states"]), leaf(&["arm_1", "states"])]);
+        let temp = TempDir::new().unwrap();
+        let err = write_module_tree(
+            temp.path(),
+            &tree,
+            ModuleCategory::ConsumedTopics,
+            &mut NoopWriter,
+        )
+        .expect_err("colliding link_ids must be rejected");
+        assert!(
+            matches!(err, Error::ModuleNameCollision { .. }),
+            "expected ModuleNameCollision, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn native_leaf_colliding_with_slot_directory_is_a_hard_error() {
+        // A native produced topic named `arm` collides with a slot directory
+        // `arm`; the leaf and the sibling directory share one namespace.
+        let tree = build_module_tree(vec![leaf(&["arm"]), leaf(&["arm", "states"])]);
+        let temp = TempDir::new().unwrap();
+        let err = write_module_tree(
+            temp.path(),
+            &tree,
+            ModuleCategory::EmittedTopics,
+            &mut NoopWriter,
+        )
+        .expect_err("a native leaf colliding with a slot directory must be rejected");
+        assert!(
+            matches!(err, Error::ModuleNameCollision { .. }),
+            "expected ModuleNameCollision, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn distinct_slots_and_leaves_write_cleanly() {
+        // The happy path: distinct link_ids and a distinct native leaf coexist.
+        let tree = build_module_tree(vec![
+            leaf(&["video_stream"]),
+            leaf(&["front_cam", "frames"]),
+            leaf(&["rear_cam", "frames"]),
+        ]);
+        let temp = TempDir::new().unwrap();
+        write_module_tree(
+            temp.path(),
+            &tree,
+            ModuleCategory::EmittedTopics,
+            &mut NoopWriter,
+        )
+        .expect("distinct names must write without collision");
+    }
 }

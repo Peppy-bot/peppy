@@ -50,7 +50,7 @@ pub async fn listen_for_node_add(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    pairing: Arc<super::pairing::PairingCoordinator>,
+    relationships: super::RelationshipCoordinators,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -69,7 +69,7 @@ pub async fn listen_for_node_add(
             bound_core_node: core_node_name.to_string(),
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
-            pairing,
+            relationships,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -247,9 +247,8 @@ pub(crate) struct NodeAddActionContext {
     pub(crate) bound_core_node: String,
     pub(crate) core_instance_id: String,
     pub(crate) peppy_dirs: PeppyDirs,
-    /// The daemon's single pairing authority; the overwrite path stops the
-    /// entity's old instances, which must dissolve their pairs eagerly.
-    pub(crate) pairing: Arc<super::pairing::PairingCoordinator>,
+    /// All relationship authorities needed to tear down overwritten instances.
+    pub(crate) relationships: super::RelationshipCoordinators,
 }
 
 struct ProcessNodeAddContext {
@@ -1295,8 +1294,8 @@ async fn shutdown_existing_instances(
 
     for instance_id in &instances {
         ctx.action
-            .pairing
-            .dissolve_for_instance(instance_id.as_str())
+            .relationships
+            .tear_down_instance(instance_id.as_str())
             .await;
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,

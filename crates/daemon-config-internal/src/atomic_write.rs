@@ -32,9 +32,14 @@ where
     // on drop, so a panic or early return between stage and rename
     // doesn't leave a stray.
     let tmp = tempfile::NamedTempFile::new_in(parent)?;
-    let tmp_path = tmp.path().to_path_buf();
-    write(&tmp_path)?;
-    tmp.persist(final_path).map_err(|e| e.error)?;
+    // Callers populate the temporary file through its path, so close the
+    // descriptor opened by NamedTempFile before handing that path to them.
+    // In particular, this ensures an executable is never published while the
+    // staging descriptor is still open for writing, which Linux rejects with
+    // ETXTBSY when the executable is launched immediately after publication.
+    let tmp_path = tmp.into_temp_path();
+    write(tmp_path.as_ref())?;
+    tmp_path.persist(final_path).map_err(|e| e.error)?;
     Ok(final_path.to_path_buf())
 }
 
@@ -64,6 +69,25 @@ mod tests {
         publish_atomic(&target, |tmp| std::fs::write(tmp, b"x")).expect("publish");
 
         assert!(target.exists(), "expected {} to exist", target.display());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn closes_the_staging_descriptor_before_the_write_callback() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("executable");
+
+        publish_atomic(&target, |tmp| {
+            std::fs::write(tmp, b"#!/bin/sh\nexit 0\n")?;
+            std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o755))?;
+
+            let status = std::process::Command::new(tmp).status()?;
+            assert!(status.success(), "staged executable should run");
+            Ok(())
+        })
+        .expect("publish executable");
     }
 
     #[test]

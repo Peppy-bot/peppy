@@ -5,13 +5,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const DAEMON_STATE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
-
 struct NodeSetup {
-    daemon_state_path: PathBuf,
-    /// Root of the emulated daemon's directory tree (its `conf/` holds
-    /// `repositories.json5`). Captured so contract-backed snippets can
-    /// register an fs repo the daemon will scan on refresh.
+    /// Root of the emulated daemon's directory tree, exported to every peppy
+    /// subprocess as `PEPPY_HOME` so the CLI resolves the same state file,
+    /// `conf/`, and cache the emulated daemon serves. Its `conf/` holds
+    /// `repositories.json5`, so contract-backed snippets can register an fs
+    /// repo the daemon will scan on refresh.
     daemon_root: PathBuf,
     node_ref: String,
     _temp_dir: tempfile::TempDir,
@@ -32,15 +31,10 @@ fn assert_success(output: &Output, context: &str) {
     );
 }
 
-fn peppy_output(
-    peppy: &Path,
-    daemon_state_path: &Path,
-    current_dir: &Path,
-    args: &[&str],
-) -> Output {
+fn peppy_output(peppy: &Path, daemon_root: &Path, current_dir: &Path, args: &[&str]) -> Output {
     Command::new(peppy)
         .args(args)
-        .env(DAEMON_STATE_ENV, daemon_state_path.as_os_str())
+        .env(config::consts::PEPPY_HOME_ENV, daemon_root)
         .current_dir(current_dir)
         .output()
         .unwrap_or_else(|e| panic!("failed to run peppy {}: {e}", args.join(" ")))
@@ -61,7 +55,6 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     // Allow the Zenoh router and core-node service subscriptions to stabilize
     // before spawning peppy subprocesses that open new sessions.
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let daemon_state_path = serve.daemon_state_path().to_path_buf();
     let daemon_root = serve.temp_dir().to_path_buf();
 
     // Create a node in a tempdir with `peppy node init`
@@ -70,14 +63,13 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
 
     let init_output = peppy_output(
         peppy,
-        &daemon_state_path,
+        &daemon_root,
         nodes_root,
         &["node", "init", node_name.as_str()],
     );
     assert_success(&init_output, "peppy node init");
 
     NodeSetup {
-        daemon_state_path,
         daemon_root,
         node_ref,
         _temp_dir: temp_dir,
@@ -88,19 +80,19 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
 
 fn sync_and_add_node(
     peppy: &Path,
-    daemon_state_path: &Path,
+    daemon_root: &Path,
     node_dir: &Path,
     context: &str,
     extra_sync_args: &[&str],
 ) {
     let mut sync_cmd = vec!["node", "sync"];
     sync_cmd.extend_from_slice(extra_sync_args);
-    let sync_output = peppy_output(peppy, daemon_state_path, node_dir, &sync_cmd);
+    let sync_output = peppy_output(peppy, daemon_root, node_dir, &sync_cmd);
     assert_success(&sync_output, &format!("peppy node sync for {context}"));
 
     let add_output = peppy_output(
         peppy,
-        daemon_state_path,
+        daemon_root,
         node_dir,
         &["node", "add", ".", "--force"],
     );
@@ -126,20 +118,15 @@ fn register_contract_repo(peppy: &Path, setup: &NodeSetup, contracts_root: &str)
 
     let refresh_output = peppy_output(
         peppy,
-        &setup.daemon_state_path,
+        &setup.daemon_root,
         &contracts_dir,
         &["repo", "refresh"],
     );
     assert_success(&refresh_output, "peppy repo refresh");
 }
 
-fn build_node(peppy: &Path, daemon_state_path: &Path, node_dir: &Path, node_ref: &str) {
-    let build_output = peppy_output(
-        peppy,
-        daemon_state_path,
-        node_dir,
-        &["node", "build", node_ref],
-    );
+fn build_node(peppy: &Path, daemon_root: &Path, node_dir: &Path, node_ref: &str) {
+    let build_output = peppy_output(peppy, daemon_root, node_dir, &["node", "build", node_ref]);
     assert_success(&build_output, &format!("peppy node build {node_ref}"));
 }
 
@@ -150,7 +137,7 @@ pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str])
 /// Run a snippet that depends on other snippets being added first.
 /// Each `(dep, dep_run_args)` entry is added, built, and started under
 /// the deterministic instance id `<dep>_1` (with `dep_run_args` appended,
-/// e.g. required `key=value` parameters), so the main node's `--bind`
+/// e.g. required `key=value` parameters), so the main node's `--link`
 /// lines (passed via `start_args`) can name it: every declared
 /// `depends_on` slot must be bound, so consumer snippets launch against
 /// live producers.
@@ -177,8 +164,8 @@ pub fn run_snippet_with_deps(
             dep_config.manifest.name.as_str(),
             dep_config.manifest.tag
         );
-        sync_and_add_node(peppy, &setup.daemon_state_path, &dep_dir, dep, &[]);
-        build_node(peppy, &setup.daemon_state_path, &dep_dir, &dep_ref);
+        sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
+        build_node(peppy, &setup.daemon_root, &dep_dir, &dep_ref);
         let dep_instance_id = format!("{dep}_1");
         let mut dep_run_cmd = vec![
             "node",
@@ -188,24 +175,18 @@ pub fn run_snippet_with_deps(
             dep_instance_id.as_str(),
         ];
         dep_run_cmd.extend_from_slice(dep_run_args);
-        let dep_run = peppy_output(peppy, &setup.daemon_state_path, &dep_dir, &dep_run_cmd);
+        let dep_run = peppy_output(peppy, &setup.daemon_root, &dep_dir, &dep_run_cmd);
         assert_success(&dep_run, &format!("peppy node run {dep_ref}"));
     }
 
     // Now sync, add, and build the main node
-    sync_and_add_node(
-        peppy,
-        &setup.daemon_state_path,
-        &node_dir,
-        snippet_name,
-        &[],
-    );
-    build_node(peppy, &setup.daemon_state_path, &node_dir, &setup.node_ref);
+    sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
+    build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
     let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
     run_cmd.extend_from_slice(start_args);
 
-    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &run_cmd);
+    let start_output = peppy_output(peppy, &setup.daemon_root, &node_dir, &run_cmd);
     assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
 }
 
@@ -215,7 +196,7 @@ pub fn run_snippet_with_deps(
 /// workspace-relative directory of `contract/v1` / `pairing/v1` documents;
 /// it is registered as an fs repo and refreshed, then the snippet is synced
 /// with `-r`, added, built, and launched with `start_args`. The pairing
-/// snippets launch solo with `--defer-pair <slot>`: a required slot boots
+/// snippets launch solo with `--defer-link <slot>`: a required slot boots
 /// unpaired when explicitly deferred, with no peer present.
 pub fn run_snippet_with_contract_repo(
     snippets_root: &str,
@@ -232,18 +213,12 @@ pub fn run_snippet_with_contract_repo(
 
     // `-r` lets the daemon resolve the contract deps from the repo cache
     // populated by the refresh above (no producer node is in the stack).
-    sync_and_add_node(
-        peppy,
-        &setup.daemon_state_path,
-        &node_dir,
-        snippet_name,
-        &["-r"],
-    );
-    build_node(peppy, &setup.daemon_state_path, &node_dir, &setup.node_ref);
+    sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &["-r"]);
+    build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
     let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
     run_cmd.extend_from_slice(start_args);
 
-    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &run_cmd);
+    let start_output = peppy_output(peppy, &setup.daemon_root, &node_dir, &run_cmd);
     assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
 }

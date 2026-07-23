@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
 use config::node::Toolchain;
-use core_node_api::encoding::PairTarget;
 use tracing::info;
 
 use super::Command;
@@ -25,6 +24,8 @@ use crate::{context::AppContext, error::Error as CommandError};
 pub use add::{AddNodeParams, add_node};
 pub use builder::build_node_async;
 pub use init::NodeInitBuilder;
+#[cfg(feature = "test-support")]
+pub use run::run_instance_async;
 pub use types::NodeName;
 // Internal helper: `launch` reaches it through the `node::` path; no test or
 // `main.rs` consumer, so it stays off the public surface. (`BuildNodeParams`
@@ -81,68 +82,51 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
     Ok((key, value))
 }
 
-/// Parses a `KEY@VALUE` `--bind` argument: KEY is a `link_id` from the
-/// consumer's `depends_on`; VALUE is the producer `instance_id` to pin the
-/// consumer's subscription to. Splits on the first `@`; both halves must be
-/// non-empty. KEY is validated as a wire segment via the strict
-/// `pmi::Segment::try_from`, which rejects empty, `/`, `@`, `*`, `**`, and
-/// the reserved sentinel `_`. VALUE is left as a free-form `instance_id`;
-/// the daemon-side binding validator confirms it matches a running producer
-/// of the expected `(name, tag)`.
-fn parse_bind_kv(raw: &str) -> Result<(String, String), String> {
+/// Parses a `KEY@TARGET` `--link` argument, the unified flag for every kind of
+/// launcher link. KEY is a `link_id` from this node's `depends_on` (a producer
+/// slot under `{nodes,contracts}`, or a participant/observer slot under
+/// `pairings`); TARGET is `<instance>` (a producer instance to bind, or a peer
+/// / source instance to pair with / observe) with an optional `/<link_id>`
+/// suffix that pins a specific slot on the target (used to disambiguate a
+/// pairing peer or an observed source that plays the role through more than one
+/// slot). Splits on the first `@`; both halves must be non-empty. KEY and the
+/// optional target `/<link_id>` are validated as wire segments via the strict
+/// `pmi::Segment::try_from`, which rejects empty, `/`, `@`, `*`, `**`, and the
+/// reserved sentinel `_`. The instance part is left free-form for the
+/// daemon-side validators to resolve against the stack. The slot KIND is not
+/// known here (it needs the manifest), so classification is deferred to
+/// validation.
+fn parse_link_kv(raw: &str) -> Result<(String, String), String> {
     let (key, value) = raw
         .split_once('@')
-        .ok_or_else(|| format!("invalid --bind value '{raw}': expected KEY@VALUE"))?;
+        .ok_or_else(|| format!("invalid --link value '{raw}': expected KEY@TARGET"))?;
     let key = key.trim();
     let value = value.trim();
     if value.is_empty() {
         return Err(format!(
-            "invalid --bind value '{raw}': VALUE cannot be empty"
+            "invalid --link value '{raw}': TARGET cannot be empty"
         ));
     }
-    pmi::Segment::try_from(key).map_err(|e| format!("invalid --bind KEY '{key}': {e}"))?;
+    pmi::Segment::try_from(key).map_err(|e| format!("invalid --link KEY '{key}': {e}"))?;
+    let (instance, link) = daemon_config::launcher::split_link_target(value);
+    if instance.is_empty() {
+        return Err(format!(
+            "invalid --link value '{raw}': target instance cannot be empty"
+        ));
+    }
+    if let Some(link) = link {
+        pmi::Segment::try_from(link)
+            .map_err(|e| format!("invalid --link target slot '{link}': {e}"))?;
+    }
     Ok((key.to_string(), value.to_string()))
 }
 
-/// Parses a `LINK_ID@PEER_INSTANCE[/PEER_LINK]` `--pair` argument: LINK_ID
-/// is a pairing slot from this node's `depends_on.pairings`; PEER_INSTANCE
-/// is the running instance to pair with; the optional `/PEER_LINK` pins the
-/// peer's slot when the peer declares more than one complementary slot of
-/// the same pairing. LINK_ID and PEER_LINK are validated as wire segments
-/// (pairing slot link_ids ride the wire keyexpr); PEER_INSTANCE is left
-/// free-form for the daemon-side validator to resolve against the stack.
-fn parse_pair_kv(raw: &str) -> Result<(String, PairTarget), String> {
-    let (key, value) = raw.split_once('@').ok_or_else(|| {
-        format!("invalid --pair value '{raw}': expected LINK_ID@PEER_INSTANCE[/PEER_LINK]")
-    })?;
-    let key = key.trim();
-    let value = value.trim();
-    pmi::Segment::try_from(key).map_err(|e| format!("invalid --pair LINK_ID '{key}': {e}"))?;
-    let (peer_instance, peer_link) = daemon_config::launcher::split_pair_target(value);
-    if peer_instance.is_empty() {
-        return Err(format!(
-            "invalid --pair value '{raw}': PEER_INSTANCE cannot be empty"
-        ));
-    }
-    if let Some(peer_link) = peer_link {
-        pmi::Segment::try_from(peer_link)
-            .map_err(|e| format!("invalid --pair PEER_LINK '{peer_link}': {e}"))?;
-    }
-    Ok((
-        key.to_string(),
-        match peer_link {
-            Some(peer_link) => PairTarget::pinned(peer_instance, peer_link),
-            None => PairTarget::new(peer_instance),
-        },
-    ))
-}
-
-/// Parses a `--defer-pair` argument: a single pairing slot `link_id`,
-/// validated as a wire segment.
-fn parse_defer_pair(raw: &str) -> Result<String, String> {
+/// Parses a `--defer-link` argument: a single pairing/observer slot `link_id`
+/// deliberately left unresolved at launch, validated as a wire segment.
+fn parse_defer_link(raw: &str) -> Result<String, String> {
     let link_id = raw.trim();
     pmi::Segment::try_from(link_id)
-        .map_err(|e| format!("invalid --defer-pair LINK_ID '{link_id}': {e}"))?;
+        .map_err(|e| format!("invalid --defer-link LINK_ID '{link_id}': {e}"))?;
     Ok(link_id.to_string())
 }
 
@@ -213,45 +197,35 @@ pub enum NodeCommands {
         /// Only meaningful with `--run`; gated with `requires = "run"`.
         #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
-        /// Bind a `link_id` from this consumer's `depends_on` to a specific
-        /// producer `instance_id`: `KEY@VALUE`. Repeatable across slots
-        /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`); repeating a KEY accumulates the slot's
-        /// bound set on a multi-cardinality slot and is rejected on a
-        /// `cardinality: "one"` slot. Only valid alongside `--run`: without
-        /// a chained run there is no instance to apply the bindings to, so
-        /// `requires = "run"` rejects the combination at parse time.
-        /// Validation is shared with `peppy node run`; see
-        /// `validate_and_run_instance` for the rule set.
+        /// Link a `link_id` from this node's `depends_on` to a target:
+        /// `KEY@TARGET`. One flag for every link kind — a producer binding
+        /// (TARGET is a producer `instance_id`), a pairing (TARGET is a peer
+        /// `instance_id[/peer_link_id]`), or an observer source (TARGET is a
+        /// source `instance_id[/source_link_id]`). Repeatable across slots
+        /// (`--link a@p1 --link b@p2`) or comma-separated (`--link a@p1,b@p2`);
+        /// repeating a KEY accumulates a producer binding's set on a
+        /// multi-cardinality slot (and is rejected on a `one` slot or on a
+        /// pairing/observer slot). Only valid alongside `--run`: without a
+        /// chained run there is no instance to apply the links to, so
+        /// `requires = "run"` rejects the combination at parse time. Validation
+        /// is shared with `peppy node run`; see `validate_and_run_instance`.
         #[arg(
-            long = "bind",
+            long = "link",
             value_delimiter = ',',
-            value_parser = parse_bind_kv,
+            value_parser = parse_link_kv,
             action = clap::ArgAction::Append,
             requires = "run",
         )]
-        binds: Vec<(String, String)>,
-        /// Pair a pairing slot from this node's `depends_on.pairings` with a
-        /// running peer instance: `LINK_ID@PEER_INSTANCE[/PEER_LINK]`.
-        /// Repeatable. Only valid alongside `--run` (pairs are established
-        /// at instance start). Every required slot must be covered by
-        /// `--pair` or `--defer-pair`, or the run fails loudly.
+        links: Vec<(String, String)>,
+        /// Explicitly start with a required pairing/observer slot unresolved:
+        /// `LINK_ID`. Repeatable. Only valid alongside `--run`.
         #[arg(
-            long = "pair",
-            value_parser = parse_pair_kv,
+            long = "defer-link",
+            value_parser = parse_defer_link,
             action = clap::ArgAction::Append,
             requires = "run",
         )]
-        pairs: Vec<(String, PairTarget)>,
-        /// Explicitly start with a pairing slot unpaired: `LINK_ID`.
-        /// Repeatable. Only valid alongside `--run`.
-        #[arg(
-            long = "defer-pair",
-            value_parser = parse_defer_pair,
-            action = clap::ArgAction::Append,
-            requires = "run",
-        )]
-        defer_pairs: Vec<String>,
+        defer_links: Vec<String>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -315,47 +289,34 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
-        /// Bind a `link_id` from this consumer's `depends_on` to a specific
-        /// producer `instance_id`: `KEY@VALUE`. Repeatable across slots
-        /// (`--bind a@p1 --bind b@p2`) or comma-separated
-        /// (`--bind a@p1,b@p2`); repeating a KEY accumulates the slot's
-        /// bound set in flag order on a multi-cardinality slot and is
-        /// rejected on a `cardinality: "one"` slot. KEY must be a `link_id`
-        /// declared in this node's manifest; VALUE is the producer's
-        /// `instance_id` (see `peppy node list`). A declared slot with no
-        /// binding aborts the run unless its cardinality is
-        /// `zero_or_more`.
+        /// Link a `link_id` from this node's `depends_on` to a target:
+        /// `KEY@TARGET`. One flag for every link kind. For a producer binding,
+        /// TARGET is the producer's `instance_id` (see `peppy node list`),
+        /// repeatable across slots (`--link a@p1 --link b@p2`) or
+        /// comma-separated (`--link a@p1,b@p2`); repeating a KEY accumulates a
+        /// multi-cardinality slot's set in flag order and is rejected on a
+        /// `one` slot. For a pairing or observer link, TARGET is a peer/source
+        /// `instance_id[/link_id]`, where the `/link_id` suffix disambiguates
+        /// when the target plays the role through several slots. A required
+        /// slot left unlinked aborts the run unless it is a `zero_or_more`
+        /// producer slot or an `optional` pairing slot.
         #[arg(
-            long = "bind",
+            long = "link",
             value_delimiter = ',',
-            value_parser = parse_bind_kv,
+            value_parser = parse_link_kv,
             action = clap::ArgAction::Append,
         )]
-        binds: Vec<(String, String)>,
-        /// Pair a pairing slot from this node's `depends_on.pairings` with a
-        /// running peer instance: `LINK_ID@PEER_INSTANCE[/PEER_LINK]`.
-        /// Repeatable (`--pair arm@arm_1 --pair grip@grip_1`). LINK_ID is a
-        /// slot declared in this node's manifest; PEER_INSTANCE is a running
-        /// instance declaring the complementary role (see `peppy node list`);
-        /// `/PEER_LINK` disambiguates when the peer has several matching
-        /// slots. Every required (non-optional) slot must be covered by
-        /// `--pair` or `--defer-pair`, or the run fails loudly.
+        links: Vec<(String, String)>,
+        /// Explicitly start with a required pairing/observer slot unresolved:
+        /// `LINK_ID`. Repeatable. The instance boots with the slot silent (no
+        /// wire traffic) until a later start resolves it — for a pairing, via
+        /// `--link <peer_slot>@<this_instance>/<LINK_ID>` from the peer.
         #[arg(
-            long = "pair",
-            value_parser = parse_pair_kv,
+            long = "defer-link",
+            value_parser = parse_defer_link,
             action = clap::ArgAction::Append,
         )]
-        pairs: Vec<(String, PairTarget)>,
-        /// Explicitly start with a pairing slot unpaired: `LINK_ID`.
-        /// Repeatable. The instance boots with the slot silent (no wire
-        /// traffic) until a later peer start pairs with it via
-        /// `--pair <peer_slot>@<this_instance>/<LINK_ID>`.
-        #[arg(
-            long = "defer-pair",
-            value_parser = parse_defer_pair,
-            action = clap::ArgAction::Append,
-        )]
-        defer_pairs: Vec<String>,
+        defer_links: Vec<String>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -440,15 +401,14 @@ impl Command for NodeCommand {
                 run,
                 args,
                 instance_id,
-                binds,
-                pairs,
-                defer_pairs,
+                links,
+                defer_links,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
-                // `requires = "run"` on `args`, `instance_id`, `binds`,
-                // `pairs`, and `defer_pairs` means we can only land here with
+                // `requires = "run"` on `args`, `instance_id`, `links`, and
+                // `defer_links` means we can only land here with
                 // `run == false` when all of them are empty; the run-only
                 // fields therefore have a single legal home: inside
                 // `Some(RunAfterAddOptions)`.
@@ -456,9 +416,8 @@ impl Command for NodeCommand {
                     Some(add::RunAfterAddOptions {
                         args,
                         instance_id,
-                        binds,
-                        pairs,
-                        defer_pairs,
+                        links,
+                        defer_links,
                     })
                 } else {
                     None
@@ -519,9 +478,8 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
-                binds,
-                pairs,
-                defer_pairs,
+                links,
+                defer_links,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -540,9 +498,8 @@ impl Command for NodeCommand {
                     tag,
                     args,
                     instance_id,
-                    binds,
-                    pairs,
-                    defer_pairs,
+                    links,
+                    defer_links,
                     timeouts,
                     build,
                 )
@@ -626,14 +583,14 @@ mod tests {
         }
     }
 
-    fn parse_run_binds(args: &[&str]) -> Vec<(String, String)> {
+    fn parse_run_links(args: &[&str]) -> Vec<(String, String)> {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once("run"))
             .chain(args.iter().copied())
             .collect();
         let cli = TestCli::try_parse_from(full).expect("should parse");
         match cli.command {
-            NodeCommands::Run { binds, .. } => binds,
+            NodeCommands::Run { links, .. } => links,
             _ => panic!("expected Run variant"),
         }
     }
@@ -654,14 +611,14 @@ mod tests {
         TestCli::try_parse_from(full)
     }
 
-    fn parse_add_binds(args: &[&str]) -> Vec<(String, String)> {
+    fn parse_add_links(args: &[&str]) -> Vec<(String, String)> {
         let full: Vec<&str> = std::iter::once("peppy")
             .chain(std::iter::once("add"))
             .chain(args.iter().copied())
             .collect();
         let cli = TestCli::try_parse_from(full).expect("should parse");
         match cli.command {
-            NodeCommands::Add { binds, .. } => binds,
+            NodeCommands::Add { links, .. } => links,
             _ => panic!("expected Add variant"),
         }
     }
@@ -814,9 +771,9 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_repeated() {
+    fn link_repeated() {
         assert_eq!(
-            parse_run_binds(&["foo:v1", "--bind", "feed@cam_a", "--bind", "ctl@cam_b"]),
+            parse_run_links(&["foo:v1", "--link", "feed@cam_a", "--link", "ctl@cam_b"]),
             vec![
                 ("feed".to_string(), "cam_a".to_string()),
                 ("ctl".to_string(), "cam_b".to_string())
@@ -825,9 +782,9 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_comma_delimited() {
+    fn link_comma_delimited() {
         assert_eq!(
-            parse_run_binds(&["foo:v1", "--bind", "feed@cam_a,ctl@cam_b"]),
+            parse_run_links(&["foo:v1", "--link", "feed@cam_a,ctl@cam_b"]),
             vec![
                 ("feed".to_string(), "cam_a".to_string()),
                 ("ctl".to_string(), "cam_b".to_string())
@@ -836,40 +793,40 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_missing_at_separator_rejected() {
-        let err = try_parse_run(&["foo:v1", "--bind", "noseparator"])
+    fn link_missing_at_separator_rejected() {
+        let err = try_parse_run(&["foo:v1", "--link", "noseparator"])
             .err()
             .expect("missing @ should be rejected");
         let msg = err.to_string();
-        assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
+        assert!(msg.contains("KEY@TARGET"), "msg: {msg}");
     }
 
     #[test]
-    fn test_bind_reserved_sentinel_key_rejected() {
-        let err = try_parse_run(&["foo:v1", "--bind", "_@cam_a"])
+    fn link_reserved_sentinel_key_rejected() {
+        let err = try_parse_run(&["foo:v1", "--link", "_@cam_a"])
             .err()
             .expect("`_` should be rejected");
         let msg = err.to_string();
         assert!(msg.contains("reserved"), "msg: {msg}");
     }
 
-    // ─── `peppy node add` --bind / requires=run parse-time enforcement ───
+    // ─── `peppy node add` --link / requires=run parse-time enforcement ───
 
-    /// `--bind` on `node add` requires `--run`; the binds parser is the same
-    /// as `node run`'s, so a `KEY@VALUE` pair lands on the `binds` field as
+    /// `--link` on `node add` requires `--run`; the links parser is the same
+    /// as `node run`'s, so a `KEY@VALUE` pair lands on the `links` field as
     /// a tuple.
     #[test]
-    fn add_with_run_accepts_bind() {
-        let binds = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a"]);
-        assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+    fn add_with_run_accepts_link() {
+        let links = parse_add_links(&[".", "-r", "--link", "feed@cam_a"]);
+        assert_eq!(links, vec![("feed".to_string(), "cam_a".to_string())]);
     }
 
-    /// Comma-delimited form and repeated `--bind` both feed the same `binds`
+    /// Comma-delimited form and repeated `--link` both feed the same `links`
     /// vector on `node add -r`, exactly like on `node run`.
     #[test]
-    fn add_with_run_bind_repeated_and_comma_delimited() {
-        let repeated = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a", "--bind", "ctl@cam_b"]);
-        let comma = parse_add_binds(&[".", "-r", "--bind", "feed@cam_a,ctl@cam_b"]);
+    fn add_with_run_link_repeated_and_comma_delimited() {
+        let repeated = parse_add_links(&[".", "-r", "--link", "feed@cam_a", "--link", "ctl@cam_b"]);
+        let comma = parse_add_links(&[".", "-r", "--link", "feed@cam_a,ctl@cam_b"]);
         let expected = vec![
             ("feed".to_string(), "cam_a".to_string()),
             ("ctl".to_string(), "cam_b".to_string()),
@@ -878,36 +835,36 @@ mod tests {
         assert_eq!(comma, expected);
     }
 
-    /// `-sbr` plus `--bind` is the bug-replication shape from the report:
+    /// `-sbr` plus `--link` is the bug-replication shape from the report:
     /// the previous CLI accepted `add . -sbr` and ran an instance with no
-    /// bindings. Now `--bind` must parse on that same invocation so the
+    /// bindings. Now `--link` must parse on that same invocation so the
     /// user can supply them in one shot.
     #[test]
-    fn add_sbr_with_bind_parses() {
-        let cli = try_parse_add(&[".", "-sbr", "--bind", "feed@cam_a"])
-            .expect("`add . -sbr --bind feed@cam_a` should parse");
+    fn add_sbr_with_link_parses() {
+        let cli = try_parse_add(&[".", "-sbr", "--link", "feed@cam_a"])
+            .expect("`add . -sbr --link feed@cam_a` should parse");
         match cli.command {
             NodeCommands::Add {
                 sync,
                 build,
                 run,
-                binds,
+                links,
                 ..
             } => {
                 assert!(sync && build && run, "-sbr should set all three");
-                assert_eq!(binds, vec![("feed".to_string(), "cam_a".to_string())]);
+                assert_eq!(links, vec![("feed".to_string(), "cam_a".to_string())]);
             }
             _ => panic!("expected Add variant"),
         }
     }
 
-    /// Core fix: `--bind` without `--run` is meaningless (nothing to apply
+    /// Core fix: `--link` without `--run` is meaningless (nothing to apply
     /// the bindings to), so clap rejects it at parse time.
     #[test]
-    fn add_bind_without_run_rejected_at_parse_time() {
-        let err = try_parse_add(&[".", "--bind", "feed@cam_a"])
+    fn add_link_without_run_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "--link", "feed@cam_a"])
             .err()
-            .expect("--bind without --run must be a parse error");
+            .expect("--link without --run must be a parse error");
         let msg = err.to_string();
         assert!(
             msg.contains("--run") || msg.contains("<RUN>"),
@@ -916,12 +873,12 @@ mod tests {
     }
 
     /// Same enforcement when sync+build are present but `--run` isn't:
-    /// `-sb` is "stop at built", and `--bind` doesn't belong there either.
+    /// `-sb` is "stop at built", and `--link` doesn't belong there either.
     #[test]
-    fn add_sb_with_bind_rejected_at_parse_time() {
-        let err = try_parse_add(&[".", "-sb", "--bind", "feed@cam_a"])
+    fn add_sb_with_link_rejected_at_parse_time() {
+        let err = try_parse_add(&[".", "-sb", "--link", "feed@cam_a"])
             .err()
-            .expect("`-sb --bind` (no `r`) must error");
+            .expect("`-sb --link` (no `r`) must error");
         let msg = err.to_string();
         assert!(
             msg.contains("--run") || msg.contains("<RUN>"),
@@ -970,13 +927,13 @@ mod tests {
                 run,
                 args,
                 instance_id,
-                binds,
+                links,
                 ..
             } => {
                 assert!(!run);
                 assert!(args.is_empty());
                 assert!(instance_id.is_none());
-                assert!(binds.is_empty());
+                assert!(links.is_empty());
             }
             _ => panic!("expected Add variant"),
         }
@@ -988,7 +945,7 @@ mod tests {
     /// keys that `run` rejects.
     #[test]
     fn add_bind_reserved_sentinel_key_rejected() {
-        let err = try_parse_add(&[".", "-r", "--bind", "_@cam_a"])
+        let err = try_parse_add(&[".", "-r", "--link", "_@cam_a"])
             .err()
             .expect("`_@…` must be rejected on `add` too");
         let msg = err.to_string();
@@ -998,98 +955,92 @@ mod tests {
     /// And the missing-`@` rejection.
     #[test]
     fn add_bind_missing_at_separator_rejected() {
-        let err = try_parse_add(&[".", "-r", "--bind", "noseparator"])
+        let err = try_parse_add(&[".", "-r", "--link", "noseparator"])
             .err()
             .expect("missing `@` must be rejected on `add` too");
         let msg = err.to_string();
-        assert!(msg.contains("KEY@VALUE"), "msg: {msg}");
+        assert!(msg.contains("KEY@TARGET"), "msg: {msg}");
     }
 
-    // ── --pair / --defer-pair ────────────────────────────────────────────
+    // ── --link (pairing/observer form) / --defer-link ────────────────────
 
     #[test]
-    fn pair_kv_parses_plain_and_pinned_targets() {
+    fn link_kv_parses_plain_and_pinned_targets() {
         assert_eq!(
-            parse_pair_kv("arm@arm_1").unwrap(),
-            ("arm".to_string(), PairTarget::new("arm_1"))
+            parse_link_kv("arm@arm_1").unwrap(),
+            ("arm".to_string(), "arm_1".to_string())
         );
-        // The `/PEER_LINK` pin is parsed here; the goal carries it as a
-        // structured field, never as a packed string.
+        // The `/link_id` pin rides through as part of the target string; the
+        // daemon-side validator splits and resolves it against the manifest.
         assert_eq!(
-            parse_pair_kv("controller@cmd_1/left_arm").unwrap(),
-            (
-                "controller".to_string(),
-                PairTarget::pinned("cmd_1", "left_arm")
-            )
+            parse_link_kv("controller@cmd_1/left_arm").unwrap(),
+            ("controller".to_string(), "cmd_1/left_arm".to_string())
         );
     }
 
     #[test]
-    fn pair_kv_rejects_bad_shapes() {
+    fn link_kv_rejects_bad_shapes() {
         // Missing `@`.
-        assert!(parse_pair_kv("arm").unwrap_err().contains("LINK_ID@"));
-        // Empty peer instance.
-        assert!(parse_pair_kv("arm@").unwrap_err().contains("PEER_INSTANCE"));
-        // LINK_ID must be a wire segment: the reserved sentinel is rejected.
-        assert!(parse_pair_kv("_@arm_1").unwrap_err().contains("LINK_ID"));
-        // So must a wildcard PEER_LINK.
+        assert!(parse_link_kv("arm").unwrap_err().contains("KEY@TARGET"));
+        // Empty target instance.
+        assert!(parse_link_kv("arm@").unwrap_err().contains("TARGET"));
+        // KEY must be a wire segment: the reserved sentinel is rejected.
+        assert!(parse_link_kv("_@arm_1").unwrap_err().contains("KEY"));
+        // So must a wildcard target slot suffix.
         assert!(
-            parse_pair_kv("arm@arm_1/*")
+            parse_link_kv("arm@arm_1/*")
                 .unwrap_err()
-                .contains("PEER_LINK")
+                .contains("target slot")
         );
     }
 
     #[test]
-    fn defer_pair_validates_the_link_id_as_a_wire_segment() {
-        assert_eq!(parse_defer_pair(" arm ").unwrap(), "arm");
-        assert!(parse_defer_pair("_").is_err());
-        assert!(parse_defer_pair("a/b").is_err());
+    fn defer_link_validates_the_link_id_as_a_wire_segment() {
+        assert_eq!(parse_defer_link(" arm ").unwrap(), "arm");
+        assert!(parse_defer_link("_").is_err());
+        assert!(parse_defer_link("a/b").is_err());
     }
 
     #[test]
-    fn run_accepts_repeated_pair_and_defer_pair_flags() {
+    fn run_accepts_repeated_link_and_defer_link_flags() {
         let cli = try_parse_run(&[
             "commander:v1",
-            "--pair",
+            "--link",
             "left@arm_1",
-            "--pair",
+            "--link",
             "right@arm_2/controller",
-            "--defer-pair",
+            "--defer-link",
             "gripper",
         ])
-        .expect("pair flags should parse");
+        .expect("link flags should parse");
         match cli.command {
             NodeCommands::Run {
-                pairs, defer_pairs, ..
+                links, defer_links, ..
             } => {
                 assert_eq!(
-                    pairs,
+                    links,
                     vec![
-                        ("left".to_string(), PairTarget::new("arm_1")),
-                        (
-                            "right".to_string(),
-                            PairTarget::pinned("arm_2", "controller")
-                        ),
+                        ("left".to_string(), "arm_1".to_string()),
+                        ("right".to_string(), "arm_2/controller".to_string()),
                     ]
                 );
-                assert_eq!(defer_pairs, vec!["gripper".to_string()]);
+                assert_eq!(defer_links, vec!["gripper".to_string()]);
             }
             _ => panic!("expected Run variant"),
         }
     }
 
-    /// Pairs are established at instance start, so `--pair` without `--run`
-    /// on `node add` is a parse error, same as `--bind`.
+    /// Links are applied at instance start, so `--link` without `--run` on
+    /// `node add` is a parse error.
     #[test]
-    fn add_pair_requires_run() {
-        let err = try_parse_add(&[".", "--pair", "arm@arm_1"])
+    fn add_link_requires_run() {
+        let err = try_parse_add(&[".", "--link", "arm@arm_1"])
             .err()
-            .expect("--pair without --run must be rejected");
+            .expect("--link without --run must be rejected");
         assert!(err.to_string().contains("--run"), "msg: {err}");
-        let err = try_parse_add(&[".", "--defer-pair", "arm"])
+        let err = try_parse_add(&[".", "--defer-link", "arm"])
             .err()
-            .expect("--defer-pair without --run must be rejected");
+            .expect("--defer-link without --run must be rejected");
         assert!(err.to_string().contains("--run"), "msg: {err}");
     }
 }

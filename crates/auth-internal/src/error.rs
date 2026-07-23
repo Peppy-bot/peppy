@@ -15,6 +15,6 @@ pub enum Error {
     Auth(String),
 
     // -- no usable credential and not on an interactive terminal
-    #[error("Not authenticated. Run `peppy auth login` or set PEPPY_API_KEY.")]
+    #[error("Not authenticated. Run `peppy platform login` or set PEPPY_API_KEY.")]
     NotAuthenticated,
 }

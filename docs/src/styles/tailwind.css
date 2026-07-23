@@ -1,0 +1,43 @@
+@layer base, starlight, theme, components, utilities;
+
+@import 'tailwindcss';
+@import '@astrojs/starlight-tailwind';
+
+/* Peppy brand tokens. @astrojs/starlight-tailwind wires these Tailwind scales
+   into Starlight's --sl-* variables, so the lime accent scale, the navy gray
+   ramp, and the brand fonts defined here are the single source of truth for the
+   whole theme. custom.css layers on the finer brand details the scales cannot
+   express (cyan links, translucent chrome, the blueprint background).
+   Values mirror landing-page/src/styles/global.css. */
+@theme {
+	--font-sans: 'Space Grotesk', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+	/* Accent: Peppy lime / chartreuse, anchored on the brand #c8f542 (200) and
+	   the darker light-mode olive #5e8f00 (700). */
+	--color-accent-50: #fbffe8;
+	--color-accent-100: #f3fdc0;
+	--color-accent-200: #c8f542;
+	--color-accent-300: #b3e62b;
+	--color-accent-400: #9bcf1a;
+	--color-accent-500: #82b30f;
+	--color-accent-600: #6d9a07;
+	--color-accent-700: #5e8f00;
+	--color-accent-800: #496b0a;
+	--color-accent-900: #38530c;
+	--color-accent-950: #1c2e05;
+
+	/* Gray: Peppy dark-navy ramp. 900 is the deepest page background (#070b14),
+	   which Starlight maps to --sl-color-black / --sl-color-bg. */
+	--color-gray-50: #f6f8fc;
+	--color-gray-100: #eef1f8;
+	--color-gray-200: #e2e7f2;
+	--color-gray-300: #c4cde0;
+	--color-gray-400: #94a2bd;
+	--color-gray-500: #6b7a99;
+	--color-gray-600: #5c6a86;
+	--color-gray-700: #18233c;
+	--color-gray-800: #111a2e;
+	--color-gray-900: #070b14;
+	--color-gray-950: #05080f;
+}

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,90 +7,262 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::StackListRequest;
-use core_node_api::{InstanceState, SerializedEdge, SerializedInstance, SerializedNode};
+use core_node_api::{InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode};
+use futures::future::join_all;
 
-use peppylib::core_node::transport::poll;
+use peppylib::{CoreNodePresenceMessenger, core_node::transport::poll};
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
-    let colorize = crate::terminal::colors_enabled();
-    let output = crate::commands::block_on(list_nodes_collecting(ctx, dot_graph_path, colorize))?;
-    print!("{}", output);
-    Ok(())
+/// One independently queried core-node stack. Query and decode failures stay
+/// in their section so a disappearing daemon does not hide healthy peers.
+#[derive(Debug)]
+pub struct StackSection {
+    /// Attributed from the response's self-reported identity; falls back to
+    /// the queried name when the query failed.
+    pub core_node: String,
+    /// Self-reported generation of the daemon that answered (`None` when the
+    /// query failed). During an active name collision this identifies which
+    /// claimant served the section.
+    pub instance_id: Option<String>,
+    pub host_name: String,
+    /// Live instance ids advertising this name at enumeration time; more than
+    /// one means an active collision. Zero when no live token was found.
+    pub live_claimants: usize,
+    pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
 
-/// Like [`list_nodes`] but returns the rendered output as a `String` instead
-/// of printing it. `colorize` is passed in rather than read from the ambient
-/// terminal so the result is deterministic: the CLI passes
+/// Rendered `stack list` output plus the core nodes whose section failed.
+/// Callers own the failure policy: the CLI prints the output and exits
+/// non-zero on any failed name, tests assert on the fields directly.
+pub struct StackListReport {
+    pub output: String,
+    pub failed_names: Vec<String>,
+}
+
+pub fn list_nodes(ctx: &Arc<AppContext>) -> Result<()> {
+    let colorize = crate::terminal::colors_enabled();
+    let report = crate::commands::block_on(list_nodes_collecting(ctx, colorize))?;
+    print!("{}", report.output);
+    if report.failed_names.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::ExecutionFailed(format!(
+            "stack list failed for: {}",
+            report.failed_names.join(", ")
+        )))
+    }
+}
+
+/// Like [`list_nodes`] but returns the [`StackListReport`] instead of printing
+/// and deciding the exit status. `colorize` is passed in rather than read from
+/// the ambient terminal so the result is deterministic: the CLI passes
 /// [`crate::terminal::colors_enabled`], while integration tests pass `false`
 /// for stable, color-free assertions.
 pub async fn list_nodes_collecting(
     ctx: &Arc<AppContext>,
-    dot_graph_path: Option<PathBuf>,
     colorize: bool,
-) -> Result<String> {
+) -> Result<StackListReport> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = poll(
-        &StackListRequest::new(dot_graph_path.is_some()),
+    let live = CoreNodePresenceMessenger::list_live(
         conn.messenger,
-        &conn.core_node_name,
-        CALLER_INSTANCE_ID,
-        &conn.target_core_node,
-        REQUEST_TIMEOUT,
+        conn.target_is_override
+            .then_some(conn.target_core_node.as_str()),
+        CoreNodePresenceMessenger::LIST_TIMEOUT,
     )
     .await?;
+    let targets = if conn.target_is_override {
+        vec![(
+            conn.target_core_node.clone(),
+            live_instance_count(&conn.target_core_node, live),
+        )]
+    } else {
+        ordered_targets(&conn.core_node_name, live)
+    };
 
-    let graph = crate::commands::parse_stack_graph(&response.graph_json)?;
+    let sections = join_all(targets.into_iter().map(|(core_node, live_claimants)| {
+        let messenger = conn.messenger;
+        let caller_core_node = &conn.core_node_name;
+        async move {
+            let response = poll(
+                &StackListRequest::new(),
+                messenger,
+                caller_core_node,
+                CALLER_INSTANCE_ID,
+                &core_node,
+                REQUEST_TIMEOUT,
+            )
+            .await;
 
-    // Sort nodes by label for consistent output, with the daemon root first.
-    // The root belongs to the *listed* stack, so it bears the target daemon's
-    // name, not necessarily the local one.
-    let mut nodes = graph.nodes;
+            match response {
+                Ok(response) => StackSection {
+                    // Attribute the section to the identity the daemon
+                    // self-reports, not the name the request targeted; an
+                    // empty name (daemon predating identity self-reporting)
+                    // falls back to the target.
+                    core_node: if response.core_node.is_empty() {
+                        core_node
+                    } else {
+                        response.core_node
+                    },
+                    instance_id: (!response.instance_id.is_empty()).then_some(response.instance_id),
+                    host_name: response.host_name,
+                    live_claimants,
+                    outcome: crate::commands::parse_stack_graph(&response.graph_json)
+                        .map(|mut graph| {
+                            sort_graph(&mut graph.nodes, &mut graph.edges);
+                            (graph.nodes, graph.edges)
+                        })
+                        .map_err(|error| error.to_string()),
+                },
+                Err(error) => StackSection {
+                    core_node,
+                    instance_id: None,
+                    host_name: "unknown".to_string(),
+                    live_claimants,
+                    outcome: Err(error.to_string()),
+                },
+            }
+        }
+    }))
+    .await;
+
+    let failed_names = sections
+        .iter()
+        .filter(|section| section.outcome.is_err())
+        .map(|section| section.core_node.clone())
+        .collect();
+
+    Ok(StackListReport {
+        output: format_stack_list(&sections, colorize),
+        failed_names,
+    })
+}
+
+fn ordered_targets(
+    local_core_node: &str,
+    live: Vec<pmi::CoreNodePresence>,
+) -> Vec<(String, usize)> {
+    let mut claims: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for presence in live {
+        claims
+            .entry(presence.core_node)
+            .or_default()
+            .insert(presence.instance_id);
+    }
+
+    let mut targets = Vec::with_capacity(claims.len().max(1));
+    let local_claimants = claims.remove(local_core_node).map_or(0, |ids| ids.len());
+    targets.push((local_core_node.to_string(), local_claimants));
+    targets.extend(claims.into_iter().map(|(name, ids)| (name, ids.len())));
+    targets
+}
+
+fn live_instance_count(core_node: &str, live: Vec<pmi::CoreNodePresence>) -> usize {
+    live.into_iter()
+        .filter(|presence| presence.core_node == core_node)
+        .map(|presence| presence.instance_id)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
     nodes.sort_by(|a, b| {
-        let a_is_daemon = a.label().starts_with(&conn.target_core_node);
-        let b_is_daemon = b.label().starts_with(&conn.target_core_node);
+        let a_is_daemon = a.stage == Some(NodeStage::Root);
+        let b_is_daemon = b.stage == Some(NodeStage::Root);
         match (a_is_daemon, b_is_daemon) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => a.label().cmp(&b.label()),
         }
     });
-
-    // Sort edges by (from_label, to_label) for consistent output.
-    let mut edges = graph.edges;
-    edges.sort_by(|a, b| {
-        let a_key = (a.from.label(), a.to.label());
-        let b_key = (b.from.label(), b.to.label());
-        a_key.cmp(&b_key)
-    });
-
-    let mut out = format_stack_list(&nodes, &edges, colorize);
-
-    if let (Some(path), Some(dot_graph)) = (dot_graph_path, response.dot_graph) {
-        std::fs::write(&path, dot_graph).map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to write DOT graph to {}: {}",
-                path.display(),
-                e
-            ))
-        })?;
-        use std::fmt::Write as _;
-        let _ = writeln!(out, "DOT graph saved to {}", path.display());
-    }
-
-    Ok(out)
+    edges.sort_by_key(|edge| (edge.from.label(), edge.to.label()));
 }
 
-/// Pure formatter for the `peppy stack list` output, kept free of any IO so
-/// it can be unit-tested directly. `colorize` tints node labels, instances,
-/// and bindings with ANSI SGR codes; the caller passes `false` for
-/// non-interactive output so piped/redirected text and tests stay plain.
-pub fn format_stack_list(
-    nodes: &[SerializedNode],
-    edges: &[SerializedEdge],
-    colorize: bool,
-) -> String {
+/// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
+/// keeps its graph, host annotation, duplicate-name warning, or query error in
+/// a separate outer panel.
+pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            let _ = writeln!(out);
+        }
+        let header = format!(
+            "Core node: {} (host: {})",
+            paint(colorize, NODE_COLOR, &section.core_node),
+            section.host_name
+        );
+        let mut body = String::new();
+        if section.live_claimants > 1 {
+            let _ = match &section.instance_id {
+                Some(instance_id) => writeln!(
+                    body,
+                    "warning: {} live daemons currently claim this name; answered by instance {}",
+                    section.live_claimants, instance_id
+                ),
+                None => writeln!(
+                    body,
+                    "warning: {} live daemons currently claim this name",
+                    section.live_claimants
+                ),
+            };
+            let _ = writeln!(body);
+        }
+
+        match &section.outcome {
+            Ok((nodes, edges)) => {
+                body.push_str(&format_stack_body(nodes, edges, colorize));
+            }
+            Err(error) => {
+                let _ = writeln!(body, "error: {error}");
+            }
+        }
+
+        render_section_panel(&mut out, &header, &body);
+    }
+    out
+}
+
+/// Encloses one core node's complete report in a panel. Nested table borders
+/// remain intact, while the continuous outer edge makes ownership clear when
+/// several independently queried stacks are printed together.
+fn render_section_panel(out: &mut String, header: &str, body: &str) {
+    use std::fmt::Write as _;
+
+    let width = std::iter::once(header)
+        .chain(body.lines())
+        .map(col_width)
+        .max()
+        .unwrap_or(0);
+
+    let _ = writeln!(out, "┌{}┐", "─".repeat(width + 2));
+    write_panel_line(out, header, width);
+    let _ = writeln!(out, "├{}┤", "─".repeat(width + 2));
+    for line in body.lines() {
+        write_panel_line(out, line, width);
+    }
+    let _ = writeln!(out, "└{}┘", "─".repeat(width + 2));
+}
+
+fn write_panel_line(out: &mut String, line: &str, width: usize) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        out,
+        "│ {}{} │",
+        line,
+        " ".repeat(width.saturating_sub(col_width(line)))
+    );
+}
+
+/// Formats the existing tables inside one core-node section. `colorize` tints
+/// node labels, instances, and bindings; table width measurement strips those
+/// codes so colored and plain layouts remain identical.
+fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], colorize: bool) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
@@ -170,7 +342,7 @@ use super::colors::{
     NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR, STATUS_RUNNING_COLOR,
     STATUS_STARTING_COLOR, paint,
 };
-use super::table::render_table;
+use super::table::{col_width, render_table};
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
@@ -274,7 +446,7 @@ fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
 /// (the `@core_node` suffix matches the bindings table's `instance@node`
 /// producer style), `link_id ⇌ (unpaired) [role r of pairing:tag]` while
 /// not; the role makes an unpaired row self-describing when composing a
-/// `--pair` for it, and an `optional: true` slot is labelled
+/// `--link` for it, and an `optional: true` slot is labelled
 /// `(unpaired, optional)` so it never reads as a missing required peer.
 fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
     instance
@@ -485,6 +657,7 @@ mod tests {
         SerializedNode {
             name: name.to_string(),
             tag: tag.to_string(),
+            core_node: "core-a".to_string(),
             config_path: format!("/tmp/{}.json5", name),
             artifact_path: None,
             stage: Some(stage),
@@ -511,6 +684,7 @@ mod tests {
         SerializedNode {
             name: name.to_string(),
             tag: "v1".to_string(),
+            core_node: "core-a".to_string(),
             config_path: format!("/tmp/{}.json5", name),
             artifact_path: None,
             stage: Some(NodeStage::Ready),
@@ -536,6 +710,157 @@ mod tests {
         }
     }
 
+    fn successful_section(core_node: &str, host_name: &str) -> StackSection {
+        StackSection {
+            core_node: core_node.to_string(),
+            instance_id: Some("gen-1".to_string()),
+            host_name: host_name.to_string(),
+            live_claimants: 1,
+            outcome: Ok((
+                vec![node(core_node, "v1", NodeStage::Root, vec![])],
+                Vec::new(),
+            )),
+        }
+    }
+
+    #[test]
+    fn multi_daemon_sections_keep_input_order_and_are_individually_boxed() {
+        let sections = vec![
+            successful_section("z-local", "robot-local"),
+            successful_section("a-remote", "robot-remote"),
+        ];
+        let out = format_stack_list(&sections, false);
+
+        let local = out
+            .find("Core node: z-local (host: robot-local)")
+            .expect("local section header");
+        let remote = out
+            .find("Core node: a-remote (host: robot-remote)")
+            .expect("remote section header");
+        assert!(
+            local < remote,
+            "formatter must preserve caller ordering:\n{out}"
+        );
+
+        let panels: Vec<&str> = out.trim_end().split("\n\n").collect();
+        assert_eq!(panels.len(), 2, "one outer panel per core node:\n{out}");
+        for (panel, core_node) in panels.iter().zip(["z-local", "a-remote"]) {
+            let lines: Vec<&str> = panel.lines().collect();
+            assert!(
+                lines
+                    .first()
+                    .is_some_and(|line| line.starts_with('┌') && line.ends_with('┐')),
+                "panel for {core_node} is missing its top border:\n{panel}"
+            );
+            assert!(
+                lines.get(1).is_some_and(|line| line
+                    .starts_with(&format!("│ Core node: {core_node} "))
+                    && line.ends_with(" │")),
+                "panel for {core_node} is missing its header row:\n{panel}"
+            );
+            assert!(
+                lines
+                    .get(2)
+                    .is_some_and(|line| line.starts_with('├') && line.ends_with('┤')),
+                "panel for {core_node} is missing its header divider:\n{panel}"
+            );
+            assert!(
+                lines
+                    .last()
+                    .is_some_and(|line| line.starts_with('└') && line.ends_with('┘')),
+                "panel for {core_node} is missing its bottom border:\n{panel}"
+            );
+            assert!(
+                lines.iter().any(|line| line.starts_with("│ Node stack")),
+                "node stack escaped the panel for {core_node}:\n{panel}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("│ Instance bindings")),
+                "instance bindings escaped the panel for {core_node}:\n{panel}"
+            );
+            assert!(
+                lines.iter().any(|line| line.starts_with("│ Dependencies")),
+                "dependencies escaped the panel for {core_node}:\n{panel}"
+            );
+
+            let widths: Vec<usize> = lines
+                .iter()
+                .map(|line| UnicodeWidthStr::width(*line))
+                .collect();
+            assert!(
+                widths.iter().all(|width| *width == widths[0]),
+                "panel for {core_node} has mismatched display widths {widths:?}:\n{panel}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_and_failed_sections_remain_visible() {
+        let sections = vec![StackSection {
+            core_node: "claimed".to_string(),
+            instance_id: None,
+            host_name: "unknown".to_string(),
+            live_claimants: 3,
+            outcome: Err("daemon disappeared".to_string()),
+        }];
+        let out = format_stack_list(&sections, false);
+        assert!(out.contains("Core node: claimed (host: unknown)"));
+        assert!(out.contains("warning: 3 live daemons currently claim this name"));
+        assert!(out.contains("error: daemon disappeared"));
+    }
+
+    #[test]
+    fn collision_warning_names_the_answering_instance() {
+        let sections = vec![StackSection {
+            live_claimants: 2,
+            ..successful_section("claimed", "robo-a")
+        }];
+        let out = format_stack_list(&sections, false);
+        assert!(
+            out.contains(
+                "warning: 2 live daemons currently claim this name; answered by instance gen-1"
+            ),
+            "collision warning should attribute the answering claimant:\n{out}"
+        );
+    }
+
+    #[test]
+    fn target_order_is_local_first_then_lexicographic_and_deduplicated() {
+        let targets = ordered_targets(
+            "z-local",
+            vec![
+                pmi::CoreNodePresence::new("b-remote", "b1"),
+                pmi::CoreNodePresence::new("z-local", "local"),
+                pmi::CoreNodePresence::new("a-remote", "a1"),
+                pmi::CoreNodePresence::new("a-remote", "a2"),
+            ],
+        );
+        assert_eq!(
+            targets,
+            vec![
+                ("z-local".to_string(), 1),
+                ("a-remote".to_string(), 2),
+                ("b-remote".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_target_counts_distinct_live_instances_for_requested_name() {
+        let count = live_instance_count(
+            "requested",
+            vec![
+                pmi::CoreNodePresence::new("requested", "instance-a"),
+                pmi::CoreNodePresence::new("requested", "instance-a"),
+                pmi::CoreNodePresence::new("requested", "instance-b"),
+                pmi::CoreNodePresence::new("other", "instance-c"),
+            ],
+        );
+        assert_eq!(count, 2);
+    }
+
     #[test]
     fn table_renders_headers_and_rows() {
         let nodes = vec![
@@ -547,7 +872,7 @@ mod tests {
                 vec![("i1", InstanceState::Running)],
             ),
         ];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
 
         for header in HEADERS {
             assert!(out.contains(header), "missing header {}:\n{}", header, out);
@@ -578,7 +903,7 @@ mod tests {
                 ("s1", InstanceState::Starting),
             ],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         assert!(
             out.contains("2 (1 running, 1 starting)"),
             "mixed breakdown missing:\n{}",
@@ -596,7 +921,7 @@ mod tests {
             NodeStage::Ready,
             vec![("rec-1", InstanceState::Finished)],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         assert!(
             out.contains("1 finished"),
             "finished instance missing from compact count:\n{out}"
@@ -615,7 +940,7 @@ mod tests {
                 ("x1", InstanceState::Failed),
             ],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         assert!(
             out.contains("3 (1 running, 1 finished, 1 failed)"),
             "mixed terminal breakdown missing:\n{out}"
@@ -634,7 +959,7 @@ mod tests {
                 ("rec-2", InstanceState::Failed, vec![]),
             ],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         let finished_line = section
@@ -666,7 +991,7 @@ mod tests {
 
     #[test]
     fn empty_stack_renders_empty_marker() {
-        let out = format_stack_list(&[], &[], false);
+        let out = format_stack_body(&[], &[], false);
         assert!(out.contains("(empty)"), "empty marker missing:\n{}", out);
         assert!(
             out.contains("Dependencies"),
@@ -685,7 +1010,7 @@ mod tests {
             to: to.clone(),
             via_contract: None,
         }];
-        let out = format_stack_list(&[from, to], &edges, false);
+        let out = format_stack_body(&[from, to], &edges, false);
         assert!(
             out.contains("brain:v1 ➔ sensor:v1"),
             "edge line missing:\n{}",
@@ -702,7 +1027,7 @@ mod tests {
             to: provider.clone(),
             via_contract: Some("uvc_camera:v1".to_string()),
         }];
-        let out = format_stack_list(&[consumer, provider], &edges, false);
+        let out = format_stack_body(&[consumer, provider], &edges, false);
         assert!(
             out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract implementation)"),
             "contract-implementation edge annotation missing:\n{}",
@@ -746,7 +1071,7 @@ mod tests {
                 vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         for header in BINDING_HEADERS {
@@ -779,7 +1104,7 @@ mod tests {
                 )],
             ),
         ];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         assert!(section.contains("STATUS"), "STATUS header missing:\n{out}");
@@ -803,6 +1128,7 @@ mod tests {
         let nodes = vec![SerializedNode {
             name: "arm".to_string(),
             tag: "v1".to_string(),
+            core_node: "core-a".to_string(),
             config_path: "/tmp/arm.json5".to_string(),
             artifact_path: None,
             stage: Some(NodeStage::Ready),
@@ -823,7 +1149,7 @@ mod tests {
                 },
             ],
         }];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         assert!(section.contains("HEALTH"), "HEALTH header missing:\n{out}");
@@ -863,7 +1189,7 @@ mod tests {
                 ],
             )],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         // Both slots render, sorted by link id (BTreeMap order) regardless of
@@ -893,7 +1219,7 @@ mod tests {
             "camera",
             vec![("cam-1", InstanceState::Running, vec![])],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         assert!(section.contains("cam-1"), "instance id missing:\n{out}");
@@ -916,7 +1242,7 @@ mod tests {
                 ],
             )],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         let sensors_at = section
@@ -980,7 +1306,7 @@ mod tests {
             },
         );
 
-        let out = format_stack_list(&[arm, ctrl], &[], false);
+        let out = format_stack_body(&[arm, ctrl], &[], false);
         assert!(
             out.contains("Instance pairings"),
             "missing Instance pairings section:\n{out}"
@@ -1009,7 +1335,7 @@ mod tests {
             NodeStage::Ready,
             vec![("s-1", InstanceState::Running)],
         )];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         assert!(
             !out.contains("Instance pairings"),
             "Instance pairings section must be omitted for pairing-free stacks:\n{out}"
@@ -1019,7 +1345,7 @@ mod tests {
     #[test]
     fn bindings_section_renders_none_when_no_node_has_instances() {
         let nodes = vec![node("sensor", "v1", NodeStage::Added, vec![])];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
         assert!(
             section.contains("(none)"),
@@ -1052,7 +1378,7 @@ mod tests {
             node("ghost", "v1", NodeStage::Added, vec![]),
             binding_node("beta", vec![("beta-1", InstanceState::Running, vec![])]),
         ];
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
         let section = bindings_section(&out);
 
         // Instance-less node never appears in the bindings table.
@@ -1113,7 +1439,7 @@ mod tests {
                 },
             },
         );
-        let out = format_stack_list(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false);
 
         fn box_line_widths(block: &str) -> Vec<usize> {
             block
@@ -1192,8 +1518,8 @@ mod tests {
             via_contract: None,
         }];
 
-        let plain = format_stack_list(&nodes, &edges, false);
-        let colored = format_stack_list(&nodes, &edges, true);
+        let plain = format_stack_body(&nodes, &edges, false);
+        let colored = format_stack_body(&nodes, &edges, true);
 
         assert!(
             colored.contains('\x1b'),
@@ -1207,6 +1533,17 @@ mod tests {
             strip_ansi(&colored),
             plain,
             "stripping colors must reproduce the plain layout exactly"
+        );
+
+        // The enclosing core-node panel performs its own width calculation,
+        // including the colored node name in the header.
+        let sections = [successful_section("core-a", "robot-a")];
+        let plain_panel = format_stack_list(&sections, false);
+        let colored_panel = format_stack_list(&sections, true);
+        assert_eq!(
+            strip_ansi(&colored_panel),
+            plain_panel,
+            "colors must not shift the outer panel border"
         );
 
         // The two relationships use distinct arrows so they never read alike:

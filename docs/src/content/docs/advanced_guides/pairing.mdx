@@ -21,7 +21,7 @@ This creates a directed graph: if `arm_controller` depends on `robot_arm`, it ca
 
 **Pairing** is Peppy's first-class mechanism for the cases where two nodes genuinely talk to each other. A *pairing* is a named, versioned contract with exactly **two roles**; two node **instances** (one per role) are *paired* 1:1 over it, and each side's topics flow only to its paired peer:
 
-- **Explicit**: a pair is established by an operator action (`--pair` on `peppy node run`, or `pairings:` in a launcher), never by discovery.
+- **Explicit**: a pair is established by an operator action (`--link` on `peppy node run`, or `links:` in a launcher), never by discovery.
 - **Exclusive**: a pairing slot holds at most one peer at a time. A second instance trying to pair at a taken slot is rejected.
 - **Pair-before-traffic**: pairs are established when an instance starts. While unpaired, a slot is silent: publishes go nowhere and subscriptions receive nothing.
 - **Unpair on death**: when either instance dies, the pair dissolves automatically. The survivor keeps running with its slot unpaired until a new peer instance is started against it.
@@ -66,6 +66,8 @@ After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag
 
 Each node declares a **pairing slot** under `depends_on.pairings`: the contract, the role this node plays, and a `link_id` naming the slot. The `link_id` is how the node's own code and the pairing commands refer to *the other end*; while paired, exactly one peer instance sits behind it.
 
+The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is just `{ link_id, name }`: the pairing document remains the single source of shape and QoS, so an inline `message_format` or `qos_profile` on one of these entries is rejected.
+
 <Tabs>
   <TabItem label="Python">
     <Code code={robotArmPythonConfig} lang="json5" title="robot_arm/peppy.json5" />
@@ -84,12 +86,23 @@ Each node declares a **pairing slot** under `depends_on.pairings`: the contract,
   </TabItem>
 </Tabs>
 
+The two manifests are mirror images, which is what makes the conversation legible from either side alone:
+
 | Node | Role in `arm_link` | Slot (`link_id`) | Emits to the peer | Consumes from the peer |
 |---|---|---|---|---|
 | `robot_arm` | `arm` | `controller` | `joint_states` | `joint_commands` |
 | `arm_controller` | `controller` | `arm` | `joint_commands` | `joint_states` |
 
-A slot is **required** by default: starting the instance without pairing it (or explicitly deferring it) fails loudly. Mark a slot `optional: true` to let the instance boot unpaired with no ceremony.
+### Coverage: emit side complete, consume side free
+
+The two directions are checked differently, and for the same reasons contracts are:
+
+- **`emits` must be exact.** The entries for a slot are precisely the document's topics whose `emitted_by` is the slot's role: no missing entry, no unknown name, no duplicate, and never a topic the *counterpart* role emits. A role that silently stopped emitting one of its topics would break its peer, and the pairing document is the promise that it will not.
+- **`consumes` may be partial.** List any subset of the counterpart role's topics. Omitting one is a legitimate way to ignore part of a pairing: no module is generated for that topic, so no subscription can be created for it. This is a local decision with no effect on the peer. Declaring zero consumes is fine, including for a slot whose counterpart role emits nothing.
+
+Naming a topic under `consumes` that this node's own role emits is an error, as is naming a topic that is absent from the document. Both are reported as one aggregated diff per slot, so a manifest with several wrong entries produces one readable report rather than a cascade.
+
+A slot is **required** by default: starting the instance without pairing it (or explicitly deferring it) fails loudly. Mark a slot `optional: true` to let the instance boot unpaired with no ceremony. Optionality governs whether the slot must be paired at launch, not what the node declares about it: an optional slot is coverage-checked identically.
 
 ## Establishing pairs
 
@@ -102,21 +115,21 @@ peppy node sync ./arm_controller
 
 # The first instance has no peer yet, so its required slot must be
 # explicitly deferred; it boots with the slot silent.
-peppy node run --instance-id arm_1 robot_arm:v1 --defer-pair controller
+peppy node run --instance-id arm_1 robot_arm:v1 --defer-link controller
 
 # The second instance pairs its `arm` slot with arm_1 at start.
-peppy node run --instance-id ctrl_1 arm_controller:v1 --pair arm@arm_1
+peppy node run --instance-id ctrl_1 arm_controller:v1 --link arm@arm_1
 ```
 
-The `--pair` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. Running a node whose required slot is neither `--pair`ed nor `--defer-pair`ed is a hard error naming the missing slot and both flags:
+The `--link` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. Running a node whose required slot is neither `--link`ed nor `--defer-link`ed is a hard error naming the missing slot and both flags:
 
 ```sh
 $ peppy node run arm_controller:v1
-Error: required pairing slot(s) not covered: [arm]. Pass `--pair <link_id>@<peer_instance>`
-to pair each at start, or `--defer-pair <link_id>` to explicitly start unpaired
+Error: required pairing slot(s) not covered: [arm]. Pass `--link <link_id>@<peer_instance>`
+to pair each at start, or `--defer-link <link_id>` to explicitly start unpaired
 ```
 
-In a launcher, the pair is declared once, on either instance, with `pairings:`; a slot left intentionally unpaired goes in `defer_pairings:`:
+In a launcher, the pair is declared once, on either instance, with `links:`; a slot left intentionally unpaired goes in `defer_links:`:
 
 ```json5 title="peppy_launcher.json5"
 {
@@ -132,7 +145,7 @@ In a launcher, the pair is declared once, on either instance, with `pairings:`; 
         instance_id: "ctrl_1",
         // My `arm` slot pairs with the arm_1 instance. Declaring the same
         // pair from arm_1's side instead (or as well) is equivalent.
-        pairings: { arm: "arm_1" },
+        links: { arm: "arm_1" },
       }],
     },
   ],
@@ -147,13 +160,13 @@ In a launcher, the pair is declared once, on either instance, with `pairings:`; 
 Instance pairings
 
 NODE                INSTANCE   PAIRINGS
-robot_arm:v1        arm_1      controller ⇌ ctrl_1:arm@core-node-adoring-wiles-7286 (arm_link:v1)
-arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@core-node-adoring-wiles-7286 (arm_link:v1)
+robot_arm:v1        arm_1      controller ⇌ ctrl_1:arm@cn-adoring-wiles (arm_link:v1)
+arm_controller:v1   ctrl_1     arm ⇌ arm_1:controller@cn-adoring-wiles (arm_link:v1)
 ```
 
 ## Using the generated API
 
-`peppy node sync` generates a module per slot topic under `peppygen.pairings.<link_id>.<topic>` (Python) / `peppygen::pairings::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
+`peppy node sync` generates a module per declared slot topic under `peppygen.paired_topics.<link_id>.<topic>` (Python) / `peppygen::paired_topics::<link_id>::<topic>` (Rust); both directions of a slot live under the same `link_id`. The modules follow the manifest's entries, not the document's full topic list, so a counterpart topic you left out of `consumes` simply has no module. Pairing topics never appear under `consumed_topics` or `emitted_topics`, whichever direction they travel. Emitting and consuming look exactly like ordinary topics, plus two pin-state helpers on every module: `paired()` returns the current peer's identity (or `None`/`None` while unpaired), and `wait_paired()` awaits one.
 
 <Tabs>
   <TabItem label="Python">
@@ -186,16 +199,16 @@ The key behavioral guarantees, all handled by the runtime with no application co
 
 A pair lives exactly as long as both endpoints. When an instance dies (crashes, is stopped with `peppy node stop`, or is torn down by a stack operation), the daemon dissolves its pairs and live-notifies each survivor that its slot is now unpaired. The survivor keeps running; its slot goes silent.
 
-Failover is then just another `--pair` at start:
+Failover is then just another `--link` at start:
 
 ```sh
 # ctrl_1 died (or was stopped). arm_1 keeps running, slot unpaired.
-peppy node run --instance-id ctrl_2 arm_controller:v1 --pair arm@arm_1
+peppy node run --instance-id ctrl_2 arm_controller:v1 --link arm@arm_1
 ```
 
 `ctrl_2` pairs with the surviving `arm_1`, whose subscription and publisher switch to the new peer live; the arm's code never restarts and never notices beyond `paired()` reporting a new identity.
 
-Exclusivity is enforced at establishment: while `arm_1`'s slot is paired, a third instance running with `--pair arm@arm_1` is rejected naming the existing pair. To hand an arm to a different controller, stop the old controller first (or run the new one against a different arm).
+Exclusivity is enforced at establishment: while `arm_1`'s slot is paired, a third instance running with `--link arm@arm_1` is rejected naming the existing pair. To hand an arm to a different controller, stop the old controller first (or run the new one against a different arm).
 
 :::note[Pairs do not survive a daemon restart]
 Pairing state lives in the daemon, alongside the node stack itself. Like the stack, it is in-memory: after a daemon restart, instances are gone and so are their pairs; a fresh launch re-establishes them.
@@ -205,6 +218,8 @@ Pairing state lives in the daemon, alongside the node stack itself. Like the sta
 
 Because the slot, not the node, is the unit of pairing, a node can declare several slots of the *same* pairing and hold one peer per slot, each a fully isolated stream:
 
+Each slot is declared and covered on its own, so the two arms stay independent all the way down to the generated modules:
+
 ```json5
 // commander/peppy.json5 (manifest excerpt)
 depends_on: {
@@ -213,16 +228,68 @@ depends_on: {
     { name: "arm_link", tag: "v1", role: "controller", link_id: "right_arm" },
   ],
 },
+interfaces: {
+  topics: {
+    // Emit coverage is per slot, so the controller role's `joint_commands`
+    // is listed once for each arm.
+    emits: [
+      { link_id: "left_arm", name: "joint_commands" },
+      { link_id: "right_arm", name: "joint_commands" },
+    ],
+    consumes: [
+      { link_id: "left_arm", name: "joint_states" },
+      { link_id: "right_arm", name: "joint_states" },
+    ],
+  },
+},
 ```
 
 ```sh
-peppy node run --instance-id arm_l robot_arm:v1 --defer-pair controller
-peppy node run --instance-id arm_r robot_arm:v1 --defer-pair controller
+peppy node run --instance-id arm_l robot_arm:v1 --defer-link controller
+peppy node run --instance-id arm_r robot_arm:v1 --defer-link controller
 peppy node run --instance-id cmd_1 two_arm_commander:v1 \
-  --pair left_arm@arm_l --pair right_arm@arm_r
+  --link left_arm@arm_l --link right_arm@arm_r
 ```
 
-The generated code addresses each arm through its slot module (`pairings.left_arm.joint_commands` vs `pairings.right_arm.joint_commands` in Python, `pairings::left_arm::joint_commands` vs `pairings::right_arm::joint_commands` in Rust), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--pair left_arm@cmd_2/right_arm`.
+The generated code addresses each arm through its slot module (`paired_topics.left_arm.joint_commands` vs `paired_topics.right_arm.joint_commands` in Python, `paired_topics::left_arm::joint_commands` vs `paired_topics::right_arm::joint_commands` in Rust), and each subscription receives only its own arm's states. When a peer instance declares several complementary slots (pairing two commanders' arms to each other, say), disambiguate the target with `--link left_arm@cmd_2/right_arm`.
+
+## Observers: watching a pairing without joining it
+
+A pair is exclusive between two instances, but sometimes a third node just wants to *watch* one side's stream: a recorder logging every `joint_states` an arm emits, a dashboard tailing a controller's setpoints. Joining the pair is wrong (it is 1:1, and the watcher has nothing to send back), and a separate contract would duplicate the topic shape. An **observer slot** solves this: it passively taps the topics a chosen role emits, following that source instance's own lifecycle rather than any pairing.
+
+Declare an observer slot in `depends_on.pairings` with `observes_role` instead of `role`, and list the topics it taps in `interfaces.topics.consumes` under its `link_id`. An observer plays no role, claims no endpoint, and emits nothing, so it never needs coverage on an emit side:
+
+```json5
+// recorder/peppy.json5 (manifest excerpt)
+depends_on: {
+  pairings: [
+    // Watch whatever the `arm` role of arm_link/v1 publishes.
+    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+  ]
+},
+interfaces: {
+  topics: {
+    // The `arm` role emits joint_states; tap it through the `watch` slot.
+    consumes: [{ link_id: "watch", name: "joint_states" }]
+  }
+}
+```
+
+Link the observer to a **source instance** the same way you establish a pairing, with `--link` (or a launcher `links:` entry) — the target is the instance to observe, not a peer to pair with:
+
+```sh
+# Observe arm_1, whichever controller it happens to be paired with (or none).
+peppy node run --instance-id rec_1 recorder:v1 --link watch@arm_1
+```
+
+The runtime guarantees mirror pairing's, with the lifecycle twist that defines an observer:
+
+- **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
+- **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
+- **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation; no message from a previous run of the source leaks across the restart.
+- **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a `source()` helper reporting the resolved source (or `None` before it resolves). There is no publisher and no `paired()` — an observer never talks back.
+
+The generated modules live alongside participant slots under `peppygen.paired_topics.<link_id>.<topic>`. Every observer slot is required (it has no `optional` form); cover it with a `--link`/`links:` entry or defer it explicitly with `--defer-link`/`defer_links:`, exactly like a required pairing slot.
 
 ## Why topics only?
 
@@ -245,9 +312,11 @@ Pairing and [contract implementation](/advanced_guides/contract_implementation) 
 
 | | Pairing | Contract |
 |---|---|---|
+| Declaration model | The node enumerates what it uses in `interfaces.topics`; the document owns shape and QoS | The node enumerates what it uses in `interfaces`; the document owns shape and QoS |
+| Coverage | Produced side (`emits`) exact per slot, consumed side free | Produced side (`implements`) exact per slot, consumed side free |
 | Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key) | Declared per slot: exactly one by default, an application-selected set for `one_or_more` / `zero_or_more` |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |
-| Establishment | Explicit (`--pair` / `pairings:`), at instance start | Explicit (`--bind` / `bindings:`), at instance start |
+| Establishment | Declared once on either side (`--link arm@peer`), covering both endpoints, at instance start | Each consumer slot bound to its producer(s) (`--link slot@producer`), at instance start |
 | Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |
 | Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | Producers come and go freely |
 | Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry, monitoring, swappable sources (dedicated slots or one multi-cardinality slot) |

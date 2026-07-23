@@ -1,6 +1,6 @@
 //! Generate-and-compile fixture for pairing peer modules (Rust): a synthetic
 //! two-role pairing (`arm_link/v1`, roles controller/arm) generates
-//! `pairings/<link_id>/<topic>` modules for both directions, and a user node
+//! `paired_topics/<link_id>/<topic>` modules for both directions, and a user node
 //! exercising the full generated surface — slot consts, `paired()` /
 //! `wait_paired()`, the slot-scoped publisher, and the pin-following
 //! subscription — must compile against the real peppylib. This is the
@@ -73,12 +73,37 @@ fn generated_peer_modules_compile_against_peppylib() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    // Both directions of the slot nest flat under pairings/<link_id>/<topic>.
-    let pairings_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src/pairings");
+    // Both directions of the slot nest under paired_topics/<link_id>/<topic>.
+    let src_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src");
+    let paired_topics_dir = src_dir.join("paired_topics");
     for module in ["arm/joint_commands.rs", "arm/joint_states.rs"] {
         assert!(
-            pairings_dir.join(module).exists(),
-            "expected generated module pairings/{module}"
+            paired_topics_dir.join(module).exists(),
+            "expected generated module paired_topics/{module}"
+        );
+    }
+    // Neither direction may leak into the flat consumed/emitted namespaces.
+    // Asserted on directory contents so a misplaced-but-working module fails
+    // loudly instead of passing by compiling.
+    for category in ["consumed_topics", "emitted_topics"] {
+        let dir = src_dir.join(category);
+        // The scaffold creates every category dir, so a missing one means the
+        // layout changed and this check would otherwise pass vacuously.
+        assert!(
+            dir.is_dir(),
+            "expected category dir {}; if the scaffold stopped creating empty \
+             categories, rewrite this assertion rather than deleting it",
+            dir.display()
+        );
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .expect("category dir reads")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "mod.rs")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "pairing topics must not generate modules under {category}, found: {entries:?}"
         );
     }
 
@@ -88,7 +113,7 @@ fn generated_peer_modules_compile_against_peppylib() {
     let user_main = r#"
 use peppygen::NodeBuilder;
 use peppygen::Result;
-use peppygen::pairings::arm::{joint_commands, joint_states};
+use peppygen::paired_topics::arm::{joint_commands, joint_states};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
@@ -114,6 +139,97 @@ fn main() -> Result<()> {
             let payload = joint_commands::build_message([0.0, 0.5, 1.0], 0.25)?;
             publisher.publish(payload).await?;
 
+            if let Some((producer, states)) = subscription.next().await? {
+                println!(
+                    "{} joints from {}/{}",
+                    states.positions.len(),
+                    producer.core_node,
+                    producer.instance_id
+                );
+            }
+        }
+        Ok(())
+    })
+}
+"#;
+    fs::write(user_node.join("src").join("main.rs"), user_main).unwrap();
+
+    compile_project(&user_node);
+}
+
+/// The recorder side observing `arm_link/v1`: taps the `arm` role's
+/// `joint_states` through an observer slot whose link_id is `observed_arm`.
+fn recorder_observer_context() -> PeerContext {
+    PeerContext {
+        link_id: "observed_arm".to_string(),
+        pairing_name: "arm_link".to_string(),
+        pairing_tag: "v1".to_string(),
+    }
+}
+
+#[test]
+fn generated_observer_modules_compile_against_peppylib() {
+    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
+
+    let (mut generator, output_dir, user_node, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
+    let observer = recorder_observer_context();
+    generator.add_observed_topic(&states, &observer).unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(&output_dir, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    // The observer topic nests under paired_topics/<link_id>/<topic>, alongside
+    // participant topics for the same document, never in consumed/emitted.
+    let src_dir = user_node.join(PEPPYGEN_OUTPUT_PATH).join("src");
+    assert!(
+        src_dir
+            .join("paired_topics")
+            .join("observed_arm/joint_states.rs")
+            .exists(),
+        "expected generated module paired_topics/observed_arm/joint_states.rs"
+    );
+    for category in ["consumed_topics", "emitted_topics"] {
+        let dir = src_dir.join(category);
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .expect("category dir reads")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "mod.rs")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "an observer topic must not generate a module under {category}, found: {entries:?}"
+        );
+    }
+
+    init_cargo_user_node(&user_node);
+    // An observer exposes `source()` and a read-only `subscribe`, and NO
+    // publisher and NO `paired()`/`wait_paired()`. `compile_project` panics on
+    // any type error, so this main is the assertion.
+    let user_main = r#"
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use peppygen::paired_topics::observed_arm::joint_states;
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        assert_eq!(joint_states::LINK_ID, "observed_arm");
+        assert_eq!(joint_states::PAIRING_NAME, "arm_link");
+        assert_eq!(joint_states::PAIRING_TAG, "v1");
+
+        // The resolved source is local configuration state, not a health probe.
+        let source: Option<peppygen::ObservedSource> = joint_states::source(&node_runner)?;
+        if source.is_none() {
+            // A held observer subscription is legal before the source resolves.
+            let mut subscription = joint_states::subscribe(&node_runner).await?;
             if let Some((producer, states)) = subscription.next().await? {
                 println!(
                     "{} joints from {}/{}",

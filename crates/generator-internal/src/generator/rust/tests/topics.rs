@@ -182,6 +182,7 @@ fn emit_topic() {
 fn emitted_topic_via_contract_origin_targets_contract() {
     let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
     let origin = crate::ContractOrigin {
+        link_id: "depth_cam".to_string(),
         contract_name: "depth_camera".to_string(),
         contract_tag: "v1".to_string(),
     };
@@ -790,10 +791,7 @@ fn clippy_single_emitted_topic_empty_format() {
             .expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain_move_arm;",
-            "pub mod controller_rotate_servo_clockwise;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 }
 
@@ -870,15 +868,15 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     );
     assert!(
         output_dir
-            .join("src/consumed_topics/uvc_camera_video_stream.rs")
+            .join("src/consumed_topics/uvc_camera/video_stream.rs")
             .exists(),
-        "Expected uvc_camera_video_stream subscriber module"
+        "Expected uvc_camera/video_stream subscriber module"
     );
     assert!(
         output_dir
-            .join("src/consumed_topics/uvc_camera_sound.rs")
+            .join("src/consumed_topics/uvc_camera/sound.rs")
             .exists(),
-        "Expected uvc_camera_sound subscriber module"
+        "Expected uvc_camera/sound subscriber module"
     );
 }
 

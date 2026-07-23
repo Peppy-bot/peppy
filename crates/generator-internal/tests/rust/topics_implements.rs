@@ -41,10 +41,16 @@ fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
     }
 }
 
-fn contract_backed(name: &str, tag: &str, topic: NativeEmittedTopic) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    topic: NativeEmittedTopic,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::EmittedTopic {
         topic,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -91,15 +97,25 @@ const NODE_CONFIG: &str = r#"{
 ///   4. The per-interface marker fields land in their own files, proof the
 ///      four artifacts weren't cross-wired during generation.
 #[test]
-fn nests_contract_backed_topics_under_contract_name_and_tag() {
+fn nests_contract_backed_topics_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("depth_camera", "v1", make_topic("depth_v1_marker")),
-        contract_backed("depth_camera", "v2", make_topic("depth_v2_marker")),
-        contract_backed("uvc_camera", "v1", make_topic("uvc_v1_marker")),
+        contract_backed(
+            "depth_v1",
+            "depth_camera",
+            "v1",
+            make_topic("depth_v1_marker"),
+        ),
+        contract_backed(
+            "depth_v2",
+            "depth_camera",
+            "v2",
+            make_topic("depth_v2_marker"),
+        ),
+        contract_backed("uvc_v1", "uvc_camera", "v1", make_topic("uvc_v1_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -126,34 +142,37 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
         "native video_stream.rs should exist at {native_path:?}",
     );
 
-    // Conformed artifacts nest under `<iface_name>/<iface_tag>/`.
-    let depth_v1 = emit_dir.join("depth_camera/v1/video_stream.rs");
-    let depth_v2 = emit_dir.join("depth_camera/v2/video_stream.rs");
-    let uvc_v1 = emit_dir.join("uvc_camera/v1/video_stream.rs");
+    // Conformed artifacts nest under `<link_id>/`.
+    let depth_v1 = emit_dir.join("depth_v1/video_stream.rs");
+    let depth_v2 = emit_dir.join("depth_v2/video_stream.rs");
+    let uvc_v1 = emit_dir.join("uvc_v1/video_stream.rs");
     for path in [&depth_v1, &depth_v2, &uvc_v1] {
         assert!(path.exists(), "expected contract-backed topic at {path:?}");
     }
 
-    // The container mod.rs files declare every direct child module.
-    let depth_mod = fs::read_to_string(emit_dir.join("depth_camera/mod.rs"))
-        .expect("depth_camera/mod.rs should exist");
+    // Each slot's `mod.rs` declares its leaf module.
+    let depth_v1_mod =
+        fs::read_to_string(emit_dir.join("depth_v1/mod.rs")).expect("depth_v1/mod.rs should exist");
     assert!(
-        depth_mod.contains("pub mod v1;"),
-        "depth_camera/mod.rs missing v1: {depth_mod}",
+        depth_v1_mod.contains("pub mod video_stream;"),
+        "depth_v1/mod.rs missing video_stream: {depth_v1_mod}",
     );
+    let depth_v2_mod =
+        fs::read_to_string(emit_dir.join("depth_v2/mod.rs")).expect("depth_v2/mod.rs should exist");
     assert!(
-        depth_mod.contains("pub mod v2;"),
-        "depth_camera/mod.rs missing v2: {depth_mod}",
+        depth_v2_mod.contains("pub mod video_stream;"),
+        "depth_v2/mod.rs missing video_stream: {depth_v2_mod}",
     );
 
     // The category file at `src/emitted_topics.rs` lists the four entries:
-    // the native leaf and the three interface directories.
+    // the native leaf and the three slot directories.
     let category_mod =
         fs::read_to_string(src.join("emitted_topics.rs")).expect("emitted_topics.rs should exist");
     for expected in [
         "pub mod video_stream;",
-        "pub mod depth_camera;",
-        "pub mod uvc_camera;",
+        "pub mod depth_v1;",
+        "pub mod depth_v2;",
+        "pub mod uvc_v1;",
     ] {
         assert!(
             category_mod.contains(expected),
@@ -230,18 +249,19 @@ fn nests_contract_backed_topics_under_contract_name_and_tag() {
     );
 }
 
-/// Exercises hyphen-to-underscore normalization in the `iface_tag` for the
-/// Rust generator: a tag `v1-beta` becomes the directory `v1_beta` (Rust
-/// module names can't carry hyphens) while the literal `"v1-beta"` is still
-/// embedded in the declare_publisher body; messaging.rs normalizes hyphens at the wire
-/// boundary, so the generator keeps the raw value.
+/// Exercises hyphen-to-underscore normalization of the slot `link_id` for the
+/// Rust generator: a link_id `depth-beta` becomes the directory `depth_beta`
+/// (Rust module names can't carry hyphens) while the literal `"v1-beta"` tag is
+/// still embedded in the declare_publisher body; messaging.rs normalizes hyphens
+/// at the wire boundary, so the generator keeps the raw value.
 #[test]
-fn hyphenated_tag_lands_in_underscore_directory() {
+fn hyphenated_link_id_lands_in_underscore_directory() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![contract_backed(
+        "depth-beta",
         "depth_camera",
         "v1-beta",
         make_topic("hyphen_marker"),
@@ -263,10 +283,10 @@ fn hyphenated_tag_lands_in_underscore_directory() {
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
         .join("src")
         .join("emitted_topics");
-    let leaf = emit_dir.join("depth_camera/v1_beta/video_stream.rs");
+    let leaf = emit_dir.join("depth_beta/video_stream.rs");
     assert!(
         leaf.exists(),
-        "hyphenated tag should land in underscored dir at {leaf:?}",
+        "hyphenated link_id should land in an underscored dir at {leaf:?}",
     );
     let src = fs::read_to_string(&leaf).expect("read leaf");
     assert!(

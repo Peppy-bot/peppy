@@ -86,9 +86,8 @@ async fn node_stop_command_succeeds() {
             run: false,
             args: Vec::new(),
             instance_id: None,
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -131,7 +130,7 @@ async fn node_stop_command_succeeds() {
 
     // Verify the node was added with 0 instances
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -168,9 +167,8 @@ async fn node_stop_command_succeeds() {
             tag: Some("v1".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            binds: Vec::new(),
-            pairs: Vec::new(),
-            defer_pairs: Vec::new(),
+            links: Vec::new(),
+            defer_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -182,7 +180,7 @@ async fn node_stop_command_succeeds() {
 
     // Verify the node now has 1 instance
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,
@@ -260,7 +258,7 @@ async fn node_stop_command_succeeds() {
 
     // Verify the node now has 0 instances again
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         messenger_handle,
         &core_node_name,
         CALLER_INSTANCE_ID,

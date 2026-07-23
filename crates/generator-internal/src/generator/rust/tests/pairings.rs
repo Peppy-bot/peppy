@@ -43,7 +43,7 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
     assert_eq!(
         artifact.module_path,
         vec!["arm".to_string(), "joint_commands".to_string()],
-        "peer artifacts nest flat under pairings/<link_id>/<topic>"
+        "peer artifacts nest under paired_topics/<link_id>/<topic>"
     );
 
     let rendered = &artifact.code_output;
@@ -110,9 +110,13 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
         ],
     );
     // No binding-slot machinery: pairing subscriptions are pinned by the
-    // live peer_update channel, never by the consumer-filter path.
+    // live peer_update channel, never by the consumer-filter path. The
+    // cardinality-typed `bound_producer` accessors belong to consumed topics
+    // and have no meaning for a slot that holds exactly one peer.
     assert!(
-        !rendered.contains("ConsumerFilter") && !rendered.contains("TopicMessenger::subscribe("),
+        !rendered.contains("ConsumerFilter")
+            && !rendered.contains("TopicMessenger::subscribe(")
+            && !rendered.contains("bound_producer"),
         "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{rendered}"
     );
 }

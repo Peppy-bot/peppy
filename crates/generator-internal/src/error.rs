@@ -78,8 +78,8 @@ both produce the type name `{type_name}`"
         second_field: String,
     },
     #[error(
-        "pairing topic `{topic}` on slot `{link_id}` has no message_format; a consumed peer topic \
-needs a decodable payload"
+        "pairing topic `{topic}` on slot `{link_id}` has no message_format; it needs a decodable \
+payload to generate typed bindings"
     )]
     PeerTopicMissingMessageFormat { link_id: String, topic: String },
     /// Backstop: the parse-time flat topic-name uniqueness check on the
@@ -90,4 +90,18 @@ needs a decodable payload"
 (pairing topic names must be unique across the whole document)"
     )]
     PeerTopicNameCollision { link_id: String, topic: String },
+    /// Two sibling module segments at the same tree level sanitize to the same
+    /// on-disk name. Nesting is meant to make a name collision unrepresentable,
+    /// so this is a hard error naming both raw segments rather than a silent
+    /// numeric-suffix rename.
+    #[error(
+        "module name collision in `{category}`: `{first}` and `{second}` both \
+sanitize to the module name `{sanitized}`"
+    )]
+    ModuleNameCollision {
+        category: String,
+        first: String,
+        second: String,
+        sanitized: String,
+    },
 }

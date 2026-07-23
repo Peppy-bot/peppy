@@ -61,7 +61,7 @@ async fn print_runtime_config_async(
 
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
     let response = poll(
-        &StackListRequest::new(false),
+        &StackListRequest::new(),
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
@@ -120,14 +120,14 @@ async fn print_runtime_config_async(
     )
     .map_err(Error::PeppyConfig)?;
 
-    // Reflect the daemon's organization namespace, exactly as `apply_daemon_defaults`
+    // Reflect the daemon's workspace namespace, exactly as `apply_daemon_defaults`
     // stamps it onto a launched node, so this inspection output matches the session
     // namespace a real node would open under. Reuse the namespace captured when the
     // connection was established (above) rather than reading the state again, which
     // could race a restart and pair this generation's stack lookup with another
     // generation's namespace.
     let mut runtime_config = runtime_config;
-    runtime_config.discovery.organization_id = Some(conn.organization_namespace);
+    runtime_config.discovery.namespace = Some(conn.namespace);
 
     let runtime_config_json = serde_json::to_string(&runtime_config).map_err(|e| {
         Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))

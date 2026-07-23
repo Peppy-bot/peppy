@@ -323,7 +323,8 @@ To depend on a contract instead of a specific producer node, so any implementing
 ### Receiving messages
 
 The code generator creates a module for each consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust).
-The module name is `<link_id>_<topic_name>` based on the `link_id` field; in this case `uvc_camera_video_stream`.
+Every slot-backed module lives at `<category>/<link_id>/<member>`, keyed on the author's `link_id`.
+The consumed module is therefore `consumed_topics/<link_id>/<topic_name>`, imported as `from peppygen.consumed_topics.uvc_camera import video_stream` (Python) / `peppygen::consumed_topics::uvc_camera::video_stream` (Rust); here the `link_id` is `uvc_camera` and the topic is `video_stream`.
 Call `subscribe` once to obtain a held `Subscription`, then await `next` for each message:
 
 <Tabs>
@@ -333,14 +334,14 @@ import asyncio
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_topics import uvc_camera_video_stream
+from peppygen.consumed_topics.uvc_camera import video_stream
 
 
 async def receive_frames(node_runner: NodeRunner):
     # Same subscribe() as every cardinality: it covers the slot's complete
     # bound set, which for `one` is exactly one producer. The yielded
     # ProducerRef is constant here, so the loop ignores it.
-    subscription = await uvc_camera_video_stream.subscribe(node_runner)
+    subscription = await video_stream.subscribe(node_runner)
 
     async for _producer, frame in subscription:
         print(f"frame: {frame.width}x{frame.height}")
@@ -360,7 +361,7 @@ if __name__ == "__main__":
   </TabItem>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_topics::uvc_camera_video_stream;
+use peppygen::consumed_topics::uvc_camera::video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
@@ -368,7 +369,7 @@ fn main() -> Result<()> {
         // Same subscribe() as every cardinality: it covers the slot's complete
         // bound set, which for `one` is exactly one producer. The yielded
         // ProducerRef is constant here, so the loop ignores it.
-        let mut subscription = uvc_camera_video_stream::subscribe(&node_runner).await?;
+        let mut subscription = video_stream::subscribe(&node_runner).await?;
 
         while let Some((_, frame)) = subscription.next().await? {
             println!("frame: {}x{}", frame.width, frame.height);
@@ -429,7 +430,7 @@ import sys
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_topics import uvc_camera_video_stream
+from peppygen.consumed_topics.uvc_camera import video_stream
 
 
 async def process_frame(producer, frame):
@@ -441,7 +442,7 @@ async def process_frame(producer, frame):
 
 async def receive_frames(node_runner: NodeRunner):
     try:
-        subscription = await uvc_camera_video_stream.subscribe(node_runner)
+        subscription = await video_stream.subscribe(node_runner)
     except Exception as e:
         print(f"Failed to subscribe: {e}", file=sys.stderr)
         return
@@ -471,7 +472,7 @@ if __name__ == "__main__":
   <TabItem label="Rust">
 ```rust
 use std::sync::Arc;
-use peppygen::consumed_topics::uvc_camera_video_stream;
+use peppygen::consumed_topics::uvc_camera::video_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
 fn main() -> Result<()> {
@@ -482,7 +483,7 @@ fn main() -> Result<()> {
 }
 
 async fn receive_frames(node_runner: Arc<NodeRunner>) {
-    let mut subscription = match uvc_camera_video_stream::subscribe(&node_runner).await {
+    let mut subscription = match video_stream::subscribe(&node_runner).await {
         Ok(subscription) => subscription,
         Err(e) => {
             eprintln!("Failed to subscribe: {e}");
@@ -521,7 +522,7 @@ Nothing changes at the call site when the slot's [cardinality](#dependency-cardi
 <Tabs>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_topics::camera_video_stream;
+use peppygen::consumed_topics::camera::video_stream;
 use peppygen::{NodeBuilder, Parameters, ProducerRef, Result};
 use std::collections::HashMap;
 
@@ -534,7 +535,7 @@ fn main() -> Result<()> {
         // `one_or_more`: the merged subscription covers at least one producer.
         // `zero_or_more`: the slot may be empty; the subscription then
         // yields nothing until the node stops.
-        let mut subscription = camera_video_stream::subscribe(&node_runner).await?;
+        let mut subscription = video_stream::subscribe(&node_runner).await?;
 
         let mut frames_per_camera: HashMap<ProducerRef, u64> = HashMap::new();
         while let Some((producer, frame)) = subscription.next().await? {
@@ -555,13 +556,13 @@ fn main() -> Result<()> {
   </TabItem>
   <TabItem label="Python">
 ```python
-from peppygen.consumed_topics import camera_video_stream
+from peppygen.consumed_topics.camera import video_stream
 
 
 async def count_frames(node_runner):
     # One subscription covering every producer bound to the `camera`
     # slot; the yielded producer tells per-camera streams apart.
-    subscription = await camera_video_stream.subscribe(node_runner)
+    subscription = await video_stream.subscribe(node_runner)
 
     frames_per_camera: dict = {}
     async for producer, frame in subscription:
@@ -579,7 +580,7 @@ To follow a single camera instead, filter on the yielded producer (`bound_produc
 
 ## Bindings and routing
 
-Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the application bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--pair` at instance start, not by a binding.)
+Routing is **entirely consumer-side**. Producers publish unconditionally and are binding-agnostic; only the consumer's `depends_on` slots and the application bindings that fill them decide which producer instance reaches which slot. ([Pairing](/advanced_guides/pairing) topics are the one exception: a pairing slot is routed by the pair itself, established with `--link` at instance start, not by a binding.)
 
 A binding takes the form `KEY: VALUE`, where `KEY` is a `link_id` declared in the consumer's `depends_on` and `VALUE` selects the slot's target producer instance(s). Each bound target creates a private one-way channel from that producer instance to the consumer's slot: a multi-cardinality slot expands into N independent application-selected bound edges sharing the same `link_id`. How many targets a slot takes is the slot's declared [cardinality](#dependency-cardinality); there is no wildcard fallback and no discovery, only explicitly bound producers.
 
@@ -590,7 +591,7 @@ In a launcher / stack config:
   source: { local: "./consumer" },
   instances: [{
     instance_id: "my_consumer",
-    bindings: { uvc_camera: "my-camera-instance" },
+    links: { uvc_camera: "my-camera-instance" },
   }],
 }
 ```
@@ -598,7 +599,7 @@ In a launcher / stack config:
 or, when launching a single node during development:
 
 ```sh
-peppy node run --bind uvc_camera@my-camera-instance .
+peppy node run --link uvc_camera@my-camera-instance .
 ```
 
 ### Dependency cardinality
@@ -622,7 +623,7 @@ depends_on: {
 The binding value's shape mirrors the slot's cardinality. A `one` slot takes a scalar string only, exactly as above. A `one_or_more` or `zero_or_more` slot takes an **array** of instance ids; for `zero_or_more` the empty array `[]` is a valid definition, equivalent to omitting the binding entirely:
 
 ```json5
-bindings: {
+links: {
   camera: ["front_camera", "rear_camera"],
 }
 ```
@@ -630,7 +631,7 @@ bindings: {
 Any other combination is an error: an array on a `one` slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a `one` slot; the empty set has no flag spelling, omission is it:
 
 ```sh
-peppy node run --bind camera@front_camera --bind camera@rear_camera .
+peppy node run --link camera@front_camera --link camera@rear_camera .
 ```
 
 Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances, and it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. `depends_on.pairings` entries have no cardinality (a pairing is strictly 1:1 and expresses absence with its `optional` flag; a `cardinality` key on a pairing entry is a manifest error).
@@ -673,7 +674,7 @@ And the launcher that binds it:
       { instance_id: "right_cam" },
     ]},
     { source: { name: "openarm01_backbone:v1" }, instances: [
-      { instance_id: "backbone_inst_1", bindings: {
+      { instance_id: "backbone_inst_1", links: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
       }},
@@ -684,8 +685,8 @@ And the launcher that binds it:
 
 Three contract statements follow from this manifest:
 
-1. A frame from `left_cam` arrives only on the `wrist_left_camera_video_stream` slot.
-2. A frame from `right_cam` arrives only on the `wrist_right_camera_video_stream` slot.
+1. A frame from `left_cam` arrives only on the `wrist_left_camera` slot.
+2. A frame from `right_cam` arrives only on the `wrist_right_camera` slot.
 3. If the `wrist_right_camera` binding line were removed, the launch would be rejected: every declared slot except `zero_or_more` must be bound. A producer named by no binding is simply ignored, but a declared `one` or `one_or_more` slot with no binding is an error, not a silent gap.
 
 Dedicated slots (one `link_id` per camera, as here) and one multi-cardinality slot (`cameras: ["left_cam", "right_cam"]`) are both valid designs. Dedicated slots give each producer a distinct role in code; a multi slot treats the producers as an N-of-a-kind set behind one API.
@@ -694,11 +695,11 @@ Dedicated slots (one `link_id` per camera, as here) and one multi-cardinality sl
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A `--bind KEY@VALUE` (or launcher `bindings:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared `one` or `one_or_more` slot the bindings leave out fails the launch with one error per unfulfilled slot; a `zero_or_more` slot with no binding resolves to the empty set.
-2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar only (an array is rejected, single-element and empty included), a multi slot takes an array only (a scalar is rejected), and an empty array meets only `zero_or_more` (on `one_or_more` it is a cardinality-unmet error). Repeated `--bind KEY@…` flags carry no shape and are checked by count: more than one occurrence on a `one` slot is rejected. Duplicate targets within one slot are rejected rather than deduplicated.
+1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A `--link KEY@VALUE` (or launcher `links:` entry) whose `KEY` matches no `depends_on.{nodes,contracts}` `link_id` is rejected; there are no free-form keys. In the other direction, a declared `one` or `one_or_more` slot the bindings leave out fails the launch with one error per unfulfilled slot; a `zero_or_more` slot with no binding resolves to the empty set.
+2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar only (an array is rejected, single-element and empty included), a multi slot takes an array only (a scalar is rejected), and an empty array meets only `zero_or_more` (on `one_or_more` it is a cardinality-unmet error). Repeated `--link KEY@…` flags carry no shape and are checked by count: more than one occurrence on a `one` slot is rejected. Duplicate targets within one slot are rejected rather than deduplicated.
 3. **Every target must satisfy the slot, checked per bound instance.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `manifest.implements` must include the slot's `(name, tag)` (`BindingContractNotImplemented` otherwise); see [Contract implementation](/advanced_guides/contract_implementation) for the implementation rules.
-4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
-5. **Bindings are stamped with the daemon's `core_node`.** The `--bind KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot. Bound-set member order is the application declaration order (launcher array order / CLI flag occurrence order), preserved verbatim into the runtime configuration.
+4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
+5. **Bindings are stamped with the daemon's `core_node`.** The `--link KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot. Bound-set member order is the application declaration order (launcher array order / CLI flag occurrence order), preserved verbatim into the runtime configuration.
 
 ## Message format types
 

@@ -555,10 +555,7 @@ fn clippy_single_exposed_service_without_request_body() {
             .expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain_move_arm;",
-            "pub mod controller_rotate_servo_clockwise;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 }
 
@@ -655,15 +652,15 @@ fn compile_lib_with_exposed_and_consumed_services() {
     );
     assert!(
         output_dir
-            .join("src/consumed_services/uvc_camera_enable_camera.rs")
+            .join("src/consumed_services/uvc_camera/enable_camera.rs")
             .exists(),
-        "Expected uvc_camera_enable_camera subscriber module"
+        "Expected uvc_camera/enable_camera subscriber module"
     );
     assert!(
         output_dir
-            .join("src/consumed_services/uvc_camera_get_camera_info.rs")
+            .join("src/consumed_services/uvc_camera/get_camera_info.rs")
             .exists(),
-        "Expected uvc_camera_get_camera_info subscriber module"
+        "Expected uvc_camera/get_camera_info subscriber module"
     );
 }
 

@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::builder::ServeCommandBuilder;
 use crate::error::{Error, Result};
+use daemon_config::consts::PeppyDirs;
 use tokio_util::sync::CancellationToken;
 
 /// Why a serve generation stopped running, threaded up to the in-process
@@ -242,10 +243,15 @@ impl Serve {
                 tokio::select! {
                     result = join_set.join_next() => {
                         match result {
+                            // A handler that returns an error mid-run is a
+                            // broken daemon: tear the generation down and exit
+                            // non-zero so the supervisor sees it, instead of
+                            // logging once and running on half-alive.
+                            Some(Ok(Err(e))) => break Err(e),
                             Some(result) => Self::log_task_result(result),
                             None => {
                                 info!("All serve handlers completed. Exiting...");
-                                break ServeOutcome::Stop;
+                                break Ok(ServeOutcome::Stop);
                             }
                         }
                     }
@@ -256,13 +262,13 @@ impl Serve {
                         }
                     } => {
                         info!("External shutdown requested");
-                        break ServeOutcome::Stop;
+                        break Ok(ServeOutcome::Stop);
                     }
                     signal = &mut shutdown => {
                         match signal {
                             Ok(_) => {
                                 info!("Shutdown signal received");
-                                break ServeOutcome::Stop;
+                                break Ok(ServeOutcome::Stop);
                             }
                             Err(e) => {
                                 return Err(Error::ExecutionFailed(format!(
@@ -286,12 +292,15 @@ impl Serve {
                         }
                     } => {
                         info!("In-process restart signal received (namespace change)");
-                        break ServeOutcome::Restart;
+                        break Ok(ServeOutcome::Restart);
                     }
                 }
             };
 
-            info!("Tearing down serve handlers (reason: {reason:?})...");
+            match &reason {
+                Ok(outcome) => info!("Tearing down serve handlers (reason: {outcome:?})..."),
+                Err(error) => error!("Tearing down serve handlers after a handler failed: {error}"),
+            }
             // Unpark every task that observes the shared token so they run their
             // real graceful teardown rather than waiting on a signal that (for a
             // restart) will never arrive. Idempotent if already cancelled.
@@ -300,7 +309,7 @@ impl Serve {
                 Self::log_task_result(result);
             }
 
-            Ok::<ServeOutcome, Error>(reason)
+            reason
         })?;
         Ok(outcome)
     }
@@ -341,6 +350,13 @@ pub struct ServeOptions {
     /// The binary's compile-time git hash, recorded in the daemon state file.
     /// Taken as data so this library reads no build-time env of its own.
     pub git_hash: String,
+    /// The peppy data root: the singleton lock, `peppy_config.json5`, the
+    /// daemon state file, and the core node's storage all live under it.
+    /// Resolved once by the embedding binary so every consumer of the run
+    /// agrees by construction. The CLI passes [`PeppyDirs::default`]; tests
+    /// pass a per-test temp root so a daemon under test never reads (or
+    /// mutates) the machine's real peppy home.
+    pub peppy_dirs: PeppyDirs,
     /// External shutdown injection (tests / embedders): when `Some` and
     /// cancelled, the run stops cleanly. `None` in production (the CLI path).
     pub shutdown_token: Option<CancellationToken>,
@@ -357,18 +373,27 @@ pub struct ServeOptions {
 /// returns `Ok(())` and the process exits 0; the crash-only supervisor never
 /// restarts a clean exit.
 ///
+/// Refuses to start with [`Error::AlreadyRunning`] when another daemon holds
+/// the singleton lock for the same peppy data root.
+///
 /// This function may terminate the process directly with
 /// `RESTART_EXIT_CODE` (`75`) instead of returning: when restarts flap past
 /// the in-process cap, or when the messaging port stays bound between
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.
 pub fn serve(options: ServeOptions) -> Result<()> {
+    // One daemon per peppy data root: held for the WHOLE process lifetime,
+    // above the restart loop, so an in-process restart never opens a window
+    // for a second daemon. Every exit path releases it (kernel flock),
+    // including SIGKILL and the process::exit calls below.
+    let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&options.peppy_dirs)?;
     let mut flap = FlapWindow::new();
     loop {
-        match run_one_generation(&options)? {
+        let (outcome, router_adopted) = run_one_generation(&options)?;
+        match outcome {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
-                finalize_before_restart();
+                finalize_before_restart(router_adopted);
                 if flap.record_and_is_flapping() {
                     error!(
                         "daemon restarted more than {FLAP_CAP} times within {:?}; \
@@ -387,27 +412,34 @@ pub fn serve(options: ServeOptions) -> Result<()> {
 /// is a clean generation: fresh sessions, a fresh `CoreNode` (so its
 /// declaration guard re-runs), and the namespace + federation gate re-resolved
 /// from the credentials at the top of the build.
-fn run_one_generation(options: &ServeOptions) -> Result<ServeOutcome> {
-    // Read the daemon-global config, creating it with defaults if missing.
-    // Resolved from `PeppyDirs::default()` (the same ~/.peppy the core node
-    // uses), applied to the daemon's own session and every spawned node.
-    let peppy_dirs = daemon_config::consts::PeppyDirs::default();
-    let peppy_config = daemon_config::peppy_config::load_or_create(&peppy_dirs)
+fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
+    // Read the daemon-global config, creating it with defaults if missing,
+    // applied to the daemon's own session and every spawned node.
+    let peppy_config = daemon_config::peppy_config::load_or_create(&options.peppy_dirs)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to load peppy_config.json5: {e}")))?;
 
-    let mut builder = ServeCommandBuilder::new(&options.root_dir, options.git_hash.clone())?
-        .with_peppy_config(peppy_config)
-        .with_messaging_router(options.messaging_engine.clone())?
-        .with_core_node(options.core_node_name.clone(), options.clock_source)?;
+    let mut builder = ServeCommandBuilder::new(
+        &options.root_dir,
+        options.git_hash.clone(),
+        options.peppy_dirs.clone(),
+    )?
+    .with_peppy_config(peppy_config)
+    .with_messaging_router(options.messaging_engine.clone())?
+    .with_core_node(options.core_node_name.clone(), options.clock_source)?;
 
     if let Some(token) = &options.shutdown_token {
         builder = builder.with_shutdown_token(token.clone());
     }
 
+    let messenger = builder.messenger_handle();
     let executor = builder.build()?;
-    executor
+    let outcome = executor
         .execute()
-        .inspect_err(|e| error!("Serve command failed: {}", e))
+        .inspect_err(|e| error!("Serve command failed: {}", e))?;
+    let router_adopted = messenger
+        .map(|messenger| messenger.blocking_lock().router_is_adopted())
+        .unwrap_or(false);
+    Ok((outcome, router_adopted))
 }
 
 /// In-process flap backstop: more than [`FLAP_CAP`] restarts within
@@ -435,15 +467,23 @@ impl FlapWindow {
 }
 
 /// Between-generations finalizer for a restart: reap straggler children, then
-/// confirm the messaging port is free before the next `start_router`. A still-
-/// bound port the loop cannot recover from exits with [`RESTART_EXIT_CODE`].
-fn finalize_before_restart() {
+/// confirm a managed router released the messaging port before the next
+/// `start_router`. An adopted router remains outside peppy's lifecycle across
+/// generations and may be local or remote.
+fn finalize_before_restart(router_adopted: bool) {
     // Node children were reaped only by detached exit-watcher tasks that died with
     // the just-dropped runtime; because the process is long-lived (no execv/exit
     // re-parenting to init) an un-reaped child becomes a persistent zombie. A
     // single WNOHANG pass can miss a killed-but-not-yet-zombie child, so loop with
     // a short sleep until no children remain or the deadline.
     reap_stragglers(Duration::from_secs(2));
+
+    if router_adopted {
+        info!(
+            "adopted external router remains operator-managed; skipping the managed-port-free wait"
+        );
+        return;
+    }
 
     // Verify the messaging listen endpoint is free before the next generation's
     // start_router. TCP-only today (the local router listens on tcp/); if the old
@@ -589,6 +629,63 @@ mod tests {
             .execute()
             .expect("serve run failed");
         assert_eq!(outcome, ServeOutcome::Restart);
+    }
+
+    /// A handler that fails after readiness (fires its gate, then errors),
+    /// the shape of any serve task dying mid-run (e.g. the core node's
+    /// listener wait surfacing a dead listener's error).
+    struct FailsAfterReady;
+
+    impl ServeAsyncCommand for FailsAfterReady {
+        fn run(self: Box<Self>) -> ServeAsyncHandle {
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let future: ServeFuture = Box::pin(async move {
+                let _ = ready_tx.send(());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Err(Error::ExecutionFailed("post-readiness failure".into()))
+            });
+            ServeAsyncHandle::new(future, Some(ready_rx))
+        }
+    }
+
+    /// A handler that runs until the shared teardown token fires, pinning that
+    /// a failed sibling tears the whole generation down (the run would hang
+    /// here otherwise instead of returning the error).
+    struct RunsUntilTeardown {
+        token: CancellationToken,
+    }
+
+    impl ServeAsyncCommand for RunsUntilTeardown {
+        fn run(self: Box<Self>) -> ServeAsyncHandle {
+            let token = self.token;
+            let future: ServeFuture = Box::pin(async move {
+                token.cancelled().await;
+                Ok(())
+            });
+            ServeAsyncHandle::new(future, None)
+        }
+    }
+
+    /// A handler error after readiness must fail the whole run (non-zero exit,
+    /// so a late boot refusal is visible to the supervisor and to tests
+    /// waiting on the process), tearing the remaining handlers down rather
+    /// than leaving the daemon half-alive.
+    #[test]
+    fn post_readiness_handler_error_fails_the_run_and_tears_down() {
+        let teardown = CancellationToken::new();
+        let composite = CompositeCommand::default()
+            .add_async_command(Box::new(FailsAfterReady))
+            .add_async_command(Box::new(RunsUntilTeardown {
+                token: teardown.clone(),
+            }));
+        let err = Serve::new(composite)
+            .with_teardown_token(teardown)
+            .execute()
+            .expect_err("a handler failing mid-run must fail the serve run");
+        assert!(
+            err.to_string().contains("post-readiness failure"),
+            "the run must surface the failing handler's error: {err}"
+        );
     }
 
     /// A required readiness gate that drops without firing still aborts startup.

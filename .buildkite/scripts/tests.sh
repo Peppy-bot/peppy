@@ -19,14 +19,25 @@ isolated() {
   PEPPY_HOME="${PEPPY_RUN_HOME}" TMPDIR="${PEPPY_RUN_HOME}/tmpdir" "$@"
 }
 
+# Formatting needs no PEPPY_HOME, so it stays outside `isolated`. First because
+# it is the cheapest check here and failing fast on it saves a long build.
+echo "--- :rust: cargo fmt"
+cargo fmt --all -- --check
+
 echo "--- :rust: cargo test"
-isolated cargo test
+isolated cargo test --locked
 
 echo "--- :rust: container e2e tests"
-isolated cargo test -p core-node --features container_e2e --test container_e2e
+isolated cargo test --locked -p core-node --features container_e2e --test container_e2e
 
 echo "--- :rust: documentation integration tests"
-isolated cargo test -p docs-integration-tests
+isolated cargo test --locked -p docs-integration-tests
+
+# Proves the build consumed the committed lockfile rather than re-resolving it,
+# so the tested dependency graph is the shipped one. Must stay after the cargo
+# steps: placed before them it proves nothing.
+echo "--- :lock: shipping lockfile is unchanged"
+git diff --exit-code -- Cargo.lock
 
 # Release scripts tests run for every PR into main, and otherwise only when
 # scripts/ changed (was dorny/paths-filter). For PR builds, diff against the

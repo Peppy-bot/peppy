@@ -74,8 +74,8 @@ def capnp_loader(mod):
             return getattr(mod, name)
     sys.exit(f"no capnp loader found in {mod.__name__}")
 
-left = importlib.import_module("peppygen.consumed_topics.left_arm_joint_states")
-right = importlib.import_module("peppygen.consumed_topics.right_arm_joint_states")
+left = importlib.import_module("peppygen.consumed_topics.left_arm.joint_states")
+right = importlib.import_module("peppygen.consumed_topics.right_arm.joint_states")
 
 left_schema = capnp_loader(left)()
 right_schema = capnp_loader(right)()
@@ -134,8 +134,8 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
     .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    let left_module = peppygen_dir.join("peppygen/consumed_topics/left_arm_joint_states.py");
-    let right_module = peppygen_dir.join("peppygen/consumed_topics/right_arm_joint_states.py");
+    let left_module = peppygen_dir.join("peppygen/consumed_topics/left_arm/joint_states.py");
+    let right_module = peppygen_dir.join("peppygen/consumed_topics/right_arm/joint_states.py");
     assert!(
         left_module.exists(),
         "left consumer module missing at {}",
