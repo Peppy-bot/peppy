@@ -154,8 +154,8 @@ fn nests_contract_backed_actions_under_link_id() {
         "native leaf should pass `SenderTarget::node(...)`:\n{native_src}",
     );
     assert!(
-        native_src.contains("native_marker"),
-        "native source should carry its distinguishing field",
+        native_src.contains("native_marker") && native_src.contains("native_marker_ack"),
+        "native source should carry its declared request and response fields",
     );
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
@@ -168,8 +168,8 @@ fn nests_contract_backed_actions_under_link_id() {
         "arm v1 leaf should pass `arm`,`v1`:\n{arm_v1_src}",
     );
     assert!(
-        arm_v1_src.contains("arm_v1_marker"),
-        "arm v1 source should carry its distinguishing field",
+        arm_v1_src.contains("arm_v1_marker") && arm_v1_src.contains("arm_v1_marker_ack"),
+        "arm v1 source should carry its declared request and response fields",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
@@ -182,7 +182,7 @@ fn nests_contract_backed_actions_under_link_id() {
         "arm v2 leaf should pass `arm`,`v2`:\n{arm_v2_src}",
     );
     assert!(
-        arm_v2_src.contains("arm_v2_marker"),
-        "arm v2 source should carry its distinguishing field",
+        arm_v2_src.contains("arm_v2_marker") && arm_v2_src.contains("arm_v2_marker_ack"),
+        "arm v2 source should carry its declared request and response fields",
     );
 }

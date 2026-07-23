@@ -1165,6 +1165,12 @@ pub const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
+pub const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+{
+  accepted: "bool"
+}
+"#;
+
 pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
   positions: { $type: "array", $items: "f64", $length: 3 },
   velocities: { $type: "array", $items: "f64", $length: 3 },

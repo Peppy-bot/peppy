@@ -16,8 +16,8 @@ mod type_mapping;
 use super::naming::{resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
-    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
+    validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::Result;
@@ -242,11 +242,12 @@ impl LanguageGenerator for PythonGenerator {
                 .as_ref()
                 .and_then(|goal_service| goal_service.request_message_format.as_ref()),
         )?;
-        // The goal acknowledgement is framework-owned ({accepted}).
-        let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_goal_response", action.name)),
-            Some(&goal_response_fmt),
+            action
+                .goal_service
+                .as_ref()
+                .and_then(|goal_service| goal_service.response_message_format.as_ref()),
         )?;
 
         // The cancel-ack reply is encoded by the peppylib engine (a fixed
@@ -402,11 +403,9 @@ impl LanguageGenerator for PythonGenerator {
             &action_schema_keys.goal_request,
             messages.goal_request.as_ref(),
         )?;
-        // The goal acknowledgement is framework-owned ({accepted}).
-        let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             &action_schema_keys.goal_response,
-            Some(&goal_response_fmt),
+            messages.goal_response.as_ref(),
         )?;
 
         // The cancel reply is the framework-owned cancel-ack, decoded Rust-side

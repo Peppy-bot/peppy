@@ -321,6 +321,10 @@ pub(super) fn action_message_from_exposed(
             .goal_service
             .as_ref()
             .and_then(|s| s.request_message_format.clone()),
+        goal_response: exposed_action
+            .goal_service
+            .as_ref()
+            .and_then(|s| s.response_message_format.clone()),
         feedback: exposed_action
             .feedback_topic
             .as_ref()
@@ -329,6 +333,44 @@ pub(super) fn action_message_from_exposed(
             .result_service
             .as_ref()
             .and_then(|s| s.response_message_format.clone()),
+    }
+}
+
+#[cfg(test)]
+mod action_message_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_the_declared_goal_response_format_exactly() {
+        let exposed_action: config::node::NativeExposedAction = serde_json5::from_str(
+            r#"{
+                name: "move_arm",
+                goal_service: {
+                    response_message_format: {
+                        accepted: "bool"
+                    }
+                }
+            }"#,
+        )
+        .expect("action should parse");
+        let declared = exposed_action
+            .goal_service
+            .as_ref()
+            .and_then(|service| service.response_message_format.clone());
+
+        let messages = action_message_from_exposed(&exposed_action);
+
+        assert_eq!(messages.goal_response, declared);
+        assert_eq!(
+            messages
+                .goal_response
+                .as_ref()
+                .expect("declared response should be preserved")
+                .0
+                .len(),
+            1,
+            "the consumed response should contain exactly the declared field"
+        );
     }
 }
 

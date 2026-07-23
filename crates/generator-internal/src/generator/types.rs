@@ -23,13 +23,14 @@ pub enum InterfaceKind {
     ObservedTopic,
 }
 
-/// The message formats a consumer needs to talk to a producer's action: the goal request, the
-/// feedback topic format, and the result response. The goal acknowledgement is framework-owned
-/// (see [`goal_action_response_format`]) and there is no result-request wire message, so neither
-/// is carried here.
+/// The message formats a consumer needs to talk to a producer's action.
+///
+/// There is no result-request wire message, so only the goal request/response,
+/// feedback, and result response formats are carried here.
 #[derive(Debug, Clone)]
 pub struct ConsumedActionMessage {
     pub goal_request: Option<MessageFormat>,
+    pub goal_response: Option<MessageFormat>,
     pub feedback: Option<MessageFormat>,
     pub result_response: Option<MessageFormat>,
 }
@@ -712,17 +713,6 @@ pub fn validate_message_format_field_names(format: &MessageFormat, context: &str
         context
     };
     validate_field_map(format.0.iter(), "", normalized_context)
-}
-
-/// Returns the framework-owned goal-action response format used by both generators.
-///
-/// The goal acknowledgement is framework-owned (not declared by the action
-/// schema): every goal response contains only `accepted: bool`. Distinct from
-/// the cancel-ack format, which carries a typed `state`.
-pub fn goal_action_response_format() -> MessageFormat {
-    let mut fields = IndexMap::new();
-    fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
-    MessageFormat(fields)
 }
 
 /// Validates that generated type names for nested objects and array-of-object items

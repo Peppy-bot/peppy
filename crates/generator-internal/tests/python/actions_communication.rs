@@ -1,6 +1,7 @@
 use crate::helpers::{
-    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
-    EXPOSED_ACTION_EXAMPLE, bind_slot, python_consumer_stub_node_config,
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT,
+    CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, EXPOSED_ACTION_EXAMPLE,
+    bind_slot, python_consumer_stub_node_config,
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
@@ -94,6 +95,7 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -232,7 +234,7 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -437,6 +439,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -571,7 +574,7 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -764,6 +767,7 @@ async fn actions_communication_async_goal_decider(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -906,7 +910,7 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -1118,6 +1122,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1256,7 +1261,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -1483,6 +1488,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1631,7 +1637,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -1870,6 +1876,7 @@ async fn actions_communication_drain_loop_until_end_signal(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -2014,7 +2021,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)
@@ -2229,6 +2236,7 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -2373,7 +2381,7 @@ async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
     def goal_handler(_request):
-        return move_arm.GoalResponse.accept()
+        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
         ctx = await action.handle_goal_next_request(goal_handler)

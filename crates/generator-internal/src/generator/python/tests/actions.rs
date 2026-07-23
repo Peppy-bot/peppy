@@ -113,6 +113,12 @@ pub(super) const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+{
+  accepted: "bool"
+}
+"#;
+
 pub(super) const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 {
   new_position: {
@@ -204,21 +210,18 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse: framework-owned goal acknowledgement dataclass with
-    // accept()/reject() staticmethods the decider returns.
+    // GoalResponse mirrors response_message_format exactly. GoalDecision
+    // controls framework acceptance independently and carries that payload in
+    // both branches.
     assert_contains_all(
         &rendered,
         &[
             "class GoalResponse:",
             "accepted: bool",
-            "def accept():",
-            "def reject():",
+            "class GoalDecision:",
+            "def accept(response):",
+            "def reject(response):",
         ],
-    );
-    assert_rendered!(
-        !rendered.contains("error_message"),
-        rendered,
-        "goal responses must not gain an undeclared error_message field"
     );
 
     // ActionHandle class
@@ -263,9 +266,10 @@ fn exposed_action() {
     assert_contains_all(
         &rendered,
         &[
-            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> \"GoalContext | None\":",
+            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
             "pending = await self._inner.recv_next_goal()",
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
+            "response = decision.response",
             "ctx = await pending.accept(response_bytes)",
             "return GoalContext(ctx, request)",
             "await pending.reject(response_bytes)",
@@ -303,14 +307,15 @@ fn expose_action_without_request_body() {
         .expect("artifact is present");
 
     // GoalRequest still exists (with metadata) even without request data. The
-    // framework GoalResponse (+ accept/reject) is always present.
+    // declared GoalResponse and framework GoalDecision remain present.
     assert_contains_all(
         &rendered,
         &[
             "class GoalRequest:",
             "class GoalResponse:",
-            "def accept():",
-            "def reject():",
+            "class GoalDecision:",
+            "def accept(response):",
+            "def reject(response):",
             "async def handle_goal_next_request(",
         ],
     );
@@ -459,6 +464,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: None,
         result_response: None,
     };
@@ -492,6 +498,7 @@ fn consumed_action() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -715,6 +722,7 @@ fn consumed_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let move_arm_messages = ConsumedActionMessage {
         goal_request: Some(move_arm_goal_request),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(move_arm_feedback),
         result_response: Some(move_arm_result_response),
     };
@@ -728,6 +736,7 @@ fn consumed_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
     let rotate_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(rotate_feedback),
         result_response: Some(rotate_result_response),
     };
@@ -857,6 +866,7 @@ fn consumed_action_without_response_payload() {
 
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: None,
         feedback: Some(feedback_format),
         result_response: None,
     };
@@ -885,9 +895,13 @@ fn consumed_action_without_response_payload() {
         ],
     );
 
-    // The goal acknowledgement is framework-owned, so goal_response
-    // deserialization is always present even when the action declares none.
-    assert_contains_all(&rendered, &["def _deserialize_goal_response("]);
+    assert_rendered!(
+        !rendered.contains("GoalResponseData")
+            && !rendered.contains("_deserialize_goal_response")
+            && !rendered.contains("handle.data"),
+        &rendered,
+        "no goal-response API should be generated without response_message_format"
+    );
     // result_response is NOT framework-owned, so it stays absent here.
     assert_rendered!(
         !rendered.contains("def _deserialize_result_response"),
@@ -905,9 +919,8 @@ fn consumed_action_without_response_payload() {
     // ActionHandle class
     assert_contains_all(&rendered, &["class ActionHandle:"]);
 
-    // fire_goal should have serialization (goal_request exists). The goal
-    // acknowledgement is framework-owned, so GoalResponseData and handle.data
-    // are always present even when the action declares no goal response.
+    // fire_goal still serializes the declared goal request and returns a handle
+    // without response data.
     assert_contains_all(
         &rendered,
         &[
@@ -915,10 +928,7 @@ fn consumed_action_without_response_payload() {
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",
-            "handle.data = goal_response_data",
             "return handle",
-            "class GoalResponseData:",
-            "accepted: bool",
         ],
     );
 
@@ -940,6 +950,7 @@ fn consumed_action_without_feedback() {
 
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: None,
         result_response: None,
     };

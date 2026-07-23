@@ -648,10 +648,15 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         goal_response_schema.contains("accepted @0 :Bool;"),
         "goal response schema should contain the declared accepted field:\n{goal_response_schema}"
     );
-    assert!(
-        !goal_response_schema.contains("errorMessage"),
-        "goal response schema must not gain an undeclared errorMessage field:\n\
-         {goal_response_schema}"
+    let goal_response_fields: Vec<_> = goal_response_schema
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains(" @"))
+        .collect();
+    assert_eq!(
+        goal_response_fields,
+        ["accepted @0 :Bool;"],
+        "goal response schema should exactly match response_message_format"
     );
 
     let consumer_dir =
@@ -690,6 +695,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(
+            serde_json5::from_str(r#"{ accepted: "bool" }"#)
+                .expect("failed to parse goal response format"),
+        ),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };

@@ -750,6 +750,7 @@ fn clippy_single_emitted_topic_empty_format() {
     .unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: None,
         feedback: None,
         result_response: None,
     };
@@ -908,6 +909,7 @@ fn no_user_facing_producer_identity_params() {
         serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: None,
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
