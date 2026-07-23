@@ -640,6 +640,19 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         "exposed action module should exist in peppygen crate at {}",
         exposed_peppygen_dir.display()
     );
+    let goal_response_schema = fs::read_to_string(
+        exposed_peppygen_dir.join("src/capnp/test_action_goal_response_message.capnp"),
+    )
+    .expect("failed to read exposed action goal response schema");
+    assert!(
+        goal_response_schema.contains("accepted @0 :Bool;"),
+        "goal response schema should contain the declared accepted field:\n{goal_response_schema}"
+    );
+    assert!(
+        !goal_response_schema.contains("errorMessage"),
+        "goal response schema must not gain an undeclared errorMessage field:\n\
+         {goal_response_schema}"
+    );
 
     let consumer_dir =
         TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");

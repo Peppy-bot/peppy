@@ -956,10 +956,9 @@ impl LanguageGenerator for RustGenerator {
                 &format!("{label}_request"),
                 goal_service.and_then(|goal| goal.request_message_format.as_ref()),
             )?;
-            // The goal acknowledgement is framework-owned ({accepted,
-            // error_message}); any goal response declared in the action schema
-            // is ignored. The decider returns GoalResponse::accept() /
-            // GoalResponse::reject(reason).
+            // The goal acknowledgement is framework-owned ({accepted}); any
+            // goal response declared in the action schema is ignored. The
+            // decider returns GoalResponse::accept() / GoalResponse::reject().
             let goal_response_format = goal_action_response_format();
             let response_artifacts =
                 map_message_format(&format!("{label}_response"), Some(&goal_response_format))?;
@@ -1015,7 +1014,7 @@ impl LanguageGenerator for RustGenerator {
             }
 
             // The decider returns a framework `GoalResponse`
-            // (`accept()` / `reject(reason)`).
+            // (`accept()` / `reject()`).
             extra_items.push(build_goal_response_constructors());
 
             // Serialization for the `GoalResponse` (reads a local `response`).
@@ -1618,7 +1617,7 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        // The goal acknowledgement is framework-owned ({accepted}).
         let goal_response_fmt = goal_action_response_format();
         let goal_response_format = Some(&goal_response_fmt);
         let feedback_format = non_empty_message_format(messages.feedback.as_ref());

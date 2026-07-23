@@ -205,16 +205,20 @@ fn exposed_action() {
     );
 
     // GoalResponse: framework-owned goal acknowledgement dataclass with
-    // accept()/reject(reason) staticmethods the decider returns.
+    // accept()/reject() staticmethods the decider returns.
     assert_contains_all(
         &rendered,
         &[
             "class GoalResponse:",
             "accepted: bool",
-            "error_message: Optional[str]",
             "def accept():",
-            "def reject(reason):",
+            "def reject():",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("error_message"),
+        rendered,
+        "goal responses must not gain an undeclared error_message field"
     );
 
     // ActionHandle class
@@ -306,7 +310,7 @@ fn expose_action_without_request_body() {
             "class GoalRequest:",
             "class GoalResponse:",
             "def accept():",
-            "def reject(reason):",
+            "def reject():",
             "async def handle_goal_next_request(",
         ],
     );

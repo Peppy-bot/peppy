@@ -227,18 +227,23 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse struct: framework-owned goal acknowledgement
-    // ({accepted, error_message}) with its `new` constructor and the
-    // accept/reject helpers the decider returns.
+    // GoalResponse struct: framework-owned goal acknowledgement ({accepted})
+    // with its `new` constructor and the accept/reject helpers the decider
+    // returns.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalResponse",
             "impl GoalResponse",
-            "pub fn new(accepted: bool, error_message: Option<String>) -> Self",
+            "pub fn new(accepted: bool) -> Self",
             "pub fn accept() -> Self",
-            "pub fn reject(reason: impl Into<String>) -> Self",
+            "pub fn reject() -> Self",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("error_message"),
+        rendered,
+        "goal responses must not gain an undeclared error_message field"
     );
 
     // ActionHandle wraps the concurrent-action engine.
@@ -312,7 +317,7 @@ fn expose_action_without_request_body() {
             "pub struct GoalRequest",
             "pub struct GoalResponse",
             "pub fn accept() -> Self",
-            "pub fn reject(reason: impl Into<String>) -> Self",
+            "pub fn reject() -> Self",
             "pub async fn handle_goal_next_request",
             "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
         ],
@@ -413,10 +418,7 @@ fn expose_feedback_only_action() {
     // action gets the GoalResponse accept/reject helpers.
     assert_contains_all(
         &rendered,
-        &[
-            "pub fn accept() -> Self",
-            "pub fn reject(reason: impl Into<String>) -> Self",
-        ],
+        &["pub fn accept() -> Self", "pub fn reject() -> Self"],
     );
     // No result service → no completion methods.
     assert_rendered!(

@@ -3,7 +3,7 @@ use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, PrimitiveSchema, SchemaType, TypeToken,
+    NativeExposedAction, NativeExposedService, SchemaType, TypeToken,
 };
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
@@ -714,25 +714,14 @@ pub fn validate_message_format_field_names(format: &MessageFormat, context: &str
     validate_field_map(format.0.iter(), "", normalized_context)
 }
 
-/// Returns the hardcoded goal-action response format used by both Rust and Python generators.
+/// Returns the framework-owned goal-action response format used by both generators.
 ///
 /// The goal acknowledgement is framework-owned (not declared by the action
-/// schema): every goal response is `accepted: bool` plus an optional
-/// `error_message: Optional[String]` carrying the rejection reason. The
-/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
-/// constructors produce it. Distinct from the cancel-ack format (which now
-/// carries a typed `state` instead), so `fire_goal`'s accept/reject wire is
-/// unchanged.
+/// schema): every goal response contains only `accepted: bool`. Distinct from
+/// the cancel-ack format, which carries a typed `state`.
 pub fn goal_action_response_format() -> MessageFormat {
     let mut fields = IndexMap::new();
     fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
-    fields.insert(
-        String::from("error_message"),
-        SchemaType::Primitive(PrimitiveSchema {
-            kind: TypeToken::String,
-            optional: true,
-        }),
-    );
     MessageFormat(fields)
 }
 

@@ -275,9 +275,9 @@ if __name__ == "__main__":
   </TabItem>
 </Tabs>
 
-The decider returns a `GoalResponse`, the framework acknowledgement (`accepted` plus an optional rejection reason):
+The decider returns a `GoalResponse`, the framework acknowledgement containing `accepted`:
 - `GoalResponse::accept()` (`GoalResponse.accept()` in Python) admits the goal, replies to the client, and yields a `GoalContext`.
-- `GoalResponse::reject(reason)` (`GoalResponse.reject(reason)` in Python) declines it: the client receives the response with `accepted == false` and the reason in `error_message`, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
+- `GoalResponse::reject()` (`GoalResponse.reject()` in Python) declines it: the client receives the response with `accepted == false`, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
 
 The `GoalRequest` passed to the decider contains:
 - `instance_id`: the client instance that sent the goal. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
@@ -312,11 +312,7 @@ while let Ok(Some(ctx)) = action
             if busy.lock().unwrap().insert(request.data.arm_id) {
                 Ok(move_arm::GoalResponse::accept())
             } else {
-                // The reason rides back to the client in `error_message`.
-                Ok(move_arm::GoalResponse::reject(format!(
-                    "arm {} is already moving",
-                    request.data.arm_id
-                )))
+                Ok(move_arm::GoalResponse::reject())
             }
         }
     })
@@ -349,8 +345,7 @@ async def drive(ctx):
 def decide(request):
     arm_id = request.data.arm_id
     if arm_id in busy:
-        # This arm is already moving; reject with a reason the caller can read.
-        return move_arm.GoalResponse.reject(f"arm {arm_id} is already moving")
+        return move_arm.GoalResponse.reject()
     busy.add(arm_id)
     return move_arm.GoalResponse.accept()
 
@@ -798,5 +793,5 @@ This makes the "one server, many resources" pattern natural: include a
 discriminator in the goal request (e.g. `arm_id` or `device_id`) and route to a
 per-resource worker. Your goal handler is responsible for the concurrency
 policy: accept goals to run them in parallel, or reject a goal (with
-`GoalResponse::reject(reason)`) when its target resource is already busy. A goal
+`GoalResponse::reject()`) when its target resource is already busy. A goal
 that is not accepted yields no `GoalContext` and cannot be cancelled or completed.

@@ -52,22 +52,21 @@ pub fn build_action_expose_method(
 
 /// Framework constructors for the goal acknowledgement the decider returns.
 /// `accept()` admits the goal (the worker gets a `GoalContext`); `reject`
-/// declines it (no context) and carries the reason back to the client. This is
-/// how the user controls concurrency, e.g. rejecting a goal for a busy resource.
-/// The `accepted` flag is the single source of truth for the accept/reject
-/// decision and the value the client reads from `fire_goal`.
+/// declines it (no context). This is how the user controls concurrency, e.g.
+/// rejecting a goal for a busy resource. The `accepted` flag is the single
+/// source of truth for the accept/reject decision and the value the client
+/// reads from `fire_goal`.
 pub fn build_goal_response_constructors() -> TokenStream {
     quote! {
         impl GoalResponse {
             /// Accept the goal. The client sees `accepted == true`.
             pub fn accept() -> Self {
-                Self::new(true, None)
+                Self::new(true)
             }
 
-            /// Reject the goal, carrying the reason to the client (which sees
-            /// `accepted == false` and `error_message == Some(reason)`).
-            pub fn reject(reason: impl Into<String>) -> Self {
-                Self::new(false, Some(reason.into()))
+            /// Reject the goal. The client sees `accepted == false`.
+            pub fn reject() -> Self {
+                Self::new(false)
             }
         }
     }
@@ -75,7 +74,7 @@ pub fn build_goal_response_constructors() -> TokenStream {
 
 /// `handle_goal_next_request`: returns the next *accepted* goal as a
 /// `GoalContext`. The user decider runs on each incoming goal and returns a
-/// `GoalResponse` (`GoalResponse::accept()` / `GoalResponse::reject(reason)`);
+/// `GoalResponse` (`GoalResponse::accept()` / `GoalResponse::reject()`);
 /// the framework `accepted` flag decides whether the goal is admitted. Rejected
 /// goals are answered and skipped transparently (the method keeps polling), so a
 /// returned `Ok(None)` means the goal stream has closed (the node is shutting

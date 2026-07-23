@@ -61,7 +61,7 @@ pub fn build_exposed_action(
         .goal_service
         .as_ref()
         .and_then(|goal| non_empty_message_format(goal.request_message_format.as_ref()));
-    // The goal acknowledgement is framework-owned ({accepted, error_message});
+    // The goal acknowledgement is framework-owned ({accepted});
     // any goal response declared in the action schema is ignored.
     let goal_response_fmt = goal_action_response_format();
     let goal_response_format = Some(&goal_response_fmt);
@@ -97,27 +97,25 @@ pub fn build_exposed_action(
         );
     }
 
-    // GoalResponse: the framework goal acknowledgement ({accepted,
-    // error_message}). The decider returns one via GoalResponse.accept() or
-    // GoalResponse.reject(reason); the `accepted` flag is the single source of
-    // truth for the accept/reject decision and the value the client reads.
+    // GoalResponse: the framework goal acknowledgement ({accepted}). The
+    // decider returns one via GoalResponse.accept() or GoalResponse.reject();
+    // the `accepted` flag is the single source of truth for the accept/reject
+    // decision and the value the client reads.
     builder.add_import("from dataclasses import dataclass");
-    builder.add_import("from typing import Optional");
     builder.line("@dataclass");
     builder.line("class GoalResponse:");
     builder.indent();
     builder.line("accepted: bool");
-    builder.line("error_message: Optional[str]");
     builder.blank_line();
     builder.line("@staticmethod");
     builder.line("def accept():");
     builder.indent();
-    builder.line("return GoalResponse(True, None)");
+    builder.line("return GoalResponse(True)");
     builder.dedent();
     builder.line("@staticmethod");
-    builder.line("def reject(reason):");
+    builder.line("def reject():");
     builder.indent();
-    builder.line("return GoalResponse(False, reason)");
+    builder.line("return GoalResponse(False)");
     builder.dedent();
     builder.dedent();
     builder.blank_line();
@@ -368,7 +366,7 @@ pub fn build_consumed_action(
     let mut builder = PythonCodeBuilder::new();
 
     let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-    // The goal acknowledgement is framework-owned ({accepted, error_message}).
+    // The goal acknowledgement is framework-owned ({accepted}).
     let goal_response_fmt = goal_action_response_format();
     let goal_response_format = Some(&goal_response_fmt);
     let feedback_format = non_empty_message_format(messages.feedback.as_ref());

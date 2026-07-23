@@ -242,7 +242,7 @@ impl LanguageGenerator for PythonGenerator {
                 .as_ref()
                 .and_then(|goal_service| goal_service.request_message_format.as_ref()),
         )?;
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        // The goal acknowledgement is framework-owned ({accepted}).
         let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_goal_response", action.name)),
@@ -402,7 +402,7 @@ impl LanguageGenerator for PythonGenerator {
             &action_schema_keys.goal_request,
             messages.goal_request.as_ref(),
         )?;
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
+        // The goal acknowledgement is framework-owned ({accepted}).
         let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             &action_schema_keys.goal_response,
