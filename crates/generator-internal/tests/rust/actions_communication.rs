@@ -1,6 +1,6 @@
 use crate::helpers::{
-    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
-    EXPOSED_ACTION_EXAMPLE,
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT,
+    CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, EXPOSED_ACTION_EXAMPLE,
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
@@ -84,6 +84,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
         result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
     };
@@ -234,9 +235,9 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!("server received goal arm_id={}", request.data.arm_id);
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
             match maybe_ctx {
@@ -442,6 +443,7 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -585,12 +587,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -782,6 +784,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -914,12 +917,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -1131,6 +1134,7 @@ async fn actions_communication_drain_loop_until_end_signal(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1284,12 +1288,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -1524,6 +1528,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1672,8 +1677,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-                    Ok(move_arm::GoalResponse::accept())
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -1901,6 +1906,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -2061,8 +2067,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-                    Ok(move_arm::GoalResponse::accept())
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -2296,6 +2302,7 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -2456,8 +2463,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-                    Ok(move_arm::GoalResponse::accept())
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 

@@ -511,6 +511,7 @@ fn clippy_single_exposed_service_without_request_body() {
     .unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: None,
         feedback: None,
         result_response: None,
     };
