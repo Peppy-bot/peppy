@@ -1,0 +1,51 @@
+<entry>
+  <title>v0.18.0</title>
+  <id>https://docs.peppy.bot/releases/v0-18-0/</id>
+  <updated>2026-07-23T00:00:00Z</updated>
+
+  <summary>Adds observer slots, unifies binding and pairing into links, reworks zenoh config, and spans stack list across daemons.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.18.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Adds observer slots, unifies binding and pairing into links, reworks zenoh config, and spans stack list across daemons.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 23, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The &lt;code&gt;peppy auth&lt;/code&gt; command group is renamed to &lt;code&gt;peppy platform&lt;/code&gt;; update any commands or scripts that call &lt;code&gt;peppy auth&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The &lt;code&gt;--bind&lt;/code&gt; and &lt;code&gt;--pair&lt;/code&gt; flags are replaced by a single &lt;code&gt;--link&lt;/code&gt; flag; switch your commands to use &lt;code&gt;--link&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;Launch files now use unified &lt;code&gt;links&lt;/code&gt; and &lt;code&gt;defer_links&lt;/code&gt; fields in place of the previous separate binding and pairing entries; migrate your launch files to the new fields.&lt;/li&gt;
+&lt;li&gt;Zenoh settings in &lt;code&gt;peppy_config.json5&lt;/code&gt; are restructured into a &lt;code&gt;zenoh&lt;/code&gt; section with tagged &lt;code&gt;zenoh.managed&lt;/code&gt; and &lt;code&gt;zenoh.external&lt;/code&gt; blocks, replacing the flat &lt;code&gt;zenoh&lt;/code&gt;, &lt;code&gt;zenohd&lt;/code&gt;, and &lt;code&gt;peer&lt;/code&gt; fields, and unknown fields under &lt;code&gt;zenoh&lt;/code&gt; are now rejected; move your settings into the new blocks. The new &lt;code&gt;zenoh.external&lt;/code&gt; block lets peppy run against an operator-managed zenoh router.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list&lt;/code&gt; no longer prints DOT graph output; it now always renders a report of per-core-node sections aggregated across every live daemon, including live instance counts and the answering daemon's identity, so update anything that parsed the old graph output.&lt;/li&gt;
+&lt;li&gt;Generated peppygen modules for slots are now nested at &lt;code&gt;&amp;lt;category&amp;gt;/&amp;lt;link_id&amp;gt;/&amp;lt;member&amp;gt;&lt;/code&gt;; update the import paths for your generated code.&lt;/li&gt;
+&lt;li&gt;The &lt;code&gt;PEPPY_DAEMON_STATE_FILE&lt;/code&gt; environment override is removed; the daemon state file now lives under &lt;code&gt;$PEPPY_HOME&lt;/code&gt;, so stop setting &lt;code&gt;PEPPY_DAEMON_STATE_FILE&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The "organization"/"org-id" concept is renamed to "workspace"/"namespace" across authentication and daemon output; update references and scripts that use the old terms.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Observers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Nodes can now declare observer slots to observe topics, with generated observer bindings (including an &lt;code&gt;ObservedSource&lt;/code&gt; type) and delivery of observers to running nodes.&lt;/li&gt;
+&lt;li&gt;Guides and launch-file documentation now cover observer slots and the &lt;code&gt;links&lt;/code&gt;/&lt;code&gt;defer_links&lt;/code&gt; model.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Multi-daemon and federation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Daemons can participate in a federated peer topology across zenoh routers.&lt;/li&gt;
+&lt;li&gt;Federation-aware CLI commands now surface listener and serve errors instead of hanging.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Other changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Removing a node with &lt;code&gt;node remove --stop-instances&lt;/code&gt; now also dissolves that node's links.&lt;/li&gt;
+&lt;li&gt;A new &lt;code&gt;PEPPY_CONFIG&lt;/code&gt; environment variable overrides the daemon config file path.&lt;/li&gt;
+&lt;li&gt;Only one peppy daemon can run per &lt;code&gt;$PEPPY_HOME&lt;/code&gt; data root, enforced by an exclusive singleton lock.&lt;/li&gt;
+&lt;li&gt;Config drift now logs which &lt;code&gt;peppy_config.json5&lt;/code&gt; settings it adds when completing missing defaults.&lt;/li&gt;
+&lt;li&gt;Newly generated core-node default names use the compact &lt;code&gt;cn-{adj}-{surname}&lt;/code&gt; format instead of the longer &lt;code&gt;core-node-{adj}-{surname}-{4digits}-{10digits}&lt;/code&gt; form.&lt;/li&gt;
+&lt;li&gt;The bundled Cap'n Proto compiler is now installed under &lt;code&gt;$PEPPY_HOME/bin&lt;/code&gt;, and its location is documented.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Documentation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;External federation guidance adds a dedicated section on namespace handling outside the Peppy platform.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
