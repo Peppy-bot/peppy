@@ -6,8 +6,8 @@
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    ActionServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, QoSProfile,
-    SchemaType, TypeToken,
+    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
+    TypeToken,
 };
 use generator::{
     ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
@@ -23,10 +23,9 @@ fn make_action(marker: &str) -> NativeExposedAction {
     resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
     NativeExposedAction {
         name: "move_arm".to_string(),
-        goal_service: Some(ActionServiceEndpoint {
+        goal_service: Some(GoalServiceEndpoint {
             request_message_format: Some(MessageFormat(req)),
             response_message_format: Some(MessageFormat(resp)),
-            qos_profile: QoSProfile::Reliable,
         }),
         feedback_topic: None,
         result_service: None,

@@ -169,7 +169,9 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
   </TabItem>
 </Tabs>
 
-Every payload on `goal_service` and `result_service` is optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, `result_service.request_message_format`, and `result_service.response_message_format` can be omitted (or set to `{}`) when the corresponding payload is empty. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only needs to signal completion can omit `request_message_format`.
+The `goal_service` payloads and the `result_service` response are all optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, and `result_service.response_message_format` can be omitted (or set to `{}`) when the corresponding payload is empty. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only signals completion can omit its `response_message_format` too.
+
+The `result_service` never carries a user-defined request. A `get_result` call is correlated to its goal by the `goal_id` the framework assigns at `fire_goal`, so the only payload you declare on the result side is `response_message_format`, which the producer supplies through `complete` or `complete_cancelled`. Declaring a `result_service.request_message_format` is rejected when the config is parsed, since no generated API, wire message, or producer handler could ever read it.
 
 The `feedback_topic` block is optional: actions that don't stream progress can omit it entirely. When you do declare `feedback_topic`, however, its `message_format` is required and cannot be empty: every feedback message must carry a non-empty payload, since empty payloads are reserved as the framework's per-goal end-of-stream signal (see [Receiving feedback](#receiving-feedback)). Code generation will fail if `feedback_topic` is declared without a `message_format`.
 
