@@ -1,16 +1,13 @@
-import { defineCollection, z } from 'astro:content';
+import { defineCollection } from 'astro:content';
 import { docsLoader } from '@astrojs/starlight/loaders';
 import { docsSchema } from '@astrojs/starlight/schema';
-import { glob } from 'astro/loaders';
+import { z } from 'astro/zod';
+import { releaseHtmlLoader } from './lib/releaseHtmlLoader.ts';
 
 const docs = defineCollection({ loader: docsLoader(), schema: docsSchema() });
 
 const releases = defineCollection({
-  loader: glob({
-    pattern: '**/*.html',
-    base: './src/content/releases',
-    generateId: ({ entry }) => entry.replace(/\.html$/, ''),
-  }),
+  loader: releaseHtmlLoader(),
   schema: z.object({
     version: z.string(),
     date: z.date(),
