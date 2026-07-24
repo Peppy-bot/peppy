@@ -20,7 +20,7 @@ On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virt
 
 ## Setup (Linux)
 
-On Linux, Apptainer uses unprivileged user namespaces which may require a one-time system configuration. The installer handles this automatically, but if you skipped it or installed peppy manually you can run:
+On Linux, Apptainer uses unprivileged user namespaces which may require a one-time system configuration. The installer handles this automatically, but if you skipped it or installed Peppy manually you can run:
 
 ```sh
 peppy container setup
@@ -156,51 +156,51 @@ Here is what `peppy node init --container` generates:
 <Tabs>
   <TabItem label="Python">
     ```apptainer title="apptainer.def"
-Bootstrap: docker
-From: tuatini/peppy-python-uv-base
+    Bootstrap: docker
+    From: tuatini/peppy-python-uv-base
 
-%labels
-    Name my_node
-    Version v1
+    %labels
+        Name my_node
+        Version v1
 
-%environment
-    export PATH="/opt/my_node/.venv/bin:$PATH"
+    %environment
+        export PATH="/opt/my_node/.venv/bin:$PATH"
 
-%files
-    . /opt/my_node
+    %files
+        . /opt/my_node
 
-%post
-    set -eux
+    %post
+        set -eux
 
-    cd /opt/my_node
-    uv sync --no-editable
+        cd /opt/my_node
+        uv sync --no-editable
 
-%runscript
-    cd /opt/my_node
-    exec ./.venv/bin/python -m my_node
+    %runscript
+        cd /opt/my_node
+        exec ./.venv/bin/python -m my_node
     ```
   </TabItem>
   <TabItem label="Rust">
     ```apptainer title="apptainer.def"
-Bootstrap: docker
-From: tuatini/peppy-rust-cargo-base
+    Bootstrap: docker
+    From: tuatini/peppy-rust-cargo-base
 
-%labels
-    Name my_node
-    Version v1
+    %labels
+        Name my_node
+        Version v1
 
-%files
-    . /opt/my_node
+    %files
+        . /opt/my_node
 
-%post
-    set -eux
+    %post
+        set -eux
 
-    cd /opt/my_node
-    cargo build --release
+        cd /opt/my_node
+        cargo build --release
 
-%runscript
-    cd /opt/my_node
-    exec ./target/release/my_node
+    %runscript
+        cd /opt/my_node
+        exec ./target/release/my_node
     ```
   </TabItem>
 </Tabs>
@@ -246,7 +246,7 @@ Subsequent builds reuse Docker layer caches when possible.
 Starting a container node also uses the same command:
 
 ```sh
-peppy node run my_node
+peppy node run my_node:v1
 ```
 
 Peppy runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically; you don't need to configure anything beyond what a regular node requires.
@@ -300,7 +300,7 @@ On macOS, Peppy automatically configures the Lima VM to make mounted paths acces
 
 ### Using parameters in mount paths
 
-Mount paths can reference runtime [parameters](/getting_started/parameters/) using the `${parameters:<path>}` syntax. This lets each node instance mount a different host path based on its configuration.
+Mount paths can reference runtime [parameters](/guides/parameters/) using the `${parameters:<path>}` syntax. This lets each node instance mount a different host path based on its configuration.
 
 ```json5 title="peppy.json5"
 {
@@ -411,7 +411,7 @@ Add packages to the `%post` section:
 %post
     apt-get update
     apt-get install -y --no-install-recommends \
-        libopencv-dev libudev-dev
+    libopencv-dev libudev-dev
     rm -rf /var/lib/apt/lists/*
 ```
 
@@ -432,34 +432,34 @@ You can speed things up by baking those slow steps into a custom Docker image an
 
 1. **Create a `Dockerfile`** with the dependencies your node needs:
 
-<Tabs>
-  <TabItem label="Python">
-    ```dockerfile title="Dockerfile"
-    FROM ubuntu:24.04
+   <Tabs>
+     <TabItem label="Python">
+       ```dockerfile title="Dockerfile"
+       FROM ubuntu:24.04
 
-    RUN set -eux \
-        && export DEBIAN_FRONTEND=noninteractive \
-        && apt-get update \
-        && apt-get install -y --no-install-recommends \
-            ca-certificates curl python3 python3-venv \
-        && rm -rf /var/lib/apt/lists/* \
-        && curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
-  </TabItem>
-  <TabItem label="Rust">
-    ```dockerfile title="Dockerfile"
-    FROM ubuntu:24.04
+       RUN set -eux \
+           && export DEBIAN_FRONTEND=noninteractive \
+           && apt-get update \
+           && apt-get install -y --no-install-recommends \
+               ca-certificates curl python3 python3-venv \
+           && rm -rf /var/lib/apt/lists/* \
+           && curl -LsSf https://astral.sh/uv/install.sh | sh
+       ```
+     </TabItem>
+     <TabItem label="Rust">
+       ```dockerfile title="Dockerfile"
+       FROM ubuntu:24.04
 
-    RUN set -eux \
-        && export DEBIAN_FRONTEND=noninteractive \
-        && apt-get update \
-        && apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config \
-        && rm -rf /var/lib/apt/lists/* \
-        && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    ```
-  </TabItem>
-</Tabs>
+       RUN set -eux \
+           && export DEBIAN_FRONTEND=noninteractive \
+           && apt-get update \
+           && apt-get install -y --no-install-recommends \
+               ca-certificates curl build-essential pkg-config \
+           && rm -rf /var/lib/apt/lists/* \
+           && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+       ```
+     </TabItem>
+   </Tabs>
 
 2. **Build and push the image** to a registry your build machine can reach:
 
@@ -470,58 +470,58 @@ You can speed things up by baking those slow steps into a custom Docker image an
 
 3. **Point your `apptainer.def`** at the new image and remove the steps that are already baked in:
 
-<Tabs>
-  <TabItem label="Python">
-    ```apptainer title="apptainer.def"
-    Bootstrap: docker
-    From: my-registry/my_node-base:latest
+   <Tabs>
+     <TabItem label="Python">
+       ```apptainer title="apptainer.def"
+       Bootstrap: docker
+       From: my-registry/my_node-base:latest
 
-    %labels
-        Name my_node
-        Version v1
+       %labels
+           Name my_node
+           Version v1
 
-    %environment
-        export PATH="/root/.local/bin:/opt/my_node/.venv/bin:$PATH"
+       %environment
+           export PATH="/root/.local/bin:/opt/my_node/.venv/bin:$PATH"
 
-    %files
-        . /opt/my_node
+       %files
+           . /opt/my_node
 
-    %post
-        set -eux
-        cd /opt/my_node
-        uv sync --no-editable
+       %post
+           set -eux
+           cd /opt/my_node
+           uv sync --no-editable
 
-    %runscript
-        cd /opt/my_node
-        exec ./.venv/bin/python -m my_node
-    ```
-  </TabItem>
-  <TabItem label="Rust">
-    ```apptainer title="apptainer.def"
-    Bootstrap: docker
-    From: my-registry/my_node-base:latest
+       %runscript
+           cd /opt/my_node
+           exec ./.venv/bin/python -m my_node
+       ```
+     </TabItem>
+     <TabItem label="Rust">
+       ```apptainer title="apptainer.def"
+       Bootstrap: docker
+       From: my-registry/my_node-base:latest
 
-    %labels
-        Name my_node
-        Version v1
+       %labels
+           Name my_node
+           Version v1
 
-    %environment
-        export PATH="/root/.cargo/bin:$PATH"
+       %environment
+           export PATH="/root/.cargo/bin:$PATH"
 
-    %files
-        . /opt/my_node
+       %files
+           . /opt/my_node
 
-    %post
-        set -eux
-        cd /opt/my_node
-        cargo build --release
+       %post
+           set -eux
+           cd /opt/my_node
+           cargo build --release
 
-    %runscript
-        cd /opt/my_node
-        exec ./target/release/my_node
-    ```
-  </TabItem>
-</Tabs>
+       %runscript
+           cd /opt/my_node
+           exec ./target/release/my_node
+       ```
+     </TabItem>
+   </Tabs>
 
 Now `peppy node add` only runs the application-specific build steps; package installation and toolchain setup are already in the base image.
 

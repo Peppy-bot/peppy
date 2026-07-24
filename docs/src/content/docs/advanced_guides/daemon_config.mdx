@@ -1,11 +1,11 @@
 ---
 title: Daemon configuration
-description: Configure a peppy-managed or operator-run Zenoh router, messaging behavior, and node lifecycle grace periods through peppy_config.json5.
+description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, and node lifecycle grace periods through peppy_config.json5
 sidebar:
   order: 9
 ---
 
-By default, the peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, and defines the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
+By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, and defines the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform login` / `whoami` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
 
 :::note
 The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each CLI auth command, so an edit there takes effect on the next `peppy platform login` without a daemon restart.
@@ -15,11 +15,11 @@ The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`) from the 
 
 In the normal on-disk flow, you never need to create or migrate this file by hand:
 
-- **First load.** If the file does not exist, peppy creates it with every setting at its default value, annotated with explanatory comments.
-- **Missing settings.** If the file exists but omits settings (typically a file written by an older peppy, before a newer knob existed), peppy detects every omission and appends each setting it can safely place, together with its default value and comments. Your own values, comments, formatting, and any unrecognized top-level keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Peppy logs each setting it added. An unusual JSON5 spelling or layout, such as an escaped section key that the text scanner cannot safely pair with its block, produces a warning naming every setting that could not be inserted; the daemon continues with those defaults in memory. Fields required inside a non-default variant are not invented: if you select `zenoh.external`, you must supply `zenoh.external.endpoint`.
-- **Malformed file.** If the file cannot be parsed, or a value is out of range, peppy refuses to continue and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
+- **First load.** If the file does not exist, Peppy creates it with every setting at its default value, annotated with explanatory comments.
+- **Missing settings.** If the file exists but omits settings (typically a file written by an older Peppy, before a newer knob existed), Peppy detects every omission and appends each setting it can safely place, together with its default value and comments. Your own values, comments, formatting, and any unrecognized top-level keys are otherwise preserved exactly as you wrote them; when appending defaults, completion may add a structural separator comma after the prior final entry. Peppy logs each setting it added. An unusual JSON5 spelling or layout, such as an escaped section key that the text scanner cannot safely pair with its block, produces a warning naming every setting that could not be inserted; the daemon continues with those defaults in memory. Fields required inside a non-default variant are not invented: if you select `zenoh.external`, you must supply `zenoh.external.endpoint`.
+- **Malformed file.** If the file cannot be parsed, or a value is out of range, Peppy refuses to continue and reports the error instead of silently falling back to defaults. A file that fails to load is never modified.
 
-In a normally spelled section, a defaulted setting you delete from the file therefore comes back with its default the next time peppy loads the configuration. To change one, edit its value instead of removing it. If peppy warns that an unusual spelling or layout prevented insertion, add the named setting manually if you want it written; the daemon already uses its default in memory. Removing `zenoh.external.endpoint` from an external block instead makes the file invalid and leaves it untouched.
+In a normally spelled section, a defaulted setting you delete from the file therefore comes back with its default the next time Peppy loads the configuration. To change one, edit its value instead of removing it. If Peppy warns that an unusual spelling or layout prevented insertion, add the named setting manually if you want it written; the daemon already uses its default in memory. Removing `zenoh.external.endpoint` from an external block instead makes the file invalid and leaves it untouched.
 
 ### Override with `PEPPY_CONFIG`
 
@@ -29,7 +29,7 @@ Classification always tries the value as a file first. If the file can be read, 
 
 An override is read-only. Peppy ignores `$PEPPY_HOME/conf/peppy_config.json5` and never creates, completes, or rewrites either that file or the override source. The override must parse, pass validation, and explicitly spell out every setting the running release defines. Missing settings are a startup error that names their paths and explains that override sources are never completed with defaults. This differs from the normal on-disk flow, which appends safe defaults and warns when an unusual source spelling prevents an insertion.
 
-The override applies to `peppy service serve` and to every auth command that reads daemon configuration: `peppy platform login`, `logout`, and `whoami`. `PEPPY_HOME` still controls credentials, repositories, and all other peppy state. Edits to a file-form override take effect on the daemon's next restart, just like edits to the default file.
+The override applies to `peppy service serve` and to every auth command that reads daemon configuration: `peppy platform login`, `logout`, and `whoami`. `PEPPY_HOME` still controls credentials, repositories, and all other Peppy state. Edits to a file-form override take effect on the daemon's next restart, just like edits to the default file.
 
 Both examples below use the same complete config file. The second passes its full contents inline, including any leading JSON5 comments:
 
@@ -128,13 +128,13 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
 
 Core-node names must be **unique across every daemon reachable over the same router or federation**. Each daemon advertises an ephemeral presence token; on boot it refuses to start if that name is already live, and while running it logs a rate-limited collision alarm if another daemon later claims the same name. If two daemons end up sharing a name, give one of them a unique `core_node_name` (or pass `peppy service serve --core-node-name <name>` for a single run) and restart it. This most commonly matters when logging in federates several machines together, or when cloning a disk image reuses another machine's derived name.
 
-The value must be non-empty, at most **63 characters**, and use only the node-name character set (start with a letter; letters, digits, `_`, `-`). An invalid value stops the daemon at startup with an error instead of failing later when the core node boots. `peppy service serve --core-node-name <name>` overrides the config for one run (the flag wins over the file); both absent falls back to the derived default.
+The value must be non-empty, at most **63 characters**, and use only the node-name character set (start with a letter; letters, digits, `_`, `-`). An invalid value stops the daemon at startup with an error instead of failing later when the core node boots. `peppy service serve --core-node-name <name>` overrides the config for one run (the flag wins over the file); if both are absent, the derived default is used.
 
 ## `zenoh`: managed or external router
 
 The `zenoh` section holds exactly one of `managed` or `external`. Block presence selects the mode. `managed` is the default: omitting `zenoh` or writing `zenoh: {}` loads all managed defaults, and normal file completion materializes the explicit `managed` block.
 
-Use `managed` when peppy should start, monitor, restart, and stop its bundled `zenohd`:
+Use `managed` when Peppy should start, monitor, restart, and stop its bundled `zenohd`:
 
 ```json5
 zenoh: {
@@ -151,7 +151,7 @@ zenoh: {
 },
 ```
 
-Use `external` when peppy should dial a router that you run:
+Use `external` when Peppy should dial a router that you run:
 
 ```json5
 zenoh: {
@@ -161,7 +161,7 @@ zenoh: {
 },
 ```
 
-The managed knobs exist only because peppy controls that router process. Under `external`, `local_nodes_topology`, `subscriber_buffers`, and `federation` are not part of the document, and writing them is an error. Local nodes always relay through the external router, local subscriber queues use peppy's built-in capacity defaults, and router federation belongs entirely to the operator.
+The managed knobs exist only because Peppy controls that router process. Under `external`, `local_nodes_topology`, `subscriber_buffers`, and `federation` are not part of the document, and writing them is an error. Local nodes always relay through the external router, local subscriber queues use Peppy's built-in capacity defaults, and router federation belongs entirely to the operator.
 
 ## `zenoh.managed.local_nodes_topology`: local messaging topology
 
@@ -183,7 +183,7 @@ Each Peppy subscriber buffers in-flight messages in a bounded process-local queu
 
 These are local Peppy queue capacities, not Zenoh router buffers, and they apply under both managed local topologies. They matter most in the peer topology: with nodes peering directly there is no router relay between a publisher and a subscriber, so the local queue is all that absorbs a burst.
 
-When a subscriber falls behind and its local queue fills up, what happens next depends on the topic's QoS: topics published with a reliable profile block delivery so backpressure propagates to the publisher, while best-effort topics (including sensor-data streams on the high-throughput tier) drop messages instead. Raise a capacity to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match peppy's built-in behavior, so you only need to touch this block to tune backpressure.
+When a subscriber falls behind and its local queue fills up, what happens next depends on the topic's QoS: topics published with a reliable profile block delivery so backpressure propagates to the publisher, while best-effort topics (including sensor-data streams on the high-throughput tier) drop messages instead. Raise a capacity to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match Peppy's built-in behavior, so you only need to touch this block to tune backpressure.
 
 Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
 
@@ -195,7 +195,7 @@ When you are logged in under `zenoh.managed`, the daemon links ("federates") its
 
 ## `zenoh.external`: use an operator-run router
 
-To use a router you start yourself, configure `zenoh.external` with the Zenoh endpoint peppy should dial:
+To use a router you start yourself, configure `zenoh.external` with the Zenoh endpoint Peppy should dial:
 
 ```json5
 zenoh: {
@@ -205,23 +205,23 @@ zenoh: {
 },
 ```
 
-`endpoint` is a **dial address**, not a listener bind address. It must use `tcp/<host>:<port>` with a hostname, an IPv4 address, or a bracketed IPv6 address, for example `tcp/router.internal:7448` or `tcp/[::1]:7448`. The port is required and must be from `1` through `65535`. Listener wildcards such as `0.0.0.0`, `[::]`, and `*` are rejected because peppy cannot connect to them. Metadata/config suffixes (`?…` or `#…`) and non-TCP transports are not currently supported.
+`endpoint` is a **dial address**, not a listener bind address. It must use `tcp/<host>:<port>` with a hostname, an IPv4 address, or a bracketed IPv6 address, for example `tcp/router.internal:7448` or `tcp/[::1]:7448`. The port is required and must be from `1` through `65535`. Listener wildcards such as `0.0.0.0`, `[::]`, and `*` are rejected because Peppy cannot connect to them. Metadata/config suffixes (`?…` or `#…`) and non-TCP transports are not currently supported.
 
-Peppy propagates this host and port to its CLI sessions and spawned nodes, so the address must be reachable from every environment that runs a node. For Lima containers on macOS, peppy rewrites a host-local address such as `127.0.0.1` to the VM's host gateway; a genuinely remote hostname or IP address is preserved.
+Peppy propagates this host and port to its CLI sessions and spawned nodes, so the address must be reachable from every environment that runs a node. For Lima containers on macOS, Peppy rewrites a host-local address such as `127.0.0.1` to the VM's host gateway; a genuinely remote hostname or IP address is preserved.
 
-Start the external router before peppy. Its listener may bind a wildcard even though peppy's dial endpoint must be connectable. For a router on the same machine, for example:
+Start the external router before Peppy. Its listener may bind a wildcard even though Peppy's dial endpoint must be connectable. For a router on the same machine, for example:
 
 ```sh
 zenohd -l tcp/0.0.0.0:7448
 ```
 
-At startup, peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
+At startup, Peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
 
-`peppy platform login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
+`peppy platform login` and `logout` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; a sign-in change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for Peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
 
 ## `lifecycle`: grace periods
 
-The `lifecycle` block tunes the two windows peppy uses to guarantee that no node outlives the daemon. The full mechanics are described in [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
+The `lifecycle` block tunes the two windows Peppy uses to guarantee that no node outlives the daemon. The full mechanics are described in [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
 
 - **`daemon_grace_secs`** (default `180`, minimum `30`): every spawned node runs a watchdog that listens for the daemon's periodic heartbeat (published every 5 seconds). If the heartbeat goes silent for this many seconds, the node shuts itself down rather than lingering as an orphan. This only governs **unclean** daemon death (crash, OOM, `SIGKILL`); a clean shutdown does not wait for it. The minimum exists so a brief daemon blip or a quick restart never trips every node's watchdog.
 - **`shutdown_grace_secs`** (default `5`, minimum `1`): the node's cooperative-cleanup budget. A clean daemon shutdown (`Ctrl+C`, `systemctl stop`) and `peppy node stop` wait this window, plus a fixed allowance for the node's runtime to finish tearing down (in Rust, the async runtime dropping; in Python, the event-loop join and interpreter finalize), before force-killing its process group. Raise it for nodes that need longer to park actuators or release hardware before dying; the force-kill deadline rises with it.
@@ -242,10 +242,10 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `zenoh.managed.local_nodes_topology` | `"peer"` | `"peer"` or `"router"` | Topology of this machine's nodes: direct peer links with gossip, or relay everything through the central router. Cross-machine traffic always goes through the routers. |
 | `zenoh.managed.subscriber_buffers.standard_buffer_size` | `128` | `> 0` | Local Peppy subscriber queue capacity (messages) for standard-QoS topics; also sizes service request/reply queues. |
 | `zenoh.managed.subscriber_buffers.high_throughput_buffer_size` | `1024` | `> 0` | Local Peppy subscriber queue capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
+| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your workspace's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
+| `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `http://127.0.0.1:3000` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |
-| `zenoh.managed.federation.connect_timeout_secs` | `30` | `>= 1` | Seconds the daemon spends resolving your workspace's cloud router (at startup and on each auth login/logout) before falling back to a standalone router. |
-| `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
 
 Both Zenoh variants at once, a value outside its constraint, an unsupported `zenoh.external.endpoint`, an unknown `zenoh.managed.local_nodes_topology` value, an unknown key inside `zenoh` or either variant, or a syntax error all stop the operation that loaded the configuration with an error pointing at the problem. An out-of-range value names the offending field, and a parse error reports the bad value or its position, so a typo can never silently revert your stack to defaults. Unknown top-level keys remain accepted and preserved.

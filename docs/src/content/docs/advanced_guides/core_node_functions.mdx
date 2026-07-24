@@ -1,13 +1,13 @@
 ---
 title: Core node functions
-description: Inspect a running peppy stack from your own code; uptime, host, and the live node graph.
+description: "Inspect a running Peppy stack from your own code: uptime, host, and the live node graph"
 sidebar:
   order: 10
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Every peppy stack has a **core node** that tracks which nodes have been added, which instances are running, and a few facts about the host it is running on.
+Every Peppy stack has a **core node** that tracks which nodes have been added, which instances are running, and a few facts about the host it is running on.
 `peppylib` exposes two helpers that let any node query the core node at runtime:
 
 - `info`: a typed snapshot of the core node (uptime, hostname, node count, git version, container runtimes).
@@ -26,7 +26,7 @@ Both take a `NodeRunner`, the same handle your node receives from `NodeBuilder::
 
 ## `info`
 
-`info` polls the core node's `INFO` service and returns a typed response.
+`info` polls the core node's `info` service and returns a typed response.
 
 The response carries:
 
@@ -34,7 +34,7 @@ The response carries:
 - `core_node_name`, `core_node_instance_id`: identity of the core node.
 - `host_name`: the machine hosting the core node.
 - `node_count`: how many nodes are currently in the stack.
-- `git_version`: the peppy build the core node was compiled from.
+- `git_version`: the Peppy build the core node was compiled from.
 - `container_info.apptainer_version`, `container_info.lima_version`: container runtime versions.
 - `messaging_port`: the port the messaging layer is listening on.
 
@@ -97,7 +97,7 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 
 Each node entry carries its required `core_node` owner plus its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
 Each instance has an `instance_id` and a `state` (`starting`, `running`, or the terminal `finished` / `failed`). A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
-The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [contract implementation](/advanced_guides/contract_implementation): a contract edge carries a `via_contract` of `name:tag` (the contract it was resolved through), while a direct edge has none.
+The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [contract implementation](/advanced_guides/contract_implementation/): a contract edge carries a `via_contract` of `name:tag` (the contract it was resolved through), while a direct edge has none.
 
 Rust and Python expose the graph differently:
 
@@ -152,15 +152,14 @@ The example below uses `stack.list` to count the running instances of each node 
 
             for node in &result.graph.nodes {
                 println!(
-                    "{} on {} ({:?}): {} instance(s)",
+                    "{} on {} ({:?}): {} running instance(s)",
                     node.name,
                     node.core_node,
                     node.stage,
                     node.running_instance_ids().len(),
                 );
-                for instance in &node.instances {
-                    // `state` displays as "starting", "running", "finished", or "failed".
-                    println!("  - {} ({})", instance.instance_id, instance.state);
+                for instance_id in node.running_instance_ids() {
+                    println!("  - {instance_id}");
                 }
             }
             Ok(())
@@ -172,7 +171,7 @@ The example below uses `stack.list` to count the running instances of each node 
 
 ### Looking up instances by `(name, tag)`
 
-When you know which dependency you want, skip the manual iteration with `StackList.running_instance_ids_by_node(name, tag)`. The Rust signature is `Result<Vec<&str>, NodeNotFound>`; Python raises `KeyError` for the same condition. In both languages, an empty list (not an error) means the node is present but every instance is still `starting`, useful for a router that wants to back off during warmup rather than fail loudly.
+When you know which dependency you want, skip the manual iteration with `running_instance_ids_by_node(name, tag)`, exposed on the `StackList` result in Python and on `result.graph` in Rust. The Rust signature is `Result<Vec<&str>, NodeNotFound>`; Python raises `KeyError` for the same condition. In both languages, an empty list (not an error) means the node is present but every instance is still `starting`, useful for a router that wants to back off during warmup rather than fail loudly.
 
 <Tabs>
   <TabItem label="Python">

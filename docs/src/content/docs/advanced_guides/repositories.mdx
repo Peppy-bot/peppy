@@ -1,11 +1,11 @@
 ---
 title: Repositories
-description: Manage where peppy discovers nodes
+description: Manage where Peppy discovers nodes, launchers, contracts, and pairings
 sidebar:
   order: 8
 ---
 
-Repositories tell peppy where to look for nodes, launchers, contracts, and pairings. When you run `peppy repo refresh`, peppy walks every configured repository and indexes:
+Repositories tell Peppy where to look for nodes, launchers, contracts, and pairings. When you run `peppy repo refresh`, Peppy walks every configured repository and indexes:
 
 - **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
@@ -19,7 +19,7 @@ Out of the box, four repositories are configured:
 - **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
 - **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`): nodes specific to the OpenArm01 robot.
 
-Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.
+Add your own local directory with `peppy repo add /path/to/my/nodes` so Peppy can discover nodes you create locally.
 
 ## Configuration files
 
@@ -61,7 +61,7 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 peppy repo init
 ```
 
-Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading peppy to pick up new defaults (for example when `launchers-hub` was added) without having to restart the daemon. The command operates directly on the local config file; no daemon connection is required.
+Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading Peppy to pick up new defaults (for example when `launchers-hub` was added) without having to restart the daemon. The command operates directly on the local config file; no daemon connection is required.
 
 ### List repositories
 
@@ -77,7 +77,7 @@ Shows all discovered nodes grouped by the repository that provides them. Each gr
 peppy repo refresh
 ```
 
-Re-scans all configured repositories and rebuilds the node, launcher, contract, and pairing indexes. `peppy repo update` is accepted as an alias. During refresh, peppy:
+Re-scans all configured repositories and rebuilds the node, launcher, contract, and pairing indexes. `peppy repo update` is accepted as an alias. During refresh, Peppy:
 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
@@ -143,7 +143,7 @@ peppy repo exclude /home/user/projects/private-nodes
 
 ## Using a repository-indexed node
 
-Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL; peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
+Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL; Peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
 
 ```sh
 peppy node add uvc_camera:v1
@@ -161,7 +161,7 @@ If the node you want to add lives in a repository that is **not** in `repositori
 
 `peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/), otherwise the sync fails with an "X does not exist in the stack" error.
 
-Pass `-r` (or `--include-repositories`) to let peppy fall back to the repository cache when a dependency is missing from the stack:
+Pass `-r` (or `--include-repositories`) to let Peppy fall back to the repository cache when a dependency is missing from the stack:
 
 ```sh
 peppy node sync -r
@@ -206,7 +206,7 @@ Particularly useful during the early phase of a multi-node project, when the dep
 
 ## Directory pruning
 
-When scanning local and git repositories, peppy automatically skips the following directories:
+When scanning local and git repositories, Peppy automatically skips the following directories:
 
 - `.git`
 - `.peppy`
