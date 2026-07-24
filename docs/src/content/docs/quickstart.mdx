@@ -4,6 +4,7 @@ description: Install peppy and drive a simulated bimanual OpenArm from your brow
 ---
 
 import { Steps } from '@astrojs/starlight/components';
+import OpenArmStackGraph from '../../components/OpenArmStackGraph.astro';
 
 Three steps take you from nothing installed to a bimanual [OpenArm](https://openarm.dev/) you can drive from your browser. There is no repository to clone and no robot hardware to plug in: the arms, the grippers, and the physics all run in a MuJoCo simulation on your machine.
 
@@ -46,6 +47,8 @@ peppy stack launch openarm_v2_teleop_mujoco
 That single command adds, builds, and starts every [node](/reference/concepts/#node) in the launcher, in dependency order: eight instances across six node types. The cast is the MuJoCo engine, one relay per limb (two arms, two grippers), the readiness aggregator that waits for every limb's physics to come alive, the backbone that coordinates both arms, and the browser control panel. It prints `Launch complete` when the stack is up.
 
 The command then returns; it is not a foreground supervisor. The nodes keep running under the peppy background service, so you can close that terminal without stopping them.
+
+<OpenArmStackGraph />
 
 :::note
 The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. `--node-build-idle-timeout-secs` raises the window the daemon allows without build output, which keeps it from killing that first download partway through. Subsequent launches don't need the flag.
