@@ -3,7 +3,7 @@ title: Quickstart
 description: Install peppy and drive a simulated bimanual OpenArm from your browser in three steps
 ---
 
-import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Steps } from '@astrojs/starlight/components';
 
 Three steps take you from nothing installed to a bimanual [OpenArm](https://github.com/enactic/openarm) you can drive from your browser. There is no repository to clone and no robot hardware to plug in: the arms, the grippers, and the physics all run in a MuJoCo simulation on your machine.
 
@@ -22,37 +22,22 @@ Peppy runs on Linux (x86_64/aarch64, tested on Ubuntu 24.04, Fedora, and Arch Li
 
    It drops the `peppy` CLI on your `PATH`, registers the background service that builds and supervises nodes, and configures the [Apptainer](https://apptainer.org/) container runtime the simulation nodes are built on.
 
-2. Make `peppy` available in the shell you are in. The installer adds it to your shell profile and prints the line that applies the change right away:
+2. Confirm the CLI and the service are both there:
 
    ```sh
-   source ~/.bashrc   # or the file the installer names
+   peppy info
    ```
 
-   Shells opened afterwards pick it up on their own.
+   It prints the CLI version and container setup, then a `Daemon Info` block. That block is the background service answering, so seeing it means everything is up.
 
-3. Confirm the service came up:
-
-   <Tabs>
-     <TabItem label="Linux">
-       ```sh
-       systemctl --user status peppy
-       ```
-     </TabItem>
-     <TabItem label="macOS">
-       ```sh
-       launchctl list bot.peppy
-       ```
-     </TabItem>
-   </Tabs>
+   If your shell reports `peppy: command not found`, apply the `PATH` update the installer printed (`source ~/.bashrc`, or whichever file it named) and run it again. Shells opened afterwards pick it up on their own.
 </Steps>
 
 [Installation](/guides/installation/) covers version pinning, skipping the service, and managing it afterwards.
 
 ## Step 2: Launch the simulated robot
 
-Peppy ships with [`launchers-hub`](https://github.com/Peppy-bot/launchers-hub) and [`openarm-nodes`](https://github.com/Peppy-bot/openarm-nodes) among its [default repositories](/advanced_guides/repositories/), and the installer already indexed them, so the OpenArm launchers and every node they reference are reachable by name on a fresh install. Nothing to fetch first.
-
-Launch [`openarm/openarm_v2_teleop_mujoco.json5`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2_teleop_mujoco.json5). Launchers are indexed by filename, so the bare stem is enough:
+A launcher is one file listing the nodes that make up a robot. The OpenArm ones ship with peppy and the installer indexed them, so you can start [`openarm_v2_teleop_mujoco`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2_teleop_mujoco.json5) by name, with nothing to fetch first:
 
 ```sh
 peppy stack launch openarm_v2_teleop_mujoco --node-build-idle-timeout-secs 18000
@@ -138,4 +123,5 @@ You just ran a stack someone else assembled. To build your own:
 - [Installation](/guides/installation/): the full install reference, including service management
 - [Creating your first node](/guides/first_node/): write and run a node from scratch, in Rust or Python
 - [Launch files](/guides/launch_files/): the launcher format behind the command you just ran
+- [Repositories](/advanced_guides/repositories/): where peppy resolves node and launcher names from, and how to add your own
 - [Concepts](/reference/concepts/): nodes, instances, contracts, and the stack, defined
