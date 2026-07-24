@@ -67,24 +67,7 @@ Once the launcher prints `Launch complete`, open two browser tabs:
 | **http://localhost:8080** | the MuJoCo viewer, showing both arms in the simulated world |
 | **http://localhost:8765** | the `openarm_commander` control panel |
 
-Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer while its measured state streams back into the panel. Press **Disable** to stop driving it.
-
-The two other modes on the panel's mode switch are worth a look once the arms move:
-
-- **Actions** turns the per-arm button into **Execute**, which fires one governed move to the target you composed, and adds **Home Pose** / **Ready Pose** presets.
-- **Gestures** plays a baked choreography (wave, spiral, figure eight, shrug, clap), with **Stop** to interrupt it.
-
-The panel reconnects on its own if the connection drops. Both servers bind all interfaces, so you can also reach them from another machine on the same network by swapping `localhost` for the host's address.
-
-Those two ports are only the defaults, and the nodes behave differently when one is busy. The viewer walks up to the next free port (8081, 8082, and so on) and reports the one it took in the sim's run log, on a line reading `listening *:<port>`. The panel does not walk: if 8765 is taken, `commander_inst` fails to start instead.
-
-Check on the stack at any point:
-
-```sh
-peppy stack list
-```
-
-The instance bindings table lists every instance the launcher started; all eight should read `running` under `STATUS` and `healthy` under `HEALTH`. That table is also where the instance ids live (`sim_inst`, `commander_inst`, and so on).
+Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer. The mode switch has two more modes to try once the arms move: **Actions** for one governed move to a target you compose, and **Gestures** for a baked choreography.
 
 To shut things down, stop instances one at a time:
 
@@ -101,7 +84,7 @@ peppy service reset
 <details>
 <summary>**If something doesn't come up**</summary>
 
-**The viewer or the panel won't load.** The simulation keeps initializing for a moment after `Launch complete`. Give it a few seconds, then look at the sim node:
+**The viewer or the panel won't load.** The simulation keeps initializing for a moment after `Launch complete`. Give it a few seconds, then run `peppy stack list`: every instance should read `running` under `STATUS` and `healthy` under `HEALTH`. To dig into one of them:
 
 ```sh
 peppy node info openarm_sim_mujoco:v1
