@@ -17,6 +17,15 @@
  * faint chassis (head housing, spine, torso plate, shoulder beam, forearms)
  * sits behind the nodes to sell the silhouette.
  *
+ * The graph cannot be drawn without crossings: four relays each linking to the
+ * same three hubs (backbone, aggregator, engine) contains K3,3, and the floor
+ * for K3,4 is two crossings. This drawing sits at that floor. Getting there
+ * costs the two backbone to gripper links their straight line: each curves out
+ * around its arm, down the corridor between the arm and its label, and into the
+ * gripper, which also reads as the command running down the arm to the hand.
+ * The two crossings left are gripper readiness against arm engine link, one per
+ * side. Moving a node without re-checking those routes puts crossings back.
+ *
  * Deliberately not drawn: the commander's four observed_* links (it watches
  * each relay's measured state directly). They span the full height of the
  * graph and would bury the command path; the caption covers them instead. Keep
@@ -73,36 +82,38 @@
 	<g class="stack-graph__chassis" fill="none">
 		<rect x="276" y="2" width="108" height="108" rx="26" stroke-width="2"></rect>
 		<line x1="330" y1="112" x2="330" y2="424" stroke-width="14" stroke-linecap="round"></line>
-		<line x1="170" y1="250" x2="490" y2="250" stroke-width="16" stroke-linecap="round"></line>
-		<line x1="170" y1="250" x2="170" y2="358" stroke-width="13" stroke-linecap="round"></line>
-		<line x1="490" y1="250" x2="490" y2="358" stroke-width="13" stroke-linecap="round"></line>
+		<line x1="200" y1="250" x2="460" y2="250" stroke-width="16" stroke-linecap="round"></line>
+		<line x1="200" y1="250" x2="200" y2="358" stroke-width="13" stroke-linecap="round"></line>
+		<line x1="460" y1="250" x2="460" y2="358" stroke-width="13" stroke-linecap="round"></line>
 		<rect x="294" y="124" width="72" height="72" rx="16" stroke-width="2"></rect>
 	</g>
 
-	<!-- Command path: the panel's targets, then the backbone's governed setpoints. -->
+	<!-- Command path: the panel's targets, then the backbone's governed setpoints.
+	     The gripper links take the long way round their arm to keep the drawing
+	     at the minimum two crossings. -->
 	<g class="stack-graph__links stack-graph__links--command">
 		<line x1="330" y1="88" x2="330" y2="124"></line>
-		<line x1="302" y1="176" x2="201" y2="232"></line>
-		<line x1="358" y1="176" x2="459" y2="232"></line>
-		<line x1="310" y1="185" x2="193" y2="330"></line>
-		<line x1="350" y1="185" x2="467" y2="330"></line>
+		<line x1="304" y1="178" x2="230" y2="230"></line>
+		<line x1="356" y1="178" x2="430" y2="230"></line>
+		<path d="M303,175 C240,205 140,200 134,268 S148,326 176,334"></path>
+		<path d="M357,175 C420,205 520,200 526,268 S512,326 484,334"></path>
 	</g>
 
 	<!-- Readiness: every relay reports its limb, the aggregator reports the robot. -->
 	<g class="stack-graph__links stack-graph__links--ready">
-		<line x1="201" y1="260" x2="296" y2="289"></line>
-		<line x1="200" y1="347" x2="296" y2="312"></line>
-		<line x1="459" y1="260" x2="364" y2="289"></line>
-		<line x1="460" y1="347" x2="364" y2="312"></line>
+		<line x1="230" y1="261" x2="296" y2="287"></line>
+		<line x1="229" y1="345" x2="297" y2="315"></line>
+		<line x1="430" y1="261" x2="364" y2="287"></line>
+		<line x1="431" y1="345" x2="363" y2="315"></line>
 		<line x1="330" y1="268" x2="330" y2="196"></line>
 	</g>
 
 	<!-- Engine links: each relay leads its own limb inside the MuJoCo engine. -->
 	<g class="stack-graph__links stack-graph__links--engine">
-		<line x1="192" y1="274" x2="306" y2="398"></line>
-		<line x1="200" y1="370" x2="297" y2="410"></line>
-		<line x1="468" y1="274" x2="354" y2="398"></line>
-		<line x1="460" y1="370" x2="363" y2="410"></line>
+		<line x1="219" y1="276" x2="308" y2="395"></line>
+		<line x1="229" y1="372" x2="298" y2="408"></line>
+		<line x1="441" y1="276" x2="352" y2="395"></line>
+		<line x1="431" y1="372" x2="362" y2="408"></line>
 	</g>
 
 	<!-- commander_inst: the browser control panel -->
@@ -144,7 +155,7 @@
 	</g>
 
 	<!-- left_arm_inst: engine-agnostic arm relay -->
-	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(170 250)">
+	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(200 250)">
 		<g class="stack-graph__float" style="--bob-dur: 2.3s; --bob-delay: 0.9s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloCyan)" style="--halo-delay: 0.9s"
 			></circle>
@@ -160,11 +171,11 @@
 				<path d="M8,-4 L11,-5.5 L11.6,-7.6 M8,-4 L11,-2.5 L11.6,-0.4" stroke-width="1.3"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="-36" y="5" text-anchor="end">left_arm_inst</text>
+		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">left_arm_inst</text>
 	</g>
 
 	<!-- right_arm_inst: the same relay for the other arm -->
-	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(490 250)">
+	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(460 250)">
 		<g class="stack-graph__float" style="--bob-dur: 2.7s; --bob-delay: 0.2s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloCyan)" style="--halo-delay: 0.3s"
 			></circle>
@@ -180,11 +191,11 @@
 				<path d="M8,-4 L11,-5.5 L11.6,-7.6 M8,-4 L11,-2.5 L11.6,-0.4" stroke-width="1.3"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="36" y="5" text-anchor="start">right_arm_inst</text>
+		<text class="stack-graph__label" x="88" y="5" text-anchor="start">right_arm_inst</text>
 	</g>
 
 	<!-- left_grip_inst: gripper relay, mirroring the arm relay over gripper_link -->
-	<g class="stack-graph__node stack-graph__node--teal" transform="translate(170 358)">
+	<g class="stack-graph__node stack-graph__node--teal" transform="translate(200 358)">
 		<g class="stack-graph__float" style="--bob-dur: 2.6s; --bob-delay: 1.2s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloTeal)" style="--halo-delay: 1.2s"
 			></circle>
@@ -198,11 +209,11 @@
 					stroke-linejoin="round"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="-36" y="5" text-anchor="end">left_grip_inst</text>
+		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">left_grip_inst</text>
 	</g>
 
 	<!-- right_grip_inst: the same relay for the other gripper -->
-	<g class="stack-graph__node stack-graph__node--teal" transform="translate(490 358)">
+	<g class="stack-graph__node stack-graph__node--teal" transform="translate(460 358)">
 		<g class="stack-graph__float" style="--bob-dur: 2.4s; --bob-delay: 0.6s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloTeal)" style="--halo-delay: 0.7s"
 			></circle>
@@ -216,7 +227,7 @@
 					stroke-linejoin="round"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="36" y="5" text-anchor="start">right_grip_inst</text>
+		<text class="stack-graph__label" x="88" y="5" text-anchor="start">right_grip_inst</text>
 	</g>
 
 	<!-- robot_init_inst: ready once every limb's physics is live -->
@@ -340,7 +351,8 @@
 		stroke-opacity: 0.22;
 	}
 
-	.stack-graph__links line {
+	.stack-graph__links line,
+	.stack-graph__links path {
 		fill: none;
 		stroke-width: 2;
 		stroke-linecap: round;
@@ -353,14 +365,16 @@
 		}
 	}
 
-	.stack-graph__links--command line {
+	.stack-graph__links--command line,
+	.stack-graph__links--command path {
 		stroke: var(--graph-orange-soft);
 		stroke-dasharray: 9 6;
 		marker-end: url(#sgArrowCommand);
 		--flow-end: -30;
 	}
 
-	.stack-graph__links--ready line {
+	.stack-graph__links--ready line,
+	.stack-graph__links--ready path {
 		stroke: var(--graph-green-soft);
 		stroke-width: 1.6;
 		stroke-opacity: 0.75;
@@ -370,7 +384,8 @@
 		--flow-end: -24;
 	}
 
-	.stack-graph__links--engine line {
+	.stack-graph__links--engine line,
+	.stack-graph__links--engine path {
 		stroke: var(--graph-blue-soft);
 		stroke-dasharray: 5 5;
 		marker-end: url(#sgArrowEngine);
