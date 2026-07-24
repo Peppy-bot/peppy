@@ -50,23 +50,13 @@ Peppy runs on Linux (x86_64/aarch64, tested on Ubuntu 24.04, Fedora, and Arch Li
 
 ## Step 2: Launch the simulated robot
 
-Peppy ships with [`launchers-hub`](https://github.com/Peppy-bot/launchers-hub) and [`openarm-nodes`](https://github.com/Peppy-bot/openarm-nodes) among its [default repositories](/advanced_guides/repositories/), so the OpenArm launchers and every node they reference are already reachable by name on a fresh install.
+Peppy ships with [`launchers-hub`](https://github.com/Peppy-bot/launchers-hub) and [`openarm-nodes`](https://github.com/Peppy-bot/openarm-nodes) among its [default repositories](/advanced_guides/repositories/), and the installer already indexed them, so the OpenArm launchers and every node they reference are reachable by name on a fresh install. Nothing to fetch first.
 
-<Steps>
-1. Populate the local index so peppy can resolve launchers and nodes by name:
+Launch [`openarm/openarm_v2_teleop_mujoco.json5`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2_teleop_mujoco.json5). Launchers are indexed by filename, so the bare stem is enough:
 
-   ```sh
-   peppy repo refresh
-   ```
-
-   It ends with a summary like `Repository refresh complete. 42 node(s), 12 launcher(s), 9 contract(s), 5 pairing(s) found.`
-
-2. Launch [`openarm/openarm_v2_teleop_mujoco.json5`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2_teleop_mujoco.json5). Launchers are indexed by filename, so the bare stem is enough:
-
-   ```sh
-   peppy stack launch openarm_v2_teleop_mujoco --node-build-idle-timeout-secs 18000
-   ```
-</Steps>
+```sh
+peppy stack launch openarm_v2_teleop_mujoco --node-build-idle-timeout-secs 18000
+```
 
 That single command adds, builds, and starts every node in the launcher, in dependency order: eight instances across six node types. The cast is the MuJoCo engine, one relay per limb (two arms, two grippers), the readiness aggregator that waits for every limb's physics to come alive, the backbone that coordinates both arms, and the browser control panel. It prints `Launch complete` when the stack is up.
 
@@ -97,6 +87,8 @@ The two other modes on the panel's mode switch are worth a look once the arms mo
 - **Gestures** plays a baked choreography (wave, spiral, figure eight, shrug, clap), with **Stop** to interrupt it.
 
 The panel reconnects on its own if the connection drops. Both servers bind all interfaces, so you can also reach them from another machine on the same network by swapping `localhost` for the host's address.
+
+Those two ports are only the defaults, and the nodes behave differently when one is busy. The viewer walks up to the next free port (8081, 8082, and so on) and reports the one it took in the sim's run log, on a line reading `listening *:<port>`. The panel does not walk: if 8765 is taken, `commander_inst` fails to start instead.
 
 Check on the stack at any point:
 
@@ -129,7 +121,9 @@ peppy node info openarm_sim_mujoco:v1
 
 It prints the instance's state and health plus the path to its run log, which is the file to read when the state alone doesn't explain the problem.
 
-**Port 8080 or 8765 is already in use.** An earlier instance is still running. Find it with `peppy stack list` and stop it with `peppy node stop <instance_id>`.
+**The panel won't load and `commander_inst` is not running.** Port 8765 is taken, usually by an earlier instance that is still up. Find it with `peppy stack list` and stop it with `peppy node stop <instance_id>`, then launch again.
+
+**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info openarm_sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` in the launcher.
 
 **A build fails on Linux.** Apptainer needs unprivileged user namespaces, which the installer normally configures. Check with `peppy container status`, and repair it with `peppy container setup` (see [Containers](/advanced_guides/containers/)).
 
