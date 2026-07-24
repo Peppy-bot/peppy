@@ -415,7 +415,7 @@ async fn send_launch_origin_and_wait(
     .await
     .map_err(|e| format!("Failed to send launch goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response = LaunchGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {e}"))?;
 

@@ -43,7 +43,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     .await
     .expect("first goal should be sent");
 
-    let first_response_payload = first_action_handle.goal_response().payload();
+    let first_response_payload = first_action_handle.goal_reply().body.clone();
     let first_response = NodeAddGoalResponse::decode(&first_response_payload)
         .expect("failed to decode first goal response");
     assert!(first_response.accepted, "first goal should be accepted");
@@ -126,7 +126,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     .await
     .expect("first goal should be sent");
 
-    let first_response_payload = first_action_handle.goal_response().payload();
+    let first_response_payload = first_action_handle.goal_reply().body.clone();
     let first_response = NodeAddGoalResponse::decode(&first_response_payload)
         .expect("failed to decode first goal response");
     assert!(first_response.accepted, "first goal should be accepted");

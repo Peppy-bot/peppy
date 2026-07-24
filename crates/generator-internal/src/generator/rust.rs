@@ -16,8 +16,7 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
-    scoped_schema_key,
+    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -38,8 +37,8 @@ use std::path::Path;
 use actions::{
     build_action_expose_method, build_action_handle_struct, build_action_request_deserializer,
     build_goal_context_base_methods, build_goal_context_complete,
-    build_goal_context_publish_feedback, build_goal_context_struct,
-    build_goal_response_constructors, build_handle_goal_next_request,
+    build_goal_context_publish_feedback, build_goal_context_struct, build_goal_decision_enum,
+    build_handle_goal_next_request,
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
@@ -268,19 +267,35 @@ impl RustGenerator {
             helper_items.push(deserialize_helper);
 
             quote! {
-                let payload = action_handle.goal_response().payload();
-                let response_data = deserialize_goal_response(payload.as_ref())?;
+                let reply = action_handle.goal_reply();
+                let accepted = reply.accepted;
+                let reason = reply.reason.clone();
+                // An empty body means no response was supplied (a declared
+                // response serializes to a non-empty capnp message), which
+                // only a reject can produce.
+                let data = if reply.body.is_empty() {
+                    None
+                } else {
+                    Some(deserialize_goal_response(reply.body.as_ref())?)
+                };
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
                     inner: action_handle,
-                    data: response_data,
+                    accepted,
+                    reason,
+                    data,
                 })
             }
         } else {
             quote! {
+                let reply = action_handle.goal_reply();
+                let accepted = reply.accepted;
+                let reason = reply.reason.clone();
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
                     inner: action_handle,
+                    accepted,
+                    reason,
                 })
             }
         };
@@ -936,7 +951,7 @@ impl LanguageGenerator for RustGenerator {
         // publish_feedback and complete/complete_cancelled when applicable).
         let mut goal_context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
-        // Free items (the GoalResponse constructors).
+        // Free items (the GoalDecision enum).
         let mut extra_items: Vec<TokenStream> = Vec::new();
 
         let action_name_literal = Literal::string(&action.name);
@@ -956,13 +971,10 @@ impl LanguageGenerator for RustGenerator {
                 &format!("{label}_request"),
                 goal_service.and_then(|goal| goal.request_message_format.as_ref()),
             )?;
-            // The goal acknowledgement is framework-owned ({accepted,
-            // error_message}); any goal response declared in the action schema
-            // is ignored. The decider returns GoalResponse::accept() /
-            // GoalResponse::reject(reason).
-            let goal_response_format = goal_action_response_format();
-            let response_artifacts =
-                map_message_format(&format!("{label}_response"), Some(&goal_response_format))?;
+            let response_artifacts = map_message_format(
+                &format!("{label}_response"),
+                goal_service.and_then(|goal| goal.response_message_format.as_ref()),
+            )?;
 
             // Generates `GoalResponse` (+ `new`) when there is a response, and
             // returns the request params used to build `GoalRequestData`.
@@ -1014,29 +1026,35 @@ impl LanguageGenerator for RustGenerator {
                 helper_tokens.push(deserializer_fn);
             }
 
-            // The decider returns a framework `GoalResponse`
-            // (`accept()` / `reject(reason)`).
-            extra_items.push(build_goal_response_constructors());
+            // The user closure returns this to accept or reject the goal.
+            extra_items.push(build_goal_decision_enum(response_artifacts.is_some()));
 
-            // Serialization for the `GoalResponse` (reads a local `response`).
-            // The goal response is framework-owned, so it is always present.
-            let return_artifacts = response_artifacts
-                .as_ref()
-                .expect("framework goal response format always yields artifacts");
-            let response_schema_prefix = format!("{schema_struct_prefix}Response");
-            let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
-            let schema_info =
-                self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
-            let spec = ServiceResponseSpec {
-                format: return_artifacts.message_format(),
-                struct_ident: Ident::new("GoalResponse", Span::call_site()),
-                builder_type: schema_info.builder_type_tokens(),
-                include_service_instance_id: false,
+            // Serialization for the accepted/rejected `GoalResponse` (reads a
+            // local `response` variable). `None` when the goal has no response.
+            let response_serialization = if let Some(return_artifacts) = response_artifacts.as_ref()
+            {
+                let response_schema_prefix = format!("{schema_struct_prefix}Response");
+                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
+                let schema_info =
+                    self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
+                let spec = ServiceResponseSpec {
+                    format: return_artifacts.message_format(),
+                    struct_ident: Ident::new("GoalResponse", Span::call_site()),
+                    builder_type: schema_info.builder_type_tokens(),
+                    include_service_instance_id: false,
+                };
+                let response_ident = Ident::new("response", Span::call_site());
+                let error_context =
+                    quote!(format!("{} {}", "handle_goal_next_request", ACTION_NAME));
+                Some(build_response_payload_tokens(
+                    &spec,
+                    &response_ident,
+                    &error_context,
+                    None,
+                )?)
+            } else {
+                None
             };
-            let response_ident = Ident::new("response", Span::call_site());
-            let error_context = quote!(format!("{} {}", "handle_goal_next_request", ACTION_NAME));
-            let response_serialization =
-                build_response_payload_tokens(&spec, &response_ident, &error_context, None)?;
 
             action_handle_methods.push(build_handle_goal_next_request(
                 goal_request_data_struct.is_some(),
@@ -1611,18 +1629,25 @@ impl LanguageGenerator for RustGenerator {
         let node_name_literal = Literal::string(dependency_node_name);
         let action_name_literal = Literal::string(action.name.as_str());
         let link_id_literal = Literal::string(&dependency.link_id);
+
+        let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
+        let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
+        let feedback_format = non_empty_message_format(messages.feedback.as_ref());
+        let result_response_format = non_empty_message_format(messages.result_response.as_ref());
+        let target_node_name_constant = if goal_request_format.is_some()
+            || goal_response_format.is_some()
+            || feedback_format.is_some()
+            || result_response_format.is_some()
+        {
+            quote!(const TARGET_NODE_NAME: &str = #node_name_literal;)
+        } else {
+            TokenStream::new()
+        };
         let constants_tokens = quote! {
-            const TARGET_NODE_NAME: &str = #node_name_literal;
+            #target_node_name_constant
             const TARGET_ACTION_NAME: &str = #action_name_literal;
             const LINK_ID: &str = #link_id_literal;
         };
-
-        let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
-        let goal_response_fmt = goal_action_response_format();
-        let goal_response_format = Some(&goal_response_fmt);
-        let feedback_format = non_empty_message_format(messages.feedback.as_ref());
-        let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
         let (goal_method, mut goal_helpers, has_goal_response_data) = self
             .build_consumed_action_fire_goal_method(
@@ -1670,7 +1695,17 @@ impl LanguageGenerator for RustGenerator {
                 pub struct ActionHandle {
                     messenger: peppylib::MessengerHandle,
                     inner: peppylib::messaging::ActionGoalHandle,
-                    pub data: #goal_response_data_ident,
+                    /// Whether the producer admitted the goal, decoded from
+                    /// the framework goal-ack envelope.
+                    pub accepted: bool,
+                    /// Optional human-readable rejection reason from the
+                    /// goal-ack envelope. `None` for accepted goals and for
+                    /// rejections sent without a reason.
+                    pub reason: Option<String>,
+                    /// The declared goal response. Always present for
+                    /// accepted goals; `None` when a rejection carried no
+                    /// response payload.
+                    pub data: Option<#goal_response_data_ident>,
                 }
             }
         } else {
@@ -1678,6 +1713,13 @@ impl LanguageGenerator for RustGenerator {
                 pub struct ActionHandle {
                     messenger: peppylib::MessengerHandle,
                     inner: peppylib::messaging::ActionGoalHandle,
+                    /// Whether the producer admitted the goal, decoded from
+                    /// the framework goal-ack envelope.
+                    pub accepted: bool,
+                    /// Optional human-readable rejection reason from the
+                    /// goal-ack envelope. `None` for accepted goals and for
+                    /// rejections sent without a reason.
+                    pub reason: Option<String>,
                 }
             }
         };

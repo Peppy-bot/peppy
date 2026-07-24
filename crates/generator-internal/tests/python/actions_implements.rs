@@ -2,8 +2,8 @@
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    ActionServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, QoSProfile,
-    SchemaType, TypeToken,
+    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
+    TypeToken,
 };
 use generator::{
     ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
@@ -19,10 +19,9 @@ fn make_action(marker: &str) -> NativeExposedAction {
     resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
     NativeExposedAction {
         name: "move_arm".to_string(),
-        goal_service: Some(ActionServiceEndpoint {
+        goal_service: Some(GoalServiceEndpoint {
             request_message_format: Some(MessageFormat(req)),
             response_message_format: Some(MessageFormat(resp)),
-            qos_profile: QoSProfile::Reliable,
         }),
         feedback_topic: None,
         result_service: None,
@@ -116,17 +115,29 @@ fn nests_contract_backed_actions_under_link_id() {
         native_src.contains("peppylib.SenderTarget.node("),
         "native leaf should pass `peppylib.SenderTarget.node(...)`:\n{native_src}",
     );
+    assert!(
+        native_src.contains("native_marker") && native_src.contains("native_marker_ack"),
+        "native source should carry its declared request and response fields",
+    );
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
         arm_v1_src.contains("peppylib.SenderTarget.contract(\"arm\", \"v1\")"),
         "arm v1 leaf should pass `SenderTarget.contract(\"arm\", \"v1\")`:\n{arm_v1_src}",
     );
+    assert!(
+        arm_v1_src.contains("arm_v1_marker") && arm_v1_src.contains("arm_v1_marker_ack"),
+        "arm v1 source should carry its declared request and response fields",
+    );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
         arm_v2_src.contains("peppylib.SenderTarget.contract(\"arm\", \"v2\")"),
         "arm v2 leaf should pass `SenderTarget.contract(\"arm\", \"v2\")`:\n{arm_v2_src}",
+    );
+    assert!(
+        arm_v2_src.contains("arm_v2_marker") && arm_v2_src.contains("arm_v2_marker_ack"),
+        "arm v2 source should carry its declared request and response fields",
     );
 
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,

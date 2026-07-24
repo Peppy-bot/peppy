@@ -34,9 +34,8 @@ async fn run_benchmark_goal(
     .await
     .expect("send stack_benchmark goal");
 
-    let goal_response =
-        StackBenchmarkGoalResponse::decode(&action_handle.goal_response().payload())
-            .expect("decode goal response");
+    let goal_response = StackBenchmarkGoalResponse::decode(&action_handle.goal_reply().body)
+        .expect("decode goal response");
     assert!(goal_response.accepted, "benchmark goal should be accepted");
 
     // Drain feedback to end-of-stream with a generous overall deadline.

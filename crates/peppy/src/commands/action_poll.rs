@@ -49,7 +49,7 @@ where
     Fb: ActionFeedbackLike,
     Res: ActionResultLike,
 {
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response = Resp::decode_payload(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 

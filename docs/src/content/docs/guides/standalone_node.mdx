@@ -19,7 +19,7 @@ In that scenario, you want to be able to run your node as a regular Rust/Python 
 
 ## Debugging a node
 
-While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the peppy node stack.
+While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the Peppy node stack.
 To support this, `peppy` can run a node in "standalone mode": it communicates with other nodes in the stack but runs as a regular program outside of it, allowing you to use standard debugging tools.
 Let's create a new node:
 
@@ -44,7 +44,7 @@ Let's create a new node:
    ```
 </Steps>
 
-with the following configuration:
+Then modify the `peppy.json5` configuration to look like this:
 <Tabs>
   <TabItem label="Python">
     <Code code={standalonePythonConfig} lang="json5" title="peppy.json5" />
@@ -69,8 +69,8 @@ Now if you try to run the node:
     uv run standalone
     ```
     You'll run into the following error:
-    ```sh
-    RuntimeError: missing required parameter(s) for standalone mode: device, video. Provide them via StandaloneConfig().with_parameters()
+    ```text
+    RuntimeError: missing required parameter(s) for standalone mode: device_path, video. Provide them via StandaloneConfig().with_parameters()
     ```
   </TabItem>
   <TabItem label="Rust">
@@ -78,13 +78,13 @@ Now if you try to run the node:
     cargo run
     ```
     You'll run into the following error:
-    ```sh
-    Error: ParameterDeserialization(ParameterDeserializationError(["device", "video"]))
+    ```text
+    Error: ParameterDeserialization(ParameterDeserializationError(["device_path", "video"]))
     ```
   </TabItem>
 </Tabs>
 
-These parameters are usually provided during `peppy node run`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
+These parameters are usually provided during `peppy node run`, but since we want this node to run as a standalone program, we need to pass them outside of the Peppy daemon environment.
 We can define our parameters in a `params.json` file at the root of the project:
 
 <Tabs>
@@ -117,5 +117,5 @@ Then modify the source file to read from this file:
 
 The node should run without a crash.
 The standalone object allows us to load parameters from an external JSON file and pass them to the node, which in turn allows us to run our node as a regular Rust/Python program.
-Note that the standalone config is completely ignored when a node is run with `peppy node run`, all parameters provided during the `node run` operation take precedence.
+Note that the standalone config is completely ignored when a node is run with `peppy node run`; all parameters provided during the `node run` operation take precedence.
 

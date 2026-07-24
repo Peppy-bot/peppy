@@ -17,7 +17,7 @@ and must not be read side by side:
 - **Real traffic**: the observe-only one-way delivery latency of a topic's live
   messages, full payload included. This is what a consumer actually
   experiences: a camera topic streaming multi-megabyte frames can legitimately
-  read 30x above its own plumbing cost, and that difference is payload, not
+  read 30× above its own plumbing cost, and that difference is payload, not
   overhead.
 
 It covers **both** ways a node can depend on another:
@@ -37,7 +37,7 @@ machine).
 The daemon must be running with a launched stack (see
 [Core node functions](/advanced_guides/core_node_functions/)).
 
-```shell
+```sh
 # Benchmark every dependency edge with the defaults (200 samples, 20 warmup).
 peppy stack benchmark
 
@@ -216,7 +216,7 @@ One-way **topic delivery** is the only measurement that depends on clocks:
   sub-millisecond latencies. The benchmark handles this in layers:
   - With **PTP** (gPTP / IEEE-1588) deployed on your network, the system clocks
     are disciplined to each other and cross-host numbers are trustworthy with no
-    extra work, so peppy benefits transparently.
+    extra work, so Peppy benefits transparently.
   - Otherwise, the benchmark asks each producer for its measured offset to the
     core node (an NTP-style exchange) and **corrects** the number. The `clock`
     column reads `corrected`. Accuracy is roughly the LAN sync asymmetry (tens of

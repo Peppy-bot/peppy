@@ -4,7 +4,7 @@ description: Learn how to share your node or use other people's nodes
 sidebar:
   order: 7
 ---
-import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 One of Peppy's key features is the ability to share nodes with other people.
 As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes-hub.git) in a separate shell.
@@ -15,7 +15,7 @@ Because `nodes-hub` ships as one of the default [repositories](/advanced_guides/
 peppy node add uvc_camera:v1
 ```
 
-### Adding a node from an unindexed repository
+## Adding a node from an unindexed repository
 
 If the node lives in a repository that isn't registered in your `repositories.json5`, you can still add it directly by URL:
 
@@ -38,11 +38,11 @@ peppy node run uvc_camera:v1 device_path=/dev/video0 video.camera_encoding="mjpe
 ```
 
 and inspect its logs:
-```sh
-❯ tail /Users/tuatini/.peppy/logs/run/angry-ride-4256.log
+```
+$ tail /home/ubuntu/.peppy/logs/run/angry-ride-4256.log
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video params: 1280x720 @ 25 fps, encoding: rgb8
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Starting video loop...
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /Users/tuatini/.peppy/instances/angry-ride-4256/assets/robot.mp4
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /home/ubuntu/.peppy/instances/angry-ride-4256/assets/robot.mp4
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Opening video file for playback...
 [2026-01-25T16:38:54.892] [stdout] [uvc_camera] Emitted frame 65
 [2026-01-25T16:38:57.913] [stdout] [uvc_camera] Emitted frame 129
@@ -50,7 +50,7 @@ and inspect its logs:
 ```
 
 We see that video frames are emitted from that node. We can pull a new node that depends on `uvc_camera` to read those frames and reconstruct a short video.
-Pull another node from the same repository:
+Pull another node from the examples repository:
 <Tabs>
   <TabItem label="Python">
 ```sh
@@ -78,11 +78,11 @@ If we look at the logs of the started `fake_video_reconstruction` node:
 [2026-01-26T15:35:34.106] [stdout] Recorded 200/250 frames (4 seconds)
 [2026-01-26T15:35:36.423] [stdout] Recorded 250/250 frames (5 seconds)
 [2026-01-26T15:35:36.423] [stdout] Recording complete. Encoding video...
-[2026-01-26T15:35:37.222] [stdout] Video saved to: /var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/.tmpCJoXVL/reconstructed_video.mp4
+[2026-01-26T15:35:37.222] [stdout] Video saved to: /tmp/.tmpCJoXVL/reconstructed_video.mp4
 ```
 
 We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.
-In the same way, you can share your own nodes by hosting them in a Git repository and connect them to remote nodes.
+In the same way, you can share your own nodes by hosting them in a Git repository so others can pull them into their own stacks.
 A node can also be pulled in the same way if it's in a `.tar.zst` archive.
 
 :::note
@@ -90,6 +90,6 @@ Archive downloads over HTTP tolerate flaky networks: a transient failure (a conn
 :::
 
 :::tip
-When you're iterating on a node that depends on a hub node, and you don't want to `peppy node add` the hub node first just to regenerate peppygen, run `peppy node sync -r` instead. The `--include-repositories` flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
+When you're iterating on a node that depends on a hub node, and you don't want to `peppy node add` the hub node first just to regenerate peppygen, run `peppy node sync -r` (short for `--include-repositories`) instead. This flag lets the daemon resolve missing dependencies through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) directly.
 :::
 

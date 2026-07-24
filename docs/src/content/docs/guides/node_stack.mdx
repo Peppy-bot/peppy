@@ -1,5 +1,5 @@
 ---
-title: The Node stack
+title: The node stack
 description: Learn how to add, start, stop, and manage nodes in the Peppy stack
 sidebar:
   order: 4
@@ -34,7 +34,7 @@ Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699.log
 Added node hello_world:v1 to the node stack
 ```
 This gives you access to the log file for debugging in case the `add` command fails.
-When a node is added to the node stack, a copy is made in the peppy cache under `~/.peppy/built_nodes/` to "snapshot" the node based on its name and tag.
+When a node is added to the node stack, a copy is made in the Peppy cache under `~/.peppy/built_nodes/` to "snapshot" the node based on its name and tag.
 No two copies of the same node with the same name + tag can exist at the same time in the node stack.
 Re-adding a node with the same name and tag overrides the one that was previously in the node stack, except if that node has dependencies, in which case the operation fails.
 
@@ -186,7 +186,7 @@ Each lifecycle transition (a `running` instance going `unhealthy` or recovering,
 
 ### Daemon shutdown and orphan prevention
 
-Spawned nodes are child processes of the daemon, so peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
+Spawned nodes are child processes of the daemon, so Peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
 
 **Clean shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`).** Before it exits, the daemon tears down every spawned node: it asks each node to shut down cooperatively (in the node, this fires the cancellation token and runs its shutdown hooks; see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), waits for each to exit cooperatively (the shared **shutdown grace period** for cleanup, `shutdown_grace_secs`, **5 seconds** by default, plus the brief runtime teardown that follows), then force-kills the process group of anything still alive. This is immediate: it does **not** wait the daemon-liveness grace period described below, so stopping the daemon feels instant while still guaranteeing nothing is orphaned. It's the same graceful-then-forced sequence [`peppy node stop`](#stopping-your-node) runs for a single instance, which uses the same `shutdown_grace_secs` window.
 
@@ -271,7 +271,7 @@ When you're done, you can stop your node:
 peppy node stop <instance-id>
 ```
 
-This stops **one instance** of the `hello_world:v1` node, but the node itself still remains in the node stack.
+This stops **one instance** of the `hello_world:v1` node, but the node itself remains in the node stack.
 
 Stopping is a **graceful-then-forced** operation, and the command blocks until the instance's process has actually exited:
 
@@ -324,8 +324,8 @@ $ peppy stack list
 
 ## Next steps
 
-Now that you've created your first node, you can:
+Now that you can manage nodes in the stack, you can:
 
 - Add [interfaces](/reference/concepts/#interfaces) to communicate with other nodes
 - Configure [parameters](/reference/concepts/#manifest) for your node
-- Learn about the [node stack](/reference/concepts/#node-stack) and dependencies
+- Start multiple nodes at once with [launch files](/guides/launch_files/)
