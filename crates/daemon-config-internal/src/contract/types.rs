@@ -279,6 +279,37 @@ mod tests {
         assert!(action.feedback_topic.is_none());
     }
 
+    /// A contract must not advertise a user-defined result request: the action
+    /// protocol has none, so `deny_unknown_fields` rejects it at parse time
+    /// rather than letting a contract require an API no implementation or
+    /// consumer can honor.
+    #[test]
+    fn action_rejects_result_service_request_message_format() {
+        let json5 = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "arm", tag: "v1" },
+            interfaces: {
+                actions: [
+                    {
+                        name: "move_arm",
+                        result_service: {
+                            request_message_format: { include_diagnostics: "bool" },
+                            response_message_format: { success: "bool" },
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let err = serde_json5::from_str::<PeppyContract>(json5)
+            .expect_err("result_service.request_message_format must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("request_message_format"),
+            "error should name the rejected field, got: {message}"
+        );
+    }
+
     /// The schema field is the source of truth: a node-shaped document
     /// must not be accepted by the contract parser, even if no
     /// contract-specific field is present.
