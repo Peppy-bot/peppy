@@ -998,7 +998,14 @@ mod tests {
     /// Registering `/run/user` would mount the macOS side (which does not even
     /// exist) over the guest's own runtime tmpfs, and would restart the VM to
     /// do it. The guest resolves these paths itself.
+    ///
+    /// macOS-gated like its companion below: off macOS
+    /// `external_lima_mount_sources` returns empty before consulting the
+    /// filter at all, so an ungated assertion would hold with the filter
+    /// deleted and prove nothing. The predicate itself is platform-independent
+    /// and covered in `containers::mount_source`.
     #[test]
+    #[cfg(target_os = "macos")]
     fn host_provided_sources_are_not_forwarded_to_lima() {
         let forwarded = external_lima_mount_sources(&[
             "/run/user".to_string(),

@@ -490,9 +490,21 @@ impl Apptainer {
                     Error::ConfigurationError("HOME environment variable not set".into())
                 })?;
 
+                // Host runtime trees are never Lima's to carry. Registering
+                // `/run/user` here would write it into the Lima YAML — restarting
+                // the VM to mount the Mac's copy (which does not exist) over the
+                // guest's own runtime tmpfs — and would then whitelist it in
+                // `extra_mounts`, so `translate_path` would wave it through. The
+                // filter lives here rather than at the call sites because all
+                // three of them (stack preflight, node run, node build) funnel
+                // through this one method.
                 let external_paths: Vec<&str> = mount_src_paths
                     .iter()
-                    .filter(|p| !resolve_absolute(p).starts_with(&home))
+                    .filter(|p| {
+                        let absolute = resolve_absolute(p);
+                        !absolute.starts_with(&home)
+                            && !crate::is_host_provided_mount_source(&absolute)
+                    })
                     .copied()
                     .collect();
 
@@ -860,6 +872,17 @@ impl Apptainer {
                     Error::ConfigurationError("HOME environment variable not set".into())
                 })?;
 
+                // Ahead of both acceptance checks on purpose. `ensure_host_mounts`
+                // already refuses to register these, but a `$HOME`-relative or
+                // stale `extra_mounts` entry must not be able to launder one
+                // through: the guest's `/run/user` is not the Mac's, whatever the
+                // mount list says.
+                if crate::is_host_provided_mount_source(&absolute_path) {
+                    return Err(Error::HostRuntimePathNotInVm {
+                        path: absolute_path.display().to_string(),
+                    });
+                }
+
                 if absolute_path.starts_with(&home) {
                     return Ok(absolute_path);
                 }
@@ -871,12 +894,6 @@ impl Apptainer {
                     .any(|m| absolute_path.starts_with(m))
                 {
                     return Ok(absolute_path);
-                }
-
-                if crate::is_host_provided_mount_source(&absolute_path) {
-                    return Err(Error::HostRuntimePathNotInVm {
-                        path: absolute_path.display().to_string(),
-                    });
                 }
 
                 Err(Error::PathNotAccessibleInVm {
