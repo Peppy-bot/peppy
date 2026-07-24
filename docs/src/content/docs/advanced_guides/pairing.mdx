@@ -50,7 +50,7 @@ One pairing document models both directions. Each topic declares which **role** 
 
 ## Define the pairing
 
-A pairing is a standalone `pairing/v1` document in a repository peppy scans (see [Repositories](/advanced_guides/repositories)). Like a contract, the `message_format` lives here once and both sides inherit it by reference, but unlike a contract, a pairing names *both* directions and the two roles playing them.
+A pairing is a standalone `pairing/v1` document in a repository Peppy scans (see [Repositories](/advanced_guides/repositories/)). Like a contract, the `message_format` lives here once and both sides inherit it by reference, but unlike a contract, a pairing names *both* directions and the two roles playing them.
 
 <Code code={armLinkPairing} lang="json5" title="pairings/arm_link/peppy.json5" />
 
@@ -216,7 +216,7 @@ Pairing state lives in the daemon, alongside the node stack itself. Like the sta
 
 ## Multiple slots: the two-arm commander
 
-Because the slot, not the node, is the unit of pairing, a node can declare several slots of the *same* pairing and hold one peer per slot, each a fully isolated stream:
+Because the slot, not the node, is the unit of pairing, a node can declare several slots of the *same* pairing and hold one peer per slot, each a fully isolated stream.
 
 Each slot is declared and covered on its own, so the two arms stay independent all the way down to the generated modules:
 
@@ -275,7 +275,7 @@ interfaces: {
 }
 ```
 
-Link the observer to a **source instance** the same way you establish a pairing, with `--link` (or a launcher `links:` entry) — the target is the instance to observe, not a peer to pair with:
+Link the observer to a **source instance** the same way you establish a pairing, with `--link` (or a launcher `links:` entry); the target is the instance to observe, not a peer to pair with:
 
 ```sh
 # Observe arm_1, whichever controller it happens to be paired with (or none).
@@ -287,9 +287,9 @@ The runtime guarantees mirror pairing's, with the lifecycle twist that defines a
 - **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
 - **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation; no message from a previous run of the source leaks across the restart.
-- **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a `source()` helper reporting the resolved source (or `None` before it resolves). There is no publisher and no `paired()` — an observer never talks back.
+- **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a `source()` helper reporting the resolved source (or `None` before it resolves). There is no publisher and no `paired()`; an observer never talks back.
 
-The generated modules live alongside participant slots under `peppygen.paired_topics.<link_id>.<topic>`. Every observer slot is required (it has no `optional` form); cover it with a `--link`/`links:` entry or defer it explicitly with `--defer-link`/`defer_links:`, exactly like a required pairing slot.
+The generated modules live alongside participant slots under `peppygen.paired_topics.<link_id>.<topic>` (Python) / `peppygen::paired_topics::<link_id>::<topic>` (Rust). Every observer slot is required (it has no `optional` form); cover it with a `--link`/`links:` entry or defer it explicitly with `--defer-link`/`defer_links:`, exactly like a required pairing slot.
 
 ## Why topics only?
 
@@ -302,13 +302,13 @@ Peppy has three communication patterns (topics, services, and actions), but a pa
 | Consuming means | "I passively receive these messages" | "I actively call this provider" | "I actively orchestrate this provider" |
 | Allowed in a pairing? | Yes | No | No |
 
-A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [contract implementation](/advanced_guides/contract_implementation#caller-driven-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
+A pairing's two directions are two independent one-way streams: each side publishes whenever it has data, and neither ever *blocks on* the other at the protocol level. That is what makes the mutual relationship safe to hide from the static dependency graph. Services and actions are caller-driven: each side would actively invoke the other, forming a real request-response cycle at runtime, which is exactly the deadlock hazard the acyclic dependency model exists to prevent. The same rule applies to [contract implementation](/advanced_guides/contract_implementation/#caller-driven-cycles-are-rejected): mutual service or action relationships are rejected, however they are wired.
 
-If two paired nodes also need a bounded request-response exchange, keep the continuous streams in the pairing and model the bounded job as an [action](/advanced_guides/actions) in one direction (the client depends on the server, no cycle).
+If two paired nodes also need a bounded request-response exchange, keep the continuous streams in the pairing and model the bounded job as an [action](/advanced_guides/actions/) in one direction (the client depends on the server, no cycle).
 
 ## Pairing vs. contracts
 
-Pairing and [contract implementation](/advanced_guides/contract_implementation) both decouple nodes from each other through a shared contract. They answer different questions:
+Pairing and [contract implementation](/advanced_guides/contract_implementation/) both decouple nodes from each other through a shared contract. They answer different questions:
 
 | | Pairing | Contract |
 |---|---|---|

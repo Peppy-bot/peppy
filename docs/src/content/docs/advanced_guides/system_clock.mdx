@@ -1,13 +1,13 @@
 ---
 title: System clock
-description: Synchronize a node's wall clock against the core node, or subscribe to periodic clock ticks for continuous correlation.
+description: Synchronize a node's wall clock against the core node, or subscribe to periodic clock ticks for continuous correlation
 sidebar:
   order: 11
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Every node in a peppy stack runs against its own OS wall clock.
+Every node in a Peppy stack runs against its own OS wall clock.
 That's fine on a single host. The trouble starts when two nodes need to compare timestamps. For example, matching a sensor reading to the controller command that triggered it, or merging logs from multiple machines into a single timeline. 
 Their clocks drift independently, so "1.7 s ago" on one node no longer points to the same instant as "1.7 s ago" on another.
 
@@ -36,7 +36,7 @@ If unsure, start with `synchronize`; it gives you both numbers and you can call 
 
 ## `synchronize`
 
-`synchronize` performs the standard NTP 4-timestamp exchange against the core node's `CLOCK` service: the helper stamps `t0` before sending, the core node stamps `t1` on receive and `t2` before responding, and the helper stamps `t3` on receive. It returns a `ClockSync` with three fields:
+`synchronize` performs the standard NTP 4-timestamp exchange against the core node's `clock` service: the helper stamps `t0` before sending, the core node stamps `t1` on receive and `t2` before responding, and the helper stamps `t3` on receive. It returns a `ClockSync` with three fields:
 
 - `offset_ns` (`i64` in Rust, `int` in Python): signed nanoseconds. `local + offset_ns ≈ core_node`. Negative means the local clock leads the core node.
 - `round_trip_delay_ns` (`u64` in Rust, `int` in Python): the round-trip delay observed on this exchange.
@@ -179,7 +179,7 @@ Each `ClockTick` carries a single field, `time` (`u64` in Rust, `int` in Python)
 
 ## Sim and replay clocks
 
-Most of the time the core node feeds these helpers from its own OS wall time. For simulators and bag replay you usually want the same node binaries to read a virtual clock instead, without rebuilding. peppy makes this a deployment-time choice through two knobs:
+Most of the time the core node feeds these helpers from its own OS wall time. For simulators and bag replay you usually want the same node binaries to read a virtual clock instead, without rebuilding. Peppy makes this a deployment-time choice through two knobs:
 
 - A typed `framework` block on each per-instance launcher entry, sibling to `arguments` and `env_vars`.
 - A daemon-wide CLI flag `--clock-source=wall|sim` that decides the default for instances that omit the override.
