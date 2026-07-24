@@ -1,0 +1,31 @@
+<entry>
+  <title>v0.19.0</title>
+  <id>https://docs.peppy.bot/releases/v0-19-0/</id>
+  <updated>2026-07-24T00:00:00Z</updated>
+
+  <summary>Actions adopt the goal-ack envelope and split goal/result endpoints; the generator now honors declared goal response schemas.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.19.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Actions adopt the goal-ack envelope and split goal/result endpoints; the generator now honors declared goal response schemas.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on July 24, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Actions now use the framework goal-ack envelope for goal acknowledgements; update any consumer that parses goal acknowledgement messages to the new envelope format.&lt;/li&gt;
+&lt;li&gt;Action endpoints are now split into separate goal and result endpoint types; update any configuration or code that referenced the previous combined action endpoint type.&lt;/li&gt;
+&lt;li&gt;Generated goal responses no longer include an error field; update any code that read that field.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Code generation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The code generator now honors the goal response schemas you declare, so generated goal responses match your declaration; regenerate to pick up the change.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Documentation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The guide pages have been revised to fix inconsistencies and formatting issues.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
