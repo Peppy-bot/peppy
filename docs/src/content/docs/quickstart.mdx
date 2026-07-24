@@ -58,10 +58,6 @@ Every circle is one instance the launcher started, and every arrow a link betwee
 The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. `--node-build-idle-timeout-secs` raises the window the daemon allows without build output, which keeps it from killing that first download partway through. Subsequent launches don't need the flag.
 :::
 
-:::caution
-`peppy stack launch` replaces the current node stack: it stops every running instance before bringing up the new one.
-:::
-
 ## Step 3: Drive the arms
 
 Once the launcher prints `Launch complete`, open two browser tabs:

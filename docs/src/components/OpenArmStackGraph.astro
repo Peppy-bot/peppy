@@ -329,7 +329,9 @@
 	/* Light mode needs the darker end of each ramp to stay readable on the pale
 	   page background, and a light disc fill so the icons keep their contrast. */
 	:global([data-theme='light']) .stack-graph {
-		--graph-surface: #eef1f8;
+		/* White, not the page background: the graph also sits inside a note aside,
+		   whose tint would otherwise show the disc as a muddy gray. */
+		--graph-surface: #ffffff;
 		--graph-chassis: #94a2bd;
 		--graph-label: #5c6a86;
 		--graph-violet: #7c3aed;
