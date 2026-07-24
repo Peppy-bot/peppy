@@ -475,14 +475,37 @@ pub(super) async fn build_container_command(
     })
 }
 
+/// Whether a bind mount source lives under a tree the *host* materializes,
+/// which peppy must therefore never create.
+///
+/// `/dev`, `/proc` and `/sys` are kernel virtual filesystems; `/run` is the
+/// runtime tmpfs whose contents (`/run/user/$UID`, session sockets) are owned
+/// by init and the login stack. In every case the entry either already exists
+/// on the host that will run the container, or it is not ours to conjure: a
+/// `mkdir -p` would at best be a no-op and at worst mask a real "this host
+/// isn't the one you want" mismatch behind an empty directory.
+///
+/// The distinction matters most off-Linux. A macOS daemon runs its containers
+/// inside the Lima guest, and macOS has neither `/run` nor a writable `/`
+/// (the sealed system volume), so auto-creating these paths fails outright
+/// with `EROFS` — see the sim nodes that bind `/run/user` to back
+/// `XDG_RUNTIME_DIR`. Skipping them here leaves resolution to the guest,
+/// where the path really lives.
+pub fn is_host_provided_mount_source(path: &Path) -> bool {
+    path.starts_with("/dev")
+        || path.starts_with("/proc")
+        || path.starts_with("/run")
+        || path.starts_with("/sys")
+}
+
 /// Ensures every bind mount source path is usable by the container runtime.
 ///
 /// For each entry:
 ///   - existing paths are left untouched (they may be files, sockets, devices,
 ///     or directories; we must not modify them);
-///   - paths under kernel-managed virtual filesystems (`/dev`, `/proc`,
-///     `/sys`) are accepted as-is, since the kernel materializes them and the
-///     daemon's host may legitimately not have the device node;
+///   - paths the host provides ([`is_host_provided_mount_source`]) are
+///     accepted as-is, since the daemon's host may legitimately not have the
+///     device node or runtime dir;
 ///   - any other missing path is auto-created with `mkdir -p`, and a warning
 ///     line is emitted both to the daemon `tracing` log and to the
 ///     per-instance start log via `feedback_sink`. The warning is the only
@@ -498,13 +521,7 @@ pub(super) fn ensure_bind_sources(
 ) -> std::io::Result<()> {
     for bind in binds {
         let src_path = Path::new(&bind.src);
-        if src_path.exists() {
-            continue;
-        }
-        let in_special_fs = src_path.starts_with("/dev")
-            || src_path.starts_with("/proc")
-            || src_path.starts_with("/sys");
-        if in_special_fs {
+        if src_path.exists() || is_host_provided_mount_source(src_path) {
             continue;
         }
         std::fs::create_dir_all(src_path).map_err(|e| {
@@ -701,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_bind_sources_accepts_special_fs_paths_without_creating() {
+    fn ensure_bind_sources_accepts_host_provided_paths_without_creating() {
         let (sink, log_file) = make_log_sink();
         let binds = vec![
             ContainerBind {
@@ -719,13 +736,54 @@ mod tests {
                 dest: None,
                 opts: None,
             },
+            // The runtime tmpfs. Sim nodes bind `/run/user` to back
+            // `XDG_RUNTIME_DIR`; on a macOS daemon there is no `/run` and `/`
+            // is read-only, so any attempt to create it fails with `EROFS`.
+            ContainerBind {
+                src: "/run/user".to_string(),
+                dest: None,
+                opts: None,
+            },
         ];
         let (tx, mut rx) = make_feedback_channel();
-        ensure_bind_sources(&binds, &sink, &tx).expect("special-fs paths should be accepted");
+        ensure_bind_sources(&binds, &sink, &tx).expect("host-provided paths should be accepted");
         assert!(rx.try_recv().is_err(), "no warning should be sent");
         assert!(!Path::new("/dev/does-not-exist-xyz").exists());
         let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
         assert!(!log_contents.contains("auto-created"));
+    }
+
+    /// The carve-out is a prefix test over whole trees, not an exact-path
+    /// match: a node binding `/run/user/1000/pipewire-0` must be skipped just
+    /// like the tree root. Everything outside those roots stays auto-created,
+    /// which is what keeps a typo'd bind loud.
+    #[test]
+    fn host_provided_mount_sources_cover_whole_trees_only() {
+        for path in [
+            "/dev",
+            "/dev/can0",
+            "/proc",
+            "/proc/self",
+            "/run",
+            "/run/user",
+            "/run/user/1000/pipewire-0",
+            "/sys",
+            "/sys/class",
+        ] {
+            assert!(
+                is_host_provided_mount_source(Path::new(path)),
+                "{path} is host-provided and must never be auto-created"
+            );
+        }
+        // `/runtime` guards the boundary: `Path::starts_with` matches whole
+        // components, so a longer name sharing the `/run` prefix must not be
+        // swept in.
+        for path in ["/", "/runtime", "/home/peppy/run", "/opt/dev"] {
+            assert!(
+                !is_host_provided_mount_source(Path::new(path)),
+                "{path} is an ordinary bind source and must keep auto-create + warning"
+            );
+        }
     }
 
     #[test]

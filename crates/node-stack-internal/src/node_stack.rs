@@ -11,6 +11,7 @@ pub use entity::{
 };
 use pairing::PairingRegistry;
 pub use pairing::{PairEndpoint, Pairing, SlotAddr};
+pub use run_steps::is_host_provided_mount_source;
 
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
