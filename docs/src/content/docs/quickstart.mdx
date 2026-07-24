@@ -48,7 +48,11 @@ That single command adds, builds, and starts every [node](/reference/concepts/#n
 
 The command then returns; it is not a foreground supervisor. The nodes keep running under the peppy background service, so you can close that terminal without stopping them.
 
+:::note[This is the node stack you just launched]
+Every circle is one instance the launcher started, and every arrow a link between two of them. Together they are the [node stack](/reference/concepts/#node-stack): the set of nodes the background service is running for you. `peppy stack list` prints the same set as a table.
+
 <OpenArmStackGraph />
+:::
 
 :::note
 The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. `--node-build-idle-timeout-secs` raises the window the daemon allows without build output, which keeps it from killing that first download partway through. Subsequent launches don't need the flag.
