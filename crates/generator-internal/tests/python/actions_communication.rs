@@ -155,12 +155,24 @@ from peppygen.exposed_services import move_arm_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
-    request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
+
+    # A goal for the reserved arm is rejected through the framework
+    # admission ack; no declared response payload rides along.
+    reserved = brain_move_arm.GoalRequest(arm_id=99, desired_position=[0, 0, 0])
+    rejected = await brain_move_arm.ActionHandle.fire_goal(
+        node_runner, arm, reserved, 5.0, QoSProfile.SensorData
+    )
+    print(
+        f"rejected goal accepted={rejected.accepted} reason={rejected.reason} data_present={rejected.data is not None}",
+        flush=True,
+    )
+
+    request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     goal = await brain_move_arm.ActionHandle.fire_goal(
         node_runner, arm, request, 5.0, QoSProfile.SensorData
     )
-    print(f"goal accepted={goal.data.accepted}", flush=True)
+    print(f"goal accepted={goal.accepted} data_accepted={goal.data.accepted}", flush=True)
 
     feedback = await goal.on_next_feedback_message()
     assert feedback.new_position == [7, 31, 43], "unexpected feedback message"
@@ -234,6 +246,8 @@ async def run_exposer(node_runner):
             f"server received goal arm_id={request.data.arm_id} desired={request.data.desired_position}",
             flush=True,
         )
+        if request.data.arm_id == 99:
+            return move_arm.GoalDecision.reject("arm 99 is reserved")
         return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
@@ -387,7 +401,9 @@ if __name__ == "__main__":
         consumer_stderr
     );
     assert!(
-        consumer_stdout.contains("goal accepted=True")
+        consumer_stdout
+            .contains("rejected goal accepted=False reason=arm 99 is reserved data_present=False")
+            && consumer_stdout.contains("goal accepted=True data_accepted=True")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
                 .contains("result success=True error=None final_position=[98, 4, 26]"),

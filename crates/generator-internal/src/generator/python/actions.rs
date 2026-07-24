@@ -100,30 +100,39 @@ pub fn build_exposed_action(
         emit_format_as_dataclass(&mut builder, "GoalResponse", fmt)?;
     }
 
-    // GoalDecision controls framework acceptance independently of the response
-    // payload. Both branches carry the declared GoalResponse when one exists.
+    // GoalDecision controls framework admission, carried by the goal-ack
+    // envelope independently of the declared response payload. An accept
+    // carries the declared GoalResponse when one exists; a reject carries an
+    // optional human-readable reason and an optional response.
     builder.line("class GoalDecision:");
     builder.indent();
     if has_goal_response {
-        builder.line("def __init__(self, accepted: bool, response):");
+        builder.line("def __init__(self, accepted: bool, reason=None, response=None):");
         builder.indent();
         builder.line("self.accepted = accepted");
+        builder.line("self.reason = reason");
         builder.line("self.response = response");
         builder.dedent();
         builder.line("@staticmethod");
         builder.line("def accept(response):");
         builder.indent();
-        builder.line("return GoalDecision(True, response)");
+        builder.line("if response is None:");
+        builder.indent();
+        builder
+            .line("raise ValueError(\"GoalDecision.accept requires the declared GoalResponse\")");
+        builder.dedent();
+        builder.line("return GoalDecision(True, response=response)");
         builder.dedent();
         builder.line("@staticmethod");
-        builder.line("def reject(response):");
+        builder.line("def reject(reason=None, response=None):");
         builder.indent();
-        builder.line("return GoalDecision(False, response)");
+        builder.line("return GoalDecision(False, reason=reason, response=response)");
         builder.dedent();
     } else {
-        builder.line("def __init__(self, accepted: bool):");
+        builder.line("def __init__(self, accepted: bool, reason=None):");
         builder.indent();
         builder.line("self.accepted = accepted");
+        builder.line("self.reason = reason");
         builder.dedent();
         builder.line("@staticmethod");
         builder.line("def accept():");
@@ -131,9 +140,9 @@ pub fn build_exposed_action(
         builder.line("return GoalDecision(True)");
         builder.dedent();
         builder.line("@staticmethod");
-        builder.line("def reject():");
+        builder.line("def reject(reason=None):");
         builder.indent();
-        builder.line("return GoalDecision(False)");
+        builder.line("return GoalDecision(False, reason=reason)");
         builder.dedent();
     }
     builder.dedent();
@@ -237,9 +246,12 @@ pub fn build_exposed_action(
     builder.indent();
     builder.line("decision = await decision");
     builder.dedent();
-    // Serialize the GoalResponse once; both accept and reject reply with it.
+    // Serialize the declared GoalResponse when the decision carries one; a
+    // reject without a response replies with an empty body.
     if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
         builder.line("response = decision.response");
+        builder.line("if response is not None:");
+        builder.indent();
         let loader_fn_name = capnp_loader_fn_name(info);
         builder.line(&format!(
             "capnp_msg = {loader_fn_name}().{}.new_message()",
@@ -254,6 +266,11 @@ pub fn build_exposed_action(
             &mut counter,
         );
         builder.line("response_bytes = capnp_msg.to_bytes()");
+        builder.dedent();
+        builder.line("else:");
+        builder.indent();
+        builder.line("response_bytes = b\"\"");
+        builder.dedent();
     } else {
         builder.line("response_bytes = b\"\"");
     }
@@ -264,7 +281,7 @@ pub fn build_exposed_action(
     builder.dedent();
     // Rejected: answer the client and keep polling for the next goal (the
     // accept branch above returns, so this runs only when not accepted).
-    builder.line("await pending.reject(response_bytes)");
+    builder.line("await pending.reject(decision.reason, response_bytes)");
     builder.dedent(); // end while loop
     builder.dedent(); // end handle_goal_next_request
 
@@ -604,14 +621,19 @@ pub fn build_consumed_action(
     builder.dedent();
     builder.line(")");
 
-    // Construct ActionHandle instance
+    // Construct ActionHandle instance. Admission and the optional rejection
+    // reason come from the framework goal-ack envelope, decoded engine-side.
     builder.line("handle = cls()");
     builder.line("handle._messenger = node_runner.messenger()");
     builder.line("handle._inner = action_handle");
+    builder.line("handle.accepted = action_handle.accepted");
+    builder.line("handle.reason = action_handle.reason");
     if has_goal_response {
-        builder.line("payload = action_handle.goal_response.payload");
-        builder.line("goal_response_data = _deserialize_goal_response(payload)");
-        builder.line("handle.data = goal_response_data");
+        // An empty body means no response was supplied (a declared response
+        // serializes to a non-empty capnp message), which only a reject can
+        // produce.
+        builder.line("body = action_handle.goal_reply_body");
+        builder.line("handle.data = _deserialize_goal_response(body) if body else None");
     }
     builder.line("return handle");
 

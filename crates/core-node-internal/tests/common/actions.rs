@@ -158,7 +158,7 @@ async fn send_node_run_goal(
     .await
     .map_err(|e| format!("Failed to send goal: {}", e))?;
 
-    let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_response().payload())
+    let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     // A rejected goal never streams feedback or produces a result, so callers
@@ -462,7 +462,7 @@ async fn send_node_add_and_wait_internal<'a>(
     // Check if the goal was rejected - if so, return a failure result immediately.
     // This matches the behavior of the CLI client which doesn't poll for results
     // when the goal is rejected.
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
@@ -603,7 +603,7 @@ async fn send_node_build_and_wait_internal(
     .await
     .map_err(|e| format!("Failed to send build goal: {}", e))?;
 
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response = NodeBuildGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode build goal response: {}", e))?;
 

@@ -101,7 +101,7 @@ async fn send_refresh_inner(
     .await
     .expect("send goal should succeed");
 
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response =
         RepoRefreshGoalResponse::decode(&goal_response_payload).expect("decode goal response");
 

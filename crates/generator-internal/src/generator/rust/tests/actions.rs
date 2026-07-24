@@ -234,7 +234,8 @@ fn exposed_action() {
     );
 
     // GoalResponse mirrors the declared response_message_format exactly. The
-    // framework decision is a separate enum whose branches both carry it.
+    // framework decision is a separate enum: an accept carries the declared
+    // response, a reject carries an optional reason and optional response.
     assert_contains_all(
         &rendered,
         &[
@@ -243,7 +244,10 @@ fn exposed_action() {
             "pub fn new(accepted: bool) -> Self",
             "pub enum GoalDecision",
             "Accept(GoalResponse)",
-            "Reject(GoalResponse)",
+            "reason: Option<String>",
+            "response: Option<GoalResponse>",
+            "pub fn accept(response: GoalResponse) -> Self",
+            "pub fn reject(reason: impl Into<String>) -> Self",
         ],
     );
 
@@ -277,8 +281,8 @@ fn exposed_action() {
             "recv_next_goal",
             "GoalDecision::Accept(response)",
             "pending.accept(response_payload).await?",
-            "GoalDecision::Reject(response)",
-            "pending.reject(response_payload).await?",
+            "GoalDecision::Reject { reason, response }",
+            "pending.reject(reason.as_deref(), response_payload).await?",
         ],
     );
 
@@ -325,7 +329,8 @@ fn expose_action_without_request_body() {
             "pub struct GoalResponse",
             "pub enum GoalDecision",
             "Accept(GoalResponse)",
-            "Reject(GoalResponse)",
+            "reason: Option<String>",
+            "response: Option<GoalResponse>",
             "pub async fn handle_goal_next_request",
             "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
         ],
@@ -419,6 +424,9 @@ fn expose_feedback_only_action() {
             "pub enum GoalDecision",
             "Accept",
             "Reject",
+            "reason: Option<String>",
+            "pub fn reject(reason: impl Into<String>) -> Self",
+            "pending.reject(reason.as_deref(), peppylib::Payload::new()).await?",
             "pub struct GoalContext",
             "pub async fn publish_feedback",
         ],
@@ -554,7 +562,9 @@ fn consumed_action() {
             "pub struct ActionHandle",
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
-            "pub data: GoalResponseData",
+            "pub accepted: bool",
+            "pub reason: Option<String>",
+            "pub data: Option<GoalResponseData>",
             "impl ActionHandle",
         ],
     );
@@ -901,13 +911,16 @@ fn consumed_action_without_response_payload() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     // No declared goal response means the client handle carries no response
-    // data and needs no goal-response deserializer.
+    // data and needs no goal-response deserializer. The admission ack fields
+    // are still present.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ActionHandle",
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
+            "pub accepted: bool",
+            "pub reason: Option<String>",
             "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",

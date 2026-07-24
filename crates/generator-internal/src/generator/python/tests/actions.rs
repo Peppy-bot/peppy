@@ -211,8 +211,9 @@ fn exposed_action() {
     );
 
     // GoalResponse mirrors response_message_format exactly. GoalDecision
-    // controls framework acceptance independently and carries that payload in
-    // both branches.
+    // controls framework admission independently: an accept carries the
+    // declared payload, a reject carries an optional reason and optional
+    // payload.
     assert_contains_all(
         &rendered,
         &[
@@ -220,7 +221,7 @@ fn exposed_action() {
             "accepted: bool",
             "class GoalDecision:",
             "def accept(response):",
-            "def reject(response):",
+            "def reject(reason=None, response=None):",
         ],
     );
 
@@ -270,9 +271,10 @@ fn exposed_action() {
             "pending = await self._inner.recv_next_goal()",
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
             "response = decision.response",
+            "if response is not None:",
             "ctx = await pending.accept(response_bytes)",
             "return GoalContext(ctx, request)",
-            "await pending.reject(response_bytes)",
+            "await pending.reject(decision.reason, response_bytes)",
         ],
     );
 
@@ -315,7 +317,7 @@ fn expose_action_without_request_body() {
             "class GoalResponse:",
             "class GoalDecision:",
             "def accept(response):",
-            "def reject(response):",
+            "def reject(reason=None, response=None):",
             "async def handle_goal_next_request(",
         ],
     );
@@ -638,8 +640,10 @@ fn consumed_action() {
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",
-            "goal_response_data = _deserialize_goal_response(payload)",
-            "handle.data = goal_response_data",
+            "handle.accepted = action_handle.accepted",
+            "handle.reason = action_handle.reason",
+            "body = action_handle.goal_reply_body",
+            "handle.data = _deserialize_goal_response(body) if body else None",
             "return handle",
         ],
     );

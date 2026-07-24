@@ -498,6 +498,25 @@ use peppygen::Result;
 use std::time::Duration;
 
 async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    // A goal for the reserved arm is rejected through the framework
+    // admission ack; no declared response payload rides along.
+    let rejected = brain_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        brain_move_arm::GoalRequest {
+            arm_id: 99,
+            desired_position: [0, 0, 0],
+        },
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    println!(
+        "rejected goal accepted={} reason={:?} data_present={}",
+        rejected.accepted,
+        rejected.reason.as_deref(),
+        rejected.data.is_some()
+    );
+
     let request = brain_move_arm::GoalRequest {
         arm_id: 7,
         desired_position: [10, 20, 30],
@@ -509,7 +528,8 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    let data = action_handle.data.as_ref().expect("accepted goal carries the declared response");
+    println!("goal accepted={} data_accepted={}", action_handle.accepted, data.accepted);
 
     let feedback = action_handle.on_next_feedback_message().await?;
     assert_eq!(feedback.new_position, [7, 31, 43], "unexpected feedback message");
@@ -592,6 +612,9 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
+                    if request.data.arm_id == 99 {
+                        return Ok(move_arm::GoalDecision::reject("arm 99 is reserved"));
+                    }
                     Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
@@ -732,7 +755,9 @@ fn main() -> Result<()> {
         consumer_stderr
     );
     assert!(
-        consumer_stdout.contains("goal accepted=true")
+        consumer_stdout.contains(
+            "rejected goal accepted=false reason=Some(\"arm 99 is reserved\") data_present=false"
+        ) && consumer_stdout.contains("goal accepted=true data_accepted=true")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
                 .contains("result success=true error=None final_position=[98, 4, 26]"),
@@ -850,7 +875,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
     let accepted = matches!(
@@ -1200,7 +1225,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
     println!("draining feedback...");
 
     // Drain-loop pattern: keep reading feedback until the server signals
@@ -1594,7 +1619,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     // Server emits a single warmup feedback before the cancel arrives so
     // we can verify it's received before the close signal.
@@ -1972,7 +1997,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     let pre_cancel = action_handle.on_next_feedback_message().await?;
     println!("pre_cancel feedback new_position={:?}", pre_cancel.new_position);
@@ -2368,7 +2393,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     let first = action_handle.on_next_feedback_message().await?;
     println!("first feedback received new_position={:?}", first.new_position);

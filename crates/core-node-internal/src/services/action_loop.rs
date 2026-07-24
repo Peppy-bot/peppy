@@ -73,7 +73,9 @@ pub(crate) async fn accept_goal(
 pub(crate) async fn reject_goal(pending: PendingGoal, encoded: PeppyResult<Payload>) {
     match encoded {
         Ok(payload) => {
-            let _ = pending.reject(payload).await;
+            // The core-node action protocol carries its rejection reason in
+            // the structured payload, so the envelope reason stays empty.
+            let _ = pending.reject(None, payload).await;
         }
         Err(err) => {
             debug!("failed to encode goal rejection: {err}");
