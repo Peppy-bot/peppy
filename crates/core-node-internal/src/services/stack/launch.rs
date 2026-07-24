@@ -20,6 +20,7 @@ use chrono::Local;
 use config::apply_parameter_defaults;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
+use containers::is_host_provided_mount_source;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
@@ -448,7 +449,7 @@ async fn ensure_launch_bind_sources(
 ) -> std::result::Result<(), String> {
     for src in mount_sources {
         let src_path = Path::new(src);
-        if src_path.exists() || is_kernel_managed_mount_source(src_path) {
+        if src_path.exists() || is_host_provided_mount_source(src_path) {
             continue;
         }
 
@@ -477,7 +478,7 @@ fn external_lima_mount_sources(mount_sources: &[String]) -> Vec<String> {
         .iter()
         .filter(|src| {
             let src_path = absolute_mount_source(src);
-            !is_kernel_managed_mount_source(&src_path)
+            !is_host_provided_mount_source(&src_path)
                 && home
                     .as_ref()
                     .is_none_or(|home_path| !src_path.starts_with(home_path))
@@ -499,10 +500,6 @@ fn absolute_mount_source(src: &str) -> PathBuf {
 
 fn mount_source(mount: &str) -> &str {
     mount.split(':').next().unwrap_or(mount)
-}
-
-fn is_kernel_managed_mount_source(path: &Path) -> bool {
-    path.starts_with("/dev") || path.starts_with("/proc") || path.starts_with("/sys")
 }
 
 /// Step 7: Start every instance in dependency order.
@@ -996,6 +993,46 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Notify;
+
+    /// A host-provided source must never be handed to Lima as an extra mount.
+    /// Registering `/run/user` would mount the macOS side (which does not even
+    /// exist) over the guest's own runtime tmpfs, and would restart the VM to
+    /// do it. The guest resolves these paths itself.
+    ///
+    /// macOS-gated like its companion below: off macOS
+    /// `external_lima_mount_sources` returns empty before consulting the
+    /// filter at all, so an ungated assertion would hold with the filter
+    /// deleted and prove nothing. The predicate itself is platform-independent
+    /// and covered in `containers::mount_source`.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn host_provided_sources_are_not_forwarded_to_lima() {
+        let forwarded = external_lima_mount_sources(&[
+            "/run/user".to_string(),
+            "/dev/ttyUSB0".to_string(),
+            "/proc/self".to_string(),
+            "/sys/class".to_string(),
+        ]);
+        assert!(
+            forwarded.is_empty(),
+            "host-provided trees must stay out of the Lima mount list, got: {forwarded:?}"
+        );
+    }
+
+    /// The complement of the test above: the filter is a carve-out, not a
+    /// blanket opt-out. An ordinary path outside `$HOME` still has to reach
+    /// Lima or the guest could not see it. Only meaningful on macOS, where
+    /// `external_lima_mount_sources` does its work.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn ordinary_external_sources_are_still_forwarded_to_lima() {
+        let forwarded = external_lima_mount_sources(&["/opt/robot_assets".to_string()]);
+        assert_eq!(
+            forwarded,
+            vec!["/opt/robot_assets".to_string()],
+            "a non-home path the guest cannot otherwise see must be registered",
+        );
+    }
 
     /// Builds a phase future that signals `cleanup_ran` if it observes the
     /// cancel token, simulating `run_node_run`'s `abort_started` branch.

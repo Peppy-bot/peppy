@@ -6,11 +6,13 @@
 
 mod apptainer;
 mod error;
+mod mount_source;
 
 pub use apptainer::Apptainer;
 #[cfg(target_os = "linux")]
 pub use apptainer::{SetupStatus, check_setup_status};
 pub use error::{Error, Result};
+pub use mount_source::is_host_provided_mount_source;
 
 /// Pinned Apptainer version bundled at build time.
 pub const APPTAINER_VERSION: &str = env!("APPTAINER_VERSION");

@@ -21,6 +21,8 @@ use tracing::{debug, warn};
 
 use tokio::sync::mpsc;
 
+use containers::is_host_provided_mount_source;
+
 use crate::archive::extract_tar_zst;
 use crate::build_io::{FeedbackLine, FeedbackStream, write_feedback_log_line};
 
@@ -480,9 +482,9 @@ pub(super) async fn build_container_command(
 /// For each entry:
 ///   - existing paths are left untouched (they may be files, sockets, devices,
 ///     or directories; we must not modify them);
-///   - paths under kernel-managed virtual filesystems (`/dev`, `/proc`,
-///     `/sys`) are accepted as-is, since the kernel materializes them and the
-///     daemon's host may legitimately not have the device node;
+///   - paths the host provides ([`is_host_provided_mount_source`]) are
+///     accepted as-is, since the daemon's host may legitimately not have the
+///     device node or runtime dir;
 ///   - any other missing path is auto-created with `mkdir -p`, and a warning
 ///     line is emitted both to the daemon `tracing` log and to the
 ///     per-instance start log via `feedback_sink`. The warning is the only
@@ -498,13 +500,7 @@ pub(super) fn ensure_bind_sources(
 ) -> std::io::Result<()> {
     for bind in binds {
         let src_path = Path::new(&bind.src);
-        if src_path.exists() {
-            continue;
-        }
-        let in_special_fs = src_path.starts_with("/dev")
-            || src_path.starts_with("/proc")
-            || src_path.starts_with("/sys");
-        if in_special_fs {
+        if src_path.exists() || is_host_provided_mount_source(src_path) {
             continue;
         }
         std::fs::create_dir_all(src_path).map_err(|e| {
@@ -701,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_bind_sources_accepts_special_fs_paths_without_creating() {
+    fn ensure_bind_sources_accepts_host_provided_paths_without_creating() {
         let (sink, log_file) = make_log_sink();
         let binds = vec![
             ContainerBind {
@@ -719,9 +715,17 @@ mod tests {
                 dest: None,
                 opts: None,
             },
+            // The runtime tmpfs. Sim nodes bind `/run/user` to back
+            // `XDG_RUNTIME_DIR`; on a macOS daemon there is no `/run` and `/`
+            // is read-only, so any attempt to create it fails with `EROFS`.
+            ContainerBind {
+                src: "/run/user".to_string(),
+                dest: None,
+                opts: None,
+            },
         ];
         let (tx, mut rx) = make_feedback_channel();
-        ensure_bind_sources(&binds, &sink, &tx).expect("special-fs paths should be accepted");
+        ensure_bind_sources(&binds, &sink, &tx).expect("host-provided paths should be accepted");
         assert!(rx.try_recv().is_err(), "no warning should be sent");
         assert!(!Path::new("/dev/does-not-exist-xyz").exists());
         let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
