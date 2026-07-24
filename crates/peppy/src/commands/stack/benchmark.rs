@@ -94,10 +94,8 @@ async fn benchmark_async(
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {}", e)))?;
 
-    let goal_response = StackBenchmarkGoalResponse::decode(
-        &action_handle.goal_response().payload(),
-    )
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+    let goal_response = StackBenchmarkGoalResponse::decode(&action_handle.goal_reply().body)
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
     if !goal_response.accepted {
         let reason = goal_response

@@ -267,19 +267,35 @@ impl RustGenerator {
             helper_items.push(deserialize_helper);
 
             quote! {
-                let payload = action_handle.goal_response().payload();
-                let response_data = deserialize_goal_response(payload.as_ref())?;
+                let reply = action_handle.goal_reply();
+                let accepted = reply.accepted;
+                let reason = reply.reason.clone();
+                // An empty body means no response was supplied (a declared
+                // response serializes to a non-empty capnp message), which
+                // only a reject can produce.
+                let data = if reply.body.is_empty() {
+                    None
+                } else {
+                    Some(deserialize_goal_response(reply.body.as_ref())?)
+                };
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
                     inner: action_handle,
-                    data: response_data,
+                    accepted,
+                    reason,
+                    data,
                 })
             }
         } else {
             quote! {
+                let reply = action_handle.goal_reply();
+                let accepted = reply.accepted;
+                let reason = reply.reason.clone();
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
                     inner: action_handle,
+                    accepted,
+                    reason,
                 })
             }
         };
@@ -1679,7 +1695,17 @@ impl LanguageGenerator for RustGenerator {
                 pub struct ActionHandle {
                     messenger: peppylib::MessengerHandle,
                     inner: peppylib::messaging::ActionGoalHandle,
-                    pub data: #goal_response_data_ident,
+                    /// Whether the producer admitted the goal, decoded from
+                    /// the framework goal-ack envelope.
+                    pub accepted: bool,
+                    /// Optional human-readable rejection reason from the
+                    /// goal-ack envelope. `None` for accepted goals and for
+                    /// rejections sent without a reason.
+                    pub reason: Option<String>,
+                    /// The declared goal response. Always present for
+                    /// accepted goals; `None` when a rejection carried no
+                    /// response payload.
+                    pub data: Option<#goal_response_data_ident>,
                 }
             }
         } else {
@@ -1687,6 +1713,13 @@ impl LanguageGenerator for RustGenerator {
                 pub struct ActionHandle {
                     messenger: peppylib::MessengerHandle,
                     inner: peppylib::messaging::ActionGoalHandle,
+                    /// Whether the producer admitted the goal, decoded from
+                    /// the framework goal-ack envelope.
+                    pub accepted: bool,
+                    /// Optional human-readable rejection reason from the
+                    /// goal-ack envelope. `None` for accepted goals and for
+                    /// rejections sent without a reason.
+                    pub reason: Option<String>,
                 }
             }
         };

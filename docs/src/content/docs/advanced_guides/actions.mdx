@@ -28,7 +28,7 @@ Additionally, the client can issue a **cancel** request at any time to abort an 
 Client                              Server
   │                                    │
   │──── fire_goal (request) ──────────>│
-  │<─── GoalResponse (accepted) ───────│
+  │<─── goal ack (+ GoalResponse) ─────│
   │                                    │
   │<─── feedback ──────────────────────│  (repeated)
   │<─── feedback ──────────────────────│
@@ -64,9 +64,6 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
                     $items: "i32",
                     $length: 3
                   }
-                },
-                response_message_format: {
-                  accepted: "bool"
                 }
               },
               feedback_topic: {
@@ -126,9 +123,6 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
                     $items: "i32",
                     $length: 3
                   }
-                },
-                response_message_format: {
-                  accepted: "bool"
                 }
               },
               feedback_topic: {
@@ -204,9 +198,7 @@ fn main() -> Result<()> {
                     );
                     // The decider sets the concurrency policy: e.g. reject a
                     // goal for a busy `arm_id`.
-                    Ok(move_arm::GoalDecision::Accept(
-                        move_arm::GoalResponse::new(true),
-                    ))
+                    Ok(move_arm::GoalDecision::accept())
                 })
                 .await
             {
@@ -255,7 +247,7 @@ async def run_action(node_runner):
             f"desired={request.data.desired_position}",
             flush=True,
         )
-        return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
+        return move_arm.GoalDecision.accept()
 
     while True:
         ctx = await action.handle_goal_next_request(decide)
@@ -279,12 +271,11 @@ if __name__ == "__main__":
   </TabItem>
 </Tabs>
 
-`GoalResponse` contains exactly the fields declared in `goal_service.response_message_format`. The framework never adds an `accepted` or error field. `GoalDecision` controls admission independently of that payload:
+`GoalDecision` controls admission. The decision and its optional rejection reason travel in a framework-owned envelope wrapped around the goal reply, so they never appear in your schema: `GoalResponse` contains exactly the fields declared in `goal_service.response_message_format`, and the framework never adds an `accepted` or error field to it.
 
-- `GoalDecision::Accept(response)` (`GoalDecision.accept(response)` in Python) admits the goal, sends `response` to the client, and yields a `GoalContext`.
-- `GoalDecision::Reject(response)` (`GoalDecision.reject(response)` in Python) declines it: the client receives the supplied response, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
-
-Both decisions send the response, including `Reject`. If `response_message_format` is omitted, use the corresponding decision without a response argument. The framework decision remains separate and still works with an empty response payload.
+- `GoalDecision::accept()` (`GoalDecision.accept()` in Python) admits the goal, replies to the client, and yields a `GoalContext`. When the action declares a `response_message_format`, the constructor takes the declared response instead: `GoalDecision::accept(response)`.
+- `GoalDecision::reject(reason)` (`GoalDecision.reject(reason)` in Python) declines it: the client sees `accepted == false` and the reason on its handle, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
+- A reject can also carry the declared response payload: construct `GoalDecision::Reject { reason, response }` directly in Rust, or pass both arguments in Python with `GoalDecision.reject(reason, response)`. The client's `data` is absent when a rejection carried no payload.
 
 The `GoalRequest` passed to the decider contains:
 - `instance_id`: the client instance that sent the goal. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
@@ -317,13 +308,13 @@ while let Ok(Some(ctx)) = action
         move |request| -> Result<move_arm::GoalDecision> {
             // `HashSet::insert` returns false when the arm is already busy.
             if busy.lock().unwrap().insert(request.data.arm_id) {
-                Ok(move_arm::GoalDecision::Accept(
-                    move_arm::GoalResponse::new(true),
-                ))
+                Ok(move_arm::GoalDecision::accept())
             } else {
-                Ok(move_arm::GoalDecision::Reject(
-                    move_arm::GoalResponse::new(false),
-                ))
+                // The reason rides back to the client in the goal ack.
+                Ok(move_arm::GoalDecision::reject(format!(
+                    "arm {} is already moving",
+                    request.data.arm_id
+                )))
             }
         }
     })
@@ -356,9 +347,10 @@ async def drive(ctx):
 def decide(request):
     arm_id = request.data.arm_id
     if arm_id in busy:
-        return move_arm.GoalDecision.reject(move_arm.GoalResponse(False))
+        # The reason rides back to the client in the goal ack.
+        return move_arm.GoalDecision.reject(f"arm {arm_id} is already moving")
     busy.add(arm_id)
-    return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
+    return move_arm.GoalDecision.accept()
 
 
 while True:
@@ -523,7 +515,10 @@ fn main() -> Result<()> {
         )
         .await?;
 
-        println!("goal accepted={}", action_handle.data.accepted);
+        println!(
+            "goal accepted={} reason={:?}",
+            action_handle.accepted, action_handle.reason
+        );
 
         Ok(())
     })
@@ -549,7 +544,10 @@ async def run(node_runner):
         5.0,                    # timeout (seconds)
         QoSProfile.SensorData,  # QoS for the feedback topic
     )
-    print(f"goal accepted={action_handle.data.accepted}", flush=True)
+    print(
+        f"goal accepted={action_handle.accepted} reason={action_handle.reason}",
+        flush=True,
+    )
 
 
 async def setup(parameters, node_runner):
@@ -568,7 +566,7 @@ if __name__ == "__main__":
 
 `fire_goal` requires the caller to pass one explicit target for every [cardinality](/advanced_guides/topics#dependency-cardinality), including the default `one`; obtain it from the slot's cardinality-typed accessor (the singular, infallible `bound_producer()` on a `one` slot, `bound_producers()` on the multi cardinalities, never empty for `one_or_more`). The target must belong to the slot's own set; anything else fails with a runtime error before the goal reaches the wire. Firing a goal at every bound producer of a multi-cardinality slot is a plain loop over `bound_producers()`; each returned handle drives its own feedback stream, cancel, and result, exactly as a single goal does.
 
-`fire_goal` returns an `ActionHandle` whose `data` field holds the goal response (e.g. `data.accepted`). The handle retains the selected target: goal submission, feedback, result retrieval, and cancellation all stay pinned to that same producer; no stage uses a wildcard, fallback producer, discovery, or automatic retargeting. The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
+`fire_goal` returns an `ActionHandle`. Its `accepted` flag and optional rejection `reason` are decoded from the framework goal ack, and, when the action declares a `response_message_format`, its `data` field holds the declared goal response (absent when a rejection carried no payload). The handle retains the selected target: goal submission, feedback, result retrieval, and cancellation all stay pinned to that same producer; no stage uses a wildcard, fallback producer, discovery, or automatic retargeting. The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 
 ### Receiving feedback
 
@@ -804,5 +802,5 @@ This makes the "one server, many resources" pattern natural: include a
 discriminator in the goal request (e.g. `arm_id` or `device_id`) and route to a
 per-resource worker. Your goal handler is responsible for the concurrency
 policy: accept goals to run them in parallel, or reject a goal (with
-`GoalDecision::Reject(response)`) when its target resource is already busy. A goal
+`GoalDecision::reject(reason)`) when its target resource is already busy. A goal
 that is not accepted yields no `GoalContext` and cannot be cancelled or completed.

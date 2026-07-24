@@ -50,16 +50,40 @@ pub fn build_action_expose_method(
     }
 }
 
-/// The framework decision returned by a goal handler. Accept and reject both
-/// carry the declared `GoalResponse` when one exists, keeping control flow
-/// independent of the response payload's fields.
+/// The framework decision returned by a goal handler. Admission travels in
+/// the framework goal-ack envelope, so it stays independent of the declared
+/// `GoalResponse` fields: an accept carries the declared response when one
+/// exists, and a reject carries an optional human-readable reason plus an
+/// optional response. The `accept` / `reject` constructors cover the common
+/// paths; construct the `Reject` variant directly for full control.
 pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
     if has_response {
         quote! {
             #[allow(dead_code)]
             pub enum GoalDecision {
                 Accept(GoalResponse),
-                Reject(GoalResponse),
+                Reject {
+                    reason: Option<String>,
+                    response: Option<GoalResponse>,
+                },
+            }
+
+            #[allow(dead_code)]
+            impl GoalDecision {
+                /// Admit the goal and reply with the declared response.
+                pub fn accept(response: GoalResponse) -> Self {
+                    Self::Accept(response)
+                }
+
+                /// Decline the goal with a human-readable reason and no
+                /// response payload. Construct `GoalDecision::Reject`
+                /// directly to attach a response as well.
+                pub fn reject(reason: impl Into<String>) -> Self {
+                    Self::Reject {
+                        reason: Some(reason.into()),
+                        response: None,
+                    }
+                }
             }
         }
     } else {
@@ -67,7 +91,26 @@ pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
             #[allow(dead_code)]
             pub enum GoalDecision {
                 Accept,
-                Reject,
+                Reject {
+                    reason: Option<String>,
+                },
+            }
+
+            #[allow(dead_code)]
+            impl GoalDecision {
+                /// Admit the goal.
+                pub fn accept() -> Self {
+                    Self::Accept
+                }
+
+                /// Decline the goal with a human-readable reason. Construct
+                /// `GoalDecision::Reject { reason: None }` directly for a
+                /// silent reject.
+                pub fn reject(reason: impl Into<String>) -> Self {
+                    Self::Reject {
+                        reason: Some(reason.into()),
+                    }
+                }
             }
         }
     }
@@ -117,9 +160,12 @@ pub fn build_handle_goal_next_request(
                 quote! {
                     // Rejected: answer the client and keep polling for the
                     // next goal. A reject never ends the accept loop.
-                    GoalDecision::Reject(response) => {
-                        let response_payload = #serialize_reject;
-                        pending.reject(response_payload).await?;
+                    GoalDecision::Reject { reason, response } => {
+                        let response_payload = match response {
+                            Some(response) => #serialize_reject,
+                            None => peppylib::Payload::new(),
+                        };
+                        pending.reject(reason.as_deref(), response_payload).await?;
                     }
                 },
             )
@@ -134,8 +180,8 @@ pub fn build_handle_goal_next_request(
             quote! {
                 // Rejected: answer the client and keep polling for the next
                 // goal. A reject never ends the accept loop.
-                GoalDecision::Reject => {
-                    pending.reject(peppylib::Payload::new()).await?;
+                GoalDecision::Reject { reason } => {
+                    pending.reject(reason.as_deref(), peppylib::Payload::new()).await?;
                 }
             },
         ),

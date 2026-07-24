@@ -269,7 +269,7 @@ async fn launch_async(
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send launch goal: {}", e)))?;
 
-    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_response().payload())
+    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
     if !goal_response.accepted {
