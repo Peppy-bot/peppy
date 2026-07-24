@@ -13,11 +13,11 @@ mod services;
 mod topics;
 mod type_mapping;
 
-use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
+use super::naming::{resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
-    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
+    validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::Result;
@@ -128,6 +128,56 @@ impl PythonGenerator {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PairTopicConsumerKind {
+    Peer,
+    Observed,
+}
+
+impl PythonGenerator {
+    /// Shared schema registration and artifact plumbing for both kinds of
+    /// consume-side pairing topic.
+    fn add_pair_topic_consumer(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+        kind: PairTopicConsumerKind,
+    ) -> Result<()> {
+        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let arguments = topic.message_format.clone().ok_or_else(|| {
+            crate::error::Error::PeerTopicMissingMessageFormat {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            }
+        })?;
+        let schema_info = self.register_schema(&schema_key, &arguments)?;
+        let (code, artifact_kind) = match kind {
+            PairTopicConsumerKind::Peer => (
+                topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?,
+                InterfaceKind::PeerConsumedTopic,
+            ),
+            PairTopicConsumerKind::Observed => (
+                topics::build_observed_topic(topic, &arguments, &schema_info, peer)?,
+                InterfaceKind::ObservedTopic,
+            ),
+        };
+
+        let module_path = peer.module_path_for(&topic.name);
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: artifact_kind,
+            code_output: code,
+        });
+        Ok(())
+    }
+}
+
 impl LanguageGenerator for PythonGenerator {
     fn add_emitted_topic(
         &mut self,
@@ -192,11 +242,12 @@ impl LanguageGenerator for PythonGenerator {
                 .as_ref()
                 .and_then(|goal_service| goal_service.request_message_format.as_ref()),
         )?;
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
-        let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_goal_response", action.name)),
-            Some(&goal_response_fmt),
+            action
+                .goal_service
+                .as_ref()
+                .and_then(|goal_service| goal_service.response_message_format.as_ref()),
         )?;
 
         // The cancel-ack reply is encoded by the peppylib engine (a fixed
@@ -247,13 +298,11 @@ impl LanguageGenerator for PythonGenerator {
         );
         let schema_info = self.register_schema(&schema_key, &arguments)?;
         let code = topics::build_consumed_topic(topic, &arguments, &schema_info, dependency)?;
-        let module_label = module_name_from_components(&topic.link_id, &topic.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedTopic,
-            code,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![topic.link_id.clone(), topic.name.clone()],
+            kind: InterfaceKind::ConsumedTopic,
+            code_output: code,
+        });
         Ok(())
     }
 
@@ -288,13 +337,11 @@ impl LanguageGenerator for PythonGenerator {
             response_schema_info.as_ref(),
             dependency,
         )?;
-        let module_label = module_name_from_components(&service.link_id, &service.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedService,
-            code,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![service.link_id.clone(), service.name.clone()],
+            kind: InterfaceKind::ConsumedService,
+            code_output: code,
+        });
         Ok(())
     }
 
@@ -331,29 +378,15 @@ impl LanguageGenerator for PythonGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
-        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
-        let arguments = topic.message_format.clone().ok_or_else(|| {
-            crate::error::Error::PeerTopicMissingMessageFormat {
-                link_id: peer.link_id.clone(),
-                topic: topic.name.clone(),
-            }
-        })?;
-        let schema_info = self.register_schema(&schema_key, &arguments)?;
+        self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
+    }
 
-        let code = topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?;
-        let module_path = peer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerConsumedTopic,
-            code_output: code,
-        });
-        Ok(())
+    fn add_observed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        observer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
     }
 
     fn add_consumed_action(
@@ -370,11 +403,9 @@ impl LanguageGenerator for PythonGenerator {
             &action_schema_keys.goal_request,
             messages.goal_request.as_ref(),
         )?;
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
-        let goal_response_fmt = goal_action_response_format();
         let goal_response_schema_info = self.register_optional_schema(
             &action_schema_keys.goal_response,
-            Some(&goal_response_fmt),
+            messages.goal_response.as_ref(),
         )?;
 
         // The cancel reply is the framework-owned cancel-ack, decoded Rust-side
@@ -399,13 +430,11 @@ impl LanguageGenerator for PythonGenerator {
             },
             dependency,
         )?;
-        let module_label = module_name_from_components(&action.link_id, &action.name);
-        self.push_section(self.make_artifact(
-            &module_label,
-            None,
-            InterfaceKind::ConsumedAction,
-            code,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![action.link_id.clone(), action.name.clone()],
+            kind: InterfaceKind::ConsumedAction,
+            code_output: code,
+        });
         Ok(())
     }
 

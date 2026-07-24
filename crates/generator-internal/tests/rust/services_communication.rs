@@ -119,7 +119,7 @@ async fn services_communication_no_target_instance_id(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera::enable_camera as uvc_camera_enable_camera;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -432,7 +432,7 @@ async fn services_communication_exposed_service_without_request_body(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_services::uvc_camera_get_system_status;
+use peppygen::consumed_services::uvc_camera::get_system_status as uvc_camera_get_system_status;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -735,7 +735,7 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera::enable_camera as uvc_camera_enable_camera;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;

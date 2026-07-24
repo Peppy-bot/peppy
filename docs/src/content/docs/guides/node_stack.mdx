@@ -1,5 +1,5 @@
 ---
-title: The Node stack
+title: The node stack
 description: Learn how to add, start, stop, and manage nodes in the Peppy stack
 sidebar:
   order: 4
@@ -34,7 +34,7 @@ Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699.log
 Added node hello_world:v1 to the node stack
 ```
 This gives you access to the log file for debugging in case the `add` command fails.
-When a node is added to the node stack, a copy is made in the peppy cache under `~/.peppy/built_nodes/` to "snapshot" the node based on its name and tag.
+When a node is added to the node stack, a copy is made in the Peppy cache under `~/.peppy/built_nodes/` to "snapshot" the node based on its name and tag.
 No two copies of the same node with the same name + tag can exist at the same time in the node stack.
 Re-adding a node with the same name and tag overrides the one that was previously in the node stack, except if that node has dependencies, in which case the operation fails.
 
@@ -111,7 +111,7 @@ peppy node add -sr .    # sync, then add, then build, then run an instance
 :::tip
 `-sb` and `-sr` are the shorthands you'll reach for constantly during development. The typical edit-loop is: change `peppy.json5` or source, hit `peppy node add -sr .`, watch the logs, iterate. Without `-s`, a stale `.peppy/` bindings directory can make the daemon see an out-of-date interface; without `-r`, you have to follow every add and build with a separate `peppy node run`. Bundling them collapses the whole "I edited something, now run it" cycle to a single command.
 
-Run-only options (trailing `key=value` arguments, `--instance-id`, and `--bind KEY@VALUE`) are only accepted alongside `-r`/`--run`; combining them with a plain `peppy node add` is rejected at parse time so an arg you cared about isn't silently dropped. Keep `key=value` arguments **after** the source path (e.g. `peppy node add -sr . frequency=30`) so the source positional isn't confused with the trailing args. `--bind` mirrors the `peppy node run --bind` flag and runs the same validator; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
+Run-only options (trailing `key=value` arguments, `--instance-id`, and `--link KEY@VALUE`) are only accepted alongside `-r`/`--run`; combining them with a plain `peppy node add` is rejected at parse time so an arg you cared about isn't silently dropped. Keep `key=value` arguments **after** the source path (e.g. `peppy node add -sr . frequency=30`) so the source positional isn't confused with the trailing args. `--link` mirrors the `peppy node run --link` flag and runs the same validator; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
 :::
 
 ## Checking node status
@@ -164,7 +164,7 @@ The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 
 The `INSTANCES` column aggregates per-instance state (`starting`, `running`, and the terminal `finished` / `failed`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
 
-Below the node table, the **`Instance bindings`** table expands the stack one level further: one row per instance, grouped by node, alongside the slot **bindings** that instance resolved when it started. A binding ties one of the consumer's `depends_on` slots (identified by its `link_id`) to the producer instance(s) that feed it, rendered as `link_id → producer` (a multi-cardinality slot lists every bound member in binding order; a `zero_or_more` slot bound to nothing shows `(empty set)`). Every declared slot except `zero_or_more` must be bound (launch rejects unbound slots), and an instance whose node declares no `depends_on` shows `(none)`. Only nodes that currently have at least one instance appear in this table. See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for how slots are declared and how `--bind` pins them. In the listing above neither node declares a dependency, so every binding cell is `(none)`.
+Below the node table, the **`Instance bindings`** table expands the stack one level further: one row per instance, grouped by node, alongside the slot **bindings** that instance resolved when it started. A binding ties one of the consumer's `depends_on` slots (identified by its `link_id`) to the producer instance(s) that feed it, rendered as `link_id → producer` (a multi-cardinality slot lists every bound member in binding order; a `zero_or_more` slot bound to nothing shows `(empty set)`). Every declared slot except `zero_or_more` must be bound (launch rejects unbound slots), and an instance whose node declares no `depends_on` shows `(none)`. Only nodes that currently have at least one instance appear in this table. See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for how slots are declared and how `--link` pins them. In the listing above neither node declares a dependency, so every binding cell is `(none)`.
 
 ### Instance health and lifecycle
 
@@ -186,7 +186,7 @@ Each lifecycle transition (a `running` instance going `unhealthy` or recovering,
 
 ### Daemon shutdown and orphan prevention
 
-Spawned nodes are child processes of the daemon, so peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
+Spawned nodes are child processes of the daemon, so Peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
 
 **Clean shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`).** Before it exits, the daemon tears down every spawned node: it asks each node to shut down cooperatively (in the node, this fires the cancellation token and runs its shutdown hooks; see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), waits for each to exit cooperatively (the shared **shutdown grace period** for cleanup, `shutdown_grace_secs`, **5 seconds** by default, plus the brief runtime teardown that follows), then force-kills the process group of anything still alive. This is immediate: it does **not** wait the daemon-liveness grace period described below, so stopping the daemon feels instant while still guaranteeing nothing is orphaned. It's the same graceful-then-forced sequence [`peppy node stop`](#stopping-your-node) runs for a single instance, which uses the same `shutdown_grace_secs` window.
 
@@ -271,7 +271,7 @@ When you're done, you can stop your node:
 peppy node stop <instance-id>
 ```
 
-This stops **one instance** of the `hello_world:v1` node, but the node itself still remains in the node stack.
+This stops **one instance** of the `hello_world:v1` node, but the node itself remains in the node stack.
 
 Stopping is a **graceful-then-forced** operation, and the command blocks until the instance's process has actually exited:
 
@@ -324,8 +324,8 @@ $ peppy stack list
 
 ## Next steps
 
-Now that you've created your first node, you can:
+Now that you can manage nodes in the stack, you can:
 
 - Add [interfaces](/reference/concepts/#interfaces) to communicate with other nodes
 - Configure [parameters](/reference/concepts/#manifest) for your node
-- Learn about the [node stack](/reference/concepts/#node-stack) and dependencies
+- Start multiple nodes at once with [launch files](/guides/launch_files/)

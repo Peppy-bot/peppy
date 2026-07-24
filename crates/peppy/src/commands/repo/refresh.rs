@@ -34,7 +34,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response = RepoRefreshGoalResponse::decode(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 

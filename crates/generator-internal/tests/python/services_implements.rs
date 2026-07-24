@@ -1,6 +1,6 @@
 //! Python mirror of `tests/rust/services_implements.rs`: verifies the
 //! Python generator nests contract-backed services under
-//! `peppygen/exposed_services/{iface_name}/{iface_tag}/<service>.py` and
+//! `peppygen/exposed_services/{link_id}/<service>.py` and
 //! splices the matching `peppylib.SenderTarget.contract(...)` expression
 //! into each `ServiceMessenger.listen` call (or
 //! `peppylib.SenderTarget.node(...)` for the native leaf).
@@ -26,10 +26,16 @@ fn make_service(marker: &str) -> NativeExposedService {
     }
 }
 
-fn contract_backed(name: &str, tag: &str, service: NativeExposedService) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    service: NativeExposedService,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedService {
         service,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -61,14 +67,14 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 #[test]
-fn nests_contract_backed_services_under_contract_name_and_tag() {
+fn nests_contract_backed_services_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("camera", "v1", make_service("camera_v1_marker")),
-        contract_backed("arm", "v2", make_service("arm_v2_marker")),
+        contract_backed("cam", "camera", "v1", make_service("camera_v1_marker")),
+        contract_backed("arm", "arm", "v2", make_service("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -89,8 +95,8 @@ fn nests_contract_backed_services_under_contract_name_and_tag() {
     let svc_dir = pkg.join("exposed_services");
 
     let native_path = svc_dir.join("control.py");
-    let camera_v1 = svc_dir.join("camera/v1/control.py");
-    let arm_v2 = svc_dir.join("arm/v2/control.py");
+    let camera_v1 = svc_dir.join("cam/control.py");
+    let arm_v2 = svc_dir.join("arm/control.py");
 
     for path in [&native_path, &camera_v1, &arm_v2] {
         assert!(path.exists(), "expected service file at {path:?}");

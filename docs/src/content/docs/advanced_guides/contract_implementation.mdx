@@ -15,7 +15,7 @@ Contract implementation is the abstraction you reach for when several nodes prov
 
 ### 1. The contract document
 
-A contract lives in its own file under a repository peppy scans (see [Repositories](/advanced_guides/repositories)). It uses `peppy_schema: "contract/v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
+A contract lives in its own file under a repository Peppy scans (see [Repositories](/advanced_guides/repositories/)). It uses `peppy_schema: "contract/v1"` and declares the same `topics` / `services` / `actions` shapes you would put on a node, except the `interfaces` block is the contract itself, with no `emits` / `consumes` split:
 
 ```json5
 // depth_camera/peppy.json5 (inside a registered repo)
@@ -54,7 +54,7 @@ A contract lives in its own file under a repository peppy scans (see [Repositori
 }
 ```
 
-After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like; peppy identifies a `contract/v1` document by its `peppy_schema` field.
+After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like; Peppy identifies a `contract/v1` document by its `peppy_schema` field.
 
 ### 2. A producer that implements the contract
 
@@ -129,7 +129,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
 
 A contract-backed entry is exactly `{link_id, name}`. The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
 
-The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the contract's identity (`emitted_topics/depth_camera/v1/video_stream`).
+The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the implements slot's `link_id` (`emitted_topics/cam/video_stream`), not the contract's name or tag.
 
 #### Full coverage is mandatory
 
@@ -147,12 +147,14 @@ This is the point of the explicit-entry design: the node's `peppy.json5` shows w
 
 Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings}` link_ids; a collision is rejected at parse time. Direction matters:
 
-- A produced entry (`topics.emits`, `services.exposes`, `actions.exposes`) may only reference a `manifest.implements` slot.
-- A consumed entry (`*.consumes`) may only reference a `depends_on.{nodes,contracts}` slot.
+- `services.exposes` and `actions.exposes` may only reference a `manifest.implements` slot.
+- `topics.emits` may reference a `manifest.implements` slot or a `depends_on.pairings` slot, because a [pairing](/advanced_guides/pairing/) role produces the document's topics as well as consuming them.
+- `services.consumes` and `actions.consumes` may only reference a `depends_on.{nodes,contracts}` slot; a pairing document declares topics only, so it exposes no service or action to consume.
+- `topics.consumes` may additionally reference a `depends_on.pairings` slot, naming a topic the counterpart role emits.
 
 Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready`, `moves`), matching the consumer-side style, rather than echoing the contract name.
 
-A single node can implement multiple contracts (e.g. `depth_camera:v1` and `uvc_camera:v1` under distinct link_ids) and then satisfies any consumer slot that asks for either. A node may implement each contract `(name, tag)` at most once; several instances of one capability are the job of node instances and [pairings](/advanced_guides/pairing), not repeated implements entries. A node may also implement a contract *and* depend on the same contract under a different link_id (the relay shape).
+A single node can implement multiple contracts (e.g. `depth_camera:v1` and `uvc_camera:v1` under distinct link_ids) and then satisfies any consumer slot that asks for either. A node may implement each contract `(name, tag)` at most once; several instances of one capability are the job of node instances and [pairings](/advanced_guides/pairing/), not repeated implements entries. A node may also implement a contract *and* depend on the same contract under a different link_id (the relay shape).
 
 A native entry and a contract-backed entry may share a name on the same producer: the two are namespaced apart in generated modules, schema keys, and wire keys.
 
@@ -239,7 +241,7 @@ The matching predicate at binding time is: *a producer satisfies a contract slot
 
 ### Binding a contract slot
 
-A contract slot is bound with `--bind link_id@producer_instance_id` (or a launcher `bindings:` entry) whose value points at an instance whose node implements the requested contract:
+A contract slot is bound with `--link link_id@producer_instance_id` (or a launcher `links:` entry) whose value points at an instance whose node implements the requested contract:
 
 ```json5
 // peppy_launcher.json5
@@ -254,7 +256,7 @@ A contract slot is bound with `--bind link_id@producer_instance_id` (or a launch
       source: { name: "video_reconstruction:v1" },
       instances: [{
         instance_id: "video_rec_1",
-        bindings: { rear_camera: "depth_cam_inst1" },
+        links: { rear_camera: "depth_cam_inst1" },
       }],
     },
   ],
@@ -264,15 +266,15 @@ A contract slot is bound with `--bind link_id@producer_instance_id` (or a launch
 The same example from the command line, launching the producer against an already-running consumer:
 
 ```sh
-peppy node run --instance-id=depth_cam_inst1 realsense_d405:v1
-peppy node run --instance-id=video_rec_1 --bind=rear_camera@depth_cam_inst1 video_reconstruction:v1
+peppy node run --instance-id depth_cam_inst1 realsense_d405:v1
+peppy node run --instance-id=video_rec_1 --link rear_camera@depth_cam_inst1 video_reconstruction:v1
 ```
 
 If `depth_cam_inst1` were instead an instance of a node with no `implements`, the launcher rejects the binding with a `BindingContractNotImplemented` error citing the expected contract and the producer's actual `(name, tag)`. The producer's node name does **not** save it: a node called `depth_camera:v1` that fails to declare `implements: [{ depth_camera, v1, link_id }]` is treated like any other non-implementing node.
 
 ### One slot per implementing producer
 
-How many implementing producers a slot binds is its declared [cardinality](/advanced_guides/topics#dependency-cardinality): exactly one by default, an application-selected set for `one_or_more` / `zero_or_more`. A consumer that reads from several implementing producers can either declare one contract slot per producer (giving each a distinct role in code) or one multi-cardinality slot bound to the whole set behind a single API. Both keep contract slots the natural shape for many-to-one consumption whose membership the application controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared `one` / `one_or_more` slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing) instead.)
+How many implementing producers a slot binds is its declared [cardinality](/advanced_guides/topics/#dependency-cardinality): exactly one by default, an application-selected set for `one_or_more` / `zero_or_more`. A consumer that reads from several implementing producers can either declare one contract slot per producer (giving each a distinct role in code) or one multi-cardinality slot bound to the whole set behind a single API. Both keep contract slots the natural shape for many-to-one consumption whose membership the application controls: telemetry, monitoring, any consumer that reads data from a launch-chosen set of producers. Every declared `one` / `one_or_more` slot must be bound; a launch that leaves one out is rejected. (For an exclusive 1:1 bidirectional relationship between two specific instances, use a [pairing](/advanced_guides/pairing/) instead.)
 
 ```json5
 manifest: {
@@ -381,7 +383,7 @@ Then the launcher binds each slot to its producer instance:
       instances: [
         {
           instance_id: "recon_1",
-          bindings: {
+          links: {
             front: "rs_front",
             back_left: "rs_back_left",
             back_right: "rs_back_right",
@@ -393,7 +395,7 @@ Then the launcher binds each slot to its producer instance:
 }
 ```
 
-The three bindings feed the three slots, and the consumer receives the streams through the generated `front_video_stream`, `back_left_video_stream`, and `back_right_video_stream` modules. A fourth camera launched without a slot of its own would reach no consumer at all: only bound producers feed a slot.
+The three bindings feed the three slots, and the consumer receives the streams through the generated `video_stream` modules under the `front`, `back_left`, and `back_right` slots. A fourth camera launched without a slot of its own would reach no consumer at all: only bound producers feed a slot.
 
 Inside the consumer, every consumed-topic API returns the **producer's full `(core_node, instance_id)` identity** alongside the message payload. The consumer never hard-codes the launcher's instance ids; it just uses the returned identity as a runtime key to keep per-producer state (latest frame, frame count, last-seen timestamp, etc.) when merging its slots into one aggregate, so the launcher can re-point a slot at a different implementing instance with no consumer code change.
 
@@ -403,11 +405,9 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
     import asyncio
 
     from peppylib import ProducerRef
-    from peppygen.consumed_topics import (
-        back_left_video_stream,
-        back_right_video_stream,
-        front_video_stream,
-    )
+    from peppygen.consumed_topics.front import video_stream as front_video_stream
+    from peppygen.consumed_topics.back_left import video_stream as back_left_video_stream
+    from peppygen.consumed_topics.back_right import video_stream as back_right_video_stream
 
     frames_by_producer: dict[ProducerRef, Frame] = {}
 
@@ -428,7 +428,9 @@ Inside the consumer, every consumed-topic API returns the **producer's full `(co
   <TabItem label="Rust">
     ```rust
     use peppygen::consumed_topics::{
-        back_left_video_stream, back_right_video_stream, front_video_stream,
+        front::video_stream as front_video_stream,
+        back_left::video_stream as back_left_video_stream,
+        back_right::video_stream as back_right_video_stream,
     };
     use peppylib::messaging::ProducerRef;
     use std::collections::HashMap;
@@ -520,7 +522,7 @@ A launcher can wire the three slots to any mix of implementing producers:
       instances: [
         {
           instance_id: "recon_1",
-          bindings: {
+          links: {
             left_cam: "rs_left",
             right_cam: "rs_right",
             overhead_cam: "zed_overhead",
@@ -540,7 +542,7 @@ Once the stack is running, these contract-resolved dependencies surface in the t
 
 ## Caller-driven cycles are rejected
 
-A contract dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's contracts without forming a structural cycle (the same property [pairings](/advanced_guides/pairing) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
+A contract dependency is deliberately invisible to the node dependency graph, which is what lets two nodes depend on each other's contracts without forming a structural cycle (the same property [pairings](/advanced_guides/pairing/) rely on). For **topics** this is always safe: a topic dependency is passive ("I receive whatever is published"), so two nodes can each receive from the other with no runtime ordering between them.
 
 **Services and actions are different.** Consuming a service or action contract means "I will actively call the provider and wait for its reply." If two nodes each call a service (or action) the other provides, neither can make progress until the other does: a request/response deadlock. Routing the calls through contracts hides that cycle from the static graph, but it does not make the deadlock go away. Peppy therefore rebuilds the *caller-driven* edges separately, resolving each contract dep to its implementing providers via `manifest.implements`, and rejects any service/action cycle it finds.
 
@@ -736,15 +738,15 @@ The same rejection applies however you wire it: directly through `depends_on.nod
 
 ### Two properties of the check
 
-- **It is conservative (type-level).** The check reasons about node identities and their declared `implements`, not about which producer a specific `--bind` resolves to. If a service or action contract has several implementing providers and only one of them closes a cycle, the configuration is still rejected, because *any* implementing provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
-- **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing) relies on.
+- **It is conservative (type-level).** The check reasons about node identities and their declared `implements`, not about which producer a specific `--link` resolves to. If a service or action contract has several implementing providers and only one of them closes a cycle, the configuration is still rejected, because *any* implementing provider could be bound into the cyclic slot. If you hit this, pin the binding to a non-cyclic provider or split the contract so the cyclic capability is not declared on the shared contract.
+- **Topics never count.** Only links consumed as a *service* or *action* contribute a caller-driven edge. The very same two nodes wired to consume each other's `link_id` as a **topic** are accepted, because passive subscriptions cannot deadlock, which is exactly what [pairing](/advanced_guides/pairing/) relies on.
 
 ### How to fix it
 
 If the two nodes genuinely need to exchange data, model it without a caller-driven cycle:
 
-- Make at least one direction a **topic** stream rather than a service or action: passive subscriptions never deadlock. If the two nodes form an exclusive 1:1 relationship, model both directions as a [pairing](/advanced_guides/pairing).
-- Or model the request/response exchange as an [action](/advanced_guides/actions), which is one-directional by construction (the client depends on the server), so it never needs a back-edge.
+- Make at least one direction a **topic** stream rather than a service or action: passive subscriptions never deadlock. If the two nodes form an exclusive 1:1 relationship, model both directions as a [pairing](/advanced_guides/pairing/).
+- Or model the request/response exchange as an [action](/advanced_guides/actions/), which is one-directional by construction (the client depends on the server), so it never needs a back-edge.
 
 See [Why topics only?](/advanced_guides/pairing/#why-topics-only) for the full rationale behind the topic/service/action distinction.
 

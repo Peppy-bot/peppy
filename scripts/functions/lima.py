@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -54,6 +55,20 @@ RELEASE_PLATFORM_SO = (
     "_peppylib.abi3.macos-aarch64.so",
 )
 SO_BUILD_STATE_MARKER = ".so-build-state"
+
+# Build artifacts the host packaging step reads, as glob patterns relative to
+# {target_dir}/{target_triple}/release/. The in-VM build compiles on the
+# guest's own disk and copies only these back to the host-visible target dir;
+# everything else cargo produced stays (and is deleted) guest-side. Source of
+# truth: find_peppy_binary, find_zenohd_binary, and the find_build_dir calls in
+# build.py's build_and_package (lima-install is macOS-only, so it is never
+# produced by a Linux cross build). Mirrored here because the copy runs in bash
+# inside the guest.
+GUEST_COPY_BACK_ARTIFACTS = (
+    "peppy",
+    "build/pmi-*/out/zenohd",
+    "build/containers-*/out/apptainer-install",
+)
 
 
 def find_limactl(repo_root: Path) -> Path:
@@ -121,6 +136,39 @@ def _lima_shell(
     )
 
 
+def _host_memory_gib() -> int:
+    """Total host RAM in GiB. This code path only runs on macOS, so sysctl."""
+    result = subprocess.run(
+        ["sysctl", "-n", "hw.memsize"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip().isdigit():
+        raise ReleaseError(
+            "failed to read host memory size via 'sysctl -n hw.memsize'"
+        )
+    return int(result.stdout.strip()) // (1024**3)
+
+
+def _vm_resources() -> tuple[int, int]:
+    """Derive the build VM's vCPU count and memory (GiB) from the host.
+
+    CPUs: host cores minus two, so macOS and Lima's host-side daemons (ssh,
+    virtiofs, port forwarding) keep dedicated cores while the build runs at
+    full parallelism. Memory: 1.5 GiB per vCPU, the ratio the earlier fixed
+    8-job/12 GiB tuning established for release builds with LTO, floored at
+    8 GiB so the serial LTO link step is never starved, and capped at half
+    the host's RAM so starting the VM cannot push the host into swap.
+
+    Only applied at VM creation: an existing instance keeps the resources it
+    was created with, so the in-VM build derives its parallelism from the
+    guest's actual CPU count (cargo's default), not from these values.
+    """
+    cpus = max(2, (os.cpu_count() or 4) - 2)
+    memory_gib = min(max(8, math.ceil(cpus * 1.5)), _host_memory_gib() // 2)
+    return cpus, memory_gib
+
+
 def ensure_lima_vm(limactl: Path) -> None:
     """Ensure the peppy Lima VM instance exists and is running.
 
@@ -133,9 +181,11 @@ def ensure_lima_vm(limactl: Path) -> None:
     status = result.stdout.strip()
 
     if not status:
+        cpus, memory_gib = _vm_resources()
         console.print(
             f"Creating Lima VM '{LIMA_INSTANCE}' with {LIMA_TEMPLATE} "
-            "(this may take a few minutes on first run)..."
+            f"({cpus} CPUs, {memory_gib} GiB; this may take a few minutes "
+            "on first run)..."
         )
         create = _run_limactl(
             limactl,
@@ -145,7 +195,8 @@ def ensure_lima_vm(limactl: Path) -> None:
                 "--tty=false",
                 "--mount-writable",
                 "--containerd=none",
-                "--memory=12",
+                f"--cpus={cpus}",
+                f"--memory={memory_gib}",
                 LIMA_TEMPLATE,
             ],
             capture=False,
@@ -306,13 +357,20 @@ def cargo_build_in_lima(
     target_triple: str,
     repo_root: Path,
     *,
-    target_dir: Path | None = None,
+    target_dir: Path,
 ) -> None:
     """Run cargo build inside the Lima VM for a Linux target.
 
     The VM has no pixi, so it cannot build the peppylib bindings. It reads the
     host-built .so directly from PEPPYLIB_PREBUILT_SO_DIR (the host home is mounted
     into the guest), so the host build must have run first.
+
+    Cargo writes to a tree on the guest's own disk, never the virtiofs mount:
+    parallel rustc jobs writing through virtiofs intermittently lose
+    just-written object files ("failed to build archive ...: No such file or
+    directory"). After the build, only GUEST_COPY_BACK_ARTIFACTS are copied
+    into `target_dir` (which the host reads for packaging); the guest tree is
+    deleted on exit either way so retries cannot fill the VM disk.
     """
     so_dir = require_prebuilt_peppylib_so()
 
@@ -322,6 +380,11 @@ def cargo_build_in_lima(
             "export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc"
         )
     cross_linker = "\n".join(cross_linker_lines)
+
+    # target_dir.name is unique per release invocation (mkdtemp suffix), so
+    # concurrent or interrupted builds never share a guest tree.
+    guest_target_dir = f"{GUEST_RUST_DIR}/target/{target_dir.name}"
+    copy_back_patterns = " ".join(GUEST_COPY_BACK_ARTIFACTS)
 
     console.print(
         f"Building peppy for [bold]{target_triple}[/bold] in Lima VM..."
@@ -336,10 +399,23 @@ export PEPPY_GIT_TAG={tag}
 export PEPPY_CROSS_ARCH=1
 export RUSTC_WRAPPER=""
 export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
-{f"export CARGO_TARGET_DIR={target_dir}" if target_dir is not None else ""}
+export CARGO_TARGET_DIR={guest_target_dir}
 {cross_linker}
+rm -rf {guest_target_dir}
+trap 'rm -rf {guest_target_dir}' EXIT
 cd {repo_root}
-cargo build -p peppy --release --locked --target {target_triple} -j 8
+cargo build -p peppy --release --locked --target {target_triple}
+guest_release={guest_target_dir}/{target_triple}/release
+host_release={target_dir}/{target_triple}/release
+mkdir -p "$host_release"
+cd "$guest_release"
+for artifact in {copy_back_patterns}; do
+    if [ ! -e "$artifact" ]; then
+        echo "error: build artifact missing from guest tree: $guest_release/$artifact" >&2
+        exit 1
+    fi
+    cp -a --parents "$artifact" "$host_release"/
+done
 """
     result = _lima_shell(limactl, build_script)
     if result.returncode != 0:

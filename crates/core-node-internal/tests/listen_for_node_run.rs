@@ -984,7 +984,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .expect("first goal should be sent");
 
     // Verify first goal was accepted
-    let first_goal_response_payload = first_action_handle.goal_response().payload();
+    let first_goal_response_payload = first_action_handle.goal_reply().body.clone();
     let first_goal_response =
         core_node_api::encoding::NodeRunGoalResponse::decode(&first_goal_response_payload)
             .expect("failed to decode first goal response");

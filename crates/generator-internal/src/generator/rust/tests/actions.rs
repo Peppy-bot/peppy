@@ -142,6 +142,12 @@ pub(super) const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+{
+  accepted: "bool"
+}
+"#;
+
 pub(super) const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 {
   new_position: {
@@ -227,16 +233,20 @@ fn exposed_action() {
         ],
     );
 
-    // GoalResponse struct: framework-owned goal acknowledgement
-    // ({accepted, error_message}) with its `new` constructor and the
-    // accept/reject helpers the decider returns.
+    // GoalResponse mirrors the declared response_message_format exactly. The
+    // framework decision is a separate enum: an accept carries the declared
+    // response, a reject carries an optional reason and optional response.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalResponse",
             "impl GoalResponse",
-            "pub fn new(accepted: bool, error_message: Option<String>) -> Self",
-            "pub fn accept() -> Self",
+            "pub fn new(accepted: bool) -> Self",
+            "pub enum GoalDecision",
+            "Accept(GoalResponse)",
+            "reason: Option<String>",
+            "response: Option<GoalResponse>",
+            "pub fn accept(response: GoalResponse) -> Self",
             "pub fn reject(reason: impl Into<String>) -> Self",
         ],
     );
@@ -259,15 +269,20 @@ fn exposed_action() {
         ],
     );
 
-    // handle_goal_next_request returns a per-goal GoalContext (or None when
-    // rejected / the stream closed).
+    // handle_goal_next_request returns a per-goal GoalContext. Rejected goals
+    // send their declared response and are skipped; None means the stream
+    // closed.
     assert_contains_all(
         &rendered,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
             "crate::Result<Option<GoalContext>>",
             "recv_next_goal",
+            "GoalDecision::Accept(response)",
+            "pending.accept(response_payload).await?",
+            "GoalDecision::Reject { reason, response }",
+            "pending.reject(reason.as_deref(), response_payload).await?",
         ],
     );
 
@@ -305,16 +320,19 @@ fn expose_action_without_request_body() {
         .expect("artifact is present");
 
     // GoalRequest still exists (with instance_id and core_node) even without
-    // data. The framework GoalResponse (+ accept/reject) is always present.
+    // data. The declared GoalResponse and framework GoalDecision remain
+    // present.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalRequest",
             "pub struct GoalResponse",
-            "pub fn accept() -> Self",
-            "pub fn reject(reason: impl Into<String>) -> Self",
+            "pub enum GoalDecision",
+            "Accept(GoalResponse)",
+            "reason: Option<String>",
+            "response: Option<GoalResponse>",
             "pub async fn handle_goal_next_request",
-            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
         ],
     );
     // No request data → GoalRequest has no `data` field and no deserializer.
@@ -403,20 +421,21 @@ fn expose_feedback_only_action() {
             "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
             "peppylib::messaging::ConcurrentAction::expose",
             "pub async fn handle_goal_next_request",
-            "pub struct GoalResponse",
+            "pub enum GoalDecision",
+            "Accept",
+            "Reject",
+            "reason: Option<String>",
+            "pub fn reject(reason: impl Into<String>) -> Self",
+            "pending.reject(reason.as_deref(), peppylib::Payload::new()).await?",
             "pub struct GoalContext",
             "pub async fn publish_feedback",
         ],
     );
 
-    // The goal acknowledgement is framework-owned, so even a feedback-only
-    // action gets the GoalResponse accept/reject helpers.
-    assert_contains_all(
-        &rendered,
-        &[
-            "pub fn accept() -> Self",
-            "pub fn reject(reason: impl Into<String>) -> Self",
-        ],
+    assert_rendered!(
+        !rendered.contains("pub struct GoalResponse"),
+        rendered,
+        "an action without response_message_format has no GoalResponse payload"
     );
     // No result service → no completion methods.
     assert_rendered!(
@@ -473,7 +492,7 @@ fn expose_two_actions() {
         rotate_servo,
         &[
             "pub async fn handle_goal_next_request",
-            "F: Fn(&GoalRequest) -> crate::Result<GoalResponse>",
+            "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
             "pub struct GoalResponse",
             "pub async fn complete",
             "pub async fn publish_feedback",
@@ -493,6 +512,7 @@ fn consumed_action() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -542,7 +562,9 @@ fn consumed_action() {
             "pub struct ActionHandle",
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
-            "pub data: GoalResponseData",
+            "pub accepted: bool",
+            "pub reason: Option<String>",
+            "pub data: Option<GoalResponseData>",
             "impl ActionHandle",
         ],
     );
@@ -675,6 +697,7 @@ fn consumed_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let move_arm_messages = ConsumedActionMessage {
         goal_request: Some(move_arm_goal_request),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(move_arm_feedback),
         result_response: Some(move_arm_result_response),
     };
@@ -688,6 +711,7 @@ fn consumed_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
     let rotate_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(rotate_feedback),
         result_response: Some(rotate_result_response),
     };
@@ -721,19 +745,19 @@ fn consumed_two_actions_same_node() {
         .map(|artifact| (artifact.leaf_name().to_string(), artifact.code_output))
         .collect();
 
-    let move_arm_module =
-        sanitize_node_display_name(&raw_module_label("brain", &move_arm_action.name));
-    let rotate_module = sanitize_node_display_name(&raw_module_label("brain", &rotate_action.name));
-
+    // Consumed artifacts nest as `[link_id, action_name]`, so the leaf segment
+    // is the raw action name.
     let move_arm = artifact_map
-        .get(&move_arm_module)
-        .unwrap_or_else(|| panic!("move_arm artifact `{}` is present", move_arm_module));
-    let rotate_servo = artifact_map.get(&rotate_module).unwrap_or_else(|| {
-        panic!(
-            "rotate_servo_clockwise artifact `{}` is present",
-            rotate_module
-        )
-    });
+        .get(move_arm_action.name.as_str())
+        .unwrap_or_else(|| panic!("move_arm artifact `{}` is present", move_arm_action.name));
+    let rotate_servo = artifact_map
+        .get(rotate_action.name.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "rotate_servo_clockwise artifact `{}` is present",
+                rotate_action.name
+            )
+        });
 
     // move_arm - constants and struct hierarchy
     assert_contains_all(
@@ -830,6 +854,7 @@ fn consumed_action_with_link_id_splices_runtime_binding_target() {
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: None,
         result_response: None,
     };
@@ -867,6 +892,7 @@ fn consumed_action_without_response_payload() {
 
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: None,
         feedback: Some(feedback_format),
         result_response: None,
     };
@@ -884,25 +910,30 @@ fn consumed_action_without_response_payload() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    // The goal acknowledgement is framework-owned, so GoalResponseData and the
-    // `pub data` field are always present even when the action declares no goal
-    // response format.
+    // No declared goal response means the client handle carries no response
+    // data and needs no goal-response deserializer. The admission ack fields
+    // are still present.
     assert_contains_all(
         &rendered,
         &[
             "pub struct ActionHandle",
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
-            "pub data: GoalResponseData",
+            "pub accepted: bool",
+            "pub reason: Option<String>",
             "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::request_result",
-            "pub struct GoalResponseData",
-            "pub accepted: bool",
-            "fn deserialize_goal_response",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("GoalResponseData")
+            && !rendered.contains("pub data:")
+            && !rendered.contains("deserialize_goal_response"),
+        rendered,
+        "no goal-response API should be generated without response_message_format"
     );
 }
 
@@ -914,6 +945,7 @@ fn consumed_action_without_feedback() {
 
     let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: None,
         result_response: None,
     };
@@ -973,6 +1005,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let consumed_action1_messages = ConsumedActionMessage {
         goal_request: Some(consumed_action1_goal_request),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(consumed_action1_feedback),
         result_response: Some(consumed_action1_result_response),
     };
@@ -985,6 +1018,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
     let consumed_action2_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(consumed_action2_feedback),
         result_response: Some(consumed_action2_result_response),
     };
@@ -1035,10 +1069,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain_move_arm;",
-            "pub mod controller_rotate_servo_clockwise;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 }
 
@@ -1059,6 +1090,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let consumed_action1_messages = ConsumedActionMessage {
         goal_request: Some(consumed_action1_goal_request),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(consumed_action1_feedback),
         result_response: Some(consumed_action1_result_response),
     };
@@ -1071,6 +1103,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
     let consumed_action2_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(consumed_action2_feedback),
         result_response: Some(consumed_action2_result_response),
     };
@@ -1137,10 +1170,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
-        &[
-            "pub mod brain_move_arm;",
-            "pub mod controller_rotate_servo_clockwise;",
-        ],
+        &["pub mod brain;", "pub mod controller;"],
     );
 
     let expose_move_arm_path = output_dir.join("src/exposed_actions/move_arm.rs");
@@ -1155,17 +1185,17 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         "Expected generated rotate_servo_clockwise action module at {:?}",
         expose_rotate_path
     );
-    let subscribed_brain_path = output_dir.join("src/consumed_actions/brain_move_arm.rs");
+    let subscribed_brain_path = output_dir.join("src/consumed_actions/brain/move_arm.rs");
     assert!(
         subscribed_brain_path.exists(),
-        "Expected brain_move_arm consumed action module at {:?}",
+        "Expected brain/move_arm consumed action module at {:?}",
         subscribed_brain_path
     );
     let subscribed_controller_path =
-        output_dir.join("src/consumed_actions/controller_rotate_servo_clockwise.rs");
+        output_dir.join("src/consumed_actions/controller/rotate_servo_clockwise.rs");
     assert!(
         subscribed_controller_path.exists(),
-        "Expected controller_rotate_servo_clockwise consumed action module at {:?}",
+        "Expected controller/rotate_servo_clockwise consumed action module at {:?}",
         subscribed_controller_path
     );
 }
@@ -1186,6 +1216,7 @@ fn clippy_consumed_action_empty_goal_request() {
     .unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: None,
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: None,
         result_response: None,
     };

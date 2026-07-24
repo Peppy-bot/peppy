@@ -111,7 +111,7 @@ import os
 import sys
 from peppygen import NodeBuilder
 from peppygen.exposed_services import frame_received_ack
-from peppygen.consumed_topics import uvc_camera_video_stream
+from peppygen.consumed_topics.uvc_camera import video_stream as uvc_camera_video_stream
 
 async def receive_frames(node_runner, frame_received):
     # `next()` returns None once the subscription has closed; unpacking that

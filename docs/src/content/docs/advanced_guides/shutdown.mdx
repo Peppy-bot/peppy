@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-A node instance rarely gets to decide when it stops, and a robot node that stops carelessly leaves motors energised, instance locks held, and state unflushed. This guide is the full contract for how a node shuts down: which events trigger it, what the runtime guarantees (and does not guarantee) about your code during it, and how the grace windows bound every step. For the quick-start version, see [Graceful shutdown](/guides/first_node/#graceful-shutdown) in the first node guide; for the daemon-side operations view, see [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
+A node instance rarely gets to decide when it stops, and a robot node that stops carelessly leaves motors energized, instance locks held, and state unflushed. This guide is the full contract for how a node shuts down: which events trigger it, what the runtime guarantees (and does not guarantee) about your code during it, and how the grace windows bound every step. For the quick-start version, see [Graceful shutdown](/guides/first_node/#graceful-shutdown) in the first node guide; for the daemon-side operations view, see [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
 
 The runtime gives your node two shutdown primitives, and they are deliberately not the same thing:
 

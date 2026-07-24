@@ -6,6 +6,6 @@ from . import exposed_services
 from . import consumed_services
 from . import exposed_actions
 from . import consumed_actions
-from . import pairings
+from . import paired_topics
 
 from peppylib import QoSProfile, NodeBuilder, NodeRunner, StandaloneConfig

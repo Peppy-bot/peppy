@@ -6,8 +6,8 @@
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    ActionServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, QoSProfile,
-    SchemaType, TypeToken,
+    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
+    TypeToken,
 };
 use generator::{
     ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
@@ -23,20 +23,25 @@ fn make_action(marker: &str) -> NativeExposedAction {
     resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
     NativeExposedAction {
         name: "move_arm".to_string(),
-        goal_service: Some(ActionServiceEndpoint {
+        goal_service: Some(GoalServiceEndpoint {
             request_message_format: Some(MessageFormat(req)),
             response_message_format: Some(MessageFormat(resp)),
-            qos_profile: QoSProfile::Reliable,
         }),
         feedback_topic: None,
         result_service: None,
     }
 }
 
-fn contract_backed(name: &str, tag: &str, action: NativeExposedAction) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    action: NativeExposedAction,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedAction {
         action,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -81,14 +86,14 @@ const NODE_CONFIG: &str = r#"{
 ///      leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
 ///   4. Per-interface marker fields land in the right file.
 #[test]
-fn nests_contract_backed_actions_under_contract_name_and_tag() {
+fn nests_contract_backed_actions_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("arm", "v1", make_action("arm_v1_marker")),
-        contract_backed("arm", "v2", make_action("arm_v2_marker")),
+        contract_backed("arm_v1", "arm", "v1", make_action("arm_v1_marker")),
+        contract_backed("arm_v2", "arm", "v2", make_action("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -109,8 +114,8 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
     let act_dir = src.join("exposed_actions");
 
     let native_path = act_dir.join("move_arm.rs");
-    let arm_v1 = act_dir.join("arm/v1/move_arm.rs");
-    let arm_v2 = act_dir.join("arm/v2/move_arm.rs");
+    let arm_v1 = act_dir.join("arm_v1/move_arm.rs");
+    let arm_v2 = act_dir.join("arm_v2/move_arm.rs");
 
     for path in [&native_path, &arm_v1, &arm_v2] {
         assert!(path.exists(), "expected action file at {path:?}");
@@ -118,17 +123,24 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
 
     let category_mod = fs::read_to_string(src.join("exposed_actions.rs"))
         .expect("exposed_actions.rs should exist");
-    for expected in ["pub mod move_arm;", "pub mod arm;"] {
+    for expected in ["pub mod move_arm;", "pub mod arm_v1;", "pub mod arm_v2;"] {
         assert!(
             category_mod.contains(expected),
             "exposed_actions.rs missing `{expected}`:\n{category_mod}",
         );
     }
 
-    let arm_mod = fs::read_to_string(act_dir.join("arm/mod.rs")).expect("arm/mod.rs should exist");
+    let arm_v1_mod =
+        fs::read_to_string(act_dir.join("arm_v1/mod.rs")).expect("arm_v1/mod.rs should exist");
     assert!(
-        arm_mod.contains("pub mod v1;") && arm_mod.contains("pub mod v2;"),
-        "arm/mod.rs should declare v1 and v2:\n{arm_mod}",
+        arm_v1_mod.contains("pub mod move_arm;"),
+        "arm_v1/mod.rs should declare move_arm:\n{arm_v1_mod}",
+    );
+    let arm_v2_mod =
+        fs::read_to_string(act_dir.join("arm_v2/mod.rs")).expect("arm_v2/mod.rs should exist");
+    assert!(
+        arm_v2_mod.contains("pub mod move_arm;"),
+        "arm_v2/mod.rs should declare move_arm:\n{arm_v2_mod}",
     );
 
     let native_src = fs::read_to_string(&native_path).expect("read native");
@@ -141,8 +153,8 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
         "native leaf should pass `SenderTarget::node(...)`:\n{native_src}",
     );
     assert!(
-        native_src.contains("native_marker"),
-        "native source should carry its distinguishing field",
+        native_src.contains("native_marker") && native_src.contains("native_marker_ack"),
+        "native source should carry its declared request and response fields",
     );
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
@@ -155,8 +167,8 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
         "arm v1 leaf should pass `arm`,`v1`:\n{arm_v1_src}",
     );
     assert!(
-        arm_v1_src.contains("arm_v1_marker"),
-        "arm v1 source should carry its distinguishing field",
+        arm_v1_src.contains("arm_v1_marker") && arm_v1_src.contains("arm_v1_marker_ack"),
+        "arm v1 source should carry its declared request and response fields",
     );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
@@ -169,7 +181,7 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
         "arm v2 leaf should pass `arm`,`v2`:\n{arm_v2_src}",
     );
     assert!(
-        arm_v2_src.contains("arm_v2_marker"),
-        "arm v2 source should carry its distinguishing field",
+        arm_v2_src.contains("arm_v2_marker") && arm_v2_src.contains("arm_v2_marker_ack"),
+        "arm v2 source should carry its declared request and response fields",
     );
 }

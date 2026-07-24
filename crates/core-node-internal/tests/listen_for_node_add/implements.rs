@@ -7,7 +7,7 @@
 //! generator never saw the contract-backed's topics/services. The
 //! resulting peppygen had a flat layout (`emitted_topics.rs` was empty)
 //! and any node code importing nested paths like
-//! `peppygen::emitted_topics::<contract>::<tag>::<topic>` failed to compile
+//! `peppygen::emitted_topics::<link_id>::<topic>` failed to compile
 //! inside the container. `sync` did this correctly, which is why a sync
 //! followed by build was enough to mask the bug on a developer's
 //! workstation but the daemon-driven path produced broken artifacts.
@@ -55,7 +55,7 @@ const NODE_BODY: &str = r#"{
 
 /// `node_add` must resolve the contract-backed entries and pass the
 /// resolved topics/services to the generator so the staged peppygen nests
-/// artifacts under `{category}/{contract_name}/{contract_tag}/`. Before the
+/// artifacts under `{category}/{link_id}/`. Before the
 /// fix, the working dir's `emitted_topics.rs` and
 /// `exposed_services.rs` were empty for a node whose only contributions
 /// came through an implemented contract.
@@ -115,15 +115,14 @@ async fn node_add_generates_contract_backed_modules_in_working_dir() {
     let emitted_topics = std::fs::read_to_string(peppygen_src.join("emitted_topics.rs"))
         .expect("emitted_topics.rs should exist in staged peppygen");
     assert!(
-        emitted_topics.contains("pub mod uvc_camera;"),
-        "emitted_topics.rs should declare the implemented contract module \
-         `uvc_camera`; got:\n{emitted_topics}"
+        emitted_topics.contains("pub mod cam;"),
+        "emitted_topics.rs should declare the slot module `cam`; got:\n{emitted_topics}"
     );
     assert!(
         peppygen_src
-            .join("emitted_topics/uvc_camera/v1/video_stream.rs")
+            .join("emitted_topics/cam/video_stream.rs")
             .is_file(),
-        "expected nested `emitted_topics/uvc_camera/v1/video_stream.rs` \
+        "expected nested `emitted_topics/cam/video_stream.rs` \
          in staged peppygen at {}",
         peppygen_src.display(),
     );
@@ -131,15 +130,14 @@ async fn node_add_generates_contract_backed_modules_in_working_dir() {
     let exposed_services = std::fs::read_to_string(peppygen_src.join("exposed_services.rs"))
         .expect("exposed_services.rs should exist in staged peppygen");
     assert!(
-        exposed_services.contains("pub mod uvc_camera;"),
-        "exposed_services.rs should declare the implemented contract module \
-         `uvc_camera`; got:\n{exposed_services}"
+        exposed_services.contains("pub mod cam;"),
+        "exposed_services.rs should declare the slot module `cam`; got:\n{exposed_services}"
     );
     assert!(
         peppygen_src
-            .join("exposed_services/uvc_camera/v1/video_stream_info.rs")
+            .join("exposed_services/cam/video_stream_info.rs")
             .is_file(),
-        "expected nested `exposed_services/uvc_camera/v1/video_stream_info.rs` \
+        "expected nested `exposed_services/cam/video_stream_info.rs` \
          in staged peppygen at {}",
         peppygen_src.display(),
     );

@@ -79,9 +79,9 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, as do services and actions, which use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, while services and actions use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
 
-## Topics, Services & Actions
+## Topics, services, and actions
 
 Peppy provides three primary communication patterns for nodes to exchange data:
 
@@ -168,10 +168,10 @@ You can combine both steps into a single command with `peppy node add . --sync` 
 
 :::note
 Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:
-```sh
+```text
 Error: `hello_receiver:v1` depends on `hello_world_param:v1`, but it does not exist in the stack
 ```
-The `node add` and `node sync` both require the consumed nodes to be present in the node stack to 
+The `node add` and `node sync` commands both require the consumed nodes to be present in the node stack to 
 generate the proper interfaces for the programming language they are written in.
 :::
 
@@ -209,29 +209,29 @@ $ peppy stack list
 We need to make sure that at least one instance is started for `hello_receiver:v1` and another one for `hello_world_param:v1`.
 The order in which the nodes are started does not affect the node communication.
 Let's start a `hello_world_param:v1` instance:
-```sh
-❯ peppy node run hello_world_param:v1 name=planet
+```
+$ peppy node run hello_world_param:v1 name=planet
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'gifted-moser-9365' and 1 argument(s)...
 Calling node_start for hello_world_param:v1 (instance_id=gifted-moser-9365)...
-Log file: /Users/tuatini/.peppy/logs/run/gifted-moser-9365.log
+Log file: /home/ubuntu/.peppy/logs/run/gifted-moser-9365.log
 Started node instance 'gifted-moser-9365' (pid: 76981)
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup. Note the producer's instance id in the output (`gifted-moser-9365` here): a consumer receives messages only from the producers explicitly bound to its slots, so we need that id to start the receiver.
-Now let's start the `hello_receiver` node, binding its `hello_world_param` slot to the producer instance with `--bind LINK_ID@INSTANCE_ID`:
-```sh
-❯ peppy node run hello_receiver:v1 --bind hello_world_param@gifted-moser-9365
+Now let's start the `hello_receiver` node, binding its `hello_world_param` slot to the producer instance with `--link LINK_ID@INSTANCE_ID`:
+```
+$ peppy node run hello_receiver:v1 --link hello_world_param@gifted-moser-9365
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_start for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
-Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
+Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A slot left without a `--bind` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
+A slot left without a `--link` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
 
-When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
+When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
 ```
 [2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
@@ -246,26 +246,26 @@ We can see the messages received from the `hello_world_param:v1` instance!
 ## Starting a second instance with different parameters
 
 Now let's push things a little further. Imagine we need a second instance with different parameters; we can start one like this:
-```sh
-❯ peppy node run hello_world_param:v1 name=you
+```
+$ peppy node run hello_world_param:v1 name=you
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'admiring-black-0614' and 1 argument(s)...
 Calling node_start for hello_world_param:v1 (instance_id=admiring-black-0614)...
-Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
+Log file: /home/ubuntu/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 
 The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer: this slot has the default cardinality `one`, so it binds exactly one producer, and only the bound producer reaches it. To read the new instance instead, restart the receiver bound to it:
-```sh
-❯ peppy node stop vigorous-buck-8117
-❯ peppy node run hello_receiver:v1 \
-    --bind hello_world_param@admiring-black-0614
+```
+$ peppy node stop vigorous-buck-8117
+$ peppy node run hello_receiver:v1 \
+    --link hello_world_param@admiring-black-0614
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 ```
 And we check the logs again:
-```sh
-❯ tail /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
+```
+$ tail /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
 [2026-01-24T10:04:47.085] [stdout] Received from admiring-black-0614: hello you count 1
 [2026-01-24T10:04:50.085] [stdout] Received from admiring-black-0614: hello you count 2
 [2026-01-24T10:04:53.086] [stdout] Received from admiring-black-0614: hello you count 3
@@ -311,5 +311,5 @@ $ peppy stack list
 The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to the one producer we bound, rendered as `instance_id@core_node` (its full wire address). A slot only ever receives from the producer bound to it: that is exactly why `vigorous-buck-8117` prints messages from `admiring-black-0614` and nothing from `gifted-moser-9365` above.
 
 ---
-We'll explore [services](/advanced_guides/services) and [actions](/advanced_guides/actions) in the advanced guides, although they fundamentally work the same way.
-Refer to nodes in [this repository](https://github.com/Peppy-bot/nodes-hub.git) for more examples of topics/service/action usage.
+We'll explore [services](/advanced_guides/services/) and [actions](/advanced_guides/actions/) in the advanced guides, although they fundamentally work the same way.
+Refer to nodes in [this repository](https://github.com/Peppy-bot/nodes-hub.git) for more examples of topic/service/action usage.

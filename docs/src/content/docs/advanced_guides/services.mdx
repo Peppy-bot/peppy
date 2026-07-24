@@ -1,6 +1,6 @@
 ---
 title: Services
-description: How to use services in peppy
+description: How to use services in Peppy
 sidebar:
   order: 2
 ---
@@ -189,6 +189,7 @@ fn main() -> Result<()> {
 
 The `request` argument contains:
 - `instance_id`: the consumer instance that sent the request, read straight from the request context. The producer is binding-agnostic; it doesn't know which slot on the consumer this call is heading to.
+- `core_node`: the core node hosting that consumer instance, read from the request context.
 - `data`: the deserialized request payload (only present when a `request_message_format` is defined).
 
 `handle_next_request` processes a single request and returns.
@@ -220,7 +221,7 @@ tokio::spawn(async move {
   </TabItem>
 </Tabs>
 
-For a service without a request body, the handler receives a `Request` with only the `instance_id`:
+For a service without a request body, the handler receives a `Request` with only the request context (`instance_id` and `core_node`):
 
 <Tabs>
   <TabItem label="Python">
@@ -346,7 +347,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen.consumed_services` (Python) / `peppygen::consumed_services` (Rust).
-Use `poll` to send a request and wait for a response. The caller selects which bound producer handles the call by passing one explicit `target`, obtained from the slot's [cardinality](/advanced_guides/topics#dependency-cardinality)-typed accessor: on a `one` slot `bound_producer()` returns the sole producer directly, on a `one_or_more` slot `bound_producers()` returns a never-empty set whose `first()` needs no unwrap, and on a `zero_or_more` slot it returns a possibly empty slice whose empty case the caller must handle. The explicit `target` parameter itself has the same shape for every cardinality. The candidates are fixed by the application bindings at launch, so by the time `poll` runs the route set is already validated.
+Use `poll` to send a request and wait for a response. The caller selects which bound producer handles the call by passing one explicit `target`, obtained from the slot's [cardinality](/advanced_guides/topics/#dependency-cardinality)-typed accessor: on a `one` slot `bound_producer()` returns the sole producer directly, on a `one_or_more` slot `bound_producers()` returns a never-empty set whose `first()` needs no unwrap, and on a `zero_or_more` slot it returns a possibly empty slice whose empty case the caller must handle. The explicit `target` parameter itself has the same shape for every cardinality. The candidates are fixed by the application bindings at launch, so by the time `poll` runs the route set is already validated.
 
 <Tabs>
   <TabItem label="Python">
@@ -355,7 +356,7 @@ import asyncio
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.consumed_services import uvc_camera_enable_camera
+from peppygen.consumed_services.uvc_camera import enable_camera
 
 
 async def call_service(node_runner: NodeRunner):
@@ -363,9 +364,9 @@ async def call_service(node_runner: NodeRunner):
     # accessor is singular and infallible; no emptiness handling exists.
     # The target is still passed explicitly, same discipline as the
     # multi cardinalities.
-    camera = uvc_camera_enable_camera.bound_producer(node_runner)
-    request = uvc_camera_enable_camera.Request(enable=True)
-    response = await uvc_camera_enable_camera.poll(
+    camera = enable_camera.bound_producer(node_runner)
+    request = enable_camera.Request(enable=True)
+    response = await enable_camera.poll(
         node_runner,
         camera,  # the slot's sole producer
         request,
@@ -393,7 +394,7 @@ if __name__ == "__main__":
   </TabItem>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera::enable_camera;
 use peppygen::{NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
@@ -403,9 +404,9 @@ fn main() -> Result<()> {
         // accessor is singular and infallible; no emptiness handling exists.
         // The target is still passed explicitly, same discipline as the
         // multi cardinalities.
-        let camera = uvc_camera_enable_camera::bound_producer(&node_runner);
-        let request = uvc_camera_enable_camera::Request::new(true);
-        let response = uvc_camera_enable_camera::poll(
+        let camera = enable_camera::bound_producer(&node_runner);
+        let request = enable_camera::Request::new(true);
+        let response = enable_camera::poll(
             &node_runner,
             camera,                 // the slot's sole producer
             Duration::from_secs(5), // timeout
@@ -431,6 +432,7 @@ The `target` must be a member of the slot's own bound set, the one its bound-pro
 
 The response contains:
 - `instance_id`: the producer instance that handled the request, read from the response context.
+- `core_node`: the core node hosting that producer instance, read from the response context.
 - `data`: the deserialized response payload.
 
 For a service without a request body, `poll` simply takes no request:
@@ -438,20 +440,20 @@ For a service without a request body, `poll` simply takes no request:
 <Tabs>
   <TabItem label="Python">
 ```python
-from peppygen.consumed_services import uvc_camera_get_camera_info
+from peppygen.consumed_services.uvc_camera import get_camera_info
 
-camera = uvc_camera_get_camera_info.bound_producer(node_runner)
-response = await uvc_camera_get_camera_info.poll(node_runner, camera, 5.0)
+camera = get_camera_info.bound_producer(node_runner)
+response = await get_camera_info.poll(node_runner, camera, 5.0)
 
 print(f"Camera: {response.data.card_type} {response.data.size}")
 ```
   </TabItem>
   <TabItem label="Rust">
 ```rust
-use peppygen::consumed_services::uvc_camera_get_camera_info;
+use peppygen::consumed_services::uvc_camera::get_camera_info;
 
-let camera = uvc_camera_get_camera_info::bound_producer(&node_runner);
-let response = uvc_camera_get_camera_info::poll(
+let camera = get_camera_info::bound_producer(&node_runner);
+let response = get_camera_info::poll(
     &node_runner,
     camera,
     Duration::from_secs(5),
@@ -472,9 +474,9 @@ Codegen provides only single-target operations; calling every member of a multi-
 # Runs once per bound producer, in binding declaration order.
 # `one_or_more`: the list is never empty, so the body runs at least once.
 # `zero_or_more`: an empty list makes the loop a no-op; no request is sent.
-for camera in camera_enable_camera.bound_producers(node_runner):
-    request = camera_enable_camera.Request(enable=True)
-    response = await camera_enable_camera.poll(node_runner, camera, request, 5.0)
+for camera in enable_camera.bound_producers(node_runner):
+    request = enable_camera.Request(enable=True)
+    response = await enable_camera.poll(node_runner, camera, request, 5.0)
     print(f"{response.instance_id}@{response.core_node}: enabled={response.data.enabled}")
 ```
   </TabItem>
@@ -483,10 +485,10 @@ for camera in camera_enable_camera.bound_producers(node_runner):
 // Runs once per bound producer, in binding declaration order.
 // `one_or_more`: the set is never empty, so the body runs at least once.
 // `zero_or_more`: an empty slice makes the loop a no-op; no request is sent.
-let cameras = camera_enable_camera::bound_producers(&node_runner);
+let cameras = enable_camera::bound_producers(&node_runner);
 for camera in cameras {
-    let request = camera_enable_camera::Request::new(true);
-    let response = camera_enable_camera::poll(
+    let request = enable_camera::Request::new(true);
+    let response = enable_camera::poll(
         &node_runner,
         camera,
         Duration::from_secs(5),
@@ -504,15 +506,24 @@ for camera in cameras {
 
 To address one member of a multi slot instead of all of them, pick it from the same set; on a `one_or_more` slot the set is never empty, so selecting the first member needs no unwrap:
 
-```rust
-let camera = camera_enable_camera::bound_producers(&node_runner).first();
+<Tabs>
+  <TabItem label="Python">
+```python
+camera = enable_camera.bound_producers(node_runner)[0]
 ```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+let camera = enable_camera::bound_producers(&node_runner).first();
+```
+  </TabItem>
+</Tabs>
 
 ## Bindings and routing
 
 Routing for services is the same consumer-side model used by topics. A binding `KEY: VALUE` creates a private channel from producer instance `VALUE` to one of the consumer's declared slots; the producer itself doesn't know or care about bindings.
 
-A service slot resolves through its bindings: the generated `poll` checks the caller-selected target against the slot's bound set and sends the wire request directly to it, carrying the producer's full `(core_node, instance_id)` wire address. No discovery is involved. How many producers may be bound to the slot is its declared [cardinality](/advanced_guides/topics#dependency-cardinality) (`one` when omitted); a multi-cardinality slot takes an array of instance ids, and a `one` / `one_or_more` slot with no binding is rejected at launch validation, before anything spawns. Because a request/response call needs exactly one responder, every call selects exactly one member of the bound set.
+A service slot resolves through its bindings: the generated `poll` checks the caller-selected target against the slot's bound set and sends the wire request directly to it, carrying the producer's full `(core_node, instance_id)` wire address. No discovery is involved. How many producers may be bound to the slot is its declared [cardinality](/advanced_guides/topics/#dependency-cardinality) (`one` when omitted); a multi-cardinality slot takes an array of instance ids, and a `one` / `one_or_more` slot with no binding is rejected at launch validation, before anything spawns. Because a request/response call needs exactly one responder, every call selects exactly one member of the bound set.
 
 In a launcher / stack config:
 
@@ -521,7 +532,7 @@ In a launcher / stack config:
   source: { local: "./consumer" },
   instances: [{
     instance_id: "my_consumer",
-    bindings: { uvc_camera: "my-camera-instance" },
+    links: { uvc_camera: "my-camera-instance" },
   }],
 }
 ```
@@ -529,7 +540,7 @@ In a launcher / stack config:
 or, when launching a single node during development:
 
 ```sh
-peppy node run --bind uvc_camera@my-camera-instance .
+peppy node run --link uvc_camera@my-camera-instance .
 ```
 
 ### Worked example: `openarm01_backbone`
@@ -562,7 +573,7 @@ A consumer that wires two depth cameras to two dedicated slots:
       { instance_id: "right_cam" },
     ]},
     { source: { name: "openarm01_backbone:v1" }, instances: [
-      { instance_id: "backbone_inst_1", bindings: {
+      { instance_id: "backbone_inst_1", links: {
         wrist_left_camera: "left_cam",
         wrist_right_camera: "right_cam",
       }},
@@ -573,13 +584,13 @@ A consumer that wires two depth cameras to two dedicated slots:
 
 Three contract statements follow from this manifest:
 
-1. `poll` on the `wrist_left_camera_<service>` module reaches `left_cam`.
-2. `poll` on the `wrist_right_camera_<service>` module reaches `right_cam`.
+1. `poll` on the nested `wrist_left_camera.<service>` (Python) / `wrist_left_camera::<service>` (Rust) module reaches `left_cam`.
+2. `poll` on the nested `wrist_right_camera.<service>` (Python) / `wrist_right_camera::<service>` (Rust) module reaches `right_cam`.
 3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared `one` / `one_or_more` slot must be bound): a service call has no wildcard fallback.
 
 ### Why an explicit single target?
 
-The underlying Zenoh transport would broadcast an untargeted service query to every matching producer (`QueryTarget::All`), and every producer's user handler would run even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. Requiring every call to name one member of the slot's validated bound set removes that hazard by construction: the selected target carries the producer's full `(core_node, instance_id)` wire address, so the call addresses exactly one producer with no probe round-trip and no discovery race, both the request and the response stay pinned to it, and an out-of-set target (never checked by plan-time binding validation) is rejected before it reaches the wire.
+The underlying Zenoh transport would broadcast an untargeted service query to every matching producer (`QueryTarget::All`), and every producer's user handler would run even though the consumer only ever consumes the first reply. For idempotent reads that wastes work; for state-changing services it can cause real-world side effects on producers the consumer never intended to reach. Requiring every call to name one member of the slot's validated bound set removes that hazard by construction: the selected target carries the producer's full `(core_node, instance_id)` wire address, so the call addresses exactly one producer with no probe round-trip and no discovery race, both the request and the response stay pinned to it, and an out-of-set target (which plan-time binding validation cannot check) is rejected before it reaches the wire.
 
 If the selected producer dies, the call surfaces `ServiceUnreachable` (a `ConnectionError` in Python) and the caller can retry once the producer is back; the bound set itself never shrinks or rebinds at runtime.
 
@@ -588,9 +599,9 @@ If the selected producer dies, the call surfaces `ServiceUnreachable` (a `Connec
 The launcher validator runs these checks before the stack starts:
 
 1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared `one` / `one_or_more` slot with no binding entry fails the launch before anything is spawned; a `zero_or_more` slot with no entry resolves to the empty set.
-2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--bind KEY@…` flags accumulate on a multi slot and are a hard error on a `one` slot.
+2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi slot and are a hard error on a `one` slot.
 3. **Every target must satisfy the slot, checked per bound instance.** A target `instance_id` that deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
-4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--bind` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
+4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
 5. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.
 
 ## Error handling

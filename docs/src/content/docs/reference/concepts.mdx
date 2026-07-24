@@ -10,8 +10,7 @@ A **Node** is the fundamental unit of computation in Peppy. It represents a runn
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
 - **Manifest**: The node's identity
-- **Build**: Commands to build and launch the node
-- **Parameters**: Configuration values passed to the node
+- **Execution**: Commands to build and run the node, plus the parameters it accepts
 - **Interfaces**: What the node exposes and consumes
 
 ### Manifest
@@ -23,7 +22,7 @@ The manifest defines a node's identity:
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
 | `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
-| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or contracts (`depends_on.contracts`); see [Contract implementation](/advanced_guides/contract_implementation) |
+| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or contracts (`depends_on.contracts`); see [Contract implementation](/advanced_guides/contract_implementation/) |
 
 A node is uniquely identified by its `name:tag` combination.
 
@@ -77,14 +76,16 @@ The **Node Stack** is the central data structure that manages all active nodes i
 - **Vertices** are node entities
 - **Edges** represent dependency relationships, pointing from a dependent node to its dependency. These edges are derived from interface connections between nodes (exposers and consumers).
 
-### Key Responsibilities
+### Key responsibilities
 
 1. **Dependency Management**: Tracks which nodes depend on which other nodes
 2. **Interface Validation**: Ensures nodes expose the interfaces their dependents require
 3. **Instance Lifecycle**: Manages the creation, health tracking, and removal of node instances. Running instances are continuously health-probed; a failing probe flags an instance `unhealthy` but never removes it, so an instance leaves the stack only when it is explicitly stopped or removed. See [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle) for details.
 4. **Root Node**: Always contains a root node (the core node) that cannot be removed
 
-### How Dependencies Work
+### How dependencies work
+
+When a node is added, the stack:
 
 1. Validates that all required dependencies exist
 2. Checks that dependencies expose the required interfaces

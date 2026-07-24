@@ -196,7 +196,7 @@ This accepts messages like:
 Schema types can be nested arbitrarily:
 
 - **Object fields** can be primitives, arrays, or other objects
-- **Array items** can be primitives, objects, or other arrays
+- **Array items** can be primitives or objects (nested arrays are not supported)
 
 This enables complex hierarchical message structures. For example, a robotics transform tree:
 
@@ -230,9 +230,9 @@ A full `peppy.json5` topic using multiple schema types:
     name: "arm_controller",
     tag: "v1"
   },
- execution: {
+  execution: {
     language: "rust",
-    run_cmd: ["./target/release/uvc_camera"],
+    run_cmd: ["./target/release/arm_controller"],
   },
   interfaces: {
     topics: {

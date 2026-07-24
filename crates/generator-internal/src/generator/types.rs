@@ -3,7 +3,7 @@ use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, PrimitiveSchema, SchemaType, TypeToken,
+    NativeExposedAction, NativeExposedService, SchemaType, TypeToken,
 };
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
@@ -20,15 +20,17 @@ pub enum InterfaceKind {
     ConsumedAction,
     PeerEmittedTopic,
     PeerConsumedTopic,
+    ObservedTopic,
 }
 
-/// The message formats a consumer needs to talk to a producer's action: the goal request, the
-/// feedback topic format, and the result response. The goal acknowledgement is framework-owned
-/// (see [`goal_action_response_format`]) and there is no result-request wire message, so neither
-/// is carried here.
+/// The message formats a consumer needs to talk to a producer's action.
+///
+/// There is no result-request wire message, so only the goal request/response,
+/// feedback, and result response formats are carried here.
 #[derive(Debug, Clone)]
 pub struct ConsumedActionMessage {
     pub goal_request: Option<MessageFormat>,
+    pub goal_response: Option<MessageFormat>,
     pub feedback: Option<MessageFormat>,
     pub result_response: Option<MessageFormat>,
 }
@@ -37,25 +39,22 @@ pub struct ConsumedActionMessage {
 ///
 /// `None` on a producer variant means the artifact is the node's own (native)
 /// declaration; `Some` means it is a contract-backed entry resolved through a
-/// `manifest.implements` slot. The pair `(contract_name, contract_tag)` drives
-/// both the generated module nesting
-/// (`emitted_topics::{contract_name}::{contract_tag}::{topic}`) and the two
-/// extra Zenoh segments on the wire path.
+/// `manifest.implements` slot. `link_id` is that slot's identifier and drives
+/// the generated module nesting (`emitted_topics::{link_id}::{topic}`).
+/// `(contract_name, contract_tag)` drive the two extra Zenoh segments on the
+/// wire path and the scoped schema key, both of which stay keyed on contract
+/// identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractOrigin {
+    pub link_id: String,
     pub contract_name: String,
     pub contract_tag: String,
 }
 
 impl ContractOrigin {
-    /// Module path for an artifact contributed by this origin:
-    /// `[contract_name, sanitized_tag, leaf_name]`.
+    /// Module path for an artifact contributed by this origin: `[link_id, leaf_name]`.
     pub fn module_path_for(&self, leaf_name: &str) -> Vec<String> {
-        vec![
-            self.contract_name.clone(),
-            crate::generator::naming::sanitize_contract_tag(&self.contract_tag),
-            leaf_name.to_string(),
-        ]
+        vec![self.link_id.clone(), leaf_name.to_string()]
     }
 
     /// Namespaces `local` with `contract_name` + sanitized tag so a leaf name
@@ -81,10 +80,8 @@ pub fn scoped_schema_key(origin: Option<&ContractOrigin>, local: &str) -> String
 
 /// Identifies the pairing slot a peer topic belongs to. "Pairing" names the
 /// mechanism/contract/slot; "peer" names the other end. Both directions of a
-/// pairing live under the slot's module (`pairings/<link_id>/<topic>`), so the
-/// module path is flat `[link_id, topic]`, deliberately NOT reusing
-/// [`ContractOrigin`], whose `[name, tag, leaf]` nesting reflects contract
-/// identity rather than slot identity.
+/// pairing live under the slot's module (`paired_topics/<link_id>/<topic>`),
+/// keyed by `link_id` like every other slot-backed category.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerContext {
     /// The node's own pairing-slot link_id (`depends_on.pairings[].link_id`).
@@ -101,7 +98,7 @@ impl PeerContext {
 }
 
 /// Backstop for the pairing document's flat topic-name uniqueness rule:
-/// two peer artifacts must never land on the same `pairings/<link_id>/<topic>`
+/// two peer artifacts must never land on the same `paired_topics/<link_id>/<topic>`
 /// module path. Shared by the Rust and Python generators so the invariant
 /// cannot drift between them.
 pub fn ensure_no_peer_collision(
@@ -113,7 +110,9 @@ pub fn ensure_no_peer_collision(
     let collides = sections.iter().any(|s| {
         matches!(
             s.kind,
-            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic
+            InterfaceKind::PeerEmittedTopic
+                | InterfaceKind::PeerConsumedTopic
+                | InterfaceKind::ObservedTopic
         ) && s.module_path == module_path
     });
     if collides {
@@ -190,14 +189,16 @@ impl DependencyContext {
     ) -> Self {
         let contract_name = contract_name.into();
         let contract_tag = contract_tag.into();
+        let link_id = link_id.into();
         Self {
             producer_name: contract_name.clone(),
             producer_tag: contract_tag.clone(),
             origin: Some(ContractOrigin {
+                link_id: link_id.clone(),
                 contract_name,
                 contract_tag,
             }),
-            link_id: link_id.into(),
+            link_id,
             cardinality,
         }
     }
@@ -314,6 +315,17 @@ pub enum InterfaceVariant {
         topic: NativeEmittedTopic,
         peer: PeerContext,
     },
+    /// A pairing topic emitted by an observed role that this node passively
+    /// taps as an observer (never a pairing participant). Lands in the same
+    /// `paired_topics/<link_id>/<topic>` namespace as peer topics, but the
+    /// generated module exposes `source()` instead of `paired()`/`wait_paired()`
+    /// and subscribes via `subscribe_observed` rather than `subscribe_peer`.
+    /// `observer` reuses `PeerContext`'s slot-identity fields (link_id, pairing
+    /// name, pairing tag), which are exactly what an observer module needs.
+    ObservedTopic {
+        topic: NativeEmittedTopic,
+        observer: PeerContext,
+    },
 }
 
 /// Maps a deployment interface to the message format required to bind it.
@@ -393,6 +405,12 @@ impl DeploymentInterface {
         Self::new(InterfaceVariant::PeerConsumedTopic { topic, peer })
     }
 
+    /// A pairing topic emitted by an observed role that this node taps as an
+    /// observer.
+    pub fn observed_topic(topic: NativeEmittedTopic, observer: PeerContext) -> Self {
+        Self::new(InterfaceVariant::ObservedTopic { topic, observer })
+    }
+
     pub fn interface(&self) -> &InterfaceVariant {
         &self.interface
     }
@@ -401,20 +419,18 @@ impl DeploymentInterface {
 #[derive(Clone)]
 pub struct InterfaceArtifact {
     /// Module path under the category dir, leaf-last. Native artifacts have a
-    /// single segment (the topic/service/action name); contract-backed
-    /// artifacts have three segments
-    /// (`[contract_name, contract_tag, leaf_name]`) so they nest as
-    /// `emitted_topics/{contract_name}/{contract_tag}/{leaf_name}.rs`.
+    /// single segment (the topic/service/action name); slot-backed artifacts
+    /// have two segments (`[link_id, leaf_name]`) so they nest as
+    /// `emitted_topics/{link_id}/{leaf_name}.rs`.
     pub module_path: Vec<String>,
     pub kind: InterfaceKind,
     pub code_output: String,
 }
 
 impl InterfaceArtifact {
-    /// Builds an artifact for `leaf_name`, nesting under
-    /// `{contract_name}/{contract_tag}/{leaf_name}` when contract-backed,
-    /// or a single-segment `[leaf_name]` for the node's own (native)
-    /// declarations.
+    /// Builds an artifact for `leaf_name`, nesting under `{link_id}/{leaf_name}`
+    /// when contract-backed, or a single-segment `[leaf_name]` for the node's
+    /// own (native) declarations.
     pub fn for_leaf(
         origin: Option<&ContractOrigin>,
         leaf_name: &str,
@@ -457,8 +473,8 @@ impl InterfaceArtifact {
 /// directly.
 pub trait LanguageGenerator {
     /// `origin` is `Some` when the topic is contract-backed (nests the
-    /// artifact under `{contract_name}/{contract_tag}/{leaf}`) and `None`
-    /// for the node's own native declarations.
+    /// artifact under `{link_id}/{leaf}`) and `None` for the node's own
+    /// native declarations.
     fn add_emitted_topic(
         &mut self,
         topic: &NativeEmittedTopic,
@@ -507,6 +523,15 @@ pub trait LanguageGenerator {
         topic: &NativeEmittedTopic,
         peer: &PeerContext,
     ) -> Result<()>;
+    /// A pairing topic an observed role emits, tapped passively: a
+    /// `subscribe_observed`-backed subscription that follows the source
+    /// instance's lifecycle. The module exposes `source()` and never a
+    /// publisher.
+    fn add_observed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        observer: &PeerContext,
+    ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
         self,
@@ -549,6 +574,9 @@ impl DeploymentInterface {
             }
             InterfaceVariant::PeerConsumedTopic { topic, peer } => {
                 backend.add_peer_consumed_topic(topic, peer)
+            }
+            InterfaceVariant::ObservedTopic { topic, observer } => {
+                backend.add_observed_topic(topic, observer)
             }
         }
     }
@@ -687,28 +715,6 @@ pub fn validate_message_format_field_names(format: &MessageFormat, context: &str
     validate_field_map(format.0.iter(), "", normalized_context)
 }
 
-/// Returns the hardcoded goal-action response format used by both Rust and Python generators.
-///
-/// The goal acknowledgement is framework-owned (not declared by the action
-/// schema): every goal response is `accepted: bool` plus an optional
-/// `error_message: Optional[String]` carrying the rejection reason. The
-/// generated `GoalResponse::accept()` / `GoalResponse::reject(reason)`
-/// constructors produce it. Distinct from the cancel-ack format (which now
-/// carries a typed `state` instead), so `fire_goal`'s accept/reject wire is
-/// unchanged.
-pub fn goal_action_response_format() -> MessageFormat {
-    let mut fields = IndexMap::new();
-    fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
-    fields.insert(
-        String::from("error_message"),
-        SchemaType::Primitive(PrimitiveSchema {
-            kind: TypeToken::String,
-            optional: true,
-        }),
-    );
-    MessageFormat(fields)
-}
-
 /// Validates that generated type names for nested objects and array-of-object items
 /// do not collide within the same message format.
 ///
@@ -807,11 +813,37 @@ mod tests {
         assert_eq!(
             contract.origin,
             Some(ContractOrigin {
+                link_id: "cam_left".to_string(),
                 contract_name: "camera_contract".to_string(),
                 contract_tag: "v2".to_string(),
             })
         );
         assert_eq!(contract.link_id, "cam_left");
+    }
+
+    #[test]
+    fn module_path_uses_link_id_but_schema_key_stays_contract_scoped() {
+        let origin = ContractOrigin {
+            link_id: "cam_left".to_string(),
+            contract_name: "depth_camera".to_string(),
+            contract_tag: "v1".to_string(),
+        };
+        // The generated module path is keyed on the slot's link_id.
+        assert_eq!(
+            origin.module_path_for("video_stream"),
+            vec!["cam_left".to_string(), "video_stream".to_string()]
+        );
+        // The capnp schema key stays keyed on contract identity, independent of
+        // the module path: relocating a module must never move its schema entry.
+        assert_eq!(
+            origin.scoped_schema_key("video_stream"),
+            "depth_camera_v1_video_stream"
+        );
+        assert!(
+            !origin
+                .scoped_schema_key("video_stream")
+                .contains("cam_left")
+        );
     }
 
     #[test]
@@ -1072,8 +1104,8 @@ pub(crate) enum ModuleCategory {
     ConsumedServices,
     ExposedActions,
     ConsumedActions,
-    /// Both directions of every pairing slot: `pairings/<link_id>/<topic>`.
-    Pairings,
+    /// Both directions of every pairing slot: `paired_topics/<link_id>/<topic>`.
+    PairedTopics,
 }
 
 impl ModuleCategory {
@@ -1084,7 +1116,7 @@ impl ModuleCategory {
         Self::ConsumedServices,
         Self::ExposedActions,
         Self::ConsumedActions,
-        Self::Pairings,
+        Self::PairedTopics,
     ];
 
     pub fn from_kind(kind: InterfaceKind) -> Self {
@@ -1095,7 +1127,9 @@ impl ModuleCategory {
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
             InterfaceKind::ConsumedAction => Self::ConsumedActions,
-            InterfaceKind::PeerEmittedTopic | InterfaceKind::PeerConsumedTopic => Self::Pairings,
+            InterfaceKind::PeerEmittedTopic
+            | InterfaceKind::PeerConsumedTopic
+            | InterfaceKind::ObservedTopic => Self::PairedTopics,
         }
     }
 
@@ -1107,7 +1141,7 @@ impl ModuleCategory {
             Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
             Self::ConsumedActions => "consumed_actions",
-            Self::Pairings => "pairings",
+            Self::PairedTopics => "paired_topics",
         }
     }
 }

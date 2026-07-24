@@ -1,6 +1,6 @@
 use crate::helpers::{
-    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT, CONSUMED_ACTION_RESULT_FORMAT,
-    EXPOSED_ACTION_EXAMPLE,
+    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT,
+    CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, EXPOSED_ACTION_EXAMPLE,
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
@@ -84,6 +84,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
         result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
     };
@@ -115,7 +116,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
 
     // Bind the consumer's pinned slot to the LEFT arm with the full
     // (core_node, instance_id) pair, exactly what the validator stamps
-    // when a stack launches with `--bind brain@left_arm_instance`.
+    // when a stack launches with `--link brain@left_arm_instance`.
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -139,7 +140,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -234,9 +235,9 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!("server received goal arm_id={}", request.data.arm_id);
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
             match maybe_ctx {
@@ -442,6 +443,7 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -490,12 +492,31 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
 
 async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    // A goal for the reserved arm is rejected through the framework
+    // admission ack; no declared response payload rides along.
+    let rejected = brain_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        brain_move_arm::GoalRequest {
+            arm_id: 99,
+            desired_position: [0, 0, 0],
+        },
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    println!(
+        "rejected goal accepted={} reason={:?} data_present={}",
+        rejected.accepted,
+        rejected.reason.as_deref(),
+        rejected.data.is_some()
+    );
+
     let request = brain_move_arm::GoalRequest {
         arm_id: 7,
         desired_position: [10, 20, 30],
@@ -507,7 +528,8 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    let data = action_handle.data.as_ref().expect("accepted goal carries the declared response");
+    println!("goal accepted={} data_accepted={}", action_handle.accepted, data.accepted);
 
     let feedback = action_handle.on_next_feedback_message().await?;
     assert_eq!(feedback.new_position, [7, 31, 43], "unexpected feedback message");
@@ -585,12 +607,15 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalResponse::accept())
+                    if request.data.arm_id == 99 {
+                        return Ok(move_arm::GoalDecision::reject("arm 99 is reserved"));
+                    }
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -730,7 +755,9 @@ fn main() -> Result<()> {
         consumer_stderr
     );
     assert!(
-        consumer_stdout.contains("goal accepted=true")
+        consumer_stdout.contains(
+            "rejected goal accepted=false reason=Some(\"arm 99 is reserved\") data_present=false"
+        ) && consumer_stdout.contains("goal accepted=true data_accepted=true")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
                 .contains("result success=true error=None final_position=[98, 4, 26]"),
@@ -782,6 +809,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -830,7 +858,7 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -847,7 +875,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
     let accepted = matches!(
@@ -914,12 +942,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -1131,6 +1159,7 @@ async fn actions_communication_drain_loop_until_end_signal(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1179,7 +1208,7 @@ async fn actions_communication_drain_loop_until_end_signal(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -1196,7 +1225,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
     println!("draining feedback...");
 
     // Drain-loop pattern: keep reading feedback until the server signals
@@ -1284,12 +1313,12 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
                     println!(
                         "server received goal arm_id={} desired={:?}",
                         request.data.arm_id, request.data.desired_position
                     );
-                    Ok(move_arm::GoalResponse::accept())
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -1524,6 +1553,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1572,7 +1602,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -1589,7 +1619,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     // Server emits a single warmup feedback before the cancel arrives so
     // we can verify it's received before the close signal.
@@ -1672,8 +1702,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-                    Ok(move_arm::GoalResponse::accept())
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -1901,6 +1931,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -1949,7 +1980,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -1966,7 +1997,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     let pre_cancel = action_handle.on_next_feedback_message().await?;
     println!("pre_cancel feedback new_position={:?}", pre_cancel.new_position);
@@ -2061,8 +2092,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-                    Ok(move_arm::GoalResponse::accept())
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 
@@ -2296,6 +2327,7 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -2344,7 +2376,7 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
-use peppygen::consumed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -2361,7 +2393,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         request,
         peppygen::QoSProfile::SensorData,
     ).await?;
-    println!("goal accepted={}", action_handle.data.accepted);
+    println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
     let first = action_handle.on_next_feedback_message().await?;
     println!("first feedback received new_position={:?}", first.new_position);
@@ -2456,8 +2488,8 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let maybe_ctx = action
-                .handle_goal_next_request(|_request| -> Result<move_arm::GoalResponse> {
-                    Ok(move_arm::GoalResponse::accept())
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
                 .await;
 

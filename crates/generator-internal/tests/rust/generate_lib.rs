@@ -430,7 +430,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         consumer_peppygen_dir
-            .join("src/consumed_topics/topic_exposer_test_topic.rs")
+            .join("src/consumed_topics/topic_exposer/test_topic.rs")
             .exists(),
         "consumed topic module should exist in peppygen crate at {}",
         consumer_peppygen_dir.display()
@@ -553,7 +553,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
 
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let consumed_service_module_path =
-        consumer_peppygen_dir.join("src/consumed_services/service_exposer_test_service.rs");
+        consumer_peppygen_dir.join("src/consumed_services/service_exposer/test_service.rs");
     assert!(
         consumed_service_module_path.exists(),
         "consumed service module should exist in peppygen crate at {}",
@@ -640,6 +640,24 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         "exposed action module should exist in peppygen crate at {}",
         exposed_peppygen_dir.display()
     );
+    let goal_response_schema = fs::read_to_string(
+        exposed_peppygen_dir.join("src/capnp/test_action_goal_response_message.capnp"),
+    )
+    .expect("failed to read exposed action goal response schema");
+    assert!(
+        goal_response_schema.contains("accepted @0 :Bool;"),
+        "goal response schema should contain the declared accepted field:\n{goal_response_schema}"
+    );
+    let goal_response_fields: Vec<_> = goal_response_schema
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains(" @"))
+        .collect();
+    assert_eq!(
+        goal_response_fields,
+        ["accepted @0 :Bool;"],
+        "goal response schema should exactly match response_message_format"
+    );
 
     let consumer_dir =
         TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
@@ -677,6 +695,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
+        goal_response: Some(
+            serde_json5::from_str(r#"{ accepted: "bool" }"#)
+                .expect("failed to parse goal response format"),
+        ),
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
@@ -701,7 +723,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         consumer_peppygen_dir
-            .join("src/consumed_actions/action_exposer_test_action.rs")
+            .join("src/consumed_actions/action_exposer/test_action.rs")
             .exists(),
         "consumed action module should exist in peppygen crate at {}",
         consumer_peppygen_dir.display()

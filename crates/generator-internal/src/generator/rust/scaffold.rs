@@ -70,7 +70,7 @@ pub fn add_artifacts_to_lib(
             category,
             category_file: &category_file,
         };
-        write_module_tree(&category_dir, &tree, &mut writer)?;
+        write_module_tree(&category_dir, &tree, category, &mut writer)?;
     }
 
     Ok(())
@@ -444,7 +444,7 @@ impl ModuleCategory {
             Self::ConsumedServices => "ConsumedServices",
             Self::ExposedActions => "ExposedActions",
             Self::ConsumedActions => "ConsumedActions",
-            Self::Pairings => "Pairings",
+            Self::PairedTopics => "PairedTopics",
         }
     }
 
@@ -456,7 +456,7 @@ impl ModuleCategory {
             Self::ConsumedServices => "consumed services",
             Self::ExposedActions => "exposed actions",
             Self::ConsumedActions => "consumed actions",
-            Self::Pairings => "pairings",
+            Self::PairedTopics => "paired topics",
         }
     }
 }

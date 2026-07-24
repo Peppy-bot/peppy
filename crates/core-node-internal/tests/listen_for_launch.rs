@@ -146,7 +146,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
         {
           instance_id: "main_robot_brain",
           arguments: {},
-          bindings: {
+          links: {
             front_camera: "camera_front",
           },
         }
@@ -415,7 +415,7 @@ async fn send_launch_origin_and_wait(
     .await
     .map_err(|e| format!("Failed to send launch goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response_payload = action_handle.goal_reply().body.clone();
     let goal_response = LaunchGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {e}"))?;
 

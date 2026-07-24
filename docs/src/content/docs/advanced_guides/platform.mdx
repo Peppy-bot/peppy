@@ -1,6 +1,6 @@
 ---
 title: Platform
-description: Log in to the Peppy platform account with peppy platform login (OAuth device flow), stay logged in across runs, and authenticate CI with a PEPPY_API_KEY.
+description: Log in to the Peppy platform account with peppy platform login (OAuth device flow), stay logged in across runs, and authenticate CI with a PEPPY_API_KEY
 sidebar:
   order: 15
 ---
@@ -23,7 +23,7 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 
 ## Logging in
 
-```
+```sh
 peppy platform login
 ```
 
@@ -36,7 +36,7 @@ tokens are refreshed automatically.
 Over SSH or anywhere without a browser, use `--no-browser`: the CLI prints the
 URL and code and waits for you to approve them on another device.
 
-```
+```sh
 peppy platform login --no-browser
 ```
 
@@ -119,7 +119,7 @@ Every session carries a **namespace**, and it is applied under `zenoh.external`
 exactly as it is under `zenoh.managed`. It is `local` when logged out and the
 workspace namespace when logged in (see
 [Workspace federation](#workspace-federation)). External mode changes which
-router peppy dials, not how sessions are namespaced: the daemon stamps its own
+router Peppy dials, not how sessions are namespaced: the daemon stamps its own
 session, and every node it spawns, with whatever namespace the local credentials
 resolve to. A shared router forwards traffic between namespaces without matching
 it, so a machine on a workspace namespace and a machine on `local` discover
@@ -128,13 +128,13 @@ nothing from each other even though both are connected to your router.
 So keep all the machines on the same namespace, and the only namespace you can
 count on without the platform is `local`:
 
-```
+```sh
 peppy platform logout
 ```
 
 Then restart the daemon on that machine (see below).
 
-Being signed in is not by itself what replaces the namespace. A workspace
+Being signed in is not by itself what changes the namespace. A workspace
 namespace is cached in `~/.peppy/conf/credentials.json5` under a `router` block,
 and only managed-mode federation ever writes it there. `peppy platform login`
 clears that block, and external mode never re-pulls it, so a fresh login under
@@ -187,14 +187,14 @@ failing with 401 and you must rotate it. A PAT principal shows up as
 ## Credential storage
 
 Tokens live at `~/.peppy/conf/credentials.json5`, written owner-only (`0600`).
-The root honours `PEPPY_HOME`.
+The root honors `PEPPY_HOME`.
 
 Tokens are never printed and `Authorization` headers are redacted in verbose
 output.
 
 ## Logging out
 
-```
+```sh
 peppy platform logout
 ```
 
@@ -218,4 +218,4 @@ next manual daemon restart (see
 | `PEPPY_API_KEY` | PAT for non-interactive auth (highest-priority credential). |
 | `PEPPY_API_URL` | Override the backend base URL. |
 | `PEPPY_HOME` | Override the `~/.peppy` data root (also moves the credentials file). |
-| `NO_COLOR` | Disable coloured output. |
+| `NO_COLOR` | Disable colored output. |

@@ -4,13 +4,12 @@ description: Learn how to run all your nodes with a single launch file
 sidebar:
   order: 9
 ---
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Launch files let you start multiple nodes simultaneously, including those with dependencies on each other. 
 With a single launch file, you or your team can recreate an entire node environment using just one command.
 
-## Running the Example
-
-import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+## Running the example
 
 Start by cloning [this repository](https://github.com/Peppy-bot/launchers-hub):
 
@@ -39,12 +38,12 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `bindings` (filling `depends_on` slots with producer instances: a scalar for a `one` slot, an array for a multi-cardinality slot), and, for nodes declaring [pairing](/advanced_guides/pairing) slots, `pairings` (pairing a slot with a peer instance at launch) and `defer_pairings` (explicitly starting a required slot unpaired)
+ 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `links` (one map filling every kind of `depends_on` slot, keyed by `link_id`), and `defer_links` (explicitly starting a required pairing or observer slot unresolved). A `links` value is interpreted against the slot it names: a producer slot (`depends_on.{nodes,contracts}`) takes a producer instance (a scalar for a `one` slot, an array for a multi-cardinality slot); a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance (`"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate); and an observer slot takes a single source instance to observe (`"<source>"` or `"<source>/<source_link_id>"`)
 
 The `source` attribute supports four formats:
  - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
- - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
+ - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the launcher file
  - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
 
 :::note
@@ -153,4 +152,4 @@ $ peppy stack list
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics#dependency-cardinality).
+The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality).

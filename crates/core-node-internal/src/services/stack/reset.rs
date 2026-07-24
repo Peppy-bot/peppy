@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::services::node::teardown_all_instances;
+use crate::services::node::{ObservationCoordinator, teardown_all_instances};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeResetRequest, NodeResetResponse};
@@ -19,6 +19,7 @@ pub async fn listen_for_stack_reset(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    observation: Arc<ObservationCoordinator>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -46,6 +47,7 @@ pub async fn listen_for_stack_reset(
                     core_node_node.clone(),
                     instance_id.clone(),
                     Arc::clone(&node_stack),
+                    Arc::clone(&observation),
                 )
             })
             .await
@@ -61,6 +63,7 @@ async fn handle_stack_reset_request(
     core_node_node: String,
     instance_id: String,
     node_stack: Arc<NodeStack>,
+    observation: Arc<ObservationCoordinator>,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -70,6 +73,7 @@ async fn handle_stack_reset_request(
             &core_node_node,
             &instance_id,
             node_stack,
+            &observation,
         )
         .await,
     )
@@ -81,6 +85,7 @@ async fn handle_node_reset_request_inner(
     core_node_node: &str,
     instance_id: &str,
     node_stack: Arc<NodeStack>,
+    observation: &ObservationCoordinator,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -92,6 +97,14 @@ async fn handle_node_reset_request_inner(
     // process group of any straggler) before dropping them from the stack, so a
     // reset never orphans the previous stack's processes.
     teardown_all_instances(messenger, core_node_node, instance_id, &node_stack).await;
+    // Clear both cross-instance registries the same way. `node_stack.reset()`
+    // drops the pairing registry; the observation registry is a separate
+    // authority, so a reset must clear it too, or a re-run of the same instance
+    // ids would inherit the previous stack's observer records. The mass
+    // teardown above mark_stopping's every instance, so their exit watchers bail
+    // before the per-instance teardown seam runs; clearing here is the seam for
+    // the whole-stack case.
     node_stack.reset();
+    observation.clear();
     NodeResetResponse::success().encode().map_err(Into::into)
 }

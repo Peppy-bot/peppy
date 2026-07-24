@@ -16,13 +16,12 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, goal_action_response_format, non_empty_message_format,
-    scoped_schema_key,
+    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
-    module_name_from_components, non_empty_str, raw_module_label, resolve_schema_file_stem,
-    sanitize_component, sanitize_node_display_name, to_camel_case,
+    non_empty_str, resolve_schema_file_stem, sanitize_component, sanitize_node_display_name,
+    to_camel_case,
 };
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -38,8 +37,8 @@ use std::path::Path;
 use actions::{
     build_action_expose_method, build_action_handle_struct, build_action_request_deserializer,
     build_goal_context_base_methods, build_goal_context_complete,
-    build_goal_context_publish_feedback, build_goal_context_struct,
-    build_goal_response_constructors, build_handle_goal_next_request,
+    build_goal_context_publish_feedback, build_goal_context_struct, build_goal_decision_enum,
+    build_handle_goal_next_request,
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
@@ -54,8 +53,9 @@ use services::{
 };
 use topics::{
     ConsumedTopicSubscriptionSpec, PeerTopicSubscriptionSpec, build_consumed_topic_subscription,
-    build_peer_module_header, build_peer_topic_publisher, build_peer_topic_subscription,
-    build_topic_publisher, consumed_to_target_expression,
+    build_observed_module_header, build_observed_topic_subscription, build_peer_module_header,
+    build_peer_topic_publisher, build_peer_topic_subscription, build_topic_publisher,
+    consumed_to_target_expression,
 };
 use type_mapping::{render_tokens, unused_params_stmt};
 
@@ -267,19 +267,35 @@ impl RustGenerator {
             helper_items.push(deserialize_helper);
 
             quote! {
-                let payload = action_handle.goal_response().payload();
-                let response_data = deserialize_goal_response(payload.as_ref())?;
+                let reply = action_handle.goal_reply();
+                let accepted = reply.accepted;
+                let reason = reply.reason.clone();
+                // An empty body means no response was supplied (a declared
+                // response serializes to a non-empty capnp message), which
+                // only a reject can produce.
+                let data = if reply.body.is_empty() {
+                    None
+                } else {
+                    Some(deserialize_goal_response(reply.body.as_ref())?)
+                };
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
                     inner: action_handle,
-                    data: response_data,
+                    accepted,
+                    reason,
+                    data,
                 })
             }
         } else {
             quote! {
+                let reply = action_handle.goal_reply();
+                let accepted = reply.accepted;
+                let reason = reply.reason.clone();
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
                     inner: action_handle,
+                    accepted,
+                    reason,
                 })
             }
         };
@@ -649,6 +665,104 @@ impl SchemaInfo {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PairTopicConsumerKind {
+    Peer,
+    Observed,
+}
+
+impl RustGenerator {
+    /// Shared consume-side scaffold for peer and observer pairing topics. The
+    /// two modes differ only in their module header, subscription runtime, and
+    /// artifact classification.
+    fn add_pair_topic_consumer(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+        kind: PairTopicConsumerKind,
+    ) -> Result<()> {
+        let topic_component = sanitize_component(topic.name.as_str());
+        let schema_key =
+            crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
+        let struct_prefix = to_camel_case(&schema_key);
+
+        let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?
+            .ok_or_else(|| Error::PeerTopicMissingMessageFormat {
+                link_id: peer.link_id.clone(),
+                topic: topic.name.clone(),
+            })?;
+
+        let mut context = GenerationContext::default();
+        let message_struct_name = String::from("Message");
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+            None,
+        )?;
+        let encoding_params = params.clone();
+
+        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let args_fields = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(args_struct_ident.clone(), args_fields);
+
+        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
+        let encoding = self
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &encoding_params,
+            )?
+            .expect("message encoding spec should exist when message format is provided");
+        let spec = PeerTopicSubscriptionSpec {
+            helper_fn_ident: &helper_fn_ident,
+            args_struct_ident: &args_struct_ident,
+            params: &params,
+            artifacts: &format_artifacts,
+            encoding: &encoding,
+            qos_profile: &topic.qos_profile,
+            struct_prefix: &message_struct_name,
+        };
+        let (header_tokens, method_tokens, artifact_kind) = match kind {
+            PairTopicConsumerKind::Peer => (
+                build_peer_module_header(topic.name.as_str(), peer),
+                build_peer_topic_subscription(spec)?,
+                InterfaceKind::PeerConsumedTopic,
+            ),
+            PairTopicConsumerKind::Observed => (
+                build_observed_module_header(topic.name.as_str(), peer),
+                build_observed_topic_subscription(spec)?,
+                InterfaceKind::ObservedTopic,
+            ),
+        };
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
+        let rendered = render_tokens(quote! {
+            #header_tokens
+            #( #items )*
+        });
+
+        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
+        crate::generator::types::ensure_no_peer_collision(
+            &self.sections,
+            &module_path,
+            peer,
+            topic,
+        )?;
+        self.push_section(InterfaceArtifact {
+            module_path,
+            kind: artifact_kind,
+            code_output: rendered,
+        });
+        Ok(())
+    }
+}
+
 impl LanguageGenerator for RustGenerator {
     fn add_emitted_topic(
         &mut self,
@@ -837,7 +951,7 @@ impl LanguageGenerator for RustGenerator {
         // publish_feedback and complete/complete_cancelled when applicable).
         let mut goal_context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
-        // Free items (the GoalResponse constructors).
+        // Free items (the GoalDecision enum).
         let mut extra_items: Vec<TokenStream> = Vec::new();
 
         let action_name_literal = Literal::string(&action.name);
@@ -857,13 +971,10 @@ impl LanguageGenerator for RustGenerator {
                 &format!("{label}_request"),
                 goal_service.and_then(|goal| goal.request_message_format.as_ref()),
             )?;
-            // The goal acknowledgement is framework-owned ({accepted,
-            // error_message}); any goal response declared in the action schema
-            // is ignored. The decider returns GoalResponse::accept() /
-            // GoalResponse::reject(reason).
-            let goal_response_format = goal_action_response_format();
-            let response_artifacts =
-                map_message_format(&format!("{label}_response"), Some(&goal_response_format))?;
+            let response_artifacts = map_message_format(
+                &format!("{label}_response"),
+                goal_service.and_then(|goal| goal.response_message_format.as_ref()),
+            )?;
 
             // Generates `GoalResponse` (+ `new`) when there is a response, and
             // returns the request params used to build `GoalRequestData`.
@@ -915,29 +1026,35 @@ impl LanguageGenerator for RustGenerator {
                 helper_tokens.push(deserializer_fn);
             }
 
-            // The decider returns a framework `GoalResponse`
-            // (`accept()` / `reject(reason)`).
-            extra_items.push(build_goal_response_constructors());
+            // The user closure returns this to accept or reject the goal.
+            extra_items.push(build_goal_decision_enum(response_artifacts.is_some()));
 
-            // Serialization for the `GoalResponse` (reads a local `response`).
-            // The goal response is framework-owned, so it is always present.
-            let return_artifacts = response_artifacts
-                .as_ref()
-                .expect("framework goal response format always yields artifacts");
-            let response_schema_prefix = format!("{schema_struct_prefix}Response");
-            let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
-            let schema_info =
-                self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
-            let spec = ServiceResponseSpec {
-                format: return_artifacts.message_format(),
-                struct_ident: Ident::new("GoalResponse", Span::call_site()),
-                builder_type: schema_info.builder_type_tokens(),
-                include_service_instance_id: false,
+            // Serialization for the accepted/rejected `GoalResponse` (reads a
+            // local `response` variable). `None` when the goal has no response.
+            let response_serialization = if let Some(return_artifacts) = response_artifacts.as_ref()
+            {
+                let response_schema_prefix = format!("{schema_struct_prefix}Response");
+                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
+                let schema_info =
+                    self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
+                let spec = ServiceResponseSpec {
+                    format: return_artifacts.message_format(),
+                    struct_ident: Ident::new("GoalResponse", Span::call_site()),
+                    builder_type: schema_info.builder_type_tokens(),
+                    include_service_instance_id: false,
+                };
+                let response_ident = Ident::new("response", Span::call_site());
+                let error_context =
+                    quote!(format!("{} {}", "handle_goal_next_request", ACTION_NAME));
+                Some(build_response_payload_tokens(
+                    &spec,
+                    &response_ident,
+                    &error_context,
+                    None,
+                )?)
+            } else {
+                None
             };
-            let response_ident = Ident::new("response", Span::call_site());
-            let error_context = quote!(format!("{} {}", "handle_goal_next_request", ACTION_NAME));
-            let response_serialization =
-                build_response_payload_tokens(&spec, &response_ident, &error_context, None)?;
 
             action_handle_methods.push(build_handle_goal_next_request(
                 goal_request_data_struct.is_some(),
@@ -1081,11 +1198,6 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = format!("{}_{}", node_name, topic.name.as_str());
-        if module_label.trim().is_empty() {
-            module_label = String::from("topic");
-        }
-
         let schema_key =
             crate::generator::naming::consumed_topic_schema_key(node_name, topic.name.as_str());
 
@@ -1138,12 +1250,11 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
-            None,
-            InterfaceKind::ConsumedTopic,
-            rendered,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![topic.link_id.clone(), topic.name.clone()],
+            kind: InterfaceKind::ConsumedTopic,
+            code_output: rendered,
+        });
 
         Ok(())
     }
@@ -1402,26 +1513,16 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_label = raw_module_label(&service.link_id, &service.name);
-        if module_name_from_components(&service.link_id, &service.name).is_empty() {
-            module_label = method_label
-                .strip_prefix("poll_")
-                .map(|label| label.to_string())
-                .filter(|label| !label.is_empty())
-                .unwrap_or_else(|| method_label.clone());
-        }
-
         let tokens: TokenStream = quote! {
             #( #all_tokens )*
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
-            None,
-            InterfaceKind::ConsumedService,
-            rendered,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![service.link_id.clone(), service.name.clone()],
+            kind: InterfaceKind::ConsumedService,
+            code_output: rendered,
+        });
         Ok(())
     }
 
@@ -1483,77 +1584,15 @@ impl LanguageGenerator for RustGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
-        let topic_component = sanitize_component(topic.name.as_str());
-        let schema_key =
-            crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
-        let struct_prefix = to_camel_case(&schema_key);
+        self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
+    }
 
-        let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?
-            .ok_or_else(|| Error::PeerTopicMissingMessageFormat {
-                link_id: peer.link_id.clone(),
-                topic: topic.name.clone(),
-            })?;
-
-        let mut context = GenerationContext::default();
-        let message_struct_name = String::from("Message");
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
-        let encoding_params = params.clone();
-
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
-
-        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &encoding_params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
-
-        let header_tokens = build_peer_module_header(topic.name.as_str(), peer);
-        let method_tokens = build_peer_topic_subscription(PeerTopicSubscriptionSpec {
-            helper_fn_ident: &helper_fn_ident,
-            args_struct_ident: &args_struct_ident,
-            params: &params,
-            artifacts: &format_artifacts,
-            encoding: &encoding,
-            qos_profile: &topic.qos_profile,
-            struct_prefix: &message_struct_name,
-        })?;
-        let mut items = context.into_tokens();
-        items.push(method_tokens);
-
-        let tokens: TokenStream = quote! {
-            #header_tokens
-            #( #items )*
-        };
-        let rendered = render_tokens(tokens);
-
-        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerConsumedTopic,
-            code_output: rendered,
-        });
-        Ok(())
+    fn add_observed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        observer: &crate::generator::types::PeerContext,
+    ) -> Result<()> {
+        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
     }
 
     fn add_consumed_action(
@@ -1590,18 +1629,25 @@ impl LanguageGenerator for RustGenerator {
         let node_name_literal = Literal::string(dependency_node_name);
         let action_name_literal = Literal::string(action.name.as_str());
         let link_id_literal = Literal::string(&dependency.link_id);
+
+        let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
+        let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
+        let feedback_format = non_empty_message_format(messages.feedback.as_ref());
+        let result_response_format = non_empty_message_format(messages.result_response.as_ref());
+        let target_node_name_constant = if goal_request_format.is_some()
+            || goal_response_format.is_some()
+            || feedback_format.is_some()
+            || result_response_format.is_some()
+        {
+            quote!(const TARGET_NODE_NAME: &str = #node_name_literal;)
+        } else {
+            TokenStream::new()
+        };
         let constants_tokens = quote! {
-            const TARGET_NODE_NAME: &str = #node_name_literal;
+            #target_node_name_constant
             const TARGET_ACTION_NAME: &str = #action_name_literal;
             const LINK_ID: &str = #link_id_literal;
         };
-
-        let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
-        // The goal acknowledgement is framework-owned ({accepted, error_message}).
-        let goal_response_fmt = goal_action_response_format();
-        let goal_response_format = Some(&goal_response_fmt);
-        let feedback_format = non_empty_message_format(messages.feedback.as_ref());
-        let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
         let (goal_method, mut goal_helpers, has_goal_response_data) = self
             .build_consumed_action_fire_goal_method(
@@ -1649,7 +1695,17 @@ impl LanguageGenerator for RustGenerator {
                 pub struct ActionHandle {
                     messenger: peppylib::MessengerHandle,
                     inner: peppylib::messaging::ActionGoalHandle,
-                    pub data: #goal_response_data_ident,
+                    /// Whether the producer admitted the goal, decoded from
+                    /// the framework goal-ack envelope.
+                    pub accepted: bool,
+                    /// Optional human-readable rejection reason from the
+                    /// goal-ack envelope. `None` for accepted goals and for
+                    /// rejections sent without a reason.
+                    pub reason: Option<String>,
+                    /// The declared goal response. Always present for
+                    /// accepted goals; `None` when a rejection carried no
+                    /// response payload.
+                    pub data: Option<#goal_response_data_ident>,
                 }
             }
         } else {
@@ -1657,6 +1713,13 @@ impl LanguageGenerator for RustGenerator {
                 pub struct ActionHandle {
                     messenger: peppylib::MessengerHandle,
                     inner: peppylib::messaging::ActionGoalHandle,
+                    /// Whether the producer admitted the goal, decoded from
+                    /// the framework goal-ack envelope.
+                    pub accepted: bool,
+                    /// Optional human-readable rejection reason from the
+                    /// goal-ack envelope. `None` for accepted goals and for
+                    /// rejections sent without a reason.
+                    pub reason: Option<String>,
                 }
             }
         };
@@ -1678,13 +1741,11 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = raw_module_label(&action.link_id, &action.name);
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
-            None,
-            InterfaceKind::ConsumedAction,
-            rendered,
-        ));
+        self.push_section(InterfaceArtifact {
+            module_path: vec![action.link_id.clone(), action.name.clone()],
+            kind: InterfaceKind::ConsumedAction,
+            code_output: rendered,
+        });
         Ok(())
     }
 

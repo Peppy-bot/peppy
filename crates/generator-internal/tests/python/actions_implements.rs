@@ -2,8 +2,8 @@
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use config::node::{
-    ActionServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, QoSProfile,
-    SchemaType, TypeToken,
+    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
+    TypeToken,
 };
 use generator::{
     ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
@@ -19,20 +19,25 @@ fn make_action(marker: &str) -> NativeExposedAction {
     resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
     NativeExposedAction {
         name: "move_arm".to_string(),
-        goal_service: Some(ActionServiceEndpoint {
+        goal_service: Some(GoalServiceEndpoint {
             request_message_format: Some(MessageFormat(req)),
             response_message_format: Some(MessageFormat(resp)),
-            qos_profile: QoSProfile::Reliable,
         }),
         feedback_topic: None,
         result_service: None,
     }
 }
 
-fn contract_backed(name: &str, tag: &str, action: NativeExposedAction) -> DeploymentInterface {
+fn contract_backed(
+    link_id: &str,
+    name: &str,
+    tag: &str,
+    action: NativeExposedAction,
+) -> DeploymentInterface {
     DeploymentInterface::new(InterfaceVariant::ExposedAction {
         action,
         origin: Some(ContractOrigin {
+            link_id: link_id.to_string(),
             contract_name: name.to_string(),
             contract_tag: tag.to_string(),
         }),
@@ -66,14 +71,14 @@ const NODE_CONFIG: &str = r#"{
 "#;
 
 #[test]
-fn nests_contract_backed_actions_under_contract_name_and_tag() {
+fn nests_contract_backed_actions_under_link_id() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("arm", "v1", make_action("arm_v1_marker")),
-        contract_backed("arm", "v2", make_action("arm_v2_marker")),
+        contract_backed("arm_v1", "arm", "v1", make_action("arm_v1_marker")),
+        contract_backed("arm_v2", "arm", "v2", make_action("arm_v2_marker")),
     ];
 
     let peppy_dirs = test_peppy_dirs();
@@ -94,8 +99,8 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
     let act_dir = pkg.join("exposed_actions");
 
     let native_path = act_dir.join("move_arm.py");
-    let arm_v1 = act_dir.join("arm/v1/move_arm.py");
-    let arm_v2 = act_dir.join("arm/v2/move_arm.py");
+    let arm_v1 = act_dir.join("arm_v1/move_arm.py");
+    let arm_v2 = act_dir.join("arm_v2/move_arm.py");
 
     for path in [&native_path, &arm_v1, &arm_v2] {
         assert!(path.exists(), "expected action file at {path:?}");
@@ -110,17 +115,29 @@ fn nests_contract_backed_actions_under_contract_name_and_tag() {
         native_src.contains("peppylib.SenderTarget.node("),
         "native leaf should pass `peppylib.SenderTarget.node(...)`:\n{native_src}",
     );
+    assert!(
+        native_src.contains("native_marker") && native_src.contains("native_marker_ack"),
+        "native source should carry its declared request and response fields",
+    );
 
     let arm_v1_src = fs::read_to_string(&arm_v1).expect("read arm v1");
     assert!(
         arm_v1_src.contains("peppylib.SenderTarget.contract(\"arm\", \"v1\")"),
         "arm v1 leaf should pass `SenderTarget.contract(\"arm\", \"v1\")`:\n{arm_v1_src}",
     );
+    assert!(
+        arm_v1_src.contains("arm_v1_marker") && arm_v1_src.contains("arm_v1_marker_ack"),
+        "arm v1 source should carry its declared request and response fields",
+    );
 
     let arm_v2_src = fs::read_to_string(&arm_v2).expect("read arm v2");
     assert!(
         arm_v2_src.contains("peppylib.SenderTarget.contract(\"arm\", \"v2\")"),
         "arm v2 leaf should pass `SenderTarget.contract(\"arm\", \"v2\")`:\n{arm_v2_src}",
+    );
+    assert!(
+        arm_v2_src.contains("arm_v2_marker") && arm_v2_src.contains("arm_v2_marker_ack"),
+        "arm v2 source should carry its declared request and response fields",
     );
 
     // Capnp schemas are resolved via `importlib.resources.files("peppygen")`,
