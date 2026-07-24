@@ -490,6 +490,52 @@ fn test_translate_path_rejects_var_folders() {
     );
 }
 
+/// A host runtime path stays rejected under Lima — passing it through to the
+/// guest would only defer the failure to Apptainer — but it must be rejected
+/// with the error that names the real constraint. The generic
+/// `PathNotAccessibleInVm` advice (declare it in `container.mount_paths`, move
+/// it under `$HOME`) is unfollowable for a device node, and telling an
+/// operator to do the thing their node already does is worse than no advice.
+#[test]
+fn test_translate_path_rejects_host_runtime_paths_with_a_targeted_error() {
+    for path in [
+        "/dev/ttyUSB0",
+        "/dev/can0",
+        "/run/user/1000",
+        "/proc/self",
+        "/sys/class/net",
+    ] {
+        let path = Path::new(path);
+        assert_eq!(
+            native_facade().translate_path(path).unwrap(),
+            path,
+            "Native: a Linux daemon resolves these directly and must pass them through"
+        );
+        match lima_facade().translate_path(path) {
+            Err(Error::HostRuntimePathNotInVm { path: reported }) => {
+                assert_eq!(reported, path.display().to_string());
+            }
+            other => panic!(
+                "Lima: {} should report HostRuntimePathNotInVm, got {other:?}",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// The complement: an ordinary unreachable path keeps the generic error, whose
+/// advice does apply to it — put it under `$HOME`, or declare it as a mount.
+#[test]
+fn test_translate_path_keeps_generic_error_for_ordinary_paths() {
+    let path = Path::new("/opt/robot_assets/openarm");
+    match lima_facade().translate_path(path) {
+        Err(Error::PathNotAccessibleInVm { path: reported }) => {
+            assert_eq!(reported, path.display().to_string());
+        }
+        other => panic!("expected the generic mount-advice error, got {other:?}"),
+    }
+}
+
 /// Verifies that `translate_path()` accepts paths outside `$HOME` when they have
 /// been registered in `extra_mounts` (simulating what `ensure_host_mounts()` does).
 #[test]

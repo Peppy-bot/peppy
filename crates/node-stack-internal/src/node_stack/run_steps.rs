@@ -21,6 +21,8 @@ use tracing::{debug, warn};
 
 use tokio::sync::mpsc;
 
+use containers::is_host_provided_mount_source;
+
 use crate::archive::extract_tar_zst;
 use crate::build_io::{FeedbackLine, FeedbackStream, write_feedback_log_line};
 
@@ -475,29 +477,6 @@ pub(super) async fn build_container_command(
     })
 }
 
-/// Whether a bind mount source lives under a tree the *host* materializes,
-/// which peppy must therefore never create.
-///
-/// `/dev`, `/proc` and `/sys` are kernel virtual filesystems; `/run` is the
-/// runtime tmpfs whose contents (`/run/user/$UID`, session sockets) are owned
-/// by init and the login stack. In every case the entry either already exists
-/// on the host that will run the container, or it is not ours to conjure: a
-/// `mkdir -p` would at best be a no-op and at worst mask a real "this host
-/// isn't the one you want" mismatch behind an empty directory.
-///
-/// The distinction matters most off-Linux. A macOS daemon runs its containers
-/// inside the Lima guest, and macOS has neither `/run` nor a writable `/`
-/// (the sealed system volume), so auto-creating these paths fails outright
-/// with `EROFS` — see the sim nodes that bind `/run/user` to back
-/// `XDG_RUNTIME_DIR`. Skipping them here leaves resolution to the guest,
-/// where the path really lives.
-pub fn is_host_provided_mount_source(path: &Path) -> bool {
-    path.starts_with("/dev")
-        || path.starts_with("/proc")
-        || path.starts_with("/run")
-        || path.starts_with("/sys")
-}
-
 /// Ensures every bind mount source path is usable by the container runtime.
 ///
 /// For each entry:
@@ -751,39 +730,6 @@ mod tests {
         assert!(!Path::new("/dev/does-not-exist-xyz").exists());
         let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
         assert!(!log_contents.contains("auto-created"));
-    }
-
-    /// The carve-out is a prefix test over whole trees, not an exact-path
-    /// match: a node binding `/run/user/1000/pipewire-0` must be skipped just
-    /// like the tree root. Everything outside those roots stays auto-created,
-    /// which is what keeps a typo'd bind loud.
-    #[test]
-    fn host_provided_mount_sources_cover_whole_trees_only() {
-        for path in [
-            "/dev",
-            "/dev/can0",
-            "/proc",
-            "/proc/self",
-            "/run",
-            "/run/user",
-            "/run/user/1000/pipewire-0",
-            "/sys",
-            "/sys/class",
-        ] {
-            assert!(
-                is_host_provided_mount_source(Path::new(path)),
-                "{path} is host-provided and must never be auto-created"
-            );
-        }
-        // `/runtime` guards the boundary: `Path::starts_with` matches whole
-        // components, so a longer name sharing the `/run` prefix must not be
-        // swept in.
-        for path in ["/", "/runtime", "/home/peppy/run", "/opt/dev"] {
-            assert!(
-                !is_host_provided_mount_source(Path::new(path)),
-                "{path} is an ordinary bind source and must keep auto-create + warning"
-            );
-        }
     }
 
     #[test]

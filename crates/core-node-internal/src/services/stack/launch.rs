@@ -20,6 +20,7 @@ use chrono::Local;
 use config::apply_parameter_defaults;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::runtime::RuntimeConfig;
+use containers::is_host_provided_mount_source;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
@@ -29,7 +30,7 @@ use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::Deployment;
 use futures::FutureExt;
-use node_stack::{NodeStack, is_host_provided_mount_source};
+use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};

@@ -45,6 +45,6 @@ pub use node_stack::add_steps;
 pub use node_stack::{
     BuildContext, EntityHandle, NodeEntity, NodeStack, NodeStage, OutputSinks, PairEndpoint,
     Pairing, PairingNodeSnapshot, SlotAddr, StartContext, StartedInstanceCtx, TrackedNodeInstance,
-    WorkingDirGuard, is_host_provided_mount_source, pairing_slot_view,
+    WorkingDirGuard, pairing_slot_view,
 };
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

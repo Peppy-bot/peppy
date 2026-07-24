@@ -839,6 +839,14 @@ impl Apptainer {
     /// unchanged. Paths outside `$HOME` are accepted if they were registered via
     /// [`ensure_host_mounts()`](Self::ensure_host_mounts); otherwise an error is
     /// returned.
+    ///
+    /// Host runtime trees ([`is_host_provided_mount_source`]) are deliberately
+    /// still rejected rather than passed through to the guest. Passing them
+    /// through would only defer the failure to Apptainer's own "bind source
+    /// does not exist", and would be a lie for the case that matters: a device
+    /// node attached to *this Mac* is not reachable from the VM at all. They
+    /// get [`Error::HostRuntimePathNotInVm`] instead, which names that
+    /// constraint rather than suggesting a mount declaration that cannot help.
     pub(crate) fn translate_path(&self, host_path: &Path) -> Result<PathBuf> {
         // Resolve relative paths to absolute using the host CWD. This is critical
         // for Lima: `limactl shell` runs in the guest's home directory, so a
@@ -863,6 +871,12 @@ impl Apptainer {
                     .any(|m| absolute_path.starts_with(m))
                 {
                     return Ok(absolute_path);
+                }
+
+                if crate::is_host_provided_mount_source(&absolute_path) {
+                    return Err(Error::HostRuntimePathNotInVm {
+                        path: absolute_path.display().to_string(),
+                    });
                 }
 
                 Err(Error::PathNotAccessibleInVm {
