@@ -416,7 +416,8 @@ fn deregistration_never_refreshes_the_token_logout_is_about_to_revoke() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = logout_with_core_node(&server, &dir, "cn-stale-token");
 
-    assert_eq!(deregister.calls(), 1);
+    // Asserted before the call count, so a refreshing implementation reports the
+    // property it broke rather than the retry that broke it.
     assert_eq!(
         discovery.calls(),
         0,
@@ -426,6 +427,11 @@ fn deregistration_never_refreshes_the_token_logout_is_about_to_revoke() {
         token.calls(),
         0,
         "deregistration must not mint a token the revocation that follows would not cover"
+    );
+    assert_eq!(
+        deregister.calls(),
+        1,
+        "the 401 is reported, not retried under a new token"
     );
     assert!(logout.calls() >= 1, "a 401 must not stop the revocation");
     assert!(
