@@ -56,6 +56,12 @@ impl AppContext {
         self
     }
 
+    /// The `--core-node` target, when one was given. Read by command groups
+    /// that cannot honor it, so they can refuse rather than silently ignore it.
+    pub(crate) fn core_node_override(&self) -> Option<&str> {
+        self.core_node_override.as_deref()
+    }
+
     pub(crate) fn read_daemon_state(&self) -> crate::error::Result<DaemonState> {
         let state = match &self.daemon_state_path {
             Some(path) => DaemonState::read_from(path),

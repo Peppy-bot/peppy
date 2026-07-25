@@ -8,10 +8,11 @@ use std::sync::Arc;
 use daemon_config::consts::PeppyDirs;
 
 use crate::commands::Command;
+use crate::commands::platform::PlatformSession;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use auth::client::Principal;
-use auth::{client, http::HttpClient, profile, resolver, storage};
+use auth::{client, profile, resolver, storage};
 
 pub struct WhoamiCommand {
     pub api_url: Option<String>,
@@ -24,12 +25,12 @@ pub struct WhoamiCommand {
 
 impl Command for WhoamiCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
-        let dirs = self.peppy_dirs.unwrap_or_default();
-        let config =
-            daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
-        let creds_path = storage::credentials_path(&dirs);
-        let http = HttpClient::new();
+        let PlatformSession {
+            api_url,
+            creds_path,
+            http,
+            ..
+        } = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let pat = resolver::pat_from_env();
 
         match resolver::resolve(&creds_path, &http, pat) {

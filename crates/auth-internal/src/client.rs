@@ -50,6 +50,87 @@ pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result
     authed_get_json(http, api_url, "/me", cred)
 }
 
+/// The caller's workspace's core nodes, as `GET /me/core-nodes` returns them.
+///
+/// Deserialized tolerantly (unknown fields ignored), and every field the
+/// platform may not know is optional. That is version skew, not a legacy shim:
+/// the CLI is installed on user machines and the backend is deployed
+/// independently, so an older CLI meets a newer backend routinely. Later work
+/// adds a per-entry `network` object to this exact response, and a CLI that
+/// rejected unknown fields would break on that deploy.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoreNodeListing {
+    /// The workspace whose core nodes these are, as the backend derives it from
+    /// the authenticated principal.
+    pub workspace_id: String,
+    /// Whether the platform could read liveliness at all. When false, every
+    /// entry's application status is null, and that is a different statement
+    /// from every machine being offline.
+    #[serde(default)]
+    pub application_status_available: bool,
+    #[serde(default)]
+    pub core_nodes: Vec<CoreNodeEntry>,
+}
+
+/// One core node in the workspace.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoreNodeEntry {
+    pub core_node_name: String,
+    /// Whether the platform has a registry row for this name. `false` is the
+    /// normal appearance of a `zenoh.external` daemon, which adopts its cached
+    /// workspace namespace but never pulls federation config.
+    #[serde(default)]
+    pub registered: bool,
+    /// RFC 3339 UTC, or null on an unregistered entry.
+    #[serde(default)]
+    pub first_seen_at: Option<String>,
+    /// RFC 3339 UTC, or null on an unregistered entry. A config-pull time, not
+    /// a liveness signal, which is why it is never rendered as "last seen".
+    #[serde(default)]
+    pub last_config_pull_at: Option<String>,
+    #[serde(default)]
+    pub application: ApplicationStatus,
+}
+
+/// Whether a core node's daemon is on the wire. Both fields are null when the
+/// platform could not read liveliness.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApplicationStatus {
+    /// `"online"`, `"offline"`, or null. Kept as a string rather than an enum
+    /// so a status this CLI has not heard of renders as itself instead of
+    /// failing the whole listing.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Distinct instance ids claiming the name. More than one is an active
+    /// collision, and the losing daemon refuses to boot.
+    #[serde(default)]
+    pub live_claimants: Option<u32>,
+}
+
+/// `GET {api_url}/me/core-nodes`, refreshing once on a 401 for session
+/// credentials.
+///
+/// A `404` is mapped explicitly: it means the backend predates this endpoint,
+/// which the generic status message would render as an unexplained
+/// `returned 404`. The mapping lives here rather than in
+/// [`interpret_authed_json`] because `404` means something different on every
+/// endpoint (on `DELETE /me/core-nodes/{name}` it means "no such row").
+pub fn list_core_nodes(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+) -> Result<CoreNodeListing> {
+    let url = format!("{}/me/core-nodes", api_url.trim_end_matches('/'));
+    let resp = authed_get(http, &url, cred)?;
+    if resp.status == 404 {
+        return Err(Error::Http(format!(
+            "{api_url} does not support `peppy platform list`; upgrade the platform, \
+             or check --api-url"
+        )));
+    }
+    interpret_authed_json(resp, cred, "GET", &url, "/me/core-nodes")
+}
+
 /// The connection config the backend hands the CLI for the caller's private
 /// per-user zenoh router. Deserialized tolerantly (unknown fields ignored) so a
 /// backend that adds fields still parses. The CA the router is validated against

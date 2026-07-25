@@ -16,6 +16,7 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 |---------|--------------|
 | `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your workspace's cloud router. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
+| `peppy platform list [--api-url <url>] [--json]` | Lists the core nodes registered to your workspace and whether each one is running right now. |
 | `peppy platform logout [--yes]` | Revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
@@ -91,6 +92,62 @@ to resolve the cloud router is bounded by
 With `zenoh.external`, login and logout skip federation and print a note instead;
 the daemon applies the resolved namespace to its sessions on its next manual
 restart. See [Federation outside the Peppy platform](#federation-outside-the-peppy-platform).
+
+### Listing the workspace's core nodes
+
+Once two machines have logged in under the same account, they share a workspace
+namespace and can already address each other. `peppy platform list` is what
+shows you that:
+
+```sh
+peppy platform list
+```
+
+```
+Workspace 4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4 (backend https://api.peppy.dev)
+
+CORE NODE            APPLICATION           REGISTERED
+cn-a1b2c3d4e5        online                2026-07-01   (this machine)
+cn-9f8e7d6c5b        offline               2026-07-14
+lab-bench-external   online (2 claimants)  -
+```
+
+The listing is **workspace scoped**. It shows the machines logged in to your own
+account and nothing else, and machines in other workspaces are invisible to you
+by design. The platform runs no core node in your workspace either, so every row
+is one of your own machines.
+
+The `APPLICATION` column reads:
+
+| Value | Meaning |
+|-------|---------|
+| `online` | The machine's daemon is running and reachable on the shared router right now. |
+| `offline` | The machine is registered but its daemon is stopped or unreachable. |
+| `online (N claimants)` | `N` different daemons are claiming this core-node name at once. This is a name collision, and it is worth acting on: the losing daemon refuses to start, so a collision is often why a machine will not come up. |
+| `unknown` | The platform could not read liveness at all, so no row's status is known. The list of machines itself is still accurate. A warning explains this on stderr. |
+
+A row with `-` under `REGISTERED` is running on the wire but was never registered
+with the platform. That is the normal appearance of a daemon configured with
+[`zenoh.external`](/advanced_guides/daemon_config/#zenohexternal-use-an-operator-run-router):
+it adopts its cached workspace namespace but never pulls federation config, so
+the platform is never told about it.
+
+`REGISTERED` is the date a machine first registered, in UTC. There is
+deliberately no "last seen" column: the platform's other timestamp records when
+a daemon last pulled its configuration, which is not the same as when it was
+last running. A machine that has been up for a week without re-pulling would
+look a week stale. Liveness lives in the `APPLICATION` column and nowhere else.
+`--json` exposes the pull time under its own name, `last_config_pull_at`.
+
+Two caveats worth knowing:
+
+- Default core-node names are hashes of the machine's UID, so the roster may not
+  tell you which machine is which. `peppy stack list` is where host names live.
+  Set [`core_node_name`](/advanced_guides/daemon_config/) to give a machine a
+  name you recognize.
+- `online` is not an authenticated statement. The messaging transport does not
+  authenticate daemons, so anything that can reach the router can claim a name.
+  A `REGISTERED` date is backed by a bearer token; a live status is not.
 
 ## Federation outside the Peppy platform
 
