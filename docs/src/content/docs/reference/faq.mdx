@@ -4,23 +4,9 @@ description: Frequently asked questions about Peppy
 ---
 
 <details>
-<summary>Will Peppy be open source?</summary>
-
-Yes! Peppy will be fully open source under a BSL license before the end of 2026. Once the software is mature, everyone will be able to contribute and participate in its development.
-
-</details>
-
-<details>
 <summary>What languages will Peppy support?</summary>
 
 Since Peppy is built in Rust, Rust will be the first supported language, followed by Python and C.
-
-</details>
-
-<details>
-<summary>Will Peppy support embedded/`no_std` nodes?</summary>
-
-Yes! While not available yet, embedded support is on the roadmap. The goal is to enable nodes running on microcontrollers like the ESP32 to be fully integrated with Peppy.
 
 </details>
 
@@ -47,21 +33,6 @@ Not until version 1.0. Since Peppy is still in alpha/beta, maintaining backward 
 </details>
 
 <details>
-<summary>What features are on the roadmap?</summary>
-
-Here are the upcoming priorities (in no particular order):
-
-1. Python support
-2. Multi-node networking for core node communication
-3. Simulation environment integration, starting with NVIDIA Isaac Sim, followed by MuJoCo/Genesis
-4. Dataset recording with LeRobot format support
-5. Action replay via "PeppyBag" for recorded robot actions
-6. Embedded chip support, starting with ESP32
-7. Full [OpenArm](https://openarm.dev/) humanoid support, enabling users to connect the robot or launch a simulation and start working within an hour. Peppy serves as the abstraction layer, allowing seamless switching between real hardware and simulation.
-
-</details>
-
-<details>
 <summary>Any plans to make Peppy compatible with Windows?</summary>
 
 Windows support is not currently planned. Our focus remains on improving Peppy core functionality, with official support limited to Linux (x86/ARM) and macOS (Apple Silicon).
@@ -71,10 +42,9 @@ Windows support is not currently planned. Our focus remains on improving Peppy c
 <summary>How will you make money?</summary>
 
 Peppy will always be free, including for commercial use; our goal is to make it as widely accessible as possible.
-We are currently building a SaaS platform that will provide centralized monitoring and management of nodes through a web dashboard. This is why Peppy is not yet open source.
-The SaaS will be entirely optional and include a free tier for hobbyists. Paid plans will only become relevant when scaling to hundreds or thousands of nodes, which typically applies to business use cases.
+We are currently building a SaaS platform that will provide centralized monitoring and management of nodes through a web dashboard.
+This dashboard will also allow you to "vibecode" robot environements.
 
-Once the SaaS is ready, Peppy will become fully open source under a BSL 1.1 license, which only restricts creating a competing hosted service from the source code for a limited period.
 </details>
 
 <details>
