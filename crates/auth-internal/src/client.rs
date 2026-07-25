@@ -139,6 +139,32 @@ pub fn logout(http: &HttpClient, api_url: &str, access_token: &str) -> Result<u1
     Ok(resp.status)
 }
 
+/// `DELETE {api_url}/me/core-nodes/{core_node_name}`: remove this machine's core
+/// node from the caller's registry on the platform. Returns the status code so
+/// the caller can decide what to print (`204` removed, `404` nothing to remove).
+///
+/// Never refreshes, deliberately, exactly like [`logout`]. `peppy platform
+/// logout` calls this immediately before revoking the very token it holds: a
+/// refresh here would mint a token that the revocation which follows does not
+/// cover, leaving it valid until its own expiry.
+///
+/// The name goes into the path unencoded because the backend accepts only
+/// `[A-Za-z0-9_-]`, which is the daemon's own charset, so a core-node name is
+/// always a literal path segment.
+pub fn deregister_core_node(
+    http: &HttpClient,
+    api_url: &str,
+    access_token: &str,
+    core_node_name: &str,
+) -> Result<u16> {
+    let url = format!(
+        "{}/me/core-nodes/{core_node_name}",
+        api_url.trim_end_matches('/')
+    );
+    let resp = http.delete(&url, Some(access_token))?;
+    Ok(resp.status)
+}
+
 /// A GET that, on 401 with a session credential, refreshes (and persists) the
 /// token and retries exactly once.
 fn authed_get(http: &HttpClient, url: &str, cred: &mut Credential) -> Result<HttpResponse> {

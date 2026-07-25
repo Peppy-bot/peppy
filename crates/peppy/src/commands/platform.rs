@@ -81,16 +81,33 @@ pub(crate) enum FederationPokeAction {
 /// nor skip the poke a managed daemon needs to (de)federate immediately
 /// (managed daemon, external config on disk). Only when no daemon is running,
 /// so there is nothing to poke or restart either way, does the on-disk `config`
-/// decide, matching what the next daemon start will do. The state file is read
-/// from the same `dirs` the command resolved, so a test seam isolates it.
+/// decide, matching what the next daemon start will do.
+///
+/// Takes the already-parsed `state` rather than reading the file itself, so a
+/// command that needs more than one field from it (logout needs the core-node
+/// name too) reads it exactly once and cannot see two different daemon
+/// generations within one invocation.
 pub(crate) fn federation_poke_timeout_secs(
-    dirs: &PeppyDirs,
+    state: Option<&DaemonState>,
     config: &daemon_config::peppy_config::PeppyConfig,
 ) -> Option<u64> {
-    match DaemonState::read_from(&DaemonState::state_file_in(dirs.root())) {
-        Ok(state) if state.is_running() => state.federation_connect_timeout_secs,
+    match state {
+        Some(state) if state.is_running() => state.federation_connect_timeout_secs,
         _ => config.zenoh.federation().map(|f| f.connect_timeout_secs),
     }
+}
+
+/// The daemon state file under `dirs`, or `None` when it is absent or
+/// unreadable. Read from the same `dirs` the command resolved, so a test seam
+/// isolates it.
+///
+/// The file outlives the daemon process, so a successful read is not proof of
+/// liveness; consumers that need "is a daemon actually up" check
+/// [`DaemonState::is_running`] themselves, and consumers that only need what the
+/// last daemon generation recorded (the core-node name it registered under) do
+/// not.
+pub(crate) fn read_daemon_state(dirs: &PeppyDirs) -> Option<DaemonState> {
+    DaemonState::read_from(&DaemonState::state_file_in(dirs.root())).ok()
 }
 
 /// Confirms (before authentication begins) a managed-router login/logout that
@@ -472,7 +489,10 @@ impl Command for PlatformCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{federation_poke_timeout_secs, report_login, report_logout, stack_has_user_nodes};
+    use super::{
+        federation_poke_timeout_secs, read_daemon_state, report_login, report_logout,
+        stack_has_user_nodes,
+    };
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
     };
@@ -522,12 +542,12 @@ mod tests {
         let dirs = PeppyDirs::new(dir.path());
         let managed = managed_config();
         assert_eq!(
-            federation_poke_timeout_secs(&dirs, &managed),
+            federation_poke_timeout_secs(read_daemon_state(&dirs).as_ref(), &managed),
             managed.zenoh.federation().map(|f| f.connect_timeout_secs),
             "no state file: a managed disk config supplies the poke timeout"
         );
         assert_eq!(
-            federation_poke_timeout_secs(&dirs, &external_config()),
+            federation_poke_timeout_secs(read_daemon_state(&dirs).as_ref(), &external_config()),
             None,
             "no state file: an external disk config means no poke"
         );
@@ -542,7 +562,7 @@ mod tests {
         // with the daemon's own timeout.
         write_running_state(&dirs, Some(7));
         assert_eq!(
-            federation_poke_timeout_secs(&dirs, &external_config()),
+            federation_poke_timeout_secs(read_daemon_state(&dirs).as_ref(), &external_config()),
             Some(7),
             "a running managed daemon must be poked even if the disk config went external"
         );
@@ -551,7 +571,7 @@ mod tests {
         // so login/logout must not warn about a restart or poke anything.
         write_running_state(&dirs, None);
         assert_eq!(
-            federation_poke_timeout_secs(&dirs, &managed_config()),
+            federation_poke_timeout_secs(read_daemon_state(&dirs).as_ref(), &managed_config()),
             None,
             "a running external daemon has no control socket to poke"
         );
@@ -578,7 +598,7 @@ mod tests {
 
         let managed = managed_config();
         assert_eq!(
-            federation_poke_timeout_secs(&dirs, &managed),
+            federation_poke_timeout_secs(read_daemon_state(&dirs).as_ref(), &managed),
             managed.zenoh.federation().map(|f| f.connect_timeout_secs),
             "a dead daemon's state must not override the disk config"
         );

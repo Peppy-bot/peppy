@@ -145,6 +145,14 @@ impl HttpClient {
             .map_err(|e| Error::Http(format!("POST {} failed: {e}", redact(url))))?;
         finish("POST", url, resp)
     }
+
+    /// `DELETE url` (used for `/me/core-nodes/{core_node_name}`).
+    pub fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let resp = with_bearer(self.agent.delete(url), bearer)
+            .call()
+            .map_err(|e| Error::Http(format!("DELETE {} failed: {e}", redact(url))))?;
+        finish("DELETE", url, resp)
+    }
 }
 
 /// Strips the query string from a URL for error messages, so a `verification_uri_complete`

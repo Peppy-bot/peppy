@@ -292,6 +292,249 @@ fn login_writes_credentials_file_0600() {
     assert_eq!(mode, 0o600, "credentials must be owner-only");
 }
 
+/// Writes a config that pins `core_node_name`, so logout can resolve the name to
+/// deregister without a daemon ever having run in the tempdir. The daemon state
+/// file takes precedence over this in production; the precedence itself is unit
+/// tested next to the resolver.
+fn write_core_node_name_config(dir: &tempfile::TempDir, core_node_name: &str) {
+    let config_dir = dir.path().join("conf");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("peppy_config.json5"),
+        format!("{{ core_node_name: \"{core_node_name}\" }}"),
+    )
+    .expect("write peppy config");
+}
+
+/// Seed a logged-in session under `dir` and run logout against `server`, with
+/// `core_node_name` pinned in the config so the deregistration has a name.
+/// Returns the credentials path so the caller can assert the session was cleared.
+fn logout_with_core_node(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    core_node_name: &str,
+) -> PathBuf {
+    write_core_node_name_config(dir, core_node_name);
+    let path = creds_path(dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("logout");
+    path
+}
+
+#[test]
+fn logout_deregisters_this_machines_core_node() {
+    let server = MockServer::start();
+    // Matching on the header as well as the path means an unauthenticated DELETE
+    // (or one under some other token) does not match, and `calls()` reads 0.
+    // Ordering against the revocation is deliberately NOT asserted here: the
+    // `/logout` mock is stateless, so a DELETE sent after it would look
+    // identical, and httpmock exposes no ordered request log to tell them apart.
+    // What ordering exists for, keeping a live token under the DELETE, is
+    // covered from the other side by
+    // `deregistration_never_refreshes_the_token_logout_is_about_to_revoke`.
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE)
+            .path("/me/core-nodes/cn-logout-me")
+            .header("Authorization", "Bearer seeded-access");
+        then.status(204);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-logout-me");
+
+    assert_eq!(
+        deregister.calls(),
+        1,
+        "logout must deregister this machine's core node"
+    );
+    assert!(logout.calls() >= 1, "POST /logout should have been called");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "local credentials must be removed after logout"
+    );
+}
+
+#[test]
+fn deregistration_never_refreshes_the_token_logout_is_about_to_revoke() {
+    // A 401 is the one trigger the refreshing `authed_*` helpers act on. If
+    // `deregister_core_node` ever routes through them, it mints and persists a
+    // NEW access token here, and the revocation immediately after would still
+    // revoke the old one, leaving the new token valid until its own expiry. That
+    // fires whenever the access token has expired but the refresh token has not,
+    // which is the ordinary state of an idle CLI.
+    //
+    // A refresh does OIDC discovery and then posts to the token endpoint, so
+    // mounting both and asserting neither is touched catches it. The type
+    // signature (`&str`, not `&mut Credential`) is what makes it impossible;
+    // this is the behavioral guard that fails if the signature is widened.
+    let server = MockServer::start();
+    let base = server.base_url();
+    let discovery = server.mock(|when, then| {
+        when.method(GET).path("/.well-known/openid-configuration");
+        then.status(200).json_body(json!({
+            "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
+            "token_endpoint": format!("{base}/oauth/v2/token"),
+        }));
+    });
+    let token = server.mock(|when, then| {
+        when.method(POST).path("/oauth/v2/token");
+        then.status(200).json_body(json!({
+            "access_token": "refreshed-access",
+            "refresh_token": "refreshed-refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "scope": "openid",
+        }));
+    });
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE).path("/me/core-nodes/cn-stale-token");
+        then.status(401);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-stale-token");
+
+    // Asserted before the call count, so a refreshing implementation reports the
+    // property it broke rather than the retry that broke it.
+    assert_eq!(
+        discovery.calls(),
+        0,
+        "deregistration must not begin a token refresh"
+    );
+    assert_eq!(
+        token.calls(),
+        0,
+        "deregistration must not mint a token the revocation that follows would not cover"
+    );
+    assert_eq!(
+        deregister.calls(),
+        1,
+        "the 401 is reported, not retried under a new token"
+    );
+    assert!(logout.calls() >= 1, "a 401 must not stop the revocation");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "a 401 must not stop the local credentials being cleared"
+    );
+}
+
+#[test]
+fn logout_completes_when_deregistration_finds_nothing_to_remove() {
+    // A 404 is silent success: a daemon in external mode never registered, and a
+    // repeated logout has nothing left to remove.
+    let server = MockServer::start();
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE)
+            .path("/me/core-nodes/cn-never-registered");
+        then.status(404);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-never-registered");
+
+    assert_eq!(deregister.calls(), 1);
+    assert!(logout.calls() >= 1, "a 404 must not stop the revocation");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "a 404 must not stop the local credentials being cleared"
+    );
+}
+
+#[test]
+fn logout_completes_when_deregistration_fails() {
+    // Every deregistration failure is best effort, exactly like the revocation
+    // itself: the row is left behind and logout still finishes.
+    let server = MockServer::start();
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE).path("/me/core-nodes/cn-backend-down");
+        then.status(503);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-backend-down");
+
+    assert_eq!(deregister.calls(), 1);
+    assert!(logout.calls() >= 1, "a 503 must not stop the revocation");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "a 503 must not stop the local credentials being cleared"
+    );
+}
+
+#[test]
+fn logout_without_a_resolvable_core_node_name_sends_no_deregistration() {
+    // No daemon state file and no configured name: there is nothing to delete by,
+    // and nothing is guessed. The row is left behind and logout still completes.
+    let server = MockServer::start();
+    let deregister = server.mock(|when, then| {
+        // Any DELETE at all, so the assertion covers a guessed name as well as
+        // the right one.
+        when.method(DELETE);
+        then.status(204);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(&server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("logout");
+
+    assert_eq!(
+        deregister.calls(),
+        0,
+        "an unresolvable name must not produce a guessed DELETE"
+    );
+    assert!(logout.calls() >= 1);
+    assert!(storage::load(&path).expect("load creds").session.is_none());
+}
+
 #[test]
 fn logout_calls_backend_and_clears_local_credentials() {
     let server = MockServer::start();
