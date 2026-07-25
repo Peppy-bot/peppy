@@ -70,7 +70,7 @@ export default defineConfig({
 				SiteTitle: './src/components/SiteTitle.astro',
 				ThemeSelect: './src/components/ThemeSelect.astro',
 			},
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/orgs/Peppy-bot/repositories' }],
+			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/Peppy-bot/peppy' }],
 			sidebar: [
 				{ slug: 'index' },
 				// Standalone entry, deliberately outside the Guides group: it is a
