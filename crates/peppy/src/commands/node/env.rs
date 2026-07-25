@@ -1,8 +1,22 @@
 use core_node_api::FORBIDDEN_ENV_KEYS;
 
 /// Env vars that are meaningless or misleading when forwarded to a spawned node
-/// because the node runs in a different working directory (the instance dir).
-const CALLER_ONLY_ENV_KEYS: [&str; 2] = ["PWD", "OLDPWD"];
+/// because the node runs somewhere the caller's paths do not describe: a
+/// different working directory (the instance dir) and, for a container node, a
+/// different filesystem and often a different OS.
+///
+/// The temp-dir trio is the second kind. A node that asks for scratch space
+/// resolves it from these, and the caller's value names a host path the
+/// container cannot write — on macOS `TMPDIR` is always `/var/folders/…`,
+/// which inside the guest exists at most as the read-only parent of a
+/// bind-mounted peppy root, so the node dies with `EROFS` the first time it
+/// wants a temp file. Dropping them lets resolution fall back to the
+/// container's own writable `/tmp`. Apptainer's `--cleanenv` does not cover
+/// this: these arrive as explicit `--env` flags, which it has no reason to
+/// strip. All three are listed because the Rust and Python lookups differ
+/// (`TMPDIR` alone, versus `TMPDIR`, `TEMP`, `TMP` in order) and this stack
+/// runs both kinds of node.
+const CALLER_ONLY_ENV_KEYS: [&str; 5] = ["PWD", "OLDPWD", "TMPDIR", "TEMP", "TMP"];
 
 /// Whether `name` is a valid POSIX shell identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 ///
@@ -83,6 +97,31 @@ mod tests {
         assert!(!is_valid_env_name("foo("));
         assert!(!is_valid_env_name("1foo"));
         assert!(!is_valid_env_name(""));
+    }
+
+    /// The caller's temp dir describes the host, not the container. On macOS
+    /// it is `/var/folders/…`, which the guest cannot write, so forwarding it
+    /// kills any node that asks for scratch space (this is how
+    /// `openarm_backbone` died: `tempfile::tempdir()` for its collision
+    /// meshes, `EROFS`). Both filters accept the value — valid identifier,
+    /// value is only alphanumerics, `/` and `_` — so it has to be excluded by
+    /// name.
+    #[test]
+    fn drops_caller_temp_dir_vars() {
+        for key in ["TMPDIR", "TEMP", "TMP"] {
+            assert!(
+                !should_forward_env(key, "/var/folders/kb/36lp35_92z5/T/"),
+                "{key} describes the caller's filesystem and must not reach the container"
+            );
+        }
+    }
+
+    /// The exclusion is by whole name, not prefix: a node's own configuration
+    /// must survive.
+    #[test]
+    fn keeps_env_vars_that_merely_mention_temp() {
+        assert!(should_forward_env("TMPDIR_OVERRIDE", "/opt/scratch"));
+        assert!(should_forward_env("PEPPY_TMP", "/opt/scratch"));
     }
 
     #[test]

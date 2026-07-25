@@ -37,6 +37,26 @@ pub enum Error {
     )]
     PathNotAccessibleInVm { path: String },
 
+    /// The host-runtime counterpart of [`Error::PathNotAccessibleInVm`].
+    ///
+    /// Kept separate because the generic message's advice is actively wrong
+    /// here: it tells you to declare the path in `container.mount_paths`,
+    /// which is exactly what a node binding `/dev/video0` already did, and to
+    /// move it under `$HOME`, which you cannot do to a device node. The real
+    /// constraint is that this daemon runs its containers in a VM that has no
+    /// view of the Mac's devices, and no mount declaration can change that.
+    #[error(
+        "Bind mount source {path} lives under a host runtime tree (/dev, /proc, /run, \
+         /sys). These resolve on the machine that actually runs the containers, and \
+         this daemon runs them inside a Lima VM, so no container.mount_paths entry \
+         will make this Mac's copy reachable. If it is a device node, that is the end \
+         of it: a USB, serial or CAN adapter plugged into this Mac cannot be forwarded \
+         into the guest — run the node on a Linux daemon, where it resolves directly. \
+         If it is a runtime directory such as /run/user backing XDG_RUNTIME_DIR, the \
+         node should not be binding the host's copy in the first place."
+    )]
+    HostRuntimePathNotInVm { path: String },
+
     #[error("Failed to sync apptainer installation to Lima VM: {0}")]
     LimaSyncFailed(String),
 

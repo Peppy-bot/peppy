@@ -490,6 +490,88 @@ fn test_translate_path_rejects_var_folders() {
     );
 }
 
+/// A host runtime path stays rejected under Lima — passing it through to the
+/// guest would only defer the failure to Apptainer — but it must be rejected
+/// with the error that names the real constraint. The generic
+/// `PathNotAccessibleInVm` advice (declare it in `container.mount_paths`, move
+/// it under `$HOME`) is unfollowable for a device node, and telling an
+/// operator to do the thing their node already does is worse than no advice.
+#[test]
+fn test_translate_path_rejects_host_runtime_paths_with_a_targeted_error() {
+    for path in [
+        "/dev/ttyUSB0",
+        "/dev/can0",
+        "/run/user/1000",
+        "/proc/self",
+        "/sys/class/net",
+    ] {
+        let path = Path::new(path);
+        assert_eq!(
+            native_facade().translate_path(path).unwrap(),
+            path,
+            "Native: a Linux daemon resolves these directly and must pass them through"
+        );
+        match lima_facade().translate_path(path) {
+            Err(Error::HostRuntimePathNotInVm { path: reported }) => {
+                assert_eq!(reported, path.display().to_string());
+            }
+            other => panic!(
+                "Lima: {} should report HostRuntimePathNotInVm, got {other:?}",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// A host runtime path must never reach the Lima mount list. The per-node run
+/// path hands `ensure_host_mounts` the node's raw bind sources, so a node
+/// declaring `mount_paths: ["/run/user"]` would otherwise have it written into
+/// the Lima YAML — restarting the VM to mount the Mac's `/run/user` over the
+/// guest's own — and then whitelisted in `extra_mounts`.
+///
+/// The facade's lima paths are fake, so reaching the YAML at all would error:
+/// this passes only because the filter empties `external_paths` and takes the
+/// early return.
+#[test]
+fn ensure_host_mounts_skips_host_provided_paths() {
+    let mut facade = lima_facade();
+    facade
+        .ensure_host_mounts(&["/run/user", "/dev/ttyUSB0", "/proc/self", "/sys/class"])
+        .expect("host-provided paths should be filtered out, not registered");
+    assert!(
+        facade.extra_mounts.is_empty(),
+        "host runtime trees must never be registered as Lima mounts, got: {:?}",
+        facade.extra_mounts
+    );
+}
+
+/// Defence in depth for the check above: even if a host runtime path did end
+/// up in `extra_mounts`, `translate_path` must still reject it. The guest's
+/// `/run/user` is not the Mac's, whatever the mount list claims.
+#[test]
+fn test_translate_path_rejects_host_runtime_paths_despite_registration() {
+    let mut facade = lima_facade();
+    facade.extra_mounts.push(PathBuf::from("/run"));
+
+    match facade.translate_path(Path::new("/run/user/1000")) {
+        Err(Error::HostRuntimePathNotInVm { .. }) => {}
+        other => panic!("a registered extra mount must not launder /run through, got {other:?}"),
+    }
+}
+
+/// The complement: an ordinary unreachable path keeps the generic error, whose
+/// advice does apply to it — put it under `$HOME`, or declare it as a mount.
+#[test]
+fn test_translate_path_keeps_generic_error_for_ordinary_paths() {
+    let path = Path::new("/opt/robot_assets/openarm");
+    match lima_facade().translate_path(path) {
+        Err(Error::PathNotAccessibleInVm { path: reported }) => {
+            assert_eq!(reported, path.display().to_string());
+        }
+        other => panic!("expected the generic mount-advice error, got {other:?}"),
+    }
+}
+
 /// Verifies that `translate_path()` accepts paths outside `$HOME` when they have
 /// been registered in `extra_mounts` (simulating what `ensure_host_mounts()` does).
 #[test]

@@ -490,9 +490,21 @@ impl Apptainer {
                     Error::ConfigurationError("HOME environment variable not set".into())
                 })?;
 
+                // Host runtime trees are never Lima's to carry. Registering
+                // `/run/user` here would write it into the Lima YAML — restarting
+                // the VM to mount the Mac's copy (which does not exist) over the
+                // guest's own runtime tmpfs — and would then whitelist it in
+                // `extra_mounts`, so `translate_path` would wave it through. The
+                // filter lives here rather than at the call sites because all
+                // three of them (stack preflight, node run, node build) funnel
+                // through this one method.
                 let external_paths: Vec<&str> = mount_src_paths
                     .iter()
-                    .filter(|p| !resolve_absolute(p).starts_with(&home))
+                    .filter(|p| {
+                        let absolute = resolve_absolute(p);
+                        !absolute.starts_with(&home)
+                            && !crate::is_host_provided_mount_source(&absolute)
+                    })
                     .copied()
                     .collect();
 
@@ -839,6 +851,14 @@ impl Apptainer {
     /// unchanged. Paths outside `$HOME` are accepted if they were registered via
     /// [`ensure_host_mounts()`](Self::ensure_host_mounts); otherwise an error is
     /// returned.
+    ///
+    /// Host runtime trees ([`is_host_provided_mount_source`]) are deliberately
+    /// still rejected rather than passed through to the guest. Passing them
+    /// through would only defer the failure to Apptainer's own "bind source
+    /// does not exist", and would be a lie for the case that matters: a device
+    /// node attached to *this Mac* is not reachable from the VM at all. They
+    /// get [`Error::HostRuntimePathNotInVm`] instead, which names that
+    /// constraint rather than suggesting a mount declaration that cannot help.
     pub(crate) fn translate_path(&self, host_path: &Path) -> Result<PathBuf> {
         // Resolve relative paths to absolute using the host CWD. This is critical
         // for Lima: `limactl shell` runs in the guest's home directory, so a
@@ -851,6 +871,17 @@ impl Apptainer {
                 let home = std::env::var("HOME").map_err(|_| {
                     Error::ConfigurationError("HOME environment variable not set".into())
                 })?;
+
+                // Ahead of both acceptance checks on purpose. `ensure_host_mounts`
+                // already refuses to register these, but a `$HOME`-relative or
+                // stale `extra_mounts` entry must not be able to launder one
+                // through: the guest's `/run/user` is not the Mac's, whatever the
+                // mount list says.
+                if crate::is_host_provided_mount_source(&absolute_path) {
+                    return Err(Error::HostRuntimePathNotInVm {
+                        path: absolute_path.display().to_string(),
+                    });
+                }
 
                 if absolute_path.starts_with(&home) {
                     return Ok(absolute_path);
