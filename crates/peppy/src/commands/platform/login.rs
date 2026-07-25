@@ -41,7 +41,8 @@ impl Command for LoginCommand {
         // Managed vs external follows the RUNNING daemon's mode (from its state
         // file), not the disk config, which may have been edited since it
         // started; only with no daemon running does the disk config decide.
-        let federation = super::federation_poke_timeout_secs(&dirs, &config);
+        let daemon_state = super::read_daemon_state(&dirs);
+        let federation = super::federation_poke_timeout_secs(daemon_state.as_ref(), &config);
         let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
         let creds_path = storage::credentials_path(&dirs);
         let http = HttpClient::new();
