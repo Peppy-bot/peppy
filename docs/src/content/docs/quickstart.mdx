@@ -1,0 +1,115 @@
+---
+title: Quickstart
+description: Install peppy and drive a simulated bimanual OpenArm from your browser in three steps
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import OpenArmStackGraph from '../../components/OpenArmStackGraph.astro';
+
+Three steps take you from nothing installed to a bimanual [OpenArm](https://openarm.dev/) you can drive from your browser. There is no repository to clone and no robot hardware to plug in: the arms, the grippers, and the physics all run in a MuJoCo simulation on your machine.
+
+This page is a demo, not a tutorial. It exists so you can watch a peppy stack work end to end before you learn how one is put together. To learn how one is put together, start at [Installation](/guides/installation/) and work through the [guides](/guides/first_node/), which build a stack up node by node from an empty directory.
+
+Peppy runs on Linux (x86_64/aarch64, tested on Ubuntu 24.04, Fedora, and Arch Linux) and macOS (aarch64).
+
+## Step 1: Install peppy
+
+<Steps>
+1. Run the installer:
+
+   ```sh
+   curl -fsSL https://peppy.bot/install.sh | sh
+   ```
+
+   It drops the `peppy` CLI on your `PATH`, registers the background service that builds and supervises nodes, and configures the [Apptainer](https://apptainer.org/) container runtime the simulation nodes are built on.
+
+2. Confirm the CLI and the service are both there:
+
+   ```sh
+   peppy info
+   ```
+
+   It prints the CLI version and container setup, then a `Daemon Info` block. That block is the background service answering, so seeing it means everything is up.
+
+   If your shell reports `peppy: command not found`, apply the `PATH` update the installer printed (`source ~/.bashrc`, or whichever file it named) and run it again. Shells opened afterwards pick it up on their own.
+</Steps>
+
+[Installation](/guides/installation/) covers version pinning, skipping the service, and managing it afterwards.
+
+## Step 2: Launch the simulated robot
+
+A launcher is one file listing the nodes that make up a robot. The OpenArm ones ship with peppy and the installer indexed them, so you can start [`openarm_v2_teleop_mujoco`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2_teleop_mujoco.json5) by name:
+
+```sh
+peppy stack launch openarm_v2_teleop_mujoco
+```
+
+That single command adds, builds, and starts every [node](/reference/concepts/#node) in the launcher, in dependency order: eight instances across six node types. The cast is the MuJoCo engine, one relay per limb (two arms, two grippers), the readiness aggregator that waits for every limb's physics to come alive, the backbone that coordinates both arms, and the browser control panel. It prints `Launch complete` when the stack is up.
+
+The command then returns; it is not a foreground supervisor. The nodes keep running under the peppy background service, so you can close that terminal without stopping them.
+
+:::note[This is the node stack you just launched]
+Every circle is one instance the launcher started, and every arrow a link between two of them. Together they are the [node stack](/reference/concepts/#node-stack): the set of nodes the background service is running for you. `peppy stack list` prints the same set as a table.
+
+<OpenArmStackGraph />
+:::
+
+:::note
+The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. `--node-build-idle-timeout-secs` raises the window the daemon allows without build output, which keeps it from killing that first download partway through. Subsequent launches don't need the flag.
+:::
+
+## Step 3: Drive the arms
+
+Once the launcher prints `Launch complete`, open two browser tabs:
+
+| Address | What it is |
+|---|---|
+| **http://localhost:8080** | the MuJoCo viewer, showing both arms in the simulated world |
+| **http://localhost:8765** | the `openarm_commander` control panel |
+
+Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer. The mode switch has two more modes to try once the arms move: **Actions** for one governed move to a target you compose, and **Gestures** for a baked choreography.
+
+![The MuJoCo viewer showing the simulated bimanual OpenArm, next to the openarm_commander panel playing the wave gesture](../../assets/mujoco_sim1.png)
+
+To shut things down, stop instances one at a time:
+
+```sh
+peppy node stop commander_inst
+```
+
+Or tear the whole stack down at once, which stops every instance and empties the stack:
+
+```sh
+peppy service reset
+```
+
+<details>
+<summary>**If something doesn't come up**</summary>
+
+**The viewer or the panel won't load.** The simulation keeps initializing for a moment after `Launch complete`. Give it a few seconds, then run `peppy stack list`: every instance should read `running` under `STATUS` and `healthy` under `HEALTH`. To dig into one of them:
+
+```sh
+peppy node info openarm_sim_mujoco:v1
+```
+
+It prints the instance's state and health plus the path to its run log, which is the file to read when the state alone doesn't explain the problem.
+
+**The panel won't load and `commander_inst` is not running.** Port 8765 is taken, usually by an earlier instance that is still up. Find it with `peppy stack list` and stop it with `peppy node stop <instance_id>`, then launch again.
+
+**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info openarm_sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` in the launcher.
+
+**A build fails on Linux.** Apptainer needs unprivileged user namespaces, which the installer normally configures. Check with `peppy container status`, and repair it with `peppy container setup` (see [Containers](/advanced_guides/containers/)).
+
+**The launch fails with `repo-node ... not found` or `nodes.json5 not found or empty`.** The local index is stale or was never populated. Run `peppy repo refresh` and launch again.
+
+</details>
+
+## Where to go next
+
+You just ran a stack someone else assembled. To build your own:
+
+- [Installation](/guides/installation/): the full install reference, including service management
+- [Creating your first node](/guides/first_node/): write and run a node from scratch, in Rust or Python
+- [Launch files](/guides/launch_files/): the launcher format behind the command you just ran
+- [Repositories](/advanced_guides/repositories/): where peppy resolves node and launcher names from, and how to add your own
+- [Concepts](/reference/concepts/): nodes, instances, contracts, and the stack, defined
