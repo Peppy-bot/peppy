@@ -11,8 +11,8 @@ daemon-config = { workspace = true }
 encoding = { workspace = true }
 quote = "1.0"
 proc-macro2 = "1.0"
-prettyplease = "0.2"
-syn = { version = "2.0", features = ["full"] }
+prettyplease = "0.3"
+syn = { version = "3.0", features = ["full"] }
 thiserror = "2"
 askama = "0.16"
 toml = "1"
