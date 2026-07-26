@@ -89,7 +89,29 @@ pub struct CoreNodeEntry {
     #[serde(default)]
     pub last_config_pull_at: Option<String>,
     #[serde(default)]
+    pub network: NetworkStatus,
+    #[serde(default)]
     pub application: ApplicationStatus,
+}
+
+/// Whether this core node's site holds a live transport session with the
+/// platform's shared router.
+///
+/// The network layer and the application layer fail separately, which is the
+/// whole reason both are reported: `linked` with an offline application layer is
+/// a dead daemon behind a healthy uplink (debug the machine), while `unlinked`
+/// with an offline application layer is an unreachable site (debug the network).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkStatus {
+    /// `"linked"`, `"indirect"`, `"unlinked"`, or `"unknown"`. Kept as a string
+    /// rather than an enum, like [`ApplicationStatus::status`], so a status this
+    /// CLI has not heard of renders as itself instead of failing the listing.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// The transport identity this site's daemon reported, or null for a name
+    /// that is live on the wire but has no registry row (nothing to join on).
+    #[serde(default)]
+    pub router_zid: Option<String>,
 }
 
 /// Whether a core node's daemon is on the wire. Both fields are null when the
@@ -195,19 +217,32 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
 /// `POST {api_url}/me/cli/federation`: fetch the shared router's
 /// connection config (the daemon's discovery point), refreshing the access token
 /// once on a 401 for session credentials (the same reactive-refresh contract as
-/// [`get_me`]). The
-/// body always carries the daemon's core-node name — the backend requires it and
-/// upserts the name into its per-principal core-node registry (its `last_seen_at`
-/// tracks config pulls, not liveness). The daemon dials the returned endpoint
-/// over one-way TLS, verifying the router's certificate and presenting none of
-/// its own.
+/// [`get_me`]). The daemon dials the returned endpoint over one-way TLS,
+/// verifying the router's certificate and presenting none of its own.
+///
+/// The body always carries two required fields, both upserted into the backend's
+/// per-principal core-node registry:
+///
+/// * `core_node_name`, the daemon's application-layer identity (its
+///   `last_seen_at` tracks config pulls, not liveness).
+/// * `router_zid`, the transport identity this daemon's managed router pins.
+///   The platform joins it against the shared router's live session list, which
+///   is what separates "the uplink is up, the daemon is not" from "this site is
+///   unreachable". Only a managed daemon pulls federation config, and a managed
+///   daemon always owns a router, so there is no caller that legitimately lacks
+///   one and the backend rejects a request without it.
 pub fn establish_federation(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
     core_node_name: &str,
+    router_zid: &pmi::RouterId,
 ) -> Result<ZenohRouterConfig> {
-    let body = serde_json::json!({ "core_node_name": core_node_name }).to_string();
+    let body = serde_json::json!({
+        "core_node_name": core_node_name,
+        "router_zid": router_zid.as_str(),
+    })
+    .to_string();
     authed_post_json(http, api_url, "/me/cli/federation", &body, cred)
 }
 

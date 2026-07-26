@@ -4,6 +4,7 @@ use super::messaging_router::{MessagingRouter, teardown_budget_for};
 use super::router_federation::RouterFederation;
 use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
+use crate::router_identity;
 use crate::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PeppyConfig;
@@ -69,6 +70,13 @@ pub struct ServeCommandBuilder {
     /// [`RouterFederation`] task (which compares against it to decide restart vs
     /// live re-federate). A single source for the whole generation.
     namespace: config::namespace::Namespace,
+    /// The managed router's persisted transport identity, resolved alongside
+    /// [`Self::namespace`] in [`with_messaging_router`](Self::with_messaging_router)
+    /// and pinned into the router's config. `None` for an external router (the
+    /// operator owns its identity) and for the non-zenoh engines. Threaded into
+    /// [`RouterFederation`], which reports it to the backend so the platform can
+    /// match this site against the shared router's live session list.
+    router_id: Option<pmi::RouterId>,
     /// The shared coordinator token for this generation: cloned into every serve
     /// task (so a restart/stop unparks them for graceful teardown) and handed to
     /// [`Serve`] (which cancels it on its way out). Created per generation.
@@ -101,6 +109,7 @@ impl ServeCommandBuilder {
             // Default for the mock/other engines that never resolve a namespace;
             // the zenoh path overwrites this in `with_messaging_router`.
             namespace: config::namespace::Namespace::local(),
+            router_id: None,
             teardown_token: CancellationToken::new(),
         })
     }
@@ -179,21 +188,46 @@ impl ServeCommandBuilder {
                 self.namespace = namespace.clone();
 
                 let gossip = self.peppy_config.zenoh.gossip();
-                let adapter = match self.peppy_config.zenoh.external_endpoint() {
+                // Taken by value so the identity resolve below can borrow `self`
+                // mutably without contending with this read.
+                let external_endpoint = self
+                    .peppy_config
+                    .zenoh
+                    .external_endpoint()
+                    .map(str::to_string);
+                let adapter = match external_endpoint {
+                    // An operator-run router keeps its own identity, and an
+                    // external daemon never federates or registers
+                    // (`zenoh.federation()` is `None` in this mode), so there is
+                    // nothing here for peppy to pin or report.
                     Some(endpoint) => {
-                        ZenohAdapter::with_external_router(endpoint, gossip, subscriber_buffers)?
+                        ZenohAdapter::with_external_router(&endpoint, gossip, subscriber_buffers)?
                     }
-                    None => ZenohAdapter::with_router(
-                        ZenohNetProtocol::Tcp,
-                        "0.0.0.0",
-                        listening_port,
-                        gossip,
-                        subscriber_buffers,
-                        // Standalone: local nodes reach this router over plaintext
-                        // loopback TCP. The federation task adds TLS upstream later.
-                        Vec::new(),
-                        None,
-                    )?,
+                    None => {
+                        // This generation's router identity, scoped to the same
+                        // namespace and persisted under this run's data root, so
+                        // the managed router keeps one zid across restarts and
+                        // the platform can attribute its transport session in the
+                        // shared router's session list to this site.
+                        let router_id = router_identity::resolve(
+                            &self.peppy_dirs.router_identity_path(),
+                            &namespace,
+                        )?;
+                        self.router_id = Some(router_id.clone());
+                        ZenohAdapter::with_router(
+                            ZenohNetProtocol::Tcp,
+                            "0.0.0.0",
+                            listening_port,
+                            gossip,
+                            subscriber_buffers,
+                            // Standalone: local nodes reach this router over
+                            // plaintext loopback TCP. The federation task adds
+                            // the TLS upstream later, keeping this same identity.
+                            Vec::new(),
+                            None,
+                            router_id,
+                        )?
+                    }
                 }
                 .with_session_reconnect()
                 .with_namespace(Some(namespace));
@@ -373,9 +407,13 @@ impl ServeCommandBuilder {
             // name, so with none materialized there is nothing to register.
             warn!("Router federation requires a core node; staying standalone");
         }
+        // `router_id` is `Some` for exactly the configurations that also set
+        // `federation_api_url` (managed zenoh), so this arm never narrows what
+        // federates; it just makes the identity available without an `expect`.
         if let Some(api_url) = self.federation_api_url.take()
             && let Some(messenger) = self.messenger.clone()
             && let Some(messaging_ready) = self.messaging_ready.clone()
+            && let Some(router_id) = self.router_id.clone()
             && let Some(core_node_name) = federation_core_node_name
         {
             let connect_timeout = self.federation_connect_timeout;
@@ -396,6 +434,10 @@ impl ServeCommandBuilder {
                         // federation POST so the backend registry knows which
                         // daemon pulled the config.
                         core_node_name,
+                        // The managed router's pinned identity, reported in the
+                        // same POST so the backend can match this site against
+                        // the shared router's live session list.
+                        router_id,
                         // The data root the loop's per-poll credential reads
                         // and materialized dev TLS derive from.
                         self.peppy_dirs.clone(),

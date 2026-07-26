@@ -1,9 +1,21 @@
-//! `peppy platform list`: the core nodes registered to this workspace, and
-//! whether each is alive right now.
+//! `peppy platform list`: the core nodes registered to this workspace, and, for
+//! each, whether its site is reachable and whether its daemon is alive.
 //!
 //! Two machines logged into the same account already federate to the platform's
 //! shared router under one workspace namespace and can address each other.
 //! Nothing in the CLI showed that; this does.
+//!
+//! # Two layers, two columns
+//!
+//! The system has two layers that fail separately, so the output reports both.
+//! NETWORK is the transport: does this site's `zenohd` hold a live session with
+//! the platform's shared `zenohd`? APPLICATION is the workspace namespace: is
+//! this site's core node declaring presence? The pairing is the diagnostic.
+//! `linked` beside `offline` is a dead daemon behind a healthy uplink, so debug
+//! the machine; `unlinked` beside `offline` is an unreachable site, so debug the
+//! network. Reporting only the second, as this command originally did, cannot
+//! tell those apart, because the absence of an application signal is exactly as
+//! consistent with a severed link as with a stopped daemon.
 //!
 //! # A pure HTTP client
 //!
@@ -126,38 +138,52 @@ fn render_human(listing: &CoreNodeListing, api_url: &str, this_machine: Option<S
         return out;
     }
 
-    let rows: Vec<(String, String, String, bool)> = ordered_rows(listing, this_machine.as_deref())
+    let rows: Vec<Row> = ordered_rows(listing, this_machine.as_deref())
         .into_iter()
-        .map(|(entry, is_this_machine)| {
-            (
-                entry.core_node_name.clone(),
-                application_column(entry),
-                registered_column(entry),
-                is_this_machine,
-            )
+        .map(|(entry, is_this_machine)| Row {
+            name: entry.core_node_name.clone(),
+            network: network_column(entry),
+            application: application_column(entry),
+            registered: registered_column(entry),
+            is_this_machine,
         })
         .collect();
 
-    let name_width = column_width("CORE NODE", rows.iter().map(|(name, ..)| name.as_str()));
-    let status_width = column_width(
+    let name_width = column_width("CORE NODE", rows.iter().map(|row| row.name.as_str()));
+    let network_width = column_width("NETWORK", rows.iter().map(|row| row.network.as_str()));
+    let application_width = column_width(
         "APPLICATION",
-        rows.iter().map(|(_, status, ..)| status.as_str()),
+        rows.iter().map(|row| row.application.as_str()),
     );
 
+    // NETWORK sits before APPLICATION because that is the order a reader
+    // diagnoses in: the transport has to be up before the application layer's
+    // silence means anything about the daemon.
     out.push_str(&format!(
-        "{:<name_width$}  {:<status_width$}  {}\n",
-        "CORE NODE", "APPLICATION", "REGISTERED"
+        "{:<name_width$}  {:<network_width$}  {:<application_width$}  {}\n",
+        "CORE NODE", "NETWORK", "APPLICATION", "REGISTERED"
     ));
-    for (name, status, registered, is_this_machine) in rows {
-        let marker = match is_this_machine {
+    for row in rows {
+        let marker = match row.is_this_machine {
             true => "   (this machine)",
             false => "",
         };
         out.push_str(&format!(
-            "{name:<name_width$}  {status:<status_width$}  {registered}{marker}\n"
+            "{:<name_width$}  {:<network_width$}  {:<application_width$}  {}{marker}\n",
+            row.name, row.network, row.application, row.registered
         ));
     }
     out
+}
+
+/// One rendered line. A struct rather than a tuple: with four columns plus the
+/// marker flag, positional access stops carrying its own meaning.
+struct Row {
+    name: String,
+    network: String,
+    application: String,
+    registered: String,
+    is_this_machine: bool,
 }
 
 /// The entries in render order: this machine first, then by name ascending.
@@ -179,6 +205,21 @@ fn ordered_rows<'a>(
         .collect();
     rows.sort_by_key(|(entry, is_this_machine)| (!is_this_machine, entry.core_node_name.clone()));
     rows
+}
+
+/// The NETWORK column: whether the platform's shared router holds a live
+/// transport session with this site's router.
+///
+/// Rendered verbatim, including a status this CLI does not recognise, for the
+/// same reason [`application_column`] does: a newer platform must not fail the
+/// whole listing. A row the platform said nothing about reads `unknown`, which
+/// is the honest answer rather than a guess in either direction.
+fn network_column(entry: &client::CoreNodeEntry) -> String {
+    entry
+        .network
+        .status
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// The APPLICATION column: the status, with the claimant count appended only
@@ -229,6 +270,10 @@ fn render_json(listing: &CoreNodeListing, api_url: &str) -> String {
                 "registered": entry.registered,
                 "first_seen_at": entry.first_seen_at,
                 "last_config_pull_at": entry.last_config_pull_at,
+                "network": {
+                    "status": entry.network.status,
+                    "router_zid": entry.network.router_zid,
+                },
                 "application": {
                     "status": entry.application.status,
                     "live_claimants": entry.application.live_claimants,
@@ -248,7 +293,7 @@ fn render_json(listing: &CoreNodeListing, api_url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::client::{ApplicationStatus, CoreNodeEntry};
+    use auth::client::{ApplicationStatus, CoreNodeEntry, NetworkStatus};
 
     const WORKSPACE: &str = "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4";
     const API_URL: &str = "https://api.peppy.dev";
@@ -275,11 +320,25 @@ mod tests {
             registered,
             first_seen_at: registered.then(|| format!("{first_seen_date}T10:00:00Z")),
             last_config_pull_at: registered.then(|| "2026-07-24T09:12:33Z".to_string()),
+            // The two columns are set independently so a test can pair any
+            // network status with any application status, which is the whole
+            // point of reporting them separately.
+            network: NetworkStatus {
+                status: Some("linked".to_string()),
+                router_zid: registered.then(|| "7f3a9c1e".to_string()),
+            },
             application: ApplicationStatus {
                 status: status.map(str::to_string),
                 live_claimants: claimants,
             },
         }
+    }
+
+    /// [`entry`] with an explicit network status, for the tests that pair the
+    /// two columns.
+    fn linked_as(mut entry: CoreNodeEntry, network: Option<&str>) -> CoreNodeEntry {
+        entry.network.status = network.map(str::to_string);
+        entry
     }
 
     fn listing(entries: Vec<CoreNodeEntry>, available: bool) -> CoreNodeListing {
@@ -291,10 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn human_output_renders_status_the_marker_and_a_collision() {
+    fn human_output_renders_both_layers_the_marker_and_a_collision() {
         let listing = listing(
             vec![
                 registered_on("cn-a1b2c3d4e5", true, Some("online"), Some(1), "2026-07-01"),
+                // A healthy uplink behind a dead daemon: the pairing the NETWORK
+                // column exists to make visible.
                 registered_on(
                     "cn-9f8e7d6c5b",
                     true,
@@ -302,7 +363,22 @@ mod tests {
                     Some(0),
                     "2026-07-14",
                 ),
-                entry("lab-bench-external", false, Some("online"), Some(2)),
+                // An unreachable site: both layers down.
+                linked_as(
+                    registered_on(
+                        "cn-113355aabb",
+                        true,
+                        Some("offline"),
+                        Some(0),
+                        "2026-06-02",
+                    ),
+                    Some("unlinked"),
+                ),
+                // Reaching the platform through a router peppy does not manage.
+                linked_as(
+                    entry("lab-bench-external", false, Some("online"), Some(2)),
+                    Some("indirect"),
+                ),
             ],
             true,
         );
@@ -313,10 +389,46 @@ mod tests {
             out,
             "Workspace 4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4 (backend https://api.peppy.dev)\n\
              \n\
-             CORE NODE           APPLICATION           REGISTERED\n\
-             cn-a1b2c3d4e5       online                2026-07-01   (this machine)\n\
-             cn-9f8e7d6c5b       offline               2026-07-14\n\
-             lab-bench-external  online (2 claimants)  -\n"
+             CORE NODE           NETWORK   APPLICATION           REGISTERED\n\
+             cn-a1b2c3d4e5       linked    online                2026-07-01   (this machine)\n\
+             cn-113355aabb       unlinked  offline               2026-06-02\n\
+             cn-9f8e7d6c5b       linked    offline               2026-07-14\n\
+             lab-bench-external  indirect  online (2 claimants)  -\n"
+        );
+    }
+
+    /// Every network status renders as itself, including one this CLI does not
+    /// know: a newer platform must not fail the listing.
+    #[test]
+    fn every_network_status_renders_verbatim() {
+        for status in [
+            "linked",
+            "indirect",
+            "unlinked",
+            "unknown",
+            "some-future-state",
+        ] {
+            assert_eq!(
+                network_column(&linked_as(
+                    entry("cn-a", true, Some("online"), Some(1)),
+                    Some(status)
+                )),
+                status
+            );
+        }
+    }
+
+    /// A row the platform said nothing about reads `unknown`, never a guess in
+    /// either direction: `unlinked` there would be wrong exactly when a site is
+    /// healthy and the observer is not.
+    #[test]
+    fn an_absent_network_status_reads_unknown() {
+        assert_eq!(
+            network_column(&linked_as(
+                entry("cn-a", true, Some("online"), Some(1)),
+                None
+            )),
+            "unknown"
         );
     }
 
@@ -427,6 +539,32 @@ mod tests {
             "the pull timestamp never appears under a name that reads as liveness"
         );
         assert_eq!(entry["application"]["status"], serde_json::json!("online"));
+        assert_eq!(entry["network"]["status"], serde_json::json!("linked"));
+        assert_eq!(
+            entry["network"]["router_zid"],
+            serde_json::json!("7f3a9c1e")
+        );
+    }
+
+    /// An unregistered row has no identity to join on, so its network object
+    /// carries a null zid rather than being absent: a script reading the shape
+    /// must not have to tell "no zid" from "no network object".
+    #[test]
+    fn json_nulls_the_router_zid_on_an_unregistered_row() {
+        let listing = listing(
+            vec![linked_as(
+                entry("lab-bench", false, Some("online"), Some(1)),
+                Some("indirect"),
+            )],
+            true,
+        );
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&render_json(&listing, API_URL)).expect("valid json");
+
+        let entry = &doc["core_nodes"][0];
+        assert_eq!(entry["network"]["status"], serde_json::json!("indirect"));
+        assert!(entry["network"]["router_zid"].is_null());
     }
 
     // ─── The `(this machine)` marker ──────────────────────────────────────
