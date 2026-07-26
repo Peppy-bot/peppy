@@ -1,12 +1,14 @@
-//! The `peppy platform` command group: `login`, `logout`, and `whoami`. Each
-//! variant maps to a handler in this module's directory; the OAuth device flow,
-//! token storage, and credential resolution they share live in the separate
-//! `auth` engine crate. The group is named for the platform account rather than
-//! for auth because signing in does more than obtain a token: it stamps this
-//! machine's workspace namespace and pokes the running daemon to refederate
-//! its messaging router, and a login whose federation link cannot be
-//! established fails.
+//! The `peppy platform` command group: `login`, `logout`, `whoami`, and
+//! `list`. Each variant maps to a handler in this module's directory; the OAuth
+//! device flow, token storage, and credential resolution they share live in the
+//! separate `auth` engine crate, and the config/URL/credential preamble they
+//! all repeat lives here as [`PlatformSession`]. The group is named for the
+//! platform account rather than for auth because signing in does more than
+//! obtain a token: it stamps this machine's workspace namespace and pokes the
+//! running daemon to refederate its messaging router, and a login whose
+//! federation link cannot be established fails.
 
+pub mod list;
 pub mod login;
 pub mod logout;
 pub mod whoami;
@@ -19,6 +21,8 @@ use core_node_api::encoding::StackListRequest;
 use core_node_api::{NodeStage, SerializedNodeGraph};
 use daemon_config::consts::PeppyDirs;
 use peppylib::core_node::transport::poll;
+
+use auth::{http::HttpClient, profile, storage};
 
 use super::Command;
 use crate::commands::CALLER_INSTANCE_ID;
@@ -108,6 +112,70 @@ pub(crate) fn federation_poke_timeout_secs(
 /// not.
 pub(crate) fn read_daemon_state(dirs: &PeppyDirs) -> Option<DaemonState> {
     DaemonState::read_from(&DaemonState::state_file_in(dirs.root())).ok()
+}
+
+/// What every `peppy platform` command resolves before it can talk to the
+/// backend.
+///
+/// All four commands opened with the same four steps: load (and seed) the peppy
+/// config with the daemon's own strict semantics, resolve the API URL through
+/// the profile fallback, locate the credentials file, and build an HTTP client.
+/// The daemon's state rides along because it decides managed-vs-external for
+/// `login`/`logout` and supplies the `(this machine)` marker for `list`;
+/// reading it never fails the command, since a machine with no daemon running
+/// is a normal case for all four.
+pub(crate) struct PlatformSession {
+    pub dirs: PeppyDirs,
+    pub config: daemon_config::peppy_config::PeppyConfig,
+    pub api_url: String,
+    pub creds_path: std::path::PathBuf,
+    pub http: HttpClient,
+    /// The running daemon's recorded state. `None` when no daemon is running,
+    /// or its state file is absent or unreadable.
+    pub daemon_state: Option<DaemonState>,
+}
+
+impl PlatformSession {
+    pub(crate) fn resolve(peppy_dirs: Option<PeppyDirs>, api_url: Option<&str>) -> Result<Self> {
+        let dirs = peppy_dirs.unwrap_or_default();
+        // Loads (and seeds/completes) peppy_config.json5 with the same strict,
+        // fail-loud semantics the daemon uses; resource_servers supplies the
+        // per-profile URL fallback.
+        let config =
+            daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
+        let resolved_api_url = profile::resolve_api_url(api_url, &config.resource_servers)?;
+        Ok(Self {
+            creds_path: storage::credentials_path(&dirs),
+            // Managed vs external follows the RUNNING daemon's mode (from its
+            // state file), not the disk config, which may have been edited
+            // since it started; only with no daemon running does the disk
+            // config decide.
+            daemon_state: read_daemon_state(&dirs),
+            dirs,
+            config,
+            api_url: resolved_api_url,
+            http: HttpClient::new(),
+        })
+    }
+}
+
+/// Rejects `--core-node` for the whole `platform` group.
+///
+/// `--core-node` redirects a command at another machine's daemon, and no
+/// command in this group addresses a daemon that way: `login` and `logout` poke
+/// the *local* daemon over its control socket, and `whoami` and `list` talk
+/// only to the platform. Accepting the flag and ignoring it would silently
+/// answer a different question than the one asked, so the whole group refuses
+/// it rather than each command deciding for itself.
+fn reject_core_node_override(ctx: &AppContext) -> Result<()> {
+    let Some(core_node) = ctx.core_node_override() else {
+        return Ok(());
+    };
+    Err(Error::ExecutionFailed(format!(
+        "`--core-node {core_node}` is not valid for `peppy platform` commands: they act on this \
+         machine's daemon and on your platform account, never on another core node. \
+         Run `peppy stack list` to see other core nodes in your workspace."
+    )))
 }
 
 /// Confirms (before authentication begins) a managed-router login/logout that
@@ -451,6 +519,14 @@ pub enum PlatformCommands {
         #[arg(long)]
         json: bool,
     },
+    /// List the core nodes registered to this workspace, and whether each is alive
+    List {
+        #[arg(long = "api-url")]
+        api_url: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub struct PlatformCommand {
@@ -459,6 +535,9 @@ pub struct PlatformCommand {
 
 impl Command for PlatformCommand {
     fn execute(self, app_ctx: &Arc<AppContext>) -> Result<()> {
+        // Refused for the whole group, before any command does work: see
+        // `reject_core_node_override`.
+        reject_core_node_override(app_ctx)?;
         match self.command {
             PlatformCommands::Login {
                 api_url,
@@ -478,6 +557,12 @@ impl Command for PlatformCommand {
             }
             .execute(app_ctx),
             PlatformCommands::Whoami { api_url, json } => whoami::WhoamiCommand {
+                api_url,
+                json,
+                peppy_dirs: None,
+            }
+            .execute(app_ctx),
+            PlatformCommands::List { api_url, json } => list::ListCommand {
                 api_url,
                 json,
                 peppy_dirs: None,

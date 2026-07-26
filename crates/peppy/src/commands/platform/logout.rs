@@ -14,7 +14,7 @@ use daemon_config::peppy_config::PeppyConfig;
 
 use crate::commands::Command;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use auth::{client, http::HttpClient, profile, storage};
 
 pub struct LogoutCommand {
@@ -28,17 +28,15 @@ pub struct LogoutCommand {
 
 impl Command for LogoutCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
-        let dirs = self.peppy_dirs.unwrap_or_default();
-        let config =
-            daemon_config::peppy_config::load_or_create(&dirs).map_err(Error::DaemonConfig)?;
-        // Managed vs external follows the RUNNING daemon's mode (from its state
-        // file), not the disk config, which may have been edited since it
-        // started; only with no daemon running does the disk config decide.
-        let daemon_state = super::read_daemon_state(&dirs);
+        let super::PlatformSession {
+            dirs,
+            config,
+            api_url,
+            creds_path,
+            http,
+            daemon_state,
+        } = super::PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let federation = super::federation_poke_timeout_secs(daemon_state.as_ref(), &config);
-        let api_url = profile::resolve_api_url(self.api_url.as_deref(), &config.resource_servers)?;
-        let creds_path = storage::credentials_path(&dirs);
-        let http = HttpClient::new();
 
         // Load-resilient: a malformed / pre-`workspace_id` file fails to parse
         // with `Error::Auth`; treat it as "already effectively logged out" rather

@@ -16,10 +16,13 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 
 use auth::storage::{self, Credentials, ProfileCreds};
+use daemon::state::DaemonState;
 use peppy::commands::Command;
+use peppy::commands::platform::list::ListCommand;
 use peppy::commands::platform::login::LoginCommand;
 use peppy::commands::platform::logout::LogoutCommand;
 use peppy::commands::platform::whoami::WhoamiCommand;
+use peppy::commands::platform::{PlatformCommand, PlatformCommands};
 use peppy::context::AppContext;
 
 /// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
@@ -701,6 +704,244 @@ fn whoami_runs_against_a_seeded_session() {
         .execute(&ctx())
         .expect("whoami");
     }
+}
+
+// ─── `peppy platform list` ────────────────────────────────────────────────
+
+const WORKSPACE: &str = "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4";
+
+/// A tempdir with a seeded session credential pointing at `server`, ready for a
+/// command that needs to be authenticated.
+fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let creds = Credentials {
+        session: Some(seeded_creds(server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&creds_path(&dir), &creds).expect("seed creds");
+    dir
+}
+
+/// Mocks `GET /me/core-nodes` with one registered, online core node.
+fn mock_core_nodes<'a>(server: &'a MockServer, core_node_name: &str) -> httpmock::Mock<'a> {
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(200).json_body(json!({
+            "workspace_id": WORKSPACE,
+            "application_status_available": true,
+            "core_nodes": [{
+                "core_node_name": core_node_name,
+                "registered": true,
+                "first_seen_at": "2026-07-01T10:00:00Z",
+                "last_config_pull_at": "2026-07-24T09:12:33Z",
+                "application": { "status": "online", "live_claimants": 1 },
+            }],
+        }));
+    })
+}
+
+fn list_in(server: &MockServer, dir: &tempfile::TempDir, json: bool) -> peppy::error::Result<()> {
+    ListCommand {
+        api_url: Some(server.base_url()),
+        json,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+}
+
+#[test]
+fn list_renders_the_workspace_roster_in_both_formats() {
+    let server = MockServer::start();
+    let core_nodes = mock_core_nodes(&server, "cn-a1b2c3d4e5");
+    let dir = authenticated_dir(&server);
+
+    for json in [false, true] {
+        list_in(&server, &dir, json).expect("list should succeed");
+    }
+
+    core_nodes.assert_calls(2);
+}
+
+/// Unlike `whoami`, whose output IS the sign-in state, `list` cannot answer at
+/// all without a credential, so it fails rather than printing a document
+/// saying so. `main` maps the error to exit 1.
+#[test]
+fn list_without_a_credential_fails_instead_of_emitting_a_document() {
+    let server = MockServer::start();
+    // No credentials seeded.
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    for json in [false, true] {
+        let error = list_in(&server, &dir, json).expect_err("list must fail unauthenticated");
+        assert!(
+            error.to_string().contains("peppy platform login"),
+            "the error must say how to fix it: {error}"
+        );
+    }
+}
+
+#[test]
+fn list_fails_when_the_backend_is_unreachable() {
+    let server = MockServer::start();
+    let dir = authenticated_dir(&server);
+    // A port nothing listens on, so the request cannot complete. There is
+    // deliberately no local fallback: a local query would answer a different
+    // question than the one the command claims to answer.
+    let unreachable = "http://127.0.0.1:1";
+
+    let error = ListCommand {
+        api_url: Some(unreachable.to_string()),
+        json: false,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect_err("an unreachable backend must fail the command");
+
+    assert!(
+        !error.to_string().is_empty(),
+        "the failure must carry a message"
+    );
+}
+
+#[test]
+fn list_surfaces_a_backend_outage_as_a_retryable_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(503);
+    });
+    let dir = authenticated_dir(&server);
+
+    let error = list_in(&server, &dir, false).expect_err("a 503 must fail the command");
+
+    assert!(
+        error.to_string().contains("try again"),
+        "a 503 must read as transient: {error}"
+    );
+}
+
+/// A newer CLI against a backend that predates the endpoint. Without the
+/// explicit mapping this reads as an unexplained `returned 404`.
+#[test]
+fn list_explains_a_backend_that_does_not_have_the_endpoint() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(404);
+    });
+    let dir = authenticated_dir(&server);
+
+    let error = list_in(&server, &dir, false).expect_err("a 404 must fail the command");
+
+    assert!(
+        error.to_string().contains("upgrade the platform"),
+        "a 404 must name the cause and the fix: {error}"
+    );
+}
+
+/// `--core-node` redirects a command at another machine's daemon, which no
+/// `platform` command does. The whole group refuses it, rather than each
+/// command silently answering a different question.
+#[test]
+fn every_platform_command_refuses_a_core_node_override() {
+    let server = MockServer::start();
+    let dir = authenticated_dir(&server);
+    let redirected = Arc::new(
+        AppContext::from_current_dir()
+            .expect("cwd is readable")
+            .with_core_node_override(Some("robot-7".to_string())),
+    );
+
+    let commands: Vec<(&str, PlatformCommands)> = vec![
+        (
+            "list",
+            PlatformCommands::List {
+                api_url: Some(server.base_url()),
+                json: false,
+            },
+        ),
+        (
+            "whoami",
+            PlatformCommands::Whoami {
+                api_url: Some(server.base_url()),
+                json: false,
+            },
+        ),
+        (
+            "logout",
+            PlatformCommands::Logout {
+                api_url: Some(server.base_url()),
+                yes: true,
+            },
+        ),
+        (
+            "login",
+            PlatformCommands::Login {
+                api_url: Some(server.base_url()),
+                no_browser: true,
+                yes: true,
+            },
+        ),
+    ];
+
+    for (name, command) in commands {
+        let error = PlatformCommand { command }
+            .execute(&redirected)
+            .expect_err(&format!("`platform {name}` must refuse --core-node"));
+        assert!(
+            error.to_string().contains("--core-node"),
+            "`platform {name}` must name the flag it refused: {error}"
+        );
+        assert!(
+            error.to_string().contains("peppy stack list"),
+            "`platform {name}` must point at the command that does show other core nodes: {error}"
+        );
+    }
+
+    // The refusal happens before any work: the backend was never called.
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(500);
+    });
+    let _ = dir;
+}
+
+/// A stale daemon state file must not fail the command, whatever it records.
+///
+/// The marker RULES are pinned as a pure unit in `platform::list`
+/// (`this_machine_name`), where each case is asserted directly rather than
+/// inferred from a command that succeeded. What this covers is the wiring: a
+/// state file on disk is read, and a daemon running in another workspace is a
+/// normal case rather than an error.
+#[test]
+fn a_daemon_in_another_workspace_does_not_fail_the_listing() {
+    let server = MockServer::start();
+    let core_nodes = mock_core_nodes(&server, "cn-local-daemon");
+    let dir = authenticated_dir(&server);
+    // Same core-node name as the listed row, different workspace: the
+    // mid-login case.
+    write_daemon_state(&dir, "cn-local-daemon", "local");
+
+    list_in(&server, &dir, false).expect("a mismatched namespace must not fail the command");
+
+    core_nodes.assert();
+}
+
+/// Writes a daemon state file recording `core_node_name` under `namespace`.
+fn write_daemon_state(dir: &tempfile::TempDir, core_node_name: &str, namespace: &str) {
+    let state = DaemonState::new(
+        core_node_name,
+        "127.0.0.1",
+        7447,
+        "test-git-hash",
+        30,
+        config::namespace::Namespace::parse(namespace).expect("valid namespace"),
+        Some(30),
+    );
+    let path = DaemonState::state_file_in(dir.path());
+    std::fs::create_dir_all(path.parent().expect("state file has a parent"))
+        .expect("state file dir");
+    DaemonState::write_to(&path, &state).expect("write daemon state");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.
