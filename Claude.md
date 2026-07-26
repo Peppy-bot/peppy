@@ -12,8 +12,8 @@
 - Do not leave legacy code behind or code that is meant to support previous version of the code.
 - When you write comments or documentation, stop using em-dash `—`, this is a recurring pattern that you make and immediately jumps at users as being your coding style.
 - Push back hard against design implementation that you think are fundamentally wrong and explain your reasoning
-- Never open or merge PRs in the remote repository without my consent
-
+- Never merge PRs in the remote repository without my consent
+- When tests are written, never make them time-based, they should be deterministic and should not depend on the speed of the host
 ---
 
 ## Workflow and interaction style
@@ -33,6 +33,6 @@
 - Test your code before declaring done.
 - No sycophantic openers or closing fluff.
 - Keep solutions simple and direct. No over-engineering, but if a big refactor is needed to keep code easier to reason about, proceed.
-- If unsure: say so and ask user questions in doubt.
+- When unsure about a big design decision: say so and AskUserQuestion, do not ask those questions if it's about a small implementation detail.
 - Never guess or invent file paths.
 - User instructions always override this file.
