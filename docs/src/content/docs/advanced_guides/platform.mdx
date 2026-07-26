@@ -17,7 +17,7 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 | `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your workspace's cloud router. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
 | `peppy platform list [--api-url <url>] [--json]` | Lists the core nodes registered to your workspace and whether each one is running right now. |
-| `peppy platform logout [--yes]` | Revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
+| `peppy platform logout [--yes]` | Removes this machine from the workspace's core-node registry, revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
 [Workspace federation](#workspace-federation).
@@ -116,7 +116,8 @@ lab-bench-external   indirect   online (2 claimants)  -
 The listing is **workspace scoped**. It shows the machines logged in to your own
 account and nothing else, and machines in other workspaces are invisible to you
 by design. The platform runs no core node in your workspace either, so every row
-is one of your own machines.
+is one of your own machines. A machine is added when it logs in and removed when
+it logs out, so `peppy platform logout` takes a machine off this list.
 
 #### Two layers, reported separately
 
@@ -301,6 +302,14 @@ This calls `POST {api_url}/logout`, which denylists the presented access token
 across all backend replicas (sub-second), then deletes the local credentials.
 The effect is near-immediate for the logged-out token. It revokes only the
 token you presented; a session on another device keeps working.
+
+Logout also deregisters this machine's core node, sending `DELETE
+{api_url}/me/core-nodes/{core_node_name}` so the machine stops appearing in
+`peppy platform list`. A logged-out machine no longer federates or pulls config,
+so leaving its row behind would misrepresent it. This step is best-effort, like
+the token revocation above: if the backend is unreachable the row is left behind
+and logout still completes, and a `zenoh.external` daemon that never registered
+has nothing to remove.
 
 Logout also returns this machine to the `local` namespace. Under `zenoh.managed`,
 it de-federates the router, restarts the daemon, and wipes the running node stack,
