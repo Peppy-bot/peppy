@@ -2,8 +2,9 @@
 /*
  * Responsive YouTube player. The iframe fills a 16:9 wrapper instead of
  * carrying fixed width/height attributes, so it tracks the content column at
- * every breakpoint, and it is served from youtube-nocookie.com so watching a
- * video from the docs does not plant tracking cookies. The frame borrows the
+ * every breakpoint, and it is served from youtube-nocookie.com, YouTube's
+ * privacy-enhanced embed, which holds back the identifiers a plain embed
+ * stores until a visitor actually plays the video. The frame borrows the
  * hairline and 12px radius the code windows and asides use, so an embed reads
  * as one of the page's own blocks rather than a foreign panel.
  */
