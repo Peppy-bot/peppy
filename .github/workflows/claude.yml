@@ -21,15 +21,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  claude:
-    # The action does its own trigger-phrase matching, but that happens after a
-    # runner is already up. This job-level filter keeps every unrelated comment
-    # in the repo from booting a runner just to be discarded.
+  # Gate. The action has its own built-in check, but it admits anyone with
+  # *write* access, and this repo is public with a job that can push branches.
+  # Admin is the narrower bar we actually want, and it has to be read at run
+  # time rather than hardcoded so that admins added later are covered without
+  # editing this file.
+  authorize:
+    # Cheap pre-filter so an unrelated comment does not boot a runner just to be
+    # discarded. The action re-checks the trigger phrase itself afterwards.
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
       || (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
       || (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
       || (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      is_admin: ${{ steps.check.outputs.is_admin }}
+
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed through the environment rather than interpolated into the
+          # script body, so no field controlled by the event can be parsed as
+          # shell.
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # `.user.permissions.admin` is a boolean, unlike `role_name`, which an
+          # org can override with a custom role whose name we cannot predict.
+          # On failure gh writes its error body to stdout, so `raw` is only
+          # trusted when it is exactly "true"; anything else (API error, actor
+          # not a collaborator, token lacking the read) denies. The failure mode
+          # is a refusal to run, never an unintended grant.
+          raw="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+            --jq '.user.permissions.admin' 2>/dev/null || true)"
+
+          if [ "$raw" = "true" ]; then
+            echo "is_admin=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_admin=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Ignoring @claude from '$ACTOR': restricted to repository admins."
+          fi
+
+  claude:
+    needs: authorize
+    if: needs.authorize.outputs.is_admin == 'true'
 
     # GitHub-hosted rather than the self-hosted runner the other workflows use.
     # This job installs its own toolchain and would otherwise contend with the
@@ -41,6 +83,15 @@ jobs:
       pull-requests: write # post review comments, open PRs
       issues: write # reply on the issue thread
       actions: read # read failing CI logs when asked why a run broke
+      # Required. With no `github_token` input the action mints its credential
+      # by exchanging an OIDC token for a GitHub App token, and without this it
+      # cannot read ACTIONS_ID_TOKEN_REQUEST_URL and fails outright.
+      #
+      # Worth keeping over the simpler `github_token: ${{ secrets.GITHUB_TOKEN }}`
+      # route: pushes made with GITHUB_TOKEN deliberately do not start other
+      # workflows, so a fix Claude pushed to a PR would never run tests.yml.
+      # The App token has no such restriction.
+      id-token: write
 
     steps:
       - uses: actions/checkout@v6
