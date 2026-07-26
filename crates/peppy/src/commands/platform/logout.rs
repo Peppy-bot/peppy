@@ -166,7 +166,7 @@ fn deregister_core_node(
     core_node_name: Option<&str>,
 ) {
     let Some(core_node_name) = core_node_name else {
-        eprintln!(
+        println!(
             "Warning: could not determine this machine's core-node name; it stays listed in \
              the platform's core-node registry."
         );
@@ -176,8 +176,8 @@ fn deregister_core_node(
         format!("core node {core_node_name} may stay listed in the platform's core-node registry");
     match client::deregister_core_node(http, api_url, access_token, core_node_name) {
         Ok(204) | Ok(404) => {}
-        Ok(status) => eprintln!("Warning: deregistering returned {status}; {leak}."),
-        Err(e) => eprintln!("Warning: could not reach the backend ({e}); {leak}."),
+        Ok(status) => println!("Warning: deregistering returned {status}; {leak}."),
+        Err(e) => println!("Warning: could not reach the backend ({e}); {leak}."),
     }
 }
 

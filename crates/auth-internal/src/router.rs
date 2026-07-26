@@ -121,7 +121,9 @@ fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Optio
 /// tags the cache, so a resolve under a different name (a renamed daemon) always
 /// re-pulls and re-registers rather than reusing a still-fresh cache.
 /// `router_zid` is the managed router's pinned transport identity, carried in
-/// the same POST and tagging the cache the same way.
+/// the same POST so the registered row can be matched against the shared
+/// router's live session list. Unlike the name, it deliberately does not
+/// participate in cache reuse (see the cache comment below).
 ///
 /// Only the pull path needs a credential, so a fresh cache is reused without
 /// touching the token at all.

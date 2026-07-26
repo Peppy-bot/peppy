@@ -167,9 +167,10 @@ pub struct ZenohRouterConfig {
     /// Transport scheme, `"tls"` today.
     pub protocol: String,
     /// How long this config may be reused before re-resolving it. A cache-freshness
-    /// hint only: the backend now actively health-checks the daemon, so reusing a
-    /// still-fresh config (rather than re-pulling) never risks the router being torn
-    /// down.
+    /// hint only: the router the backend hands back is a single shared one, not a
+    /// per-user resource with a lifetime, and nothing on the backend probes this
+    /// daemon or tears that router down. Reusing a still-fresh config therefore only
+    /// delays this daemon's next re-registration, never the loss of a router.
     pub reconnect_after_secs: u64,
     /// The daemon's session namespace, deserialized directly from the backend's
     /// `workspace_id`. Typed at the HTTP boundary: an invalid workspace id fails
