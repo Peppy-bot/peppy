@@ -845,7 +845,12 @@ fn list_explains_a_backend_that_does_not_have_the_endpoint() {
 #[test]
 fn every_platform_command_refuses_a_core_node_override() {
     let server = MockServer::start();
-    let dir = authenticated_dir(&server);
+    // Registered before the commands run, so the call count below is evidence.
+    // A mock added afterwards could not have been hit whatever the guard does.
+    let core_nodes = server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(500);
+    });
     let redirected = Arc::new(
         AppContext::from_current_dir()
             .expect("cwd is readable")
@@ -899,11 +904,11 @@ fn every_platform_command_refuses_a_core_node_override() {
     }
 
     // The refusal happens before any work: the backend was never called.
-    server.mock(|when, then| {
-        when.method(GET).path("/me/core-nodes");
-        then.status(500);
-    });
-    let _ = dir;
+    assert_eq!(
+        core_nodes.calls(),
+        0,
+        "the override must be refused before any command reaches the backend"
+    );
 }
 
 /// A stale daemon state file must not fail the command, whatever it records.

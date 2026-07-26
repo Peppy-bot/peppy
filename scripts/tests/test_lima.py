@@ -199,7 +199,12 @@ def test_vm_resources_caps_memory_at_half_host_ram(tmp_path: Path) -> None:
 def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
 
-    with patch("functions.lima._run_limactl") as mock_run:
+    # `_vm_resources` is stubbed for the same reason the success case above
+    # stubs it: it reads the host's RAM through `sysctl`, which exists only on
+    # macOS, so the real one raises its own ReleaseError on the Linux CI runner
+    # before the create call under test is ever reached.
+    with patch("functions.lima._run_limactl") as mock_run, \
+         patch("functions.lima._vm_resources", return_value=(8, 12)):
         # First call: list (empty = not found), second call: create fails
         mock_run.side_effect = [
             MagicMock(stdout=""),
