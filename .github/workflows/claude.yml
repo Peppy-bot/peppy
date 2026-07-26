@@ -1,0 +1,65 @@
+name: Claude
+
+# Interactive only: nothing runs unless a human writes `@claude` in an issue, a
+# PR comment, or a review. There is no automatic per-push review, so this costs
+# nothing on ordinary PR traffic.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened]
+
+# Keyed per issue/PR so two mentions on the same thread queue instead of racing
+# on the same branch. `cancel-in-progress` stays false on purpose: killing a run
+# mid-flight leaves a half-written comment and, worse, a half-pushed branch.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    # The action does its own trigger-phrase matching, but that happens after a
+    # runner is already up. This job-level filter keeps every unrelated comment
+    # in the repo from booting a runner just to be discarded.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+      || (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      || (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+      || (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+
+    # GitHub-hosted rather than the self-hosted runner the other workflows use.
+    # This job installs its own toolchain and would otherwise contend with the
+    # long cargo and container builds that already occupy the self-hosted box.
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # push the branch when Claude is asked to make a change
+      pull-requests: write # post review comments, open PRs
+      issues: write # reply on the issue thread
+      actions: read # read failing CI logs when asked why a run broke
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history so Claude can read blame and prior commits rather than
+          # reasoning from a single shallow snapshot.
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The `[1m]` suffix selects the 1M-context variant of Opus 5. Without
+          # it the model runs at its standard context window, which matters here
+          # because the checkout is a full-history clone of a large Rust repo.
+          #
+          # `xhigh` rather than `high`: this job reviews and edits Rust, and
+          # xhigh is the recommended level for coding and agentic work on Opus 5.
+          # Both are pinned for the same reason, so a change in either default
+          # does not silently change what CI runs.
+          claude_args: >-
+            --model claude-opus-5[1m]
+            --effort xhigh
