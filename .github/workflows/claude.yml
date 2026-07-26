@@ -13,9 +13,15 @@ on:
   issues:
     types: [opened]
 
-# Keyed per issue/PR so two mentions on the same thread queue instead of racing
-# on the same branch. `cancel-in-progress` stays false on purpose: killing a run
-# mid-flight leaves a half-written comment and, worse, a half-pushed branch.
+# Keyed per issue/PR so mentions on the same thread cannot run concurrently and
+# race on the same branch. `cancel-in-progress` stays false on purpose: killing a
+# run mid-flight leaves a half-written comment and, worse, a half-pushed branch.
+#
+# Caveat: GitHub holds at most ONE pending run per group. With a run active and
+# one already pending, a third mention displaces the pending one rather than
+# lining up behind it. Actions has no `queue:` setting to change that, and a real
+# durable queue would need external machinery that a human-paced trigger does not
+# justify. If a mention is ever dropped this way, post it again.
 concurrency:
   group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
@@ -29,11 +35,25 @@ jobs:
   authorize:
     # Cheap pre-filter so an unrelated comment does not boot a runner just to be
     # discarded. The action re-checks the trigger phrase itself afterwards.
+    #
+    # `author_association` is read straight from the event payload, so a drive-by
+    # comment from outside the org is rejected without starting a runner at all.
+    # It is deliberately wider than the admin test below (an admin here reports
+    # MEMBER, not OWNER), so it filters noise rather than granting anything; the
+    # `is_admin` lookup remains the actual authorization boundary.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
-      || (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
-      || (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-      || (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (github.event_name == 'issue_comment'
+        && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      || (github.event_name == 'pull_request_review_comment'
+        && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      || (github.event_name == 'pull_request_review'
+        && contains(github.event.review.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
+      || (github.event_name == 'issues'
+        && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
 
     runs-on: ubuntu-latest
     permissions:
@@ -94,15 +114,24 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v6
+      # Both actions below are pinned to a commit rather than a tag. Tags are
+      # mutable, and this job holds contents: write plus the Claude credential,
+      # so a retagged release would run with them. Bump deliberately.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           # Full history so Claude can read blame and prior commits rather than
           # reasoning from a single shallow snapshot.
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The job-level `actions: read` above scopes GITHUB_TOKEN, which this
+          # action does not use: it works through an App token minted by the OIDC
+          # exchange, and that token's scope comes from this input. Without it the
+          # log-reading grant lands on a token nothing reads logs with.
+          additional_permissions: |
+            actions: read
           # The `[1m]` suffix selects the 1M-context variant of Opus 5. Without
           # it the model runs at its standard context window, which matters here
           # because the checkout is a full-history clone of a large Rust repo.
