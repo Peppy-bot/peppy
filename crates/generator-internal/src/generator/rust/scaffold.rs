@@ -585,6 +585,7 @@ fn write_leaf_module(
     }
     let module_file = File {
         shebang: None,
+        frontmatter: None,
         attrs,
         items,
     };
@@ -606,6 +607,7 @@ fn render_module_file(module_file: File) -> String {
     if !module_file.attrs.is_empty() {
         let attr_file = File {
             shebang: None,
+            frontmatter: None,
             attrs: module_file.attrs,
             items: Vec::new(),
         };
@@ -618,6 +620,7 @@ fn render_module_file(module_file: File) -> String {
     while let Some(item) = items_iter.next() {
         let item_file = File {
             shebang: None,
+            frontmatter: None,
             attrs: Vec::new(),
             items: vec![item],
         };
@@ -675,6 +678,7 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     let ImplItemFn {
         attrs,
         vis,
+        modifiers,
         sig,
         block,
         ..
@@ -683,6 +687,7 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     Some(Item::Fn(ItemFn {
         attrs,
         vis,
+        modifiers,
         sig,
         block: Box::new(block),
     }))

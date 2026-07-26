@@ -168,6 +168,12 @@ fn get_me_parses_principal_with_unknown_fields() {
 /// pull mocks *require* it as the POST body (`json_body`), so a pull that
 /// drops or malforms the body gets no mock response and fails its test.
 const CORE_NODE: &str = "core-node-test-1";
+/// The managed router identity every federation pull in these tests reports.
+const ROUTER_ZID: &str = "7f3a9c1e";
+
+fn router_zid() -> pmi::RouterId {
+    pmi::RouterId::parse(ROUTER_ZID).expect("a valid router id literal")
+}
 
 fn workspace_namespace() -> config::namespace::Namespace {
     config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap()
@@ -177,12 +183,14 @@ fn workspace_namespace() -> config::namespace::Namespace {
 fn establish_federation_parses_the_contract() {
     let server = MockServer::start();
     // The shared router is static, so the POST provisions nothing — but its body
-    // must always identify the daemon by core-node name (the backend registry
-    // requires it). The matcher rejects any other body.
+    // must always identify the daemon by BOTH its core-node name (the
+    // application layer) and its router zid (the transport layer); the backend
+    // registry requires both. The matcher rejects any other body, so this is the
+    // wire-contract check for the pair.
     let cfg_mock = server.mock(|when, then| {
         when.method(POST)
             .path("/me/cli/federation")
-            .json_body(json!({ "core_node_name": CORE_NODE }));
+            .json_body(json!({ "core_node_name": CORE_NODE, "router_zid": ROUTER_ZID }));
         then.status(200).json_body(json!({
             "endpoint": "tls/localhost:7447",
             "protocol": "tls",
@@ -199,8 +207,14 @@ fn establish_federation_parses_the_contract() {
         token: storage::secret("any-token".to_string()),
         kind: CredentialKind::Pat,
     };
-    let cfg = client::establish_federation(&http, &server.base_url(), &mut cred, CORE_NODE)
-        .expect("fetch shared router config");
+    let cfg = client::establish_federation(
+        &http,
+        &server.base_url(),
+        &mut cred,
+        CORE_NODE,
+        &router_zid(),
+    )
+    .expect("fetch shared router config");
     assert_eq!(cfg.protocol, "tls");
     assert_eq!(cfg.reconnect_after_secs, 3000);
     assert_eq!(cfg.namespace, workspace_namespace());
@@ -237,20 +251,20 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
         }));
     });
     // First pull (seeded token) is rejected; the retry (rotated token) succeeds.
-    // Both matchers require the core-node-name body, so the retry provably
-    // re-sends it.
+    // Both matchers require the full identity body, so the retry provably
+    // re-sends it rather than dropping a field on the way through.
     let pull_rejected = server.mock(|when, then| {
         when.method(POST)
             .path("/me/cli/federation")
             .header("Authorization", "Bearer seeded-access")
-            .json_body(json!({ "core_node_name": CORE_NODE }));
+            .json_body(json!({ "core_node_name": CORE_NODE, "router_zid": ROUTER_ZID }));
         then.status(401);
     });
     let pull_ok = server.mock(|when, then| {
         when.method(POST)
             .path("/me/cli/federation")
             .header("Authorization", "Bearer refreshed-access")
-            .json_body(json!({ "core_node_name": CORE_NODE }));
+            .json_body(json!({ "core_node_name": CORE_NODE, "router_zid": ROUTER_ZID }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -280,8 +294,14 @@ fn router_config_pull_refreshes_on_401_then_re_pulls() {
         }),
     };
 
-    let cfg = client::establish_federation(&http, &server.base_url(), &mut cred, CORE_NODE)
-        .expect("pull after refresh");
+    let cfg = client::establish_federation(
+        &http,
+        &server.base_url(),
+        &mut cred,
+        CORE_NODE,
+        &router_zid(),
+    )
+    .expect("pull after refresh");
     assert_eq!(
         cfg.host_port().unwrap(),
         ("cap.zenoh.localhost".to_string(), 7443)
@@ -337,9 +357,16 @@ fn resolve_router_endpoint_reuses_a_fresh_cache_without_pulling() {
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
-    let endpoint =
-        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, CORE_NODE)
-            .expect("resolve from cache");
+    let endpoint = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        None,
+        None,
+        CORE_NODE,
+        &router_zid(),
+    )
+    .expect("resolve from cache");
     assert_eq!(endpoint.host, "cached.zenoh.localhost");
     assert_eq!(endpoint.port, 7443);
     assert!(endpoint.tls.verify_name_on_connect);
@@ -354,11 +381,11 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
     // the `RouterFederation` task both rely on.
     let server = MockServer::start();
     // The body matcher doubles as the C1 wire-contract check: the daemon's
-    // federation pull must always identify itself by core-node name.
+    // federation pull must always identify itself by core-node name and router zid.
     let pull = server.mock(|when, then| {
         when.method(POST)
             .path("/me/cli/federation")
-            .json_body(json!({ "core_node_name": CORE_NODE }));
+            .json_body(json!({ "core_node_name": CORE_NODE, "router_zid": ROUTER_ZID }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -383,6 +410,7 @@ fn resolve_federation_target_derives_the_upstream_tls_locator() {
         Some(ca.clone()),
         SECS_30,
         CORE_NODE,
+        &router_zid(),
     )
     .expect("logged in ⇒ a federation target");
     assert_eq!(target.0, "tls/cap.zenoh.localhost:7443");
@@ -419,6 +447,7 @@ fn resolve_federation_target_is_none_when_not_logged_in() {
         None,
         SECS_30,
         CORE_NODE,
+        &router_zid(),
     );
     assert!(target.is_none(), "not logged in ⇒ no federation target");
     assert_eq!(pull.calls(), 0, "not logged in ⇒ the backend is never hit");
@@ -457,6 +486,7 @@ fn resolve_federation_target_fails_closed_on_an_invalid_workspace_namespace() {
         None,
         SECS_30,
         CORE_NODE,
+        &router_zid(),
     );
     assert!(
         target.is_none(),
@@ -506,6 +536,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         None,
         Duration::from_millis(100),
         CORE_NODE,
+        &router_zid(),
     );
     assert!(
         too_slow.is_none(),
@@ -520,6 +551,7 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
         None,
         SECS_30,
         CORE_NODE,
+        &router_zid(),
     );
     assert!(
         in_time.is_some(),
@@ -534,12 +566,12 @@ fn resolve_federation_target_honors_a_short_connect_timeout() {
 #[test]
 fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
     let server = MockServer::start();
-    // The stale re-pull must also carry the core-node-name body (the matcher
+    // The stale re-pull must also carry both identity fields (the matcher
     // rejects anything else).
     let pull = server.mock(|when, then| {
         when.method(POST)
             .path("/me/cli/federation")
-            .json_body(json!({ "core_node_name": CORE_NODE }));
+            .json_body(json!({ "core_node_name": CORE_NODE, "router_zid": ROUTER_ZID }));
         then.status(200).json_body(json!({
             "endpoint": "tls/fresh.zenoh.localhost:7443",
             "protocol": "tls",
@@ -574,6 +606,7 @@ fn resolve_router_endpoint_re_pulls_and_caches_when_stale() {
         None,
         Some(ca.clone()),
         CORE_NODE,
+        &router_zid(),
     )
     .expect("re-pull");
     assert_eq!(endpoint.host, "fresh.zenoh.localhost");
@@ -608,7 +641,7 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
     let pull = server.mock(|when, then| {
         when.method(POST)
             .path("/me/cli/federation")
-            .json_body(json!({ "core_node_name": CORE_NODE }));
+            .json_body(json!({ "core_node_name": CORE_NODE, "router_zid": ROUTER_ZID }));
         then.status(200).json_body(json!({
             "endpoint": "tls/cap.zenoh.localhost:7443",
             "protocol": "tls",
@@ -635,9 +668,16 @@ fn resolve_router_endpoint_re_pulls_when_the_core_node_name_changed() {
     storage::save(&path, &creds).expect("seed creds");
 
     let http = HttpClient::new();
-    let endpoint =
-        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, CORE_NODE)
-            .expect("resolve re-pulls under the new name");
+    let endpoint = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        None,
+        None,
+        CORE_NODE,
+        &router_zid(),
+    )
+    .expect("resolve re-pulls under the new name");
     assert_eq!(endpoint.host, "cap.zenoh.localhost");
     assert_eq!(
         pull.calls(),
@@ -696,6 +736,7 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
         Some("the-pat".to_string()),
         None,
         CORE_NODE,
+        &router_zid(),
     )
     .expect("PAT pull resolves");
     assert_eq!(ep.host, "pat-workspace.zenoh.localhost");
@@ -718,9 +759,16 @@ fn router_cache_is_bound_to_the_pull_identity_not_the_on_disk_session() {
 
     // With the PAT gone, a session resolve must NOT reuse the PAT's cache: the
     // subjects differ, so it re-pulls rather than leaking the PAT's workspace.
-    let _ =
-        router::resolve_router_endpoint(&path, &http, &server.base_url(), None, None, CORE_NODE)
-            .expect("session resolve");
+    let _ = router::resolve_router_endpoint(
+        &path,
+        &http,
+        &server.base_url(),
+        None,
+        None,
+        CORE_NODE,
+        &router_zid(),
+    )
+    .expect("session resolve");
     assert_eq!(
         pull.calls(),
         2,

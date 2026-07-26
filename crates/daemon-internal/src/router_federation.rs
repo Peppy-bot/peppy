@@ -33,8 +33,11 @@
 //!   tears anything down: the router it hands back is a single shared one, not a
 //!   per-user resource with a lifetime.
 //! * **Registration cadence.** Every config pull's POST carries this daemon's
-//!   core-node name, upserting it into the backend's per-principal core-node
-//!   registry. The POST fires on cache-stale pulls and on login/logout pokes —
+//!   core-node name *and* its managed router's pinned transport identity
+//!   (`router_zid`), upserting both into the backend's per-principal core-node
+//!   registry. The zid is what lets the platform tell a site whose uplink is
+//!   healthy but whose daemon is dead from one that is simply unreachable: it
+//!   matches the row against the shared router's live session list. The POST fires on cache-stale pulls and on login/logout pokes —
 //!   login clears the router cache, so every login re-registers — never on a
 //!   timer. The backend's `last_seen_at` for a core node therefore means "last
 //!   federation config pull", not liveness. `peppy platform logout` removes the
@@ -213,6 +216,7 @@ impl RouterFederation {
         messenger: Arc<Mutex<Messenger>>,
         api_url: String,
         core_node_name: String,
+        router_id: pmi::RouterId,
         peppy_dirs: PeppyDirs,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
@@ -232,6 +236,7 @@ impl RouterFederation {
                 &api_url,
                 connect_timeout,
                 &core_node_name,
+                &router_id,
             )
         });
         Self {
