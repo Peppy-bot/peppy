@@ -1,0 +1,45 @@
+---
+/*
+ * Responsive YouTube player. The iframe fills a 16:9 wrapper instead of
+ * carrying fixed width/height attributes, so it tracks the content column at
+ * every breakpoint, and it is served from youtube-nocookie.com, YouTube's
+ * privacy-enhanced embed, which holds back the identifiers a plain embed
+ * stores until a visitor actually plays the video. The frame borrows the
+ * hairline and 12px radius the code windows and asides use, so an embed reads
+ * as one of the page's own blocks rather than a foreign panel.
+ */
+interface Props {
+	/** The `v` parameter of the video's watch URL. */
+	id: string;
+	/** Accessible name for the player frame; use the video's title. */
+	title: string;
+}
+
+const { id, title } = Astro.props;
+---
+
+<div class="video-embed">
+	<iframe
+		src={`https://www.youtube-nocookie.com/embed/${id}`}
+		title={title}
+		loading="lazy"
+		referrerpolicy="strict-origin-when-cross-origin"
+		allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+		allowfullscreen></iframe>
+</div>
+
+<style>
+	.video-embed {
+		aspect-ratio: 16 / 9;
+		overflow: hidden;
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 12px;
+	}
+
+	.video-embed iframe {
+		display: block;
+		width: 100%;
+		height: 100%;
+		border: 0;
+	}
+</style>

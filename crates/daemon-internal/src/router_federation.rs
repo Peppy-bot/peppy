@@ -27,18 +27,22 @@
 //!   *verifies* the federation link with a real TLS handshake
 //!   ([`pmi::probe_tls_reachable`]) so a silent UnknownCA loop is reported as
 //!   [`FederationOutcome::Unreachable`] rather than a false success.
-//! * **Liveness (backend-driven).** There is no client-side keepalive poll. Once
-//!   federated, the local router holds its link to the cloud router open on its
-//!   own (`reconnect: true`); the backend actively probes this daemon's `/health`
-//!   service over the federated link and tears the cloud router down when the
-//!   daemon stops answering. The config pull on startup/login tells the backend
-//!   this daemon's `core_node` name so it knows which `/health` service to probe.
+//! * **Liveness.** There is no keepalive poll in either direction. Once
+//!   federated, the local router holds its link to the shared router open on its
+//!   own (`reconnect: true`), and the backend neither probes this daemon nor
+//!   tears anything down: the router it hands back is a single shared one, not a
+//!   per-user resource with a lifetime.
 //! * **Registration cadence.** Every config pull's POST carries this daemon's
-//!   core-node name, upserting it into the backend's per-principal core-node
-//!   registry. The POST fires on cache-stale pulls and on login/logout pokes —
+//!   core-node name *and* its managed router's pinned transport identity
+//!   (`router_zid`), upserting both into the backend's per-principal core-node
+//!   registry. The zid is what lets the platform tell a site whose uplink is
+//!   healthy but whose daemon is dead from one that is simply unreachable: it
+//!   matches the row against the shared router's live session list. The POST fires on cache-stale pulls and on login/logout pokes —
 //!   login clears the router cache, so every login re-registers — never on a
 //!   timer. The backend's `last_seen_at` for a core node therefore means "last
-//!   federation config pull", not liveness.
+//!   federation config pull", not liveness. `peppy platform logout` removes the
+//!   row outright (`DELETE /me/core-nodes/{core_node_name}`), since a logged-out
+//!   machine stops federating and stops pulling config.
 //! * **Live (re)federation.** When the resolved upstream changes (the user logs
 //!   in, logs out, or the endpoint moves) the local router's zenohd config is
 //!   re-rendered and the router restarted, so the change takes effect without a
@@ -212,6 +216,7 @@ impl RouterFederation {
         messenger: Arc<Mutex<Messenger>>,
         api_url: String,
         core_node_name: String,
+        router_id: pmi::RouterId,
         peppy_dirs: PeppyDirs,
         messaging_ready: watch::Receiver<bool>,
         trigger_rx: TriggerReceiver,
@@ -231,6 +236,7 @@ impl RouterFederation {
                 &api_url,
                 connect_timeout,
                 &core_node_name,
+                &router_id,
             )
         });
         Self {

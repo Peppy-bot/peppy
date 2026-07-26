@@ -74,7 +74,7 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Platform account: log in, log out, and show the current identity
+    /// Platform account: log in, log out, show the current identity, and list the workspace's core nodes
     Platform {
         #[command(subcommand)]
         command: platform::PlatformCommands,

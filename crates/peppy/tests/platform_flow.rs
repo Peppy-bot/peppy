@@ -16,10 +16,13 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 
 use auth::storage::{self, Credentials, ProfileCreds};
+use daemon::state::DaemonState;
 use peppy::commands::Command;
+use peppy::commands::platform::list::ListCommand;
 use peppy::commands::platform::login::LoginCommand;
 use peppy::commands::platform::logout::LogoutCommand;
 use peppy::commands::platform::whoami::WhoamiCommand;
+use peppy::commands::platform::{PlatformCommand, PlatformCommands};
 use peppy::context::AppContext;
 
 /// Builds the cli/auth-config + OIDC discovery + device-authorization + token mocks
@@ -292,6 +295,249 @@ fn login_writes_credentials_file_0600() {
     assert_eq!(mode, 0o600, "credentials must be owner-only");
 }
 
+/// Writes a config that pins `core_node_name`, so logout can resolve the name to
+/// deregister without a daemon ever having run in the tempdir. The daemon state
+/// file takes precedence over this in production; the precedence itself is unit
+/// tested next to the resolver.
+fn write_core_node_name_config(dir: &tempfile::TempDir, core_node_name: &str) {
+    let config_dir = dir.path().join("conf");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("peppy_config.json5"),
+        format!("{{ core_node_name: \"{core_node_name}\" }}"),
+    )
+    .expect("write peppy config");
+}
+
+/// Seed a logged-in session under `dir` and run logout against `server`, with
+/// `core_node_name` pinned in the config so the deregistration has a name.
+/// Returns the credentials path so the caller can assert the session was cleared.
+fn logout_with_core_node(
+    server: &MockServer,
+    dir: &tempfile::TempDir,
+    core_node_name: &str,
+) -> PathBuf {
+    write_core_node_name_config(dir, core_node_name);
+    let path = creds_path(dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("logout");
+    path
+}
+
+#[test]
+fn logout_deregisters_this_machines_core_node() {
+    let server = MockServer::start();
+    // Matching on the header as well as the path means an unauthenticated DELETE
+    // (or one under some other token) does not match, and `calls()` reads 0.
+    // Ordering against the revocation is deliberately NOT asserted here: the
+    // `/logout` mock is stateless, so a DELETE sent after it would look
+    // identical, and httpmock exposes no ordered request log to tell them apart.
+    // What ordering exists for, keeping a live token under the DELETE, is
+    // covered from the other side by
+    // `deregistration_never_refreshes_the_token_logout_is_about_to_revoke`.
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE)
+            .path("/me/core-nodes/cn-logout-me")
+            .header("Authorization", "Bearer seeded-access");
+        then.status(204);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-logout-me");
+
+    assert_eq!(
+        deregister.calls(),
+        1,
+        "logout must deregister this machine's core node"
+    );
+    assert!(logout.calls() >= 1, "POST /logout should have been called");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "local credentials must be removed after logout"
+    );
+}
+
+#[test]
+fn deregistration_never_refreshes_the_token_logout_is_about_to_revoke() {
+    // A 401 is the one trigger the refreshing `authed_*` helpers act on. If
+    // `deregister_core_node` ever routes through them, it mints and persists a
+    // NEW access token here, and the revocation immediately after would still
+    // revoke the old one, leaving the new token valid until its own expiry. That
+    // fires whenever the access token has expired but the refresh token has not,
+    // which is the ordinary state of an idle CLI.
+    //
+    // A refresh does OIDC discovery and then posts to the token endpoint, so
+    // mounting both and asserting neither is touched catches it. The type
+    // signature (`&str`, not `&mut Credential`) is what makes it impossible;
+    // this is the behavioral guard that fails if the signature is widened.
+    let server = MockServer::start();
+    let base = server.base_url();
+    let discovery = server.mock(|when, then| {
+        when.method(GET).path("/.well-known/openid-configuration");
+        then.status(200).json_body(json!({
+            "device_authorization_endpoint": format!("{base}/oauth/v2/device_authorization"),
+            "token_endpoint": format!("{base}/oauth/v2/token"),
+        }));
+    });
+    let token = server.mock(|when, then| {
+        when.method(POST).path("/oauth/v2/token");
+        then.status(200).json_body(json!({
+            "access_token": "refreshed-access",
+            "refresh_token": "refreshed-refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "scope": "openid",
+        }));
+    });
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE).path("/me/core-nodes/cn-stale-token");
+        then.status(401);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-stale-token");
+
+    // Asserted before the call count, so a refreshing implementation reports the
+    // property it broke rather than the retry that broke it.
+    assert_eq!(
+        discovery.calls(),
+        0,
+        "deregistration must not begin a token refresh"
+    );
+    assert_eq!(
+        token.calls(),
+        0,
+        "deregistration must not mint a token the revocation that follows would not cover"
+    );
+    assert_eq!(
+        deregister.calls(),
+        1,
+        "the 401 is reported, not retried under a new token"
+    );
+    assert!(logout.calls() >= 1, "a 401 must not stop the revocation");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "a 401 must not stop the local credentials being cleared"
+    );
+}
+
+#[test]
+fn logout_completes_when_deregistration_finds_nothing_to_remove() {
+    // A 404 is silent success: a daemon in external mode never registered, and a
+    // repeated logout has nothing left to remove.
+    let server = MockServer::start();
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE)
+            .path("/me/core-nodes/cn-never-registered");
+        then.status(404);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-never-registered");
+
+    assert_eq!(deregister.calls(), 1);
+    assert!(logout.calls() >= 1, "a 404 must not stop the revocation");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "a 404 must not stop the local credentials being cleared"
+    );
+}
+
+#[test]
+fn logout_completes_when_deregistration_fails() {
+    // Every deregistration failure is best effort, exactly like the revocation
+    // itself: the row is left behind and logout still finishes.
+    let server = MockServer::start();
+    let deregister = server.mock(|when, then| {
+        when.method(DELETE).path("/me/core-nodes/cn-backend-down");
+        then.status(503);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = logout_with_core_node(&server, &dir, "cn-backend-down");
+
+    assert_eq!(deregister.calls(), 1);
+    assert!(logout.calls() >= 1, "a 503 must not stop the revocation");
+    assert!(
+        storage::load(&path).expect("load creds").session.is_none(),
+        "a 503 must not stop the local credentials being cleared"
+    );
+}
+
+#[test]
+fn logout_without_a_resolvable_core_node_name_sends_no_deregistration() {
+    // No daemon state file and no configured name: there is nothing to delete by,
+    // and nothing is guessed. The row is left behind and logout still completes.
+    let server = MockServer::start();
+    let deregister = server.mock(|when, then| {
+        // Any DELETE at all, so the assertion covers a guessed name as well as
+        // the right one.
+        when.method(DELETE);
+        then.status(204);
+    });
+    let logout = server.mock(|when, then| {
+        when.method(POST).path("/logout");
+        then.status(202);
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = creds_path(&dir);
+    storage::save(
+        &path,
+        &Credentials {
+            session: Some(seeded_creds(&server, 9_999_999_999)),
+            ..Default::default()
+        },
+    )
+    .expect("seed creds");
+
+    LogoutCommand {
+        api_url: Some(server.base_url()),
+        yes: true,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect("logout");
+
+    assert_eq!(
+        deregister.calls(),
+        0,
+        "an unresolvable name must not produce a guessed DELETE"
+    );
+    assert!(logout.calls() >= 1);
+    assert!(storage::load(&path).expect("load creds").session.is_none());
+}
+
 #[test]
 fn logout_calls_backend_and_clears_local_credentials() {
     let server = MockServer::start();
@@ -458,6 +704,249 @@ fn whoami_runs_against_a_seeded_session() {
         .execute(&ctx())
         .expect("whoami");
     }
+}
+
+// ─── `peppy platform list` ────────────────────────────────────────────────
+
+const WORKSPACE: &str = "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4";
+
+/// A tempdir with a seeded session credential pointing at `server`, ready for a
+/// command that needs to be authenticated.
+fn authenticated_dir(server: &MockServer) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let creds = Credentials {
+        session: Some(seeded_creds(server, 9_999_999_999)),
+        ..Default::default()
+    };
+    storage::save(&creds_path(&dir), &creds).expect("seed creds");
+    dir
+}
+
+/// Mocks `GET /me/core-nodes` with one registered, online core node.
+fn mock_core_nodes<'a>(server: &'a MockServer, core_node_name: &str) -> httpmock::Mock<'a> {
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(200).json_body(json!({
+            "workspace_id": WORKSPACE,
+            "application_status_available": true,
+            "core_nodes": [{
+                "core_node_name": core_node_name,
+                "registered": true,
+                "first_seen_at": "2026-07-01T10:00:00Z",
+                "last_config_pull_at": "2026-07-24T09:12:33Z",
+                "application": { "status": "online", "live_claimants": 1 },
+            }],
+        }));
+    })
+}
+
+fn list_in(server: &MockServer, dir: &tempfile::TempDir, json: bool) -> peppy::error::Result<()> {
+    ListCommand {
+        api_url: Some(server.base_url()),
+        json,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+}
+
+#[test]
+fn list_renders_the_workspace_roster_in_both_formats() {
+    let server = MockServer::start();
+    let core_nodes = mock_core_nodes(&server, "cn-a1b2c3d4e5");
+    let dir = authenticated_dir(&server);
+
+    for json in [false, true] {
+        list_in(&server, &dir, json).expect("list should succeed");
+    }
+
+    core_nodes.assert_calls(2);
+}
+
+/// Unlike `whoami`, whose output IS the sign-in state, `list` cannot answer at
+/// all without a credential, so it fails rather than printing a document
+/// saying so. `main` maps the error to exit 1.
+#[test]
+fn list_without_a_credential_fails_instead_of_emitting_a_document() {
+    let server = MockServer::start();
+    // No credentials seeded.
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    for json in [false, true] {
+        let error = list_in(&server, &dir, json).expect_err("list must fail unauthenticated");
+        assert!(
+            error.to_string().contains("peppy platform login"),
+            "the error must say how to fix it: {error}"
+        );
+    }
+}
+
+#[test]
+fn list_fails_when_the_backend_is_unreachable() {
+    let server = MockServer::start();
+    let dir = authenticated_dir(&server);
+    // A port nothing listens on, so the request cannot complete. There is
+    // deliberately no local fallback: a local query would answer a different
+    // question than the one the command claims to answer.
+    let unreachable = "http://127.0.0.1:1";
+
+    let error = ListCommand {
+        api_url: Some(unreachable.to_string()),
+        json: false,
+        peppy_dirs: Some(PeppyDirs::new(dir.path())),
+    }
+    .execute(&ctx())
+    .expect_err("an unreachable backend must fail the command");
+
+    assert!(
+        !error.to_string().is_empty(),
+        "the failure must carry a message"
+    );
+}
+
+#[test]
+fn list_surfaces_a_backend_outage_as_a_retryable_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(503);
+    });
+    let dir = authenticated_dir(&server);
+
+    let error = list_in(&server, &dir, false).expect_err("a 503 must fail the command");
+
+    assert!(
+        error.to_string().contains("try again"),
+        "a 503 must read as transient: {error}"
+    );
+}
+
+/// A newer CLI against a backend that predates the endpoint. Without the
+/// explicit mapping this reads as an unexplained `returned 404`.
+#[test]
+fn list_explains_a_backend_that_does_not_have_the_endpoint() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(404);
+    });
+    let dir = authenticated_dir(&server);
+
+    let error = list_in(&server, &dir, false).expect_err("a 404 must fail the command");
+
+    assert!(
+        error.to_string().contains("upgrade the platform"),
+        "a 404 must name the cause and the fix: {error}"
+    );
+}
+
+/// `--core-node` redirects a command at another machine's daemon, which no
+/// `platform` command does. The whole group refuses it, rather than each
+/// command silently answering a different question.
+#[test]
+fn every_platform_command_refuses_a_core_node_override() {
+    let server = MockServer::start();
+    // Registered before the commands run, so the call count below is evidence.
+    // A mock added afterwards could not have been hit whatever the guard does.
+    let core_nodes = server.mock(|when, then| {
+        when.method(GET).path("/me/core-nodes");
+        then.status(500);
+    });
+    let redirected = Arc::new(
+        AppContext::from_current_dir()
+            .expect("cwd is readable")
+            .with_core_node_override(Some("robot-7".to_string())),
+    );
+
+    let commands: Vec<(&str, PlatformCommands)> = vec![
+        (
+            "list",
+            PlatformCommands::List {
+                api_url: Some(server.base_url()),
+                json: false,
+            },
+        ),
+        (
+            "whoami",
+            PlatformCommands::Whoami {
+                api_url: Some(server.base_url()),
+                json: false,
+            },
+        ),
+        (
+            "logout",
+            PlatformCommands::Logout {
+                api_url: Some(server.base_url()),
+                yes: true,
+            },
+        ),
+        (
+            "login",
+            PlatformCommands::Login {
+                api_url: Some(server.base_url()),
+                no_browser: true,
+                yes: true,
+            },
+        ),
+    ];
+
+    for (name, command) in commands {
+        let error = PlatformCommand { command }
+            .execute(&redirected)
+            .expect_err(&format!("`platform {name}` must refuse --core-node"));
+        assert!(
+            error.to_string().contains("--core-node"),
+            "`platform {name}` must name the flag it refused: {error}"
+        );
+        assert!(
+            error.to_string().contains("peppy stack list"),
+            "`platform {name}` must point at the command that does show other core nodes: {error}"
+        );
+    }
+
+    // The refusal happens before any work: the backend was never called.
+    assert_eq!(
+        core_nodes.calls(),
+        0,
+        "the override must be refused before any command reaches the backend"
+    );
+}
+
+/// A stale daemon state file must not fail the command, whatever it records.
+///
+/// The marker RULES are pinned as a pure unit in `platform::list`
+/// (`this_machine_name`), where each case is asserted directly rather than
+/// inferred from a command that succeeded. What this covers is the wiring: a
+/// state file on disk is read, and a daemon running in another workspace is a
+/// normal case rather than an error.
+#[test]
+fn a_daemon_in_another_workspace_does_not_fail_the_listing() {
+    let server = MockServer::start();
+    let core_nodes = mock_core_nodes(&server, "cn-local-daemon");
+    let dir = authenticated_dir(&server);
+    // Same core-node name as the listed row, different workspace: the
+    // mid-login case.
+    write_daemon_state(&dir, "cn-local-daemon", "local");
+
+    list_in(&server, &dir, false).expect("a mismatched namespace must not fail the command");
+
+    core_nodes.assert();
+}
+
+/// Writes a daemon state file recording `core_node_name` under `namespace`.
+fn write_daemon_state(dir: &tempfile::TempDir, core_node_name: &str, namespace: &str) {
+    let state = DaemonState::new(
+        core_node_name,
+        "127.0.0.1",
+        7447,
+        "test-git-hash",
+        30,
+        config::namespace::Namespace::parse(namespace).expect("valid namespace"),
+        Some(30),
+    );
+    let path = DaemonState::state_file_in(dir.path());
+    std::fs::create_dir_all(path.parent().expect("state file has a parent"))
+        .expect("state file dir");
+    DaemonState::write_to(&path, &state).expect("write daemon state");
 }
 
 /// A session credential pointing at `server` with the given absolute expiry.

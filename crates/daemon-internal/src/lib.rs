@@ -27,6 +27,7 @@ mod error;
 mod federation_control;
 mod messaging_router;
 mod router_federation;
+mod router_identity;
 mod serve;
 mod shutdown_signal;
 

@@ -16,7 +16,8 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 |---------|--------------|
 | `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your workspace's cloud router. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
-| `peppy platform logout [--yes]` | Revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
+| `peppy platform list [--api-url <url>] [--json]` | Lists the core nodes registered to your workspace and whether each one is running right now. |
+| `peppy platform logout [--yes]` | Removes this machine from the workspace's core-node registry, revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
 [Workspace federation](#workspace-federation).
@@ -91,6 +92,105 @@ to resolve the cloud router is bounded by
 With `zenoh.external`, login and logout skip federation and print a note instead;
 the daemon applies the resolved namespace to its sessions on its next manual
 restart. See [Federation outside the Peppy platform](#federation-outside-the-peppy-platform).
+
+### Listing the workspace's core nodes
+
+Once two machines have logged in under the same account, they share a workspace
+namespace and can already address each other. `peppy platform list` is what
+shows you that:
+
+```sh
+peppy platform list
+```
+
+```
+Workspace 4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4 (backend https://api.peppy.dev)
+
+CORE NODE            NETWORK    APPLICATION           REGISTERED
+cn-a1b2c3d4e5        linked     online                2026-07-01   (this machine)
+cn-9f8e7d6c5b        linked     offline               2026-07-14
+cn-113355aabb        unlinked   offline               2026-06-02
+lab-bench-external   indirect   online (2 claimants)  -
+```
+
+The listing is **workspace scoped**. It shows the machines logged in to your own
+account and nothing else, and machines in other workspaces are invisible to you
+by design. The platform runs no core node in your workspace either, so every row
+is one of your own machines. A machine is added when it logs in and removed when
+it logs out, so `peppy platform logout` takes a machine off this list.
+
+#### Two layers, reported separately
+
+A machine reaches the platform through two layers, and they fail independently:
+
+- The **network** layer is the transport. Your machine's `zenohd` holds a live
+  session with the platform's shared `zenohd`. This is federation, and it knows
+  nothing about core nodes.
+- The **application** layer is your workspace namespace. Your machine's core node
+  declares its presence there, which is what `APPLICATION` reports.
+
+Both are shown because only one of them cannot tell you what to do about a
+machine that is not answering. `linked` beside `offline` is a healthy uplink with
+a dead daemon behind it, so debug the machine. `unlinked` beside `offline` is a
+site the platform cannot reach at all, so debug the network. Reading the
+application column alone, the absence of a signal is exactly as consistent with a
+severed link as with a stopped daemon.
+
+The `NETWORK` column reads:
+
+| Value | Meaning |
+|-------|---------|
+| `linked` | This machine's router holds a live transport session with the platform's shared router. |
+| `indirect` | That session is absent, but the machine is `online` anyway, so its traffic reaches the platform through a router Peppy does not manage. See below. |
+| `unlinked` | No session, and the machine is `offline`. The site is unreachable. |
+| `unknown` | The platform could not read its router's session list, so no row's network status is known; or the session is absent while the application layer is itself unavailable, in which case `indirect` and `unlinked` cannot be told apart and neither is guessed at. |
+
+The `APPLICATION` column reads:
+
+| Value | Meaning |
+|-------|---------|
+| `online` | The machine's daemon is running and reachable on the shared router right now. |
+| `offline` | The machine is registered but its daemon is stopped or unreachable. |
+| `online (N claimants)` | `N` different daemons are claiming this core-node name at once. This is a name collision, and it is worth acting on: the losing daemon refuses to start, so a collision is often why a machine will not come up. |
+| `unknown` | The platform could not read liveness at all, so no row's status is known. The list of machines itself is still accurate. A warning explains this on stderr. |
+
+`indirect` is what a machine configured with
+[`zenoh.external`](/advanced_guides/daemon_config/#zenohexternal-use-an-operator-run-router)
+looks like once it has been registered: Peppy no longer manages the router
+carrying its traffic, so the router identity the platform has on file for it
+stops connecting, while the machine keeps reaching your workspace through the
+router you run. The status exists so the two columns can never contradict each
+other by reporting a machine as both `unlinked` and `online`.
+
+The reverse pairing is real too, and it is the reason the column earns its keep.
+A daemon killed hard enough to leave its `zenohd` running keeps that router
+connected, so the row reads `linked` and `offline`: the uplink is fine, the
+daemon is not.
+
+A row with `-` under `REGISTERED` is running on the wire but was never registered
+with the platform. That is the normal appearance of a daemon configured with
+[`zenoh.external`](/advanced_guides/daemon_config/#zenohexternal-use-an-operator-run-router):
+it adopts its cached workspace namespace but never pulls federation config, so
+the platform is never told about it.
+
+`REGISTERED` is the date a machine first registered, in UTC. There is
+deliberately no "last seen" column: the platform's other timestamp records when
+a daemon last pulled its configuration, which is not the same as when it was
+last running. A machine that has been up for a week without re-pulling would
+look a week stale. Liveness lives in the `APPLICATION` column and nowhere else.
+`--json` exposes the pull time under its own name, `last_config_pull_at`.
+
+Two caveats worth knowing:
+
+- Default core-node names are hashes of the machine's UID, so the roster may not
+  tell you which machine is which. `peppy stack list` is where host names live.
+  Set [`core_node_name`](/advanced_guides/daemon_config/) to give a machine a
+  name you recognize.
+- Neither `online` nor `linked` is an authenticated statement. The messaging
+  transport does not authenticate daemons, so anything that can reach the router
+  can open a session and claim a name. `NETWORK` reports what the platform's
+  router observes on the wire, not an identity it has vouched for. A `REGISTERED`
+  date is backed by a bearer token; a live status is not.
 
 ## Federation outside the Peppy platform
 
@@ -202,6 +302,14 @@ This calls `POST {api_url}/logout`, which denylists the presented access token
 across all backend replicas (sub-second), then deletes the local credentials.
 The effect is near-immediate for the logged-out token. It revokes only the
 token you presented; a session on another device keeps working.
+
+Logout also deregisters this machine's core node, sending `DELETE
+{api_url}/me/core-nodes/{core_node_name}` so the machine stops appearing in
+`peppy platform list`. A logged-out machine no longer federates or pulls config,
+so leaving its row behind would misrepresent it. This step is best-effort, like
+the token revocation above: if the backend is unreachable the row is left behind
+and logout still completes, and a `zenoh.external` daemon that never registered
+has nothing to remove.
 
 Logout also returns this machine to the `local` namespace. Under `zenoh.managed`,
 it de-federates the router, restarts the daemon, and wipes the running node stack,

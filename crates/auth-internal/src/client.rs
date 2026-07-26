@@ -50,6 +50,109 @@ pub fn get_me(http: &HttpClient, api_url: &str, cred: &mut Credential) -> Result
     authed_get_json(http, api_url, "/me", cred)
 }
 
+/// The caller's workspace's core nodes, as `GET /me/core-nodes` returns them.
+///
+/// Deserialized tolerantly (unknown fields ignored), and every field the
+/// platform may not know is optional. That is version skew, not a legacy shim:
+/// the CLI is installed on user machines and the backend is deployed
+/// independently, so an older CLI meets a newer backend routinely. Later work
+/// adds a per-entry `network` object to this exact response, and a CLI that
+/// rejected unknown fields would break on that deploy.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoreNodeListing {
+    /// The workspace whose core nodes these are, as the backend derives it from
+    /// the authenticated principal.
+    pub workspace_id: String,
+    /// Whether the platform could read liveliness at all. When false, every
+    /// entry's application status is null, and that is a different statement
+    /// from every machine being offline.
+    #[serde(default)]
+    pub application_status_available: bool,
+    #[serde(default)]
+    pub core_nodes: Vec<CoreNodeEntry>,
+}
+
+/// One core node in the workspace.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoreNodeEntry {
+    pub core_node_name: String,
+    /// Whether the platform has a registry row for this name. `false` is the
+    /// normal appearance of a `zenoh.external` daemon, which adopts its cached
+    /// workspace namespace but never pulls federation config.
+    #[serde(default)]
+    pub registered: bool,
+    /// RFC 3339 UTC, or null on an unregistered entry.
+    #[serde(default)]
+    pub first_seen_at: Option<String>,
+    /// RFC 3339 UTC, or null on an unregistered entry. A config-pull time, not
+    /// a liveness signal, which is why it is never rendered as "last seen".
+    #[serde(default)]
+    pub last_config_pull_at: Option<String>,
+    #[serde(default)]
+    pub network: NetworkStatus,
+    #[serde(default)]
+    pub application: ApplicationStatus,
+}
+
+/// Whether this core node's site holds a live transport session with the
+/// platform's shared router.
+///
+/// The network layer and the application layer fail separately, which is the
+/// whole reason both are reported: `linked` with an offline application layer is
+/// a dead daemon behind a healthy uplink (debug the machine), while `unlinked`
+/// with an offline application layer is an unreachable site (debug the network).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkStatus {
+    /// `"linked"`, `"indirect"`, `"unlinked"`, or `"unknown"`. Kept as a string
+    /// rather than an enum, like [`ApplicationStatus::status`], so a status this
+    /// CLI has not heard of renders as itself instead of failing the listing.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// The transport identity this site's daemon reported, or null for a name
+    /// that is live on the wire but has no registry row (nothing to join on).
+    #[serde(default)]
+    pub router_zid: Option<String>,
+}
+
+/// Whether a core node's daemon is on the wire. Both fields are null when the
+/// platform could not read liveliness.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApplicationStatus {
+    /// `"online"`, `"offline"`, or null. Kept as a string rather than an enum
+    /// so a status this CLI has not heard of renders as itself instead of
+    /// failing the whole listing.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Distinct instance ids claiming the name. More than one is an active
+    /// collision, and the losing daemon refuses to boot.
+    #[serde(default)]
+    pub live_claimants: Option<u32>,
+}
+
+/// `GET {api_url}/me/core-nodes`, refreshing once on a 401 for session
+/// credentials.
+///
+/// A `404` is mapped explicitly: it means the backend predates this endpoint,
+/// which the generic status message would render as an unexplained
+/// `returned 404`. The mapping lives here rather than in
+/// [`interpret_authed_json`] because `404` means something different on every
+/// endpoint (on `DELETE /me/core-nodes/{name}` it means "no such row").
+pub fn list_core_nodes(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+) -> Result<CoreNodeListing> {
+    let url = format!("{}/me/core-nodes", api_url.trim_end_matches('/'));
+    let resp = authed_get(http, &url, cred)?;
+    if resp.status == 404 {
+        return Err(Error::Http(format!(
+            "{api_url} does not support `peppy platform list`; upgrade the platform, \
+             or check --api-url"
+        )));
+    }
+    interpret_authed_json(resp, cred, "GET", &url, "/me/core-nodes")
+}
+
 /// The connection config the backend hands the CLI for the caller's private
 /// per-user zenoh router. Deserialized tolerantly (unknown fields ignored) so a
 /// backend that adds fields still parses. The CA the router is validated against
@@ -64,9 +167,10 @@ pub struct ZenohRouterConfig {
     /// Transport scheme, `"tls"` today.
     pub protocol: String,
     /// How long this config may be reused before re-resolving it. A cache-freshness
-    /// hint only: the backend now actively health-checks the daemon, so reusing a
-    /// still-fresh config (rather than re-pulling) never risks the router being torn
-    /// down.
+    /// hint only: the router the backend hands back is a single shared one, not a
+    /// per-user resource with a lifetime, and nothing on the backend probes this
+    /// daemon or tears that router down. Reusing a still-fresh config therefore only
+    /// delays this daemon's next re-registration, never the loss of a router.
     pub reconnect_after_secs: u64,
     /// The daemon's session namespace, deserialized directly from the backend's
     /// `workspace_id`. Typed at the HTTP boundary: an invalid workspace id fails
@@ -114,19 +218,32 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
 /// `POST {api_url}/me/cli/federation`: fetch the shared router's
 /// connection config (the daemon's discovery point), refreshing the access token
 /// once on a 401 for session credentials (the same reactive-refresh contract as
-/// [`get_me`]). The
-/// body always carries the daemon's core-node name — the backend requires it and
-/// upserts the name into its per-principal core-node registry (its `last_seen_at`
-/// tracks config pulls, not liveness). The daemon dials the returned endpoint
-/// over one-way TLS, verifying the router's certificate and presenting none of
-/// its own.
+/// [`get_me`]). The daemon dials the returned endpoint over one-way TLS,
+/// verifying the router's certificate and presenting none of its own.
+///
+/// The body always carries two required fields, both upserted into the backend's
+/// per-principal core-node registry:
+///
+/// * `core_node_name`, the daemon's application-layer identity (its
+///   `last_seen_at` tracks config pulls, not liveness).
+/// * `router_zid`, the transport identity this daemon's managed router pins.
+///   The platform joins it against the shared router's live session list, which
+///   is what separates "the uplink is up, the daemon is not" from "this site is
+///   unreachable". Only a managed daemon pulls federation config, and a managed
+///   daemon always owns a router, so there is no caller that legitimately lacks
+///   one and the backend rejects a request without it.
 pub fn establish_federation(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
     core_node_name: &str,
+    router_zid: &pmi::RouterId,
 ) -> Result<ZenohRouterConfig> {
-    let body = serde_json::json!({ "core_node_name": core_node_name }).to_string();
+    let body = serde_json::json!({
+        "core_node_name": core_node_name,
+        "router_zid": router_zid.as_str(),
+    })
+    .to_string();
     authed_post_json(http, api_url, "/me/cli/federation", &body, cred)
 }
 
@@ -136,6 +253,32 @@ pub fn establish_federation(
 pub fn logout(http: &HttpClient, api_url: &str, access_token: &str) -> Result<u16> {
     let url = format!("{}/logout", api_url.trim_end_matches('/'));
     let resp = http.post_empty(&url, Some(access_token))?;
+    Ok(resp.status)
+}
+
+/// `DELETE {api_url}/me/core-nodes/{core_node_name}`: remove this machine's core
+/// node from the caller's registry on the platform. Returns the status code so
+/// the caller can decide what to print (`204` removed, `404` nothing to remove).
+///
+/// Never refreshes, deliberately, exactly like [`logout`]. `peppy platform
+/// logout` calls this immediately before revoking the very token it holds: a
+/// refresh here would mint a token that the revocation which follows does not
+/// cover, leaving it valid until its own expiry.
+///
+/// The name goes into the path unencoded because the backend accepts only
+/// `[A-Za-z0-9_-]`, which is the daemon's own charset, so a core-node name is
+/// always a literal path segment.
+pub fn deregister_core_node(
+    http: &HttpClient,
+    api_url: &str,
+    access_token: &str,
+    core_node_name: &str,
+) -> Result<u16> {
+    let url = format!(
+        "{}/me/core-nodes/{core_node_name}",
+        api_url.trim_end_matches('/')
+    );
+    let resp = http.delete(&url, Some(access_token))?;
     Ok(resp.status)
 }
 
