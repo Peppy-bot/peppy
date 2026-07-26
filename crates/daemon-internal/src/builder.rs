@@ -695,12 +695,19 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let builder =
-            ServeCommandBuilder::new("/unused", "regression-git-hash", PeppyDirs::new("/unused"))
-                .expect("create builder")
-                .with_peppy_config(peppy_config)
-                .with_messaging_router("zenoh".to_string())
-                .expect("build managed messaging adapter without starting it");
+        // Unlike the external case, the managed path persists the router
+        // identity under the data root, so this one needs a root it may
+        // actually write to.
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let builder = ServeCommandBuilder::new(
+            "/unused",
+            "regression-git-hash",
+            PeppyDirs::new(data_root.path()),
+        )
+        .expect("create builder")
+        .with_peppy_config(peppy_config)
+        .with_messaging_router("zenoh".to_string())
+        .expect("build managed messaging adapter without starting it");
 
         assert!(
             builder.federation_api_url.is_some(),
