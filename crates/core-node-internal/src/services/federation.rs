@@ -40,7 +40,8 @@
 mod service;
 
 pub(crate) use service::{
-    FederationServiceContext, listen_for_participant_release, listen_for_participant_reserve,
+    FederationServiceContext, listen_for_pair_commit, listen_for_participant_release,
+    listen_for_participant_reserve, listen_for_participant_slice_begin,
     listen_for_relationship_notify,
 };
 
@@ -168,6 +169,30 @@ impl SliceOwnership {
             Some(id) if id == held.launch_id => None,
             _ => Some(held.launch_id.clone()),
         }
+    }
+
+    /// The refusal a node action owes its caller when this machine is
+    /// committed to a federated launch other than the one asking.
+    ///
+    /// Every node action shares it so the three cannot explain the same
+    /// situation three different ways. `launch_id` is the goal's own: `None`
+    /// for anything a user typed, `Some` for a coordinator's dispatch.
+    pub fn refuse_if_reserved_elsewhere(
+        &self,
+        launch_id: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        let Some(held) = self.is_reserved_by_another_launch(launch_id) else {
+            return Ok(());
+        };
+        let coordinator = self
+            .held_reservation()
+            .map(|(_, coordinator)| coordinator)
+            .unwrap_or_else(|| "an unknown core node".to_owned());
+        Err(format!(
+            "this daemon is reserved for federated launch `{held}`, driven by `{coordinator}`, \
+             which is replacing its whole stack. Wait for that launch to finish, or clear the \
+             reservation with `peppy stack reset`."
+        ))
     }
 
     /// Records that this daemon's stack slice came from `launch`. Called when a
@@ -359,6 +384,40 @@ mod tests {
     /// The slice record outlives the reservation: the reservation guards the
     /// launch, the slice describes its result, and rediscovery needs the
     /// latter long after the former is gone.
+    /// The user-facing half of the exclusion above. A refusal has to say which
+    /// launch holds the machine and which coordinator is driving it, or the
+    /// operator has no way to tell a stuck reservation from a busy one.
+    #[test]
+    fn a_refused_local_action_names_the_launch_and_its_coordinator() {
+        let ownership = SliceOwnership::new();
+        assert!(
+            ownership.refuse_if_reserved_elsewhere(None).is_ok(),
+            "an unreserved daemon refuses nothing"
+        );
+
+        ownership.try_reserve("launch-a", "cn-robot-7");
+
+        let refusal = ownership
+            .refuse_if_reserved_elsewhere(None)
+            .expect_err("a user-typed action must be refused while a launch holds the machine");
+        assert!(refusal.contains("launch-a"), "got: {refusal}");
+        assert!(refusal.contains("cn-robot-7"), "got: {refusal}");
+        assert!(refusal.contains("stack reset"), "got: {refusal}");
+
+        assert!(
+            ownership
+                .refuse_if_reserved_elsewhere(Some("launch-a"))
+                .is_ok(),
+            "the holding launch's own dispatch must pass"
+        );
+        assert!(
+            ownership
+                .refuse_if_reserved_elsewhere(Some("launch-b"))
+                .is_err(),
+            "another launch's dispatch is still excluded"
+        );
+    }
+
     #[test]
     fn the_slice_record_outlives_the_reservation() {
         let ownership = SliceOwnership::new();

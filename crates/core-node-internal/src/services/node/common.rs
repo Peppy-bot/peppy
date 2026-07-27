@@ -57,6 +57,14 @@ impl SlotUpdateClient {
         &self.core_node_name
     }
 
+    pub(crate) fn caller_instance_id(&self) -> &str {
+        &self.caller_instance_id
+    }
+
+    pub(crate) fn messenger(&self) -> &MessengerHandle {
+        &self.messenger
+    }
+
     pub(crate) fn next_sequence(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }

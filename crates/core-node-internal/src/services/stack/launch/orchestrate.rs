@@ -4,7 +4,6 @@ use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_action_log_file,
     log_label_from_source, run_node_add, run_node_build_for_entity, run_node_run,
-    teardown_all_instances,
 };
 use chrono::Local;
 use core_node_api::encoding::{
@@ -243,6 +242,7 @@ pub(super) async fn start_node_directly(
 pub(super) async fn fail_and_clear_stack(
     ctx: &ProcessLaunchContext,
     reason: String,
+    participants: &[String],
 ) -> LaunchResult {
     publish_stderr(
         ctx,
@@ -252,6 +252,11 @@ pub(super) async fn fail_and_clear_stack(
     .await;
 
     teardown_and_reset_stack(ctx).await;
+    // Every machine this launch touched gets the same treatment, and is named
+    // while it happens. A federated failure that cleaned up only the
+    // coordinator would leave half a topology running on machines the operator
+    // never typed the name of.
+    super::federated::clear_participant_slices(ctx, participants).await;
 
     LaunchResult::failure(&ctx.log_path, reason)
 }
@@ -547,13 +552,12 @@ pub(super) async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
-    teardown_all_instances(
+    crate::services::stack::clear_stack_slice(
         &ctx.messenger,
         &ctx.bound_core_node,
         &ctx.core_instance_id,
         &ctx.node_stack,
+        ctx.relationships.observation(),
     )
     .await;
-    ctx.node_stack.reset();
-    ctx.relationships.observation().clear();
 }

@@ -159,6 +159,8 @@ pub struct NodeRunServiceConfig {
     pub shutdown_token: CancellationToken,
     /// The daemon authorities used for pairing and observation lifecycle work.
     pub(crate) relationships: RelationshipCoordinators,
+    /// Which federated launch, if any, currently holds this machine.
+    pub(crate) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 #[derive(Clone)]
@@ -241,6 +243,7 @@ pub async fn listen_for_node_run(
             relationships: config.relationships,
         },
         gate: ConcurrencyGate::new(),
+        slice_ownership: config.slice_ownership,
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -252,11 +255,19 @@ pub async fn listen_for_node_run(
 struct NodeRunGoalHandler {
     context: NodeRunActionContext,
     gate: ConcurrencyGate,
+    /// See `NodeAddGoalHandler::slice_ownership`.
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
+        handle_goal_request(
+            pending,
+            self.context.clone(),
+            self.gate.clone(),
+            &self.slice_ownership,
+        )
+        .await
     }
 }
 
@@ -518,6 +529,7 @@ async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
+    slice_ownership: &crate::services::federation::SliceOwnership,
 ) {
     let sender_instance_id = pending.instance_id().to_string();
 
@@ -532,6 +544,14 @@ async fn handle_goal_request(
             return;
         }
     };
+
+    // Before the gate, because the gate is per-action and this exclusion is
+    // per-machine: a coordinator halfway through replacing this stack must not
+    // race a locally-typed `peppy node run`.
+    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(goal.launch_id.as_deref()) {
+        reject_goal(pending, encode_rejected_start_goal(reason)).await;
+        return;
+    }
 
     let generation = match gate.try_admit(goal.timeout_secs, false) {
         // `node_run` never forces, so nothing is ever superseded here.
@@ -690,6 +710,7 @@ async fn process_node_run(
         covered_pairs,
         planned_observations,
         manifest_sha256,
+        lifecycle_watchers,
         ..
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
@@ -1245,6 +1266,22 @@ async fn process_node_run(
                         .relationships
                         .observation()
                         .on_instance_running(instance_id_str)
+                        .await;
+
+                    // The same event, for the daemons that cannot see it. An
+                    // observer on another machine has no local lifecycle event
+                    // to react to, so without this its subscription would never
+                    // activate and a source restart would go unnoticed. Records
+                    // the watchers first: they arrived on this goal, and the
+                    // announcement is what they are for.
+                    ctx.action
+                        .relationships
+                        .notifier()
+                        .set_watchers(instance_id_str, &lifecycle_watchers);
+                    ctx.action
+                        .relationships
+                        .notifier()
+                        .announce_running(instance_id_str)
                         .await;
 
                     // The instance is Running: deliver every reserved pin

@@ -675,6 +675,47 @@ impl Daemon {
     }
 }
 
+impl Daemon {
+    /// Waits for one of this daemon's node instances to log `marker`.
+    ///
+    /// Reads the per-instance run log rather than the container's stdout: node
+    /// output goes to `$PEPPY_HOME/logs/run/<instance>.log`, and it is the only
+    /// evidence that a node is not merely Running but actually carrying
+    /// messages over its slots. Polls rather than sleeping a fixed time, so it
+    /// is bounded by the same `TIMEOUT` as every other wait here and does not
+    /// depend on how fast the host is.
+    async fn wait_for_node_log(&self, instance_id: &str, marker: &str) -> String {
+        let path = format!("/data/.peppy/logs/run/{instance_id}.log");
+        let started = Instant::now();
+        let mut last = String::new();
+        while started.elapsed() < TIMEOUT {
+            let mut result = self
+                .container
+                .exec(
+                    ExecCommand::new(["cat", path.as_str()])
+                        .with_cmd_ready_condition(CmdWaitFor::exit()),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("failed to read {path} in {}: {error}", self.name));
+            last = String::from_utf8_lossy(
+                &result
+                    .stdout_to_vec()
+                    .await
+                    .unwrap_or_else(|error| panic!("reading {path} in {}: {error}", self.name)),
+            )
+            .into_owned();
+            if last.contains(marker) {
+                return last;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!(
+            "timed out waiting for `{marker}` in {}'s `{instance_id}` log; last contents:\n{last}",
+            self.name
+        );
+    }
+}
+
 /// Asserts that `earlier` appears before `later` in the launch's feedback.
 ///
 /// This is how cross-boundary ordering is checked. The coordinator's feedback
@@ -818,58 +859,10 @@ impl Federation {
     }
 }
 
-/// Preflight succeeds, is non-destructive, and then refuses because
-/// cross-machine dispatch is not implemented yet.
-///
-/// The assertion that matters is the SECOND half: a refusal must leave both
-/// machines exactly as it found them. Reserving every participant before
-/// touching anything is what buys that, and it is the property that has to hold
-/// before dispatch can be built on top of it.
+/// The whole thing, end to end: one command on the robot, two machines running
+/// the halves the launcher describes, ordering preserved across the boundary,
+/// and one `stack reset --federated` clearing both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_federated_launch_reserves_every_participant_and_refuses_without_touching_them() {
-    let federation = start_federation("peppy-fed-preflight").await;
-
-    let launch = federation.launch_split().await;
-    assert!(
-        !launch.success(),
-        "cross-machine dispatch is not implemented; the launch must refuse:\n{}",
-        launch.text
-    );
-    assert!(
-        launch.text.contains("not implemented yet"),
-        "the refusal must say why, not fail obscurely:\n{}",
-        launch.text
-    );
-    assert!(
-        launch.text.contains("Nothing was torn down"),
-        "the refusal must state that no machine was touched:\n{}",
-        launch.text
-    );
-
-    // The reservation was released, so the peer accepts the next launch rather
-    // than staying wedged.
-    let second = federation.launch_split().await;
-    assert!(
-        !second.text.contains("already reserved"),
-        "a refused launch must release the reservations it took:\n{}",
-        second.text
-    );
-
-    for (daemon, instances) in [
-        (&federation.robot, ROBOT_INSTANCES.as_slice()),
-        (&federation.cloud, CLOUD_INSTANCES.as_slice()),
-    ] {
-        let stack = daemon.stack_list(None).await;
-        assert!(
-            instances.iter().all(|id| !stack.text.contains(id)),
-            "a refused launch must leave this daemon's stack untouched:\n{}",
-            stack.text
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "cross-machine dispatch is not implemented yet; see federated::preflight"]
 async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     let federation = start_federation("peppy-fed-place").await;
 
@@ -894,6 +887,15 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     // on different machines.
     assert_starts_before(&launch.text, "wrist_cam_inst", "planner_inst");
 
+    // The peer's own output reaches the operator's terminal, attributed. A
+    // launch that ran half its work on a machine you cannot see the output of
+    // is not one you can debug.
+    assert!(
+        launch.text.contains(&format!("[{}]", federation.cloud_core_node)),
+        "the peer's feedback must be relayed and attributed:\n{}",
+        launch.text
+    );
+
     let robot_stack = federation
         .robot
         .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| text.contains(id)))
@@ -916,6 +918,29 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         &ROBOT_INSTANCES,
     );
 
+    // The data plane, which is the only proof the wiring survived the boundary:
+    // a slot can be bound, and reported bound, while carrying nothing. Each of
+    // the three cross-daemon mechanisms appears exactly once in this launcher.
+    //
+    // Producer link: the planner's `scene` slot is bound to the camera, which
+    // runs on the other machine.
+    federation
+        .cloud
+        .wait_for_node_log("planner_inst", "first frame received across the boundary")
+        .await;
+    // Pairing: the policy and the planner hold each other across the boundary,
+    // and each side sees what the other sent.
+    federation
+        .robot
+        .wait_for_node_log("reflex_inst", "adopted subgoal")
+        .await;
+    // Observation: the recorder taps the executor side of that pairing from a
+    // third machine-local vantage, without joining it.
+    federation
+        .cloud
+        .wait_for_node_log("recorder_inst", "observing execution")
+        .await;
+
     // A `stack reset` on the coordinator tears down both slices, because the
     // participants are rediscovered from the launch id each slice carries.
     let reset = federation
@@ -934,11 +959,41 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     }
 }
 
+/// A second launch of the same launcher must work: the first one released every
+/// reservation it took when it finished.
+///
+/// Without the release, a federated stack could be launched exactly once per
+/// daemon lifetime, and the second attempt would fail with "already reserved"
+/// naming a launch that had long since completed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finished_launch_releases_its_participants_so_the_next_one_can_run() {
+    let federation = start_federation("peppy-fed-relaunch").await;
+
+    let first = federation.launch_split().await;
+    assert!(first.success(), "the first launch must succeed:\n{}", first.text);
+
+    let second = federation.launch_split().await;
+    assert!(
+        second.success(),
+        "a second launch must not be blocked by the first one's reservation:\n{}",
+        second.text
+    );
+    assert!(
+        !second.text.contains("already reserved"),
+        "a finished launch must not still hold its participants:\n{}",
+        second.text
+    );
+
+    federation
+        .cloud
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .await;
+}
+
 /// The case the rejected ownership model could not serve: a coordinator that
 /// restarted has no memory of who took part, and must find its own launch again
 /// by asking the federation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs a federated launch to have populated both slices; see federated::preflight"]
 async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them() {
     let federation = start_federation("peppy-fed-restart").await;
 

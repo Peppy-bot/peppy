@@ -1,5 +1,6 @@
-use peppylib::messaging::{ActionGoalHandle, ResultStatus};
-use peppylib::{ActionMessenger, MessengerHandle};
+use peppylib::MessengerHandle;
+use peppylib::core_node::transport::take_goal_result;
+use peppylib::messaging::ActionGoalHandle;
 use tracing::info;
 
 use super::node::TimeoutConfig;
@@ -148,36 +149,18 @@ pub(crate) async fn poll_action_to_completion<R>(
     let result_timeout = absolute_deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    match ActionMessenger::request_result(messenger, action_handle, result_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                match decode_result(reply.body.as_ref()) {
-                    Ok(result) => Ok(result),
-                    Err(err) => {
-                        scrolling_output.clear();
-                        Err(Error::ExecutionFailed(err))
-                    }
-                }
-            }
-            ResultStatus::Abandoned => {
-                scrolling_output.clear();
-                Err(Error::ExecutionFailed(
-                    "the action goal was abandoned by its worker before producing a result"
-                        .to_string(),
-                ))
-            }
-            ResultStatus::Expired => {
-                scrolling_output.clear();
-                Err(Error::ExecutionFailed(
-                    "the action result expired before it could be fetched".to_string(),
-                ))
-            }
-        },
-        Err(err) => {
+    // The `ResultStatus` mapping lives in peppylib because the daemon relaying
+    // a peer's goal owes the operator the same four explanations this does, and
+    // "abandoned" and "expired" are too easy to lump in with a transport error
+    // in one of two copies.
+    let outcome = take_goal_result(messenger, action_handle, result_timeout)
+        .await
+        .and_then(|body| decode_result(body.as_ref()));
+    match outcome {
+        Ok(result) => Ok(result),
+        Err(reason) => {
             scrolling_output.clear();
-            Err(Error::ExecutionFailed(format!(
-                "Failed to get action result: {err}"
-            )))
+            Err(Error::ExecutionFailed(reason))
         }
     }
 }

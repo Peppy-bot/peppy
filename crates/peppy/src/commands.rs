@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::{InstanceState, SerializedNodeGraph};
-use peppylib::MessengerHandle;
 
 use crate::{
     context::{AppContext, DaemonConnection},
@@ -82,21 +81,23 @@ fn reject_remote_target(
     Ok(())
 }
 
-/// Guards the commands whose payload embeds this session's locally resolved
-/// messaging endpoint (see [`resolve_messaging_endpoint`]): the daemon does
-/// not rewrite `RuntimeConfig`'s `messaging_host`/`messaging_port` server-side
-/// (only the macOS container-gateway rewrite), so a runtime config built here
-/// for a remote daemon would hand its node an endpoint that only exists on
-/// this machine. Until the daemon stamps its own endpoint, these commands
-/// refuse a `--core-node` override naming anything but the local daemon.
-pub(crate) fn reject_remote_target_for_local_endpoint(
+/// Guards the commands that route every request to the LOCAL daemon regardless
+/// of `--core-node`.
+///
+/// `node run` is the shape: its preflight lookup, its build, and its start all
+/// address `conn.core_node_name`, so accepting an override would report success
+/// against the machine the operator did not name. The goal itself is now
+/// host-independent (the daemon assembles the runtime config from its own
+/// state), so what remains is purely that the routing has not been taught to
+/// follow the override. Refusing is the honest answer until it is.
+pub(crate) fn reject_remote_target_for_local_routing(
     conn: &DaemonConnection<'_>,
     command: &str,
 ) -> Result<()> {
     reject_remote_target(conn, command, |target| {
         format!(
-            "the runtime config it produces embeds this machine's messaging endpoint, \
-             which nodes on daemon '{target}' cannot reach."
+            "it addresses this machine's daemon for every step, so it would not run on \
+             daemon '{target}' even though you named it."
         )
     })
 }
@@ -108,7 +109,7 @@ pub(crate) fn reject_remote_target_for_local_endpoint(
 /// CLI reports success with a local-looking path. Until such requests carry no
 /// caller-local paths, these commands refuse a `--core-node` override naming
 /// anything but the local daemon. Sibling of
-/// [`reject_remote_target_for_local_endpoint`].
+/// [`reject_remote_target_for_local_routing`].
 pub(crate) fn reject_remote_target_for_local_path(
     conn: &DaemonConnection<'_>,
     command: &str,
@@ -119,19 +120,6 @@ pub(crate) fn reject_remote_target_for_local_path(
              be resolved on daemon '{target}''s filesystem."
         )
     })
-}
-
-/// Resolves the messaging host and port a node should connect to, falling back
-/// to the default host plus the messenger's port when the endpoint is not
-/// directly advertised. Shared by `node run` and `node runtime-config`.
-pub(crate) async fn resolve_messaging_endpoint(messenger: &MessengerHandle) -> (String, u16) {
-    match messenger.messaging_endpoint().await {
-        Some(endpoint) => endpoint,
-        None => (
-            config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-            messenger.messaging_port().await,
-        ),
-    }
 }
 
 pub(crate) fn block_on<F, T>(future: F) -> Result<T>
@@ -187,6 +175,7 @@ mod tests {
 
     #[test]
     fn remote_target_gate_rejects_only_a_differing_target() {
+        use peppylib::MessengerHandle;
         use pmi::MessengerBackend as _;
         block_on(async {
             let mut instance = pmi::MockAdapter::start_router()
@@ -207,15 +196,14 @@ mod tests {
                 target_is_override: target != "local-daemon",
                 git_hash: "test-git-hash".to_string(),
                 shutdown_grace_secs: 5,
-                namespace: config::namespace::Namespace::local(),
             };
 
             // Target == local (the no-override shape): allowed.
-            reject_remote_target_for_local_endpoint(&conn("local-daemon"), "peppy node run")
+            reject_remote_target_for_local_routing(&conn("local-daemon"), "peppy node run")
                 .expect("a local target must pass the gate");
 
             // A differing target is refused with an actionable message.
-            let err = reject_remote_target_for_local_endpoint(&conn("robot-7"), "peppy node run")
+            let err = reject_remote_target_for_local_routing(&conn("robot-7"), "peppy node run")
                 .expect_err("a remote target must be refused");
             let msg = err.to_string();
             assert!(msg.contains("--core-node"), "names the flag: {msg}");

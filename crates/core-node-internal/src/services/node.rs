@@ -13,6 +13,7 @@ mod init;
 mod logging;
 pub(crate) mod observation;
 pub(crate) mod pairing;
+mod relationship_notify;
 mod remove;
 mod run;
 mod stop;
@@ -31,6 +32,7 @@ pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 pub use observation::ObservationCoordinator;
 pub use pairing::PairingCoordinator;
+pub(crate) use relationship_notify::RelationshipNotifier;
 pub use remove::listen_for_node_remove;
 pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stop::{
@@ -107,16 +109,19 @@ pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<S
 pub(crate) struct RelationshipCoordinators {
     pairing: Arc<PairingCoordinator>,
     observation: Arc<ObservationCoordinator>,
+    notifier: Arc<RelationshipNotifier>,
 }
 
 impl RelationshipCoordinators {
     pub(crate) fn new(
         pairing: Arc<PairingCoordinator>,
         observation: Arc<ObservationCoordinator>,
+        notifier: Arc<RelationshipNotifier>,
     ) -> Self {
         Self {
             pairing,
             observation,
+            notifier,
         }
     }
 
@@ -128,10 +133,20 @@ impl RelationshipCoordinators {
         &self.observation
     }
 
+    pub(crate) fn notifier(&self) -> &Arc<RelationshipNotifier> {
+        &self.notifier
+    }
+
     /// Tears down every cross-instance relationship held by `instance_id`.
-    /// Pairing is dissolved first because it may notify a live peer, then
-    /// observation notifies live observers and drops the instance's records.
+    ///
+    /// Order matters twice over. The remote announcement goes FIRST, while the
+    /// pairing registry still records who the peers were: dissolving locally
+    /// first would erase the very entries that say which daemons to tell.
+    /// Locally, pairing is dissolved before observation because it may notify a
+    /// live peer, and then observation notifies live observers and drops the
+    /// instance's records.
     pub(crate) async fn tear_down_instance(&self, instance_id: &str) {
+        self.notifier.announce_stopped(instance_id).await;
         self.pairing.dissolve_for_instance(instance_id).await;
         self.observation.on_instance_down(instance_id).await;
     }

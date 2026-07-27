@@ -318,7 +318,7 @@ async fn launch_async(
     // daemon would open a different tree or nothing at all. Same guard the
     // other daemon-scoped commands already apply.
     if matches!(launcher_origin, LauncherOrigin::Fs(_)) {
-        crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy stack launch")
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy stack launch")
             .map_err(|_| {
                 Error::ExecutionFailed(format!(
                     "`peppy stack launch` with a launcher file path cannot target the remote \

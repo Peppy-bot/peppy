@@ -128,7 +128,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // A chained run spawns an instance whose runtime config embeds this
     // machine's messaging endpoint; that is only valid on the local daemon.
     if run_options.is_some() {
-        crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node add --run")?;
+        crate::commands::reject_remote_target_for_local_routing(&conn, "peppy node add --run")?;
     }
 
     info!(

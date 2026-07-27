@@ -11,32 +11,47 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Resolves a deployment source that a daemon OTHER than the launch
-/// coordinator must fetch.
+/// Translates a deployment source into one that any daemon in the federation
+/// can fetch for itself.
 ///
-/// `local:` is refused here rather than resolved. Its path names a tree on the
-/// coordinator's filesystem, so a peer resolving it would read a different
-/// tree or nothing at all. Registry, repo, and url sources are
-/// host-independent and each participating daemon fetches them itself.
-pub(crate) fn off_coordinator_node_source(
+/// Two things make this different from
+/// [`node_source_from_deployment_source`], and both are about not letting one
+/// machine's filesystem leak into another's instructions:
+///
+/// - `local:` is REFUSED. Its path names a tree on the coordinator, so a peer
+///   resolving it would read a different tree or nothing at all.
+/// - `repo:` stays a `(name, tag)` reference instead of being resolved through
+///   the caller's own package cache. Resolving it here would pin whatever git
+///   URL or archive THIS machine happens to have cached and hand it to another
+///   machine as fact. Left as a reference, each daemon resolves it against its
+///   own cache, which is the same cache it will spawn from.
+///
+/// Called on both sides for that reason: by the coordinator when it builds a
+/// peer's `node_add`, and by the peer when it resolves its own manifests. Same
+/// function, so the two cannot drift into disagreeing about what a source means.
+pub(crate) fn portable_node_source(
     source: &DeploymentSource,
-    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
-    if let DeploymentSource::Local(spec) = source {
-        return Err(format!(
+    match source {
+        DeploymentSource::Local(spec) => Err(format!(
             "`local:{}` cannot be placed on another core node: the path names a tree on the \
              coordinator's filesystem. A `local:` deployment must keep all of its instances on \
              one core node; publish the node to a repo or url source to split it across machines.",
             spec.local.display()
-        ));
+        )),
+        DeploymentSource::Repo(spec) => NodeSource::repo_node(&spec.name, &spec.tag)
+            .map_err(|e| format!("invalid repo node `{}:{}`: {e}", spec.name, spec.tag)),
+        DeploymentSource::Git(spec) => Ok(NodeSource::Git {
+            repo_url: git_url_from_repo(&spec.repo)?,
+            repo_path: spec.path.clone(),
+            repo_ref: Some(spec.ref_.clone()),
+        }),
+        DeploymentSource::Url(spec) => Ok(NodeSource::Http {
+            url: url::Url::parse(&spec.url)
+                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?,
+            sha256: Some(spec.sha256.clone()),
+        }),
     }
-    let deployment = Deployment {
-        source: source.clone(),
-        instances: Vec::new(),
-    };
-    // `nodes_directory` is only consulted for a relative `local:` path, which
-    // the guard above has already refused, so the value cannot be reached.
-    node_source_from_deployment_source(&deployment, std::path::Path::new("/"), peppy_dirs)
 }
 
 fn deployment_label(deployment: &Deployment) -> String {
@@ -59,37 +74,20 @@ pub(crate) fn node_source_from_deployment_source(
     nodes_directory: &std::path::Path,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
-    let source = match &deployment.source {
-        DeploymentSource::Local(spec) => {
-            let resolved = if spec.local.is_absolute() {
-                spec.local.clone()
-            } else {
-                nodes_directory.join(&spec.local)
-            };
-            NodeSource::Fs(resolved)
+    // Only the two host-dependent shapes are handled here; the rest are
+    // identical from any machine and come from `portable_node_source`, so the
+    // two functions cannot drift apart on what a `git:` or `url:` source means.
+    match &deployment.source {
+        DeploymentSource::Local(spec) => Ok(NodeSource::Fs(if spec.local.is_absolute() {
+            spec.local.clone()
+        } else {
+            nodes_directory.join(&spec.local)
+        })),
+        DeploymentSource::Repo(spec) => {
+            crate::services::repo::cache::resolve_repo_node_source(&spec.name, &spec.tag, peppy_dirs)
         }
-        DeploymentSource::Git(spec) => {
-            let repo_url = git_url_from_repo(&spec.repo)?;
-            NodeSource::Git {
-                repo_url,
-                repo_path: spec.path.clone(),
-                repo_ref: Some(spec.ref_.clone()),
-            }
-        }
-        DeploymentSource::Url(spec) => {
-            let url = url::Url::parse(&spec.url)
-                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
-            NodeSource::Http {
-                url,
-                sha256: Some(spec.sha256.clone()),
-            }
-        }
-        DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
-            &spec.name, &spec.tag, peppy_dirs,
-        )?,
-    };
-
-    Ok(source)
+        portable => portable_node_source(portable),
+    }
 }
 
 /// Step 1: Parse launcher configuration from file path.
@@ -292,10 +290,16 @@ async fn resolve_launcher_origin(
 }
 
 /// Step 2: Resolve deployments - retrieve node configs for each deployment.
+///
+/// A deployment placed wholly on a peer is NOT resolved here. The peer already
+/// resolved it during preflight and `delegated` carries what it read, so this
+/// daemon needs no reachability to a source it will never fetch, and the
+/// manifest it validates is provably the one that peer will spawn from.
 pub(super) async fn resolve_deployments(
     ctx: &ProcessLaunchContext,
     deployments: Vec<Deployment>,
     nodes_directory: &Path,
+    delegated: &BTreeMap<usize, super::federated::DelegatedManifest>,
 ) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
     publish_stdout(
         ctx,
@@ -308,7 +312,7 @@ pub(super) async fn resolve_deployments(
     let mut planning_errors: Vec<String> = Vec::new();
     let mut planned_keys: HashSet<NodeKey> = HashSet::new();
 
-    for deployment in deployments.into_iter() {
+    for (index, deployment) in deployments.into_iter().enumerate() {
         if deployment.instances.is_empty() {
             planning_errors.push(format!(
                 "deployment {} must have at least one instance",
@@ -317,36 +321,14 @@ pub(super) async fn resolve_deployments(
             continue;
         }
 
-        let source =
-            match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
-            {
-                Ok(result) => result,
-                Err(err) => {
-                    planning_errors.push(format!(
-                        "failed to resolve source for deployment {}: {err}",
-                        deployment_label(&deployment)
-                    ));
-                    continue;
-                }
-            };
-
-        publish_stdout(
-            ctx,
-            format!(
-                "Retrieving node config for {}",
-                deployment_label(&deployment)
-            ),
-            LaunchFeedbackStep::LauncherStep,
-        )
-        .await;
-
-        let config = match resolve_node_config(source.clone(), &ctx.peppy_dirs).await {
-            Ok(config) => config,
+        let resolved = match delegated.get(&index) {
+            Some(manifest) => adopt_delegated_manifest(ctx, &deployment, manifest).await,
+            None => resolve_here(ctx, &deployment, nodes_directory).await,
+        };
+        let (source, config, manifest_sha256) = match resolved {
+            Ok(resolved) => resolved,
             Err(err) => {
-                planning_errors.push(format!(
-                    "failed to retrieve node config for deployment {}: {err}",
-                    deployment_label(&deployment)
-                ));
+                planning_errors.push(err);
                 continue;
             }
         };
@@ -382,6 +364,8 @@ pub(super) async fn resolve_deployments(
             node_name,
             node_tag,
             config,
+            deployment_index: index,
+            manifest_sha256,
         });
     }
 
@@ -392,4 +376,154 @@ pub(super) async fn resolve_deployments(
     }
 
     Ok(planned)
+}
+
+/// What one resolved deployment contributes to the plan: how to fetch it, what
+/// its manifest says, and this daemon's own fingerprint of that manifest (only
+/// when this daemon read it, so a straddle can be cross-checked).
+type ResolvedDeployment = (NodeSource, config::node::NodeConfig, Option<String>);
+
+/// Takes a peer's resolved manifest at face value, but still derives the
+/// portable source: what the coordinator needs from it is the instruction to
+/// send back, not a path on the peer's disk.
+async fn adopt_delegated_manifest(
+    ctx: &ProcessLaunchContext,
+    deployment: &Deployment,
+    manifest: &super::federated::DelegatedManifest,
+) -> std::result::Result<ResolvedDeployment, String> {
+    publish_stdout(
+        ctx,
+        format!(
+            "Using the manifest `{}` resolved for {}",
+            manifest.core_node,
+            deployment_label(deployment)
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let config: config::node::NodeConfig = serde_json5::from_str(&manifest.config_json5)
+        .map_err(|e| {
+            format!(
+                "`{}` sent an undecodable manifest for deployment {}: {e}",
+                manifest.core_node,
+                deployment_label(deployment)
+            )
+        })?;
+    let source = portable_node_source(&deployment.source)?;
+    // No local fingerprint: this daemon did not read the manifest, so it has
+    // nothing of its own to compare, and the straddle check must not compare a
+    // peer's answer against itself.
+    Ok((source, config, None))
+}
+
+async fn resolve_here(
+    ctx: &ProcessLaunchContext,
+    deployment: &Deployment,
+    nodes_directory: &Path,
+) -> std::result::Result<ResolvedDeployment, String> {
+    let source = node_source_from_deployment_source(deployment, nodes_directory, &ctx.peppy_dirs)
+        .map_err(|err| {
+            format!(
+                "failed to resolve source for deployment {}: {err}",
+                deployment_label(deployment)
+            )
+        })?;
+
+    publish_stdout(
+        ctx,
+        format!(
+            "Retrieving node config for {}",
+            deployment_label(deployment)
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let config = resolve_node_config(source.clone(), &ctx.peppy_dirs)
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to retrieve node config for deployment {}: {err}",
+                deployment_label(deployment)
+            )
+        })?;
+    let fingerprint = crate::services::node::manifest_fingerprint(&config)?;
+    Ok((source, config, Some(fingerprint)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(json5: &str) -> DeploymentSource {
+        serde_json5::from_str(json5).expect("valid deployment source")
+    }
+
+    /// The hazard this exists to avoid: resolving `repo:` through the caller's
+    /// own package cache would pin whatever git URL THIS machine happens to
+    /// have cached and hand it to another machine as fact. Left as a reference,
+    /// each daemon resolves it against the cache it will actually spawn from.
+    #[test]
+    fn a_repo_source_crosses_machines_as_a_reference_not_a_resolved_url() {
+        let resolved = portable_node_source(&source(r#"{ name: "planner", tag: "v1" }"#))
+            .expect("a repo source is portable");
+        assert_eq!(
+            resolved,
+            NodeSource::RepoNode {
+                name: "planner".to_owned(),
+                tag: "v1".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn git_and_url_sources_name_the_same_bytes_from_any_machine() {
+        assert!(matches!(
+            portable_node_source(&source(
+                r#"{ repo: "https://example.com/r.git", ref: "main", path: "nodes/a" }"#
+            )),
+            Ok(NodeSource::Git { .. })
+        ));
+        assert!(matches!(
+            portable_node_source(&source(
+                r#"{ url: "https://example.com/a.tar.zst", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#
+            )),
+            Ok(NodeSource::Http { .. })
+        ));
+    }
+
+    /// A path names a tree on the coordinator's disk, so a peer resolving it
+    /// would read a different tree or nothing at all.
+    #[test]
+    fn a_local_source_is_refused_rather_than_translated() {
+        let error = portable_node_source(&source(r#"{ local: "./nodes/planner" }"#))
+            .expect_err("a local path cannot cross machines");
+        assert!(error.contains("names a tree on"), "got: {error}");
+        assert!(error.contains("repo or url source"), "got: {error}");
+    }
+
+    /// The local resolver and the portable one must not drift apart on what a
+    /// host-independent source means, which is why the former delegates to the
+    /// latter for exactly those shapes.
+    #[test]
+    fn the_local_resolver_agrees_with_the_portable_one_on_host_independent_sources() {
+        for json5 in [
+            r#"{ repo: "https://example.com/r.git", ref: "main", path: "nodes/a" }"#,
+            r#"{ url: "https://example.com/a.tar.zst", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#,
+        ] {
+            let deployment = Deployment {
+                source: source(json5),
+                instances: Vec::new(),
+            };
+            let local = node_source_from_deployment_source(
+                &deployment,
+                std::path::Path::new("/nodes"),
+                &PeppyDirs::new("/tmp/peppy"),
+            )
+            .expect("resolvable locally");
+            let portable = portable_node_source(&deployment.source).expect("portable");
+            assert_eq!(local, portable, "for {json5}");
+        }
+    }
 }

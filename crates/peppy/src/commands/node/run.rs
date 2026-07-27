@@ -1,7 +1,7 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
 use config::runtime::PairingSlotBinding;
-use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
+use config::runtime::Name;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
@@ -694,12 +694,10 @@ pub async fn validate_and_run_instance(
 /// this directly bypasses every binding rule and exists only as the lower
 /// half of the validate-then-spawn split.
 ///
-/// `core_node_name` plays both roles (caller identity and goal target)
-/// because this path is local-only: the `RuntimeConfig` built below embeds
-/// this session's messaging endpoint and `core_node_name` as the instance's
-/// bound core node, and the daemon rewrites neither server-side (it also
-/// rejects a `bound_core_node` that isn't its own). The command entry points
-/// enforce this via `reject_remote_target_for_local_endpoint`.
+/// `core_node_name` plays both roles (caller identity and goal target) because
+/// this path routes to the local daemon only; the entry points enforce that via
+/// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local
+/// any more, so the restriction is about routing rather than about the payload.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
@@ -829,10 +827,9 @@ async fn run_node_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    // The spawned instance's runtime config embeds this machine's messaging
-    // endpoint (see `run_instance_async`), which only the local daemon's
-    // nodes can dial; the whole run path is therefore local-only in v1.
-    crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node run")?;
+    // Every step below addresses `conn.core_node_name`, this machine's daemon,
+    // so an override would name a machine nothing actually runs on.
+    crate::commands::reject_remote_target_for_local_routing(&conn, "peppy node run")?;
 
     // Single end-to-end budget: every subsequent blocking stage (build, wait,
     // run) derives its `max_secs` from what's left of this budget, so the sum

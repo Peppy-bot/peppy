@@ -432,6 +432,7 @@ impl CoreNode {
             peppy_dirs: self.peppy_dirs.clone(),
             ownership: Arc::clone(&self.slice_ownership),
             relationships: ctx.relationships.clone(),
+            node_stack: Arc::clone(&self.node_stack),
             // Same string the `info` service reports: one source of truth for
             // "what version is that daemon", so a coordinator comparing
             // versions never has two answers to choose between.
@@ -543,6 +544,17 @@ impl CoreNode {
                     self.node_name(),
                 )
                 .boxed()
+            }
+            ServiceId::ParticipantSliceBegin => {
+                federation::listen_for_participant_slice_begin(
+                    self.federation_context(ctx),
+                    self.node_name(),
+                )
+                .boxed()
+            }
+            ServiceId::PairCommit => {
+                federation::listen_for_pair_commit(self.federation_context(ctx), self.node_name())
+                    .boxed()
             }
             ServiceId::ParticipantRelease => {
                 federation::listen_for_participant_release(
@@ -658,7 +670,6 @@ impl CoreNode {
                         health_monitor_interval: self.health_monitor_interval,
                         health_monitor_timeout: self.health_monitor_timeout,
                     },
-                    use_sim_time: self.daemon_use_sim_time,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),
@@ -688,6 +699,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
                 ctx.relationships.clone(),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ActionId::NodeBuild => node::listen_for_node_build(
@@ -697,6 +709,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ActionId::NodeRun => node::listen_for_node_run(
@@ -718,6 +731,7 @@ impl CoreNode {
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     relationships: ctx.relationships.clone(),
+                    slice_ownership: Arc::clone(&self.slice_ownership),
                 },
             )
             .boxed(),
@@ -841,18 +855,25 @@ impl CoreNode {
         } else {
             Arc::new(WallClockSource)
         };
+        let pairing = Arc::new(node::PairingCoordinator::new(
+            Arc::clone(&self.node_stack),
+            self.messenger.clone(),
+            core_node_name,
+            self.instance_id(),
+        ));
         let relationships = node::RelationshipCoordinators::new(
-            Arc::new(node::PairingCoordinator::new(
-                Arc::clone(&self.node_stack),
-                self.messenger.clone(),
-                core_node_name,
-                self.instance_id(),
-            )),
+            Arc::clone(&pairing),
             Arc::new(node::ObservationCoordinator::new(
                 Arc::clone(&self.node_stack),
                 self.messenger.clone(),
                 core_node_name,
                 self.instance_id(),
+            )),
+            Arc::new(node::RelationshipNotifier::new(
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+                pairing,
             )),
         );
         let ctx = ListenerCtx {

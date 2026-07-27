@@ -113,18 +113,6 @@ It is a flag rather than a key in the file because the launcher's author
 declares a topology and cannot know what machines the person running it has.
 Mixing `--local` with `--place` is an error: pick one way to say where things go.
 
-:::caution[Cross-machine dispatch is not shipped yet]
-Everything on this page up to and including preflight works today: the launcher
-syntax, `--place` and `--local`, the liveness and version checks, and the
-participant reservation. **Dispatching instances to a peer does not.** A launch
-that places instances on another machine is refused after preflight, with
-nothing torn down on any machine, rather than silently starting those instances
-on the coordinator.
-
-`--local` works end to end today and is how you develop against a federated
-launcher in the meantime.
-:::
-
 ## The worked example
 
 <Code code={splitComputeLauncher} lang="json5" title="split_compute_manipulation.json5" />
@@ -142,20 +130,27 @@ peppy stack launch --place robot_onboard@self \
 ```
 This launch will REPLACE the node stack on 1 remote daemon(s): cn-atlas-h100
 Parsing launcher configuration
-Reserving cn-atlas-h100 for launch launch-brave-otter
-Adding uvc_camera_python_mock:v1
+Resolving 5 deployment(s)
+Using the manifest cn-atlas-h100 resolved for repo:deliberative_planner:v1
+Validating dependencies
+Adding uvc_camera_python_mock:v1 on `cn-robot-7`
+Adding deliberative_planner:v1 on `cn-atlas-h100`
+[cn-atlas-h100] Fetching deliberative_planner:v1
 ...
-Starting uvc_camera_python_mock:v1 instance wrist_cam_inst
-Starting my_python_robot_arm:v1 instance arm_inst
-Starting reactive_policy:v1 instance reflex_inst
-Starting deliberative_planner:v1 instance planner_inst
-Starting episode_recorder:v1 instance recorder_inst
+Starting uvc_camera_python_mock:v1 instance wrist_cam_inst on `cn-robot-7`
+Starting my_python_robot_arm:v1 instance arm_inst on `cn-robot-7`
+Starting reactive_policy:v1 instance reflex_inst on `cn-robot-7`
+Starting deliberative_planner:v1 instance planner_inst on `cn-atlas-h100`
+Starting episode_recorder:v1 instance recorder_inst on `cn-atlas-h100`
 Launch completed successfully
 ```
 
-The first line matters: a launch is destructive on every machine it touches, and
-you typed one command. Peppy names the remote daemons whose stacks are about to
-be replaced before it replaces them.
+Two things in that output are worth pointing at. The first line: a launch is
+destructive on every machine it touches, and you typed one command, so Peppy
+names the remote daemons whose stacks are about to be replaced before it
+replaces them. And the `[cn-atlas-h100]` prefix: the peer's own output is
+relayed into this one stream and attributed, because a launch that ran half its
+work somewhere you cannot see is not one you can debug.
 
 ## Verifying placement
 
@@ -201,9 +196,20 @@ what it cannot solve, the planner pushes subgoals back down, and each side holds
 a pinned view of the other. Declaring the pair on one side covers both
 endpoints' slots. See [Pairing](/advanced_guides/pairing/).
 
+A pair is recorded on both machines, because only the daemon hosting a node can
+hand that node its peer. The later-starting side establishes the pair and asks
+the other daemon to record its half; if that is refused, the first side undoes
+its own, so a pair is never established on one machine and missing on the
+other.
+
 **Observation.** The recorder taps the executor side of that pairing without
 joining it. An observer claims no slot and holds no peer, so it cannot perturb
 control however it behaves.
+
+Because the source is not told its observers exist, it cannot report to them on
+its own. The launch works out which machines are watching each instance and
+tells that instance's daemon, which is what makes a source restart drop and
+redeclare a remote observer's subscription exactly as it does a local one.
 
 The thing to notice is that none of this looks different from the
 single-machine case. Federation changes where instances run, not how they are
@@ -214,7 +220,12 @@ wired.
 **Consumers still start after producers, across machines.** `wrist_cam_inst` is
 Running on the robot before `planner_inst` starts in the cloud, because the
 planner's `scene` slot is bound to it. The coordinator computes one global order
-and drives starts in waves across daemons.
+and starts instances strictly one at a time along it, whichever machine each one
+is on, so the guarantee is the same one a single-machine launch gives.
+
+Fetching and building do run concurrently across machines, since nothing orders
+one machine's build against another's. That is where a launch spends its time,
+so a two-machine launch is not two launches long.
 
 **Peppy guarantees the servo path never crosses the WAN.** Placement puts the
 camera, the arm, and the policy on one daemon, so the 200 Hz loop is entirely
@@ -228,9 +239,12 @@ freshness therefore owns a staleness watchdog. In the example that is
 adopts it, and then the policy falls back to its own local behavior. The uplink
 is an *enhancement path*, not a dependency.
 
-**On failure, the launch stops and reports per daemon.** There is no automatic
-rollback; a partial failure leaves each machine in the state it reached, and
-each is named. Clean up with:
+**On failure, the launch stops and clears every slice it started.** There is no
+rollback, because a launch REPLACES the previous stack: by the time anything can
+fail there is nothing to roll back to. What Peppy does instead is leave an empty
+slice on every machine it touched and name each one. If a machine cannot be
+reached to be cleared, that machine is named too, so you know exactly where to
+run:
 
 ```bash
 peppy stack reset --federated
@@ -264,3 +278,7 @@ participants keep running.
   file.
 - **No re-placement of a running instance.** Moving an instance to another
   machine means launching again.
+- **A peer prepares no container bind mounts.** The coordinator creates missing
+  bind sources for the instances it runs itself, but a path on another machine
+  is that machine's to provide. A container node placed on a peer needs its bind
+  sources to already exist there.

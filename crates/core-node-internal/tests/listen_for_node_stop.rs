@@ -487,13 +487,8 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         add_response.error_message
     );
 
-    // Point the node's runtime config at the real zenoh endpoint so the
-    // spawned process can join the messaging network.
-    let (messaging_host, messaging_port) = started
-        .caller_handle
-        .messaging_endpoint()
-        .await
-        .expect("zenoh endpoint should be available");
+    // The daemon assembles the runtime config, endpoint included, so the test
+    // only says WHICH instance to start.
     let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
 
     let start_response = send_node_run_and_wait(
