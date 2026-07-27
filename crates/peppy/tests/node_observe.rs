@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::service::{ServiceCommand, ServiceCommands};
+use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
@@ -427,8 +427,8 @@ async fn service_reset_clears_the_observation_registry() {
     // Reset: mass teardown (the source's shutdown service kills its process, so
     // this returns promptly) + node_stack.reset() (clears pairing) + the fix
     // under test (observation.clear()).
-    ServiceCommand {
-        command: ServiceCommands::Reset {},
+    StackCommand {
+        command: StackCommands::Reset { federated: false },
     }
     .execute(&ctx)
     .expect("service reset should succeed");

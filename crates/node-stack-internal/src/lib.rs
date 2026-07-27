@@ -44,7 +44,7 @@ pub use core_node_api::InstanceState;
 pub use node_stack::add_steps;
 pub use node_stack::{
     BuildContext, EntityHandle, NodeEntity, NodeStack, NodeStage, OutputSinks, PairEndpoint,
-    Pairing, PairingNodeSnapshot, SlotAddr, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr, StartContext, StartedInstanceCtx, TrackedNodeInstance,
     WorkingDirGuard, pairing_slot_view,
 };
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

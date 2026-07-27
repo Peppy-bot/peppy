@@ -1,5 +1,4 @@
 pub mod install;
-pub mod reset;
 pub mod serve;
 
 use super::Command;
@@ -60,8 +59,6 @@ pub enum ServiceCommands {
     Stop {},
     /// Uninstall the peppy background service.
     Uninstall {},
-    /// Reset the current core node stack (clears all nodes except the core node).
-    Reset {},
 }
 
 pub struct ServiceCommand {
@@ -86,7 +83,6 @@ impl Command for ServiceCommand {
             ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
             ServiceCommands::Stop {} => install::StopCommand {}.execute(app_ctx),
             ServiceCommands::Uninstall {} => install::UninstallCommand {}.execute(app_ctx),
-            ServiceCommands::Reset {} => reset::ResetCommand {}.execute(app_ctx),
         }
     }
 }

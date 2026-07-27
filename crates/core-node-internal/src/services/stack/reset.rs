@@ -2,7 +2,7 @@ use crate::Result;
 use crate::services::node::{ObservationCoordinator, teardown_all_instances};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
-use core_node_api::encoding::{NodeResetRequest, NodeResetResponse};
+use core_node_api::encoding::{StackResetRequest, StackResetResponse};
 use core_node_api::names;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
@@ -20,6 +20,7 @@ pub async fn listen_for_stack_reset(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     observation: Arc<ObservationCoordinator>,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -48,6 +49,7 @@ pub async fn listen_for_stack_reset(
                     instance_id.clone(),
                     Arc::clone(&node_stack),
                     Arc::clone(&observation),
+                    Arc::clone(&ownership),
                 )
             })
             .await
@@ -64,6 +66,7 @@ async fn handle_stack_reset_request(
     instance_id: String,
     node_stack: Arc<NodeStack>,
     observation: Arc<ObservationCoordinator>,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
@@ -74,6 +77,7 @@ async fn handle_stack_reset_request(
             &instance_id,
             node_stack,
             &observation,
+            &ownership,
         )
         .await,
     )
@@ -86,11 +90,12 @@ async fn handle_node_reset_request_inner(
     instance_id: &str,
     node_stack: Arc<NodeStack>,
     observation: &ObservationCoordinator,
+    ownership: &crate::services::federation::SliceOwnership,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let _request = NodeResetRequest::decode(payload.as_ref())?;
+    let _request = StackResetRequest::decode(payload.as_ref())?;
 
     debug!("Received `node_reset` request from {sender_instance_id}");
     // Stop the running instances (cooperative shutdown, then force-kill the
@@ -106,5 +111,9 @@ async fn handle_node_reset_request_inner(
     // the whole-stack case.
     node_stack.reset();
     observation.clear();
-    NodeResetResponse::success().encode().map_err(Into::into)
+    // An emptied stack belongs to no launch. Clearing this also releases any
+    // reservation held over this machine, so a reset is a complete escape
+    // hatch rather than one that leaves the daemon refusing future launches.
+    ownership.clear();
+    StackResetResponse::success().encode().map_err(Into::into)
 }

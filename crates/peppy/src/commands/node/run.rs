@@ -9,7 +9,7 @@ use core_node_api::encoding::{
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, LinkTargets, LinkValue, PairingValidationItem,
-    split_link_target, validate_link_plan,
+    Placements, split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -545,7 +545,13 @@ async fn validate_links_against_stack(
         pairing_deps: &target_pairing_deps,
         preexisting: false,
     });
-    let mut validated = validate_link_plan(&items, &pairing_items, &already_paired, core_node_name);
+    let mut validated = validate_link_plan(
+        &items,
+        &pairing_items,
+        &already_paired,
+        // `node run` targets one daemon, so every instance it can see is on it.
+        &Placements::all_on(core_node_name),
+    );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
         return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
@@ -577,8 +583,8 @@ async fn validate_links_against_stack(
         if let Some(target) = value.as_scalar() {
             let (peer_instance, peer_link) = split_link_target(target);
             let pair_target = match peer_link {
-                Some(link) => PairTarget::pinned(peer_instance, link),
-                None => PairTarget::new(peer_instance),
+                Some(link) => PairTarget::pinned(peer_instance, link, core_node_name),
+                None => PairTarget::new(peer_instance, core_node_name),
             };
             requested_pairs.insert(link_id.clone(), pair_target);
         }
@@ -596,7 +602,11 @@ async fn validate_links_against_stack(
         .map(|obs| {
             (
                 obs.observer_link_id.clone(),
-                ObservationTarget::new(&obs.source.instance_id, &obs.source_link_id),
+                ObservationTarget::new(
+                    &obs.source.instance_id,
+                    &obs.source_link_id,
+                    core_node_name,
+                ),
             )
         })
         .collect();
@@ -718,27 +728,21 @@ pub async fn run_instance_async(
         arguments.len()
     );
 
-    let (messaging_host, messaging_port) =
-        crate::commands::resolve_messaging_endpoint(messenger_handle).await;
-
-    let runtime_config = RuntimeConfig::new(
-        messaging_host.as_str(),
-        messaging_port,
-        NodeInstanceConfig {
-            arguments,
-            slot_bindings,
-            ..NodeInstanceConfig::new(
-                Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
-            )
-        },
-        node_name,
-        tag,
-        core_node_name,
-    )
-    .map_err(Error::PeppyConfig)?;
-
-    let runtime_config_json =
-        serde_json::to_string(&runtime_config).map_err(|e| Error::Sync(e.to_string()))?;
+    // A PLAN, not a config. The CLI says WHAT to start; the daemon owns the
+    // node's runtime identity and assembles the rest from its own state.
+    //
+    // This is what removes `node run`'s local-only restriction: the CLI used to
+    // bake its own session's messaging endpoint and core node into the config
+    // it shipped, so aiming the command at another daemon produced a node bound
+    // to the wrong machine. With nothing host-local on the goal there is
+    // nothing left to get wrong.
+    let instance_plan = config::runtime::NodeInstancePlan {
+        arguments,
+        slot_bindings,
+        ..config::runtime::NodeInstancePlan::new(
+            Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
+        )
+    };
 
     info!(
         "Calling node_run for {}:{} (instance_id={})...",
@@ -746,7 +750,7 @@ pub async fn run_instance_async(
     );
 
     let start_goal = NodeRunGoal::new(
-        &runtime_config_json,
+        instance_plan,
         node_name.to_string(),
         tag.to_string(),
         timeouts.max_secs,

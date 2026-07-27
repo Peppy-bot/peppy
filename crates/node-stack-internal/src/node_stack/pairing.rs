@@ -8,27 +8,63 @@
 //! `PairingCoordinator` in core-node-internal, which serializes all pairing
 //! operations and calls into this registry to commit.
 
-/// Address of one pairing slot: instance × link_id. A pair is strictly 1:1
-/// between two complementary slots, exclusive until cleared.
+/// Address of one pairing slot: core node × instance × link_id. A pair is
+/// strictly 1:1 between two complementary slots, exclusive until cleared.
+///
+/// The core node is part of the identity because two daemons can host
+/// same-named instances: without it, a local `reflex_inst` and a remote one
+/// would collide in this registry and each could silently claim the other's
+/// slot.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SlotAddr {
+    pub core_node: String,
     pub instance_id: String,
     pub link_id: String,
 }
 
 impl SlotAddr {
-    pub fn new(instance_id: impl Into<String>, link_id: impl Into<String>) -> Self {
+    pub fn new(
+        core_node: impl Into<String>,
+        instance_id: impl Into<String>,
+        link_id: impl Into<String>,
+    ) -> Self {
         Self {
+            core_node: core_node.into(),
             instance_id: instance_id.into(),
             link_id: link_id.into(),
         }
+    }
+
+    /// Whether this slot lives on `core_node`, i.e. whether the daemon holding
+    /// that name owns it and can read its manifest.
+    pub fn is_on(&self, core_node: &str) -> bool {
+        self.core_node == core_node
     }
 }
 
 impl std::fmt::Display for SlotAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.instance_id, self.link_id)
+        write!(f, "{}/{}:{}", self.core_node, self.instance_id, self.link_id)
     }
+}
+
+/// The already-validated metadata of a pairing slot that lives on ANOTHER
+/// daemon.
+///
+/// A daemon can only read manifests for instances it hosts, so it cannot
+/// derive these for a remote endpoint. It does not need to: the coordinator of
+/// a federated launch holds every participant's manifests and validates the
+/// whole plan (same pairing, complementary roles, matching sha pins) before
+/// anything starts. This carries that verdict to the daemon that commits the
+/// local half.
+///
+/// The coordinator is the serialization point precisely so daemons never have
+/// to negotiate this among themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSlotMeta {
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub role: String,
 }
 
 /// One endpoint of an established pair: the slot plus the role its manifest
@@ -71,8 +107,28 @@ impl Pairing {
         }
     }
 
-    pub fn involves_instance(&self, instance_id: &str) -> bool {
-        self.a.slot.instance_id == instance_id || self.b.slot.instance_id == instance_id
+    /// Whether either endpoint is the given instance ON the given daemon.
+    /// Both halves of the address matter: two daemons can host same-named
+    /// instances, and a remote one dying must not dissolve the local one's
+    /// pairs.
+    pub fn involves(&self, core_node: &str, instance_id: &str) -> bool {
+        [&self.a, &self.b]
+            .iter()
+            .any(|endpoint| endpoint.slot.core_node == core_node && endpoint.slot.instance_id == instance_id)
+    }
+
+    /// The endpoint of this pair that lives on `core_node`, if any. A pair
+    /// spanning two daemons is recorded on both, and each side only ever
+    /// delivers to the endpoint it owns.
+    pub fn local_endpoint(&self, core_node: &str) -> Option<&PairEndpoint> {
+        [&self.a, &self.b]
+            .into_iter()
+            .find(|endpoint| endpoint.slot.is_on(core_node))
+    }
+
+    /// Whether both endpoints live on the same daemon.
+    pub fn is_same_daemon(&self) -> bool {
+        self.a.slot.core_node == self.b.slot.core_node
     }
 }
 
@@ -97,21 +153,34 @@ impl PairingRegistry {
         Some(self.pairs.remove(idx))
     }
 
-    pub(crate) fn remove_for_instance(&mut self, instance_id: &str) -> Vec<Pairing> {
+    pub(crate) fn remove_for_instance(
+        &mut self,
+        core_node: &str,
+        instance_id: &str,
+    ) -> Vec<Pairing> {
         let (dissolved, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pairs)
             .into_iter()
-            .partition(|p| p.involves_instance(instance_id));
+            .partition(|p| p.involves(core_node, instance_id));
         self.pairs = kept;
         dissolved
     }
 
-    /// Drops every pair for which `is_live` rejects either endpoint's
+    /// Drops every pair for which `is_live` rejects a LOCAL endpoint's
     /// instance. The lazy half of cleanup: the process-exit watcher has no
     /// stack back-reference, so registry reads prune dead pairs on the fly
     /// instead of trusting eager dissolution alone.
-    pub(crate) fn prune_dead(&mut self, is_live: impl Fn(&str) -> bool) {
-        self.pairs
-            .retain(|p| is_live(&p.a.slot.instance_id) && is_live(&p.b.slot.instance_id));
+    ///
+    /// A remote endpoint is deliberately never pruned here. This daemon cannot
+    /// see whether an instance on another machine is alive, and treating
+    /// "cannot see" as "dead" would silently dissolve every cross-daemon pair
+    /// on the next registry read. Remote death arrives as an explicit
+    /// notification from the daemon that owns it, which stays authoritative.
+    pub(crate) fn prune_dead(&mut self, local_core_node: &str, is_live: impl Fn(&str) -> bool) {
+        self.pairs.retain(|p| {
+            [&p.a, &p.b].into_iter().all(|endpoint| {
+                !endpoint.slot.is_on(local_core_node) || is_live(&endpoint.slot.instance_id)
+            })
+        });
     }
 
     pub(crate) fn pairs(&self) -> &[Pairing] {

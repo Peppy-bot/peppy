@@ -1,14 +1,17 @@
 mod feedback;
 mod orchestrate;
 mod phases;
+mod federated;
 mod resolve;
+
+pub(crate) use resolve::off_coordinator_node_source;
 
 use self::feedback::{publish_stderr, publish_stdout};
 use self::orchestrate::{
     add_node_directly, build_node_directly, fail_and_clear_stack, start_node_directly,
     teardown_and_reset_stack, validate_and_order_dependencies,
 };
-use self::resolve::{parse_launcher_config, resolve_deployments, resolve_framework};
+use self::resolve::{parse_launcher_config, resolve_deployments};
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
@@ -18,10 +21,9 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
-use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
-use config::runtime::RuntimeConfig;
 use containers::is_host_provided_mount_source;
 use core_node_api::ActionId;
+use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
     NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, PairTarget,
@@ -77,6 +79,12 @@ pub struct StackLaunchDefaults {
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor
     /// so it stops probing the instant a clean shutdown begins.
     pub shutdown_token: CancellationToken,
+    /// Which launch this daemon's slice belongs to. Shared with the federation
+    /// endpoints so a reservation and the slice it produces are one authority.
+    pub(crate) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    /// This daemon's peppy version, compared against each participant's during
+    /// a federated preflight.
+    pub peppy_version: String,
 }
 
 #[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
@@ -105,6 +113,8 @@ pub async fn listen_for_stack_launch(
         use_sim_time: daemon_use_sim_time,
         daemon_defaults,
         shutdown_token,
+        slice_ownership,
+        peppy_version,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -114,6 +124,8 @@ pub async fn listen_for_stack_launch(
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
             timeouts,
+            slice_ownership,
+            peppy_version,
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
@@ -174,6 +186,14 @@ struct ProcessLaunchContext {
     /// The daemon authorities forwarded into each instance's relationship
     /// lifecycle work.
     relationships: RelationshipCoordinators,
+    /// Which launch this daemon's slice belongs to. Recorded once the launch
+    /// commits, so `stack list` reports it and a coordinator can rediscover
+    /// every participant by query.
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    /// This daemon's peppy version, compared against each participant's during
+    /// preflight so a mixed-version federation is refused before any stack is
+    /// touched.
+    peppy_version: String,
 }
 
 #[derive(Clone)]
@@ -188,6 +208,8 @@ struct LaunchActionContext {
     daemon_defaults: DaemonDefaults,
     shutdown_token: CancellationToken,
     relationships: RelationshipCoordinators,
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    peppy_version: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -511,6 +533,7 @@ async fn start_node_instances(
     resolved_slot_bindings: &std::collections::BTreeMap<String, config::runtime::SlotBindings>,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
     planned_observations: &[daemon_config::launcher::PlannedObservation],
+    placements: &daemon_config::launcher::Placements,
 ) -> std::result::Result<(), LaunchResult> {
     // Register every planned observation with the daemon's observation
     // coordinator up front, keyed by observer instance. As each instance
@@ -580,23 +603,24 @@ async fn start_node_instances(
             .or_default()
             .insert(
                 later.link_id.clone(),
-                PairTarget::pinned(earlier.instance_id.clone(), earlier.link_id.clone()),
+                PairTarget::pinned(
+                    earlier.instance_id.clone(),
+                    earlier.link_id.clone(),
+                    placements.of(earlier.instance_id.as_str()),
+                ),
             );
         covered_by_instance
             .entry(earlier.instance_id.as_str())
             .or_default()
             .insert(
                 earlier.link_id.clone(),
-                PairTarget::pinned(later.instance_id.clone(), later.link_id.clone()),
+                PairTarget::pinned(
+                    later.instance_id.clone(),
+                    later.link_id.clone(),
+                    placements.of(later.instance_id.as_str()),
+                ),
             );
     }
-
-    // Compute runtime config host/port.
-    let (messaging_host, messaging_port) = ctx
-        .messenger
-        .messaging_endpoint()
-        .await
-        .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
@@ -616,39 +640,19 @@ async fn start_node_instances(
                 .get(instance.instance_id.as_str())
                 .cloned()
                 .unwrap_or_default();
-            let node_instance = config::runtime::NodeInstanceConfig {
+            // A PLAN, not an assembled config. `node_run` supplies the
+            // messaging endpoint, the bound core node, and the resolved
+            // framework values from the daemon that actually spawns the node,
+            // on this path exactly as on every other. One assembly site.
+            let instance_plan = config::runtime::NodeInstancePlan {
                 arguments: instance.arguments.clone(),
-                framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
+                use_sim_time: instance.framework.use_sim_time,
                 slot_bindings,
-                ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
-            };
-            let runtime_config = match RuntimeConfig::new(
-                messaging_host.as_str(),
-                messaging_port,
-                node_instance,
-                item.node_name.as_str(),
-                item.node_tag.as_str(),
-                ctx.bound_core_node.as_str(),
-            ) {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    return Err(fail_and_clear_stack(ctx, e.to_string()).await);
-                }
-            };
-
-            let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
-                Ok(json) => json,
-                Err(e) => {
-                    return Err(fail_and_clear_stack(
-                        ctx,
-                        format!("failed to serialize runtime config: {e}"),
-                    )
-                    .await);
-                }
+                ..config::runtime::NodeInstancePlan::new(instance.instance_id.clone())
             };
 
             let node_run_goal = NodeRunGoal::for_internal_execution(
-                &runtime_config_json5,
+                instance_plan,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
             )
@@ -672,7 +676,7 @@ async fn start_node_instances(
             };
 
             let (result, log_path) =
-                start_node_directly(ctx, node_run_goal, runtime_config, log_path, log_file).await;
+                start_node_directly(ctx, node_run_goal, log_path, log_file).await;
 
             let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
             if let Some(path) = log_path {
@@ -812,6 +816,8 @@ async fn handle_goal_request(
             node_stack,
             peppy_dirs,
             timeouts,
+            slice_ownership,
+            peppy_version,
             daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
@@ -843,6 +849,8 @@ async fn handle_goal_request(
             daemon_defaults,
             shutdown_token,
             relationships,
+            slice_ownership,
+            peppy_version,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
@@ -881,7 +889,7 @@ async fn handle_goal_request(
 /// 7. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse launcher configuration
-    let (deployments, nodes_directory) = match parse_launcher_config(&ctx, &goal).await {
+    let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };
@@ -895,14 +903,34 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     // Step 3: Validate dependencies and compute topological order
     let root_config = ctx.node_stack.root().read().config().clone();
     let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
-        match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
+        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements).await {
             Ok(result) => result,
             Err(launch_result) => return launch_result,
         };
 
+    // Step 3b: Federated preflight. Everything here happens BEFORE the
+    // teardown below, which is the entire point: a launch that cannot succeed
+    // must leave every machine exactly as it found it, including this one.
+    let federated = match federated::preflight(&ctx, &goal, &planned, &placements).await {
+        Ok(federated) => federated,
+        Err(reason) => {
+            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(&ctx.log_path, reason);
+        }
+    };
+
     // Step 4: Stop and clear the currently-running stack. A launch replaces it,
     // so the old instances are torn down here before the new ones are built.
     teardown_and_reset_stack(&ctx).await;
+
+    // Record which launch this daemon's slice belongs to, so the slice is
+    // self-describing from here on and `stack reset` / a relaunch can
+    // rediscover the whole launch by query.
+    ctx.slice_ownership.record_slice(LaunchIdentity::new(
+        goal.launch_id.clone(),
+        ctx.bound_core_node.as_str(),
+    ));
+    let _ = &federated.participants;
 
     // Build lookup map
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
@@ -946,6 +974,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
                 &resolved_slot_bindings,
                 &planned_pairings,
                 &planned_observations,
+                &placements,
             )
             .await,
         )
@@ -1137,28 +1166,34 @@ mod tests {
         );
     }
 
+    fn plan_with(use_sim_time: Option<bool>) -> config::runtime::NodeInstancePlan {
+        config::runtime::NodeInstancePlan {
+            use_sim_time,
+            ..config::runtime::NodeInstancePlan::new(
+                config::runtime::Name::new("inst_1").expect("valid name"),
+            )
+        }
+    }
+
     /// Per-instance override beats the daemon default in either direction.
     /// `Some(true)` forces sim even when the daemon default is wall;
     /// `Some(false)` forces wall even when the daemon default is sim.
+    ///
+    /// Resolution happens on the daemon that spawns the node, because only it
+    /// knows its own default. A plan shipped from another machine carries the
+    /// override unresolved, which is why this is tested on the plan rather than
+    /// on a launcher-side helper.
     #[test]
-    fn resolve_framework_per_instance_wins() {
-        let force_sim = daemon_config::launcher::FrameworkOverrides {
-            use_sim_time: Some(true),
-        };
-        assert!(resolve_framework(&force_sim, false).use_sim_time);
-
-        let force_wall = daemon_config::launcher::FrameworkOverrides {
-            use_sim_time: Some(false),
-        };
-        assert!(!resolve_framework(&force_wall, true).use_sim_time);
+    fn a_per_instance_use_sim_time_override_wins_over_the_daemon_default() {
+        assert!(plan_with(Some(true)).resolve(false).framework.use_sim_time);
+        assert!(!plan_with(Some(false)).resolve(true).framework.use_sim_time);
     }
 
-    /// When the instance omits the override, the daemon default decides.
+    /// When the instance omits the override, the spawning daemon decides.
     #[test]
-    fn resolve_framework_falls_through_to_daemon_default() {
-        let none = daemon_config::launcher::FrameworkOverrides::default();
-        assert!(!resolve_framework(&none, false).use_sim_time);
-        assert!(resolve_framework(&none, true).use_sim_time);
+    fn an_absent_override_falls_through_to_the_daemon_default() {
+        assert!(!plan_with(None).resolve(false).framework.use_sim_time);
+        assert!(plan_with(None).resolve(true).framework.use_sim_time);
     }
 
     #[test]

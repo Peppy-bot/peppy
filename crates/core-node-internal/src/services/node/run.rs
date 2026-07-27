@@ -6,6 +6,7 @@ use super::{
     write_error_to_log,
 };
 use crate::Result;
+use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::peppy_config::SubscriberBufferConfig;
 use config::runtime::Name;
 use config::runtime::RuntimeConfig;
@@ -113,16 +114,25 @@ pub struct DaemonDefaults {
     /// from the cached credentials, not from `peppy_config`, so it is threaded in
     /// rather than derived in `from_peppy_config`.
     pub namespace: config::namespace::Namespace,
+    /// This daemon's `use_sim_time` default, applied to any instance plan that
+    /// declines to override it. Lives here because it is a daemon-global fact
+    /// about spawned nodes, exactly like the buffer sizes above, and because
+    /// resolution must happen on the daemon that spawns: a plan shipped from
+    /// another machine cannot know this value.
+    pub use_sim_time: bool,
 }
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
     /// (the single place that knows which of its fields are shipped to
     /// spawned nodes) plus the daemon's resolved `namespace`
-    /// (which comes from the credentials, not `peppy_config`).
+    /// (which comes from the credentials, not `peppy_config`) and its
+    /// `use_sim_time` mode (a daemon-generation argument, likewise not from
+    /// `peppy_config`).
     pub fn from_peppy_config(
         config: &PeppyConfig,
         namespace: config::namespace::Namespace,
+        use_sim_time: bool,
     ) -> Self {
         Self {
             gossip: config.zenoh.gossip(),
@@ -130,6 +140,7 @@ impl DaemonDefaults {
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
             namespace,
+            use_sim_time,
         }
     }
 }
@@ -414,6 +425,42 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
     }
 }
 
+/// Turns an instance plan into the runtime config the spawned node receives.
+///
+/// The ONLY place a `RuntimeConfig` is built from a request. Everything the
+/// requester is not allowed to choose is supplied here from this daemon's own
+/// state: the messaging endpoint of its router, its own core node name, and
+/// its `use_sim_time` default. A requester therefore cannot name an endpoint
+/// or a daemon at all, which is what makes "a daemon owns the runtime identity
+/// of every node it spawns" checkable in one function rather than trusted
+/// across three call sites.
+///
+/// The daemon-global session settings (`apply_daemon_defaults`) and the
+/// container gateway rewrite are applied later, in `process_node_run`, once
+/// the node's container mode is known.
+pub(crate) async fn assemble_runtime_config(
+    goal: &NodeRunGoal,
+    action_context: &NodeRunActionContext,
+) -> std::result::Result<RuntimeConfig, String> {
+    let (messaging_host, messaging_port) = action_context
+        .messenger
+        .messaging_endpoint()
+        .await
+        .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
+
+    RuntimeConfig::new(
+        messaging_host.as_str(),
+        messaging_port,
+        goal.instance_plan
+            .clone()
+            .resolve(action_context.daemon_defaults.use_sim_time),
+        goal.node_name.as_str(),
+        goal.tag.as_str(),
+        action_context.core_node_name.as_str(),
+    )
+    .map_err(|e| format!("failed to assemble runtime config: {e}"))
+}
+
 /// Runs the node run pipeline: calls [`process_node_run`] and catches panics.
 ///
 /// The caller is responsible for creating the log file and feedback channel.
@@ -501,48 +548,27 @@ async fn handle_goal_request(
         }
     };
 
-    // Parse runtime config to get instance_id for log file naming
-    let runtime_config: RuntimeConfig = match serde_json5::from_str(&goal.runtime_config_json5) {
+    // This daemon owns the runtime identity of every node it spawns, so it
+    // ASSEMBLES the config rather than accepting one. That is what makes the
+    // old identity-mismatch guard unnecessary: `node_name`, `tag`, and
+    // `bound_core_node` now come from the goal and from this daemon's own
+    // state, so they cannot disagree. It is also what lets a peer start a node
+    // a coordinator planned: a coordinator-assembled config would name the
+    // coordinator's router, which no node on this machine can reach.
+    let runtime_config = match assemble_runtime_config(&goal, &action_context).await {
         Ok(config) => config,
-        Err(e) => {
-            let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {e}");
+        Err(error_msg) => {
             gate.clear_running();
             reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
             return;
         }
     };
 
-    // Trust boundary: the runtime config travels in-band on the goal and is
-    // re-exported as `PEPPY_RUNTIME_CONFIG` into the child, so a mismatch
-    // would silently spawn a process under the wrong identity or bound to the
-    // wrong daemon. Reject before allocating a log file or accepting the goal.
-    if runtime_config.node_name.as_str() != goal.node_name
-        || runtime_config.node_tag.as_str() != goal.tag
-        || runtime_config.bound_core_node.as_str() != action_context.core_node_name
-    {
-        let error_msg = format!(
-            "runtime_config identity mismatch: goal requested `{}:{}` on core node `{}`, \
-             but runtime_config is `{}:{}` bound to `{}`",
-            goal.node_name,
-            goal.tag,
-            action_context.core_node_name,
-            runtime_config.node_name.as_str(),
-            runtime_config.node_tag.as_str(),
-            runtime_config.bound_core_node.as_str(),
-        );
-        gate.clear_running();
-        reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
-        return;
-    }
-
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
 
     debug!(
-        "Received `node_run` goal from {sender_instance_id}, node={}:{}, instance_id={}, runtime_config_len={}",
-        goal.node_name,
-        goal.tag,
-        instance_id_str,
-        goal.runtime_config_json5.len()
+        "Received `node_run` goal from {sender_instance_id}, node={}:{}, instance_id={}",
+        goal.node_name, goal.tag, instance_id_str,
     );
 
     // Create log file for stdout/stderr
@@ -663,6 +689,7 @@ async fn process_node_run(
         deferred_pairs,
         covered_pairs,
         planned_observations,
+        manifest_sha256,
         ..
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
@@ -739,6 +766,34 @@ async fn process_node_run(
         guard.config().clone()
     };
 
+    // Close the preflight-to-dispatch window. A federated coordinator
+    // validated this instance's whole plan (slots, cardinality, pairing roles,
+    // sha pins) against the manifest THIS daemon resolved during preflight. If
+    // the add phase since replaced that manifest, the plan was never checked
+    // against what is about to be spawned, so refuse rather than start a node
+    // under a validation that no longer applies.
+    //
+    // Absent on the in-process launch path, where planner and spawner are the
+    // same daemon reading the same entity and there is no window to close.
+    if let Some(expected) = &manifest_sha256 {
+        let actual = match super::manifest_fingerprint(&node_config) {
+            Ok(fingerprint) => fingerprint,
+            Err(msg) => {
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeRunResult::failure(msg);
+            }
+        };
+        if &actual != expected {
+            let msg = format!(
+                "manifest for `{node_name}:{tag}` changed since the launch was planned \
+                 (planned against {expected}, this daemon now resolves {actual}). \
+                 Re-run the launch so the plan is validated against the current manifest."
+            );
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+    }
+
     // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
     // and the launcher validator): coverage of every required slot, and
     // resolution of each requested target to one concrete peer slot. Loud
@@ -772,7 +827,12 @@ async fn process_node_run(
             deferred: &deferred_pairs,
             covered: &covered_pairs,
         };
-        match plan_requested_pairs(&snapshot, &live_pairs, &request) {
+        match plan_requested_pairs(
+            &snapshot,
+            &live_pairs,
+            &request,
+            &ctx.action.core_node_name,
+        ) {
             Ok(p) => p,
             Err(msg) => {
                 write_error_to_log(&ctx.log_file, &msg);
@@ -981,7 +1041,7 @@ async fn process_node_run(
             .action
             .relationships
             .pairing()
-            .reserve(&pair.own, &pair.peer)
+            .reserve(pair)
             .await
         else {
             continue;
@@ -1895,6 +1955,7 @@ mod tests {
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
             namespace: config::namespace::Namespace::local(),
+            use_sim_time: false,
         }
     }
 
@@ -1984,7 +2045,7 @@ mod tests {
         };
 
         let defaults =
-            DaemonDefaults::from_peppy_config(&config, config::namespace::Namespace::local());
+            DaemonDefaults::from_peppy_config(&config, config::namespace::Namespace::local(), false);
 
         assert!(!defaults.gossip);
         assert_eq!(

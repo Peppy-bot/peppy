@@ -153,3 +153,12 @@ $ peppy stack list
 ```
 
 The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality).
+
+## Running one launcher across several machines
+
+A launcher can span machines. It declares named placeholders under `core_nodes`,
+each instance says which one it runs on via `core_node`, and
+`peppy stack launch --place <core-node-link>@<core-node>` binds those
+placeholders to real hardware at launch time. Producer links, pairings, and
+observations all work across the boundary, and consumers still start after their
+producers. See [Federation](/advanced_guides/federation/).

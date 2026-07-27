@@ -5,11 +5,39 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource,
 };
 use daemon_config::consts::PeppyDirs;
-use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
+use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use parking_lot::Mutex as StdMutex;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Resolves a deployment source that a daemon OTHER than the launch
+/// coordinator must fetch.
+///
+/// `local:` is refused here rather than resolved. Its path names a tree on the
+/// coordinator's filesystem, so a peer resolving it would read a different
+/// tree or nothing at all. Registry, repo, and url sources are
+/// host-independent and each participating daemon fetches them itself.
+pub(crate) fn off_coordinator_node_source(
+    source: &DeploymentSource,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<NodeSource, String> {
+    if let DeploymentSource::Local(spec) = source {
+        return Err(format!(
+            "`local:{}` cannot be placed on another core node: the path names a tree on the \
+             coordinator's filesystem. A `local:` deployment must keep all of its instances on \
+             one core node; publish the node to a repo or url source to split it across machines.",
+            spec.local.display()
+        ));
+    }
+    let deployment = Deployment {
+        source: source.clone(),
+        instances: Vec::new(),
+    };
+    // `nodes_directory` is only consulted for a relative `local:` path, which
+    // the guard above has already refused, so the value cannot be reached.
+    node_source_from_deployment_source(&deployment, std::path::Path::new("/"), peppy_dirs)
+}
 
 fn deployment_label(deployment: &Deployment) -> String {
     match &deployment.source {
@@ -26,7 +54,7 @@ fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
         .map_err(|e| format!("invalid git repo URL `{repo}`: {e}"))
 }
 
-fn node_source_from_deployment_source(
+pub(crate) fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
     peppy_dirs: &PeppyDirs,
@@ -64,26 +92,11 @@ fn node_source_from_deployment_source(
     Ok(source)
 }
 
-/// Collapse a per-instance launcher override and the daemon-wide default
-/// into a single resolved framework block. Centralizes the "per-instance
-/// value > daemon default > wall" precedence so the spawned node receives
-/// one concrete value and never has to re-implement the fallback.
-pub(super) fn resolve_framework(
-    overrides: &daemon_config::launcher::FrameworkOverrides,
-    daemon_default_use_sim_time: bool,
-) -> config::runtime::ResolvedFramework {
-    config::runtime::ResolvedFramework {
-        use_sim_time: overrides
-            .use_sim_time
-            .unwrap_or(daemon_default_use_sim_time),
-    }
-}
-
 /// Step 1: Parse launcher configuration from file path.
 pub(super) async fn parse_launcher_config(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
-) -> std::result::Result<(Vec<Deployment>, PathBuf), LaunchResult> {
+) -> std::result::Result<(Vec<Deployment>, PathBuf, Placements), LaunchResult> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -133,8 +146,110 @@ pub(super) async fn parse_launcher_config(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
+    let placements = match resolve_placements(&peppy_launcher, goal, ctx.bound_core_node.as_str()) {
+        Ok(placements) => placements,
+        Err(msg) => {
+            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            return Err(LaunchResult::failure(&ctx.log_path, msg));
+        }
+    };
+
     let deployments = peppy_launcher.deployments.clone();
-    Ok((deployments, nodes_directory))
+    Ok((deployments, nodes_directory, placements))
+}
+
+/// Binds the launcher's declared core node links to the machines named by
+/// `--place`, then resolves every instance to the core node it runs on.
+///
+/// The coordinator owns this, not the CLI. The CLI passes the raw pairs
+/// through and renders feedback; only the daemon has the resolved document,
+/// which matters because a `Repository` launcher (the shape every hub launcher
+/// uses) is resolved from the daemon's own repo cache and the CLI may never
+/// have seen it.
+pub(super) fn resolve_placements(
+    launcher: &daemon_config::launcher::PeppyLauncher,
+    goal: &LaunchGoal,
+    coordinator: &str,
+) -> std::result::Result<Placements, String> {
+    let declared: BTreeSet<&str> = launcher.core_nodes.iter().map(String::as_str).collect();
+
+    if declared.is_empty() && !goal.core_node_links.is_empty() {
+        let wired = goal
+            .core_node_links
+            .keys()
+            .map(|link| format!("`{link}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "--place was given ({wired}) but this launcher declares no `core_nodes`. Either \
+             remove --place, or add a `core_nodes` list naming the machines the launcher spans."
+        ));
+    }
+
+    // Every declared link must be wired exactly once, and only declared links
+    // may be wired. A launcher describes a topology; refusing a partial wiring
+    // is what stops half of it from silently collapsing onto the coordinator.
+    let mut missing: Vec<&str> = Vec::new();
+    for link in &declared {
+        if !goal.core_node_links.contains_key(*link) {
+            missing.push(link);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "these core node links are declared but not wired: {}. Wire each one with \
+             `--place <core-node-link>@<core-node>`, or run the whole launcher on this machine \
+             with `--local`.",
+            missing
+                .iter()
+                .map(|link| format!("`{link}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let undeclared: Vec<&str> = goal
+        .core_node_links
+        .keys()
+        .map(String::as_str)
+        .filter(|link| !declared.contains(link))
+        .collect();
+    if !undeclared.is_empty() {
+        return Err(format!(
+            "--place names core node links this launcher does not declare: {}. It declares: {}",
+            undeclared
+                .iter()
+                .map(|link| format!("`{link}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if declared.is_empty() {
+                "nothing".to_owned()
+            } else {
+                declared
+                    .iter()
+                    .map(|link| format!("`{link}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
+    }
+
+    let mut by_instance = BTreeMap::new();
+    for deployment in &launcher.deployments {
+        for instance in &deployment.instances {
+            let Some(link) = &instance.core_node else {
+                continue;
+            };
+            // The parser already refused a `core_node` naming an undeclared
+            // link, and every declared link is wired by the checks above.
+            let core_node = goal
+                .core_node_links
+                .get(link)
+                .expect("every declared link is wired and every core_node names a declared link");
+            by_instance.insert(instance.instance_id.to_string(), core_node.clone());
+        }
+    }
+
+    Ok(Placements::new(coordinator, by_instance))
 }
 
 /// Translate a `LauncherOrigin` into a concrete on-disk path.

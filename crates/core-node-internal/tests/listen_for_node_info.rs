@@ -266,16 +266,11 @@ async fn node_info_has_instance_ids() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config_json5_1 = common::default_runtime_config_json5(
-        &started_core_node.core_node_name,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        TARGET_INSTANCE_ID_1,
-    );
+    let instance_plan_1 = common::default_instance_plan(TARGET_INSTANCE_ID_1);
     let start_response_1 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        &runtime_config_json5_1,
+        instance_plan_1.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -292,16 +287,11 @@ async fn node_info_has_instance_ids() {
         start_response_1.result.error_message
     );
 
-    let runtime_config_json5_2 = common::default_runtime_config_json5(
-        &started_core_node.core_node_name,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        TARGET_INSTANCE_ID_2,
-    );
+    let instance_plan_2 = common::default_instance_plan(TARGET_INSTANCE_ID_2);
     let start_response_2 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        &runtime_config_json5_2,
+        instance_plan_2.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {

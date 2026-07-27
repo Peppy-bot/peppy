@@ -4,7 +4,6 @@ use super::{
 use crate::Result;
 use crate::services::repo::cache as repo_cache;
 use config::consts::NODE_CONFIG_FILE;
-use config::fingerprint::fingerprint_for_bytes;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
@@ -184,9 +183,7 @@ async fn handle_node_info_request_inner(
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let config_json = json5_pretty::to_string_pretty(&node_config)
-        .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
-    let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
+    let config_integrity = super::manifest_fingerprint(&node_config).map_err(InfoError::Internal)?;
 
     NodeInfoResponse::Found(Box::new(NodeInfo {
         config: node_config,

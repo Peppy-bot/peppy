@@ -318,6 +318,9 @@ async fn start_daemon(
     hostname: &str,
     config: &str,
     managed_router: Option<ManagedRouterMount<'_>>,
+    // Extra read-only mount, used by the federated tests to make the
+    // documented launcher openable inside the coordinator.
+    extra_mount: Option<(&Path, &str)>,
 ) -> Daemon {
     let mut request = GenericImage::new(launch.image_name, launch.image_tag)
         .with_container_name(name)
@@ -330,6 +333,9 @@ async fn start_daemon(
         .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
         .with_env_var(PEPPY_CONFIG_ENV, config)
         .with_cmd([CONTAINER_PEPPY_BINARY, "service", "serve"]);
+    if let Some((host_path, container_path)) = extra_mount {
+        request = request.with_mount(read_only_bind(host_path, container_path));
+    }
     if let Some(router) = managed_router {
         request = request
             .with_mount(read_only_bind(
@@ -393,6 +399,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
         "robo-a",
         &external_daemon_config("daemon-a", router_port),
         None,
+        None,
     )
     .await;
     let daemon_b = start_daemon(
@@ -400,6 +407,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
         &format!("peppy-md-b-{suffix}"),
         "robo-b",
         &external_daemon_config("daemon-b", router_port),
+        None,
         None,
     )
     .await;
@@ -442,6 +450,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
         &format!("peppy-md-c-{suffix}"),
         "robo-c",
         &external_daemon_config("daemon-a", router_port),
+        None,
         None,
     )
     .await;
@@ -515,6 +524,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
             zenohd_binary: &zenohd_binary,
             config: &router_a_pin,
         }),
+        None,
     )
     .await;
     let daemon_a_ip = daemon_a.bridge_ip().await;
@@ -533,6 +543,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
             zenohd_binary: &zenohd_binary,
             config: &router_b_pin,
         }),
+        None,
     )
     .await;
     let daemon_b_ip = daemon_b.bridge_ip().await;
@@ -589,6 +600,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
             zenohd_binary: &zenohd_binary,
             config: &collision_pin,
         }),
+        None,
     )
     .await;
     let collision_status = collision.wait_for_exit().await;
@@ -600,5 +612,462 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     assert!(
         collision_logs.contains("core node name 'daemon-a' is already in use"),
         "collision error missing:\n{collision_logs}"
+    );
+}
+
+// ── Federated launch ──────────────────────────────────────────────────────
+//
+// Four tests rather than one long one. The fixtures genuinely differ (a
+// coordinator restart, a killed peer, and `--local` with no peer at all are
+// three different worlds), and a single sequential test would hide every
+// assertion after the first failure behind one stage number.
+//
+// Everything asserted here is read from stack state or from the launch's own
+// ordered feedback. Nothing compares timestamps across containers: the two
+// containers do not share a clock, and a test that leaned on that would be
+// exactly as flaky as the host it ran on.
+
+/// The launcher the `Federation` guide documents, driven from the peppy repo
+/// rather than from `launchers-hub` over the network. Same file: a superproject
+/// check keeps the two copies byte-identical.
+const SPLIT_COMPUTE_LAUNCHER: &str =
+    "docs/src/content/docs/guides/snippets/launchers/split_compute_manipulation.json5";
+
+const CONTAINER_LAUNCHER_PATH: &str = "/etc/peppy/split_compute_manipulation.json5";
+
+/// Instances the launcher places on `robot_onboard`, i.e. everything the
+/// control loop touches.
+const ROBOT_INSTANCES: [&str; 3] = ["wrist_cam_inst", "arm_inst", "reflex_inst"];
+
+/// Instances the launcher places on `cloud_inference`.
+const CLOUD_INSTANCES: [&str; 2] = ["planner_inst", "recorder_inst"];
+
+impl Daemon {
+    /// Runs `peppy` inside this container and returns its combined output.
+    async fn peppy(&self, args: &[&str]) -> ExecOutput {
+        let mut cmd = vec![CONTAINER_PEPPY_BINARY];
+        cmd.extend_from_slice(args);
+        let mut result = self
+            .container
+            .exec(ExecCommand::new(cmd).with_cmd_ready_condition(CmdWaitFor::exit()))
+            .await
+            .unwrap_or_else(|error| panic!("failed to exec peppy in {}: {error}", self.name));
+        let exit_code = result
+            .exit_code()
+            .await
+            .unwrap_or_else(|error| panic!("peppy exit code in {}: {error}", self.name));
+        let stdout = result
+            .stdout_to_vec()
+            .await
+            .unwrap_or_else(|error| panic!("peppy stdout in {}: {error}", self.name));
+        let stderr = result
+            .stderr_to_vec()
+            .await
+            .unwrap_or_else(|error| panic!("peppy stderr in {}: {error}", self.name));
+        ExecOutput {
+            exit_code,
+            text: format!(
+                "{}{}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            ),
+        }
+    }
+}
+
+/// Asserts that `earlier` appears before `later` in the launch's feedback.
+///
+/// This is how cross-boundary ordering is checked. The coordinator's feedback
+/// stream is ordered by construction, so the INDEX of each "Starting ..." line
+/// is a deterministic record of what started when. Comparing wall-clock times
+/// from two containers would be neither.
+fn assert_starts_before(feedback: &str, earlier: &str, later: &str) {
+    let earlier_at = feedback
+        .find(&format!("instance {earlier}"))
+        .unwrap_or_else(|| panic!("`{earlier}` never started; launch output:\n{feedback}"));
+    let later_at = feedback
+        .find(&format!("instance {later}"))
+        .unwrap_or_else(|| panic!("`{later}` never started; launch output:\n{feedback}"));
+    assert!(
+        earlier_at < later_at,
+        "`{earlier}` must start before `{later}` (it is bound as its producer), \
+         but the launch started them the other way round:\n{feedback}"
+    );
+}
+
+fn assert_holds_exactly(stack: &str, daemon: &str, expected: &[&str], forbidden: &[&str]) {
+    for instance in expected {
+        assert!(
+            stack.contains(instance),
+            "`{daemon}` must hold `{instance}`; stack list was:\n{stack}"
+        );
+    }
+    for instance in forbidden {
+        assert!(
+            !stack.contains(instance),
+            "`{daemon}` must NOT hold `{instance}`: it is placed on the other daemon. \
+             Stack list was:\n{stack}"
+        );
+    }
+}
+
+/// Two daemons on a shared router in one namespace, plus the launcher mounted
+/// into the coordinator. The substrate every federated test needs.
+struct Federation {
+    robot: Daemon,
+    cloud: Daemon,
+    robot_core_node: String,
+    cloud_core_node: String,
+    _router: pmi::ZenohdInstance,
+    _launcher_dir: tempfile::TempDir,
+}
+
+async fn start_federation(prefix: &str) -> Federation {
+    require_docker().await;
+    let (image_name, image_tag) = host_compatible_image();
+
+    let router = ZenohAdapter::start_router_ephemeral_in_mode(
+        "0.0.0.0",
+        None,
+        false,
+        pmi::SubscriberBufferSizes::default(),
+        None,
+    )
+    .await
+    .expect("host zenohd should start");
+    let router_port = router.port;
+
+    let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
+    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
+        .expect("the test-built daemon should have a host Apptainer installation");
+    let newuidmap = executable_on_path("newuidmap");
+    let launch = DaemonLaunch {
+        image_name: &image_name,
+        image_tag: &image_tag,
+        peppy_binary,
+        apptainer_dir: &apptainer_dir,
+        newuidmap: &newuidmap,
+    };
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_millis()
+    );
+
+    // The launcher the guide documents, copied into a mountable directory so
+    // the coordinator can launch it by path.
+    let launcher_dir = tempfile::tempdir().expect("create launcher mount directory");
+    let launcher_source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(SPLIT_COMPUTE_LAUNCHER);
+    let launcher_target = launcher_dir.path().join("split_compute_manipulation.json5");
+    std::fs::copy(&launcher_source, &launcher_target).unwrap_or_else(|error| {
+        panic!(
+            "copying {} into the launcher mount: {error}",
+            launcher_source.display()
+        )
+    });
+
+    let robot = start_daemon(
+        &launch,
+        &format!("{prefix}-robot-{suffix}"),
+        "robo-robot",
+        &external_daemon_config("cn-robot", router_port),
+        None,
+        Some((launcher_target.as_path(), CONTAINER_LAUNCHER_PATH)),
+    )
+    .await;
+    let cloud = start_daemon(
+        &launch,
+        &format!("{prefix}-cloud-{suffix}"),
+        "robo-cloud",
+        &external_daemon_config("cn-cloud", router_port),
+        None,
+        Some((launcher_target.as_path(), CONTAINER_LAUNCHER_PATH)),
+    )
+    .await;
+
+    Federation {
+        robot,
+        cloud,
+        robot_core_node: "cn-robot".to_owned(),
+        cloud_core_node: "cn-cloud".to_owned(),
+        _router: router,
+        _launcher_dir: launcher_dir,
+    }
+}
+
+impl Federation {
+    /// Launches the split-compute launcher from the robot, placing the cloud
+    /// half on the peer.
+    async fn launch_split(&self) -> ExecOutput {
+        self.robot
+            .peppy(&[
+                "stack",
+                "launch",
+                "--place",
+                "robot_onboard@self",
+                "--place",
+                &format!("cloud_inference@{}", self.cloud_core_node),
+                CONTAINER_LAUNCHER_PATH,
+            ])
+            .await
+    }
+}
+
+/// Preflight succeeds, is non-destructive, and then refuses because
+/// cross-machine dispatch is not implemented yet.
+///
+/// The assertion that matters is the SECOND half: a refusal must leave both
+/// machines exactly as it found them. Reserving every participant before
+/// touching anything is what buys that, and it is the property that has to hold
+/// before dispatch can be built on top of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_federated_launch_reserves_every_participant_and_refuses_without_touching_them() {
+    let federation = start_federation("peppy-fed-preflight").await;
+
+    let launch = federation.launch_split().await;
+    assert!(
+        !launch.success(),
+        "cross-machine dispatch is not implemented; the launch must refuse:\n{}",
+        launch.text
+    );
+    assert!(
+        launch.text.contains("not implemented yet"),
+        "the refusal must say why, not fail obscurely:\n{}",
+        launch.text
+    );
+    assert!(
+        launch.text.contains("Nothing was torn down"),
+        "the refusal must state that no machine was touched:\n{}",
+        launch.text
+    );
+
+    // The reservation was released, so the peer accepts the next launch rather
+    // than staying wedged.
+    let second = federation.launch_split().await;
+    assert!(
+        !second.text.contains("already reserved"),
+        "a refused launch must release the reservations it took:\n{}",
+        second.text
+    );
+
+    for (daemon, instances) in [
+        (&federation.robot, ROBOT_INSTANCES.as_slice()),
+        (&federation.cloud, CLOUD_INSTANCES.as_slice()),
+    ] {
+        let stack = daemon.stack_list(None).await;
+        assert!(
+            instances.iter().all(|id| !stack.text.contains(id)),
+            "a refused launch must leave this daemon's stack untouched:\n{}",
+            stack.text
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "cross-machine dispatch is not implemented yet; see federated::preflight"]
+async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
+    let federation = start_federation("peppy-fed-place").await;
+
+    let launch = federation.launch_split().await;
+    assert!(
+        launch.success(),
+        "the federated launch must succeed:\n{}",
+        launch.text
+    );
+
+    // The operator typed one command, and it replaced a stack on a machine
+    // they never named directly. That must be said out loud.
+    assert!(
+        launch.text.contains("REPLACE the node stack")
+            && launch.text.contains(&federation.cloud_core_node),
+        "the launch must name the remote daemons it is about to replace:\n{}",
+        launch.text
+    );
+
+    // Ordering across the boundary: the planner's `scene` slot is bound to the
+    // camera on the robot, so the camera starts first even though the two are
+    // on different machines.
+    assert_starts_before(&launch.text, "wrist_cam_inst", "planner_inst");
+
+    let robot_stack = federation
+        .robot
+        .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| text.contains(id)))
+        .await;
+    assert_holds_exactly(
+        &robot_stack,
+        &federation.robot_core_node,
+        &ROBOT_INSTANCES,
+        &CLOUD_INSTANCES,
+    );
+
+    let cloud_stack = federation
+        .cloud
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .await;
+    assert_holds_exactly(
+        &cloud_stack,
+        &federation.cloud_core_node,
+        &CLOUD_INSTANCES,
+        &ROBOT_INSTANCES,
+    );
+
+    // A `stack reset` on the coordinator tears down both slices, because the
+    // participants are rediscovered from the launch id each slice carries.
+    let reset = federation
+        .robot
+        .peppy(&["stack", "reset", "--federated"])
+        .await;
+    assert!(reset.success(), "federated reset must succeed:\n{}", reset.text);
+
+    for (daemon, instances) in [
+        (&federation.robot, ROBOT_INSTANCES.as_slice()),
+        (&federation.cloud, CLOUD_INSTANCES.as_slice()),
+    ] {
+        daemon
+            .wait_for_stack(|text| instances.iter().all(|id| !text.contains(id)))
+            .await;
+    }
+}
+
+/// The case the rejected ownership model could not serve: a coordinator that
+/// restarted has no memory of who took part, and must find its own launch again
+/// by asking the federation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a federated launch to have populated both slices; see federated::preflight"]
+async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them() {
+    let federation = start_federation("peppy-fed-restart").await;
+
+    let launch = federation.launch_split().await;
+    assert!(launch.success(), "launch must succeed:\n{}", launch.text);
+    federation
+        .cloud
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .await;
+
+    // Restart the coordinator's daemon. Everything it knew in RAM is gone.
+    let restart = federation
+        .robot
+        .peppy(&["service", "restart"])
+        .await;
+    assert!(
+        restart.success(),
+        "restarting the coordinator daemon must succeed:\n{}",
+        restart.text
+    );
+
+    // The peer still holds its slice, and that slice still names the launch.
+    let cloud_stack = federation
+        .cloud
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .await;
+    assert!(
+        !cloud_stack.is_empty(),
+        "the peer's slice must survive a coordinator restart"
+    );
+
+    // A reset from a participant, with no coordinator memory anywhere, still
+    // tears down the whole launch.
+    let reset = federation
+        .cloud
+        .peppy(&["stack", "reset", "--federated"])
+        .await;
+    assert!(
+        reset.success(),
+        "a federated reset must work from a participant too:\n{}",
+        reset.text
+    );
+
+    federation
+        .cloud
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| !text.contains(id)))
+        .await;
+}
+
+/// A peer that goes away after the launch has been validated. The launch must
+/// fail loudly and name the machine, rather than hanging or reporting success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreachable_peer_fails_the_launch_and_is_named() {
+    let federation = start_federation("peppy-fed-partial").await;
+
+    federation.cloud.stop().await;
+    federation.cloud.wait_for_exit().await;
+
+    let launch = federation.launch_split().await;
+    assert!(
+        !launch.success(),
+        "a launch naming a dead peer must fail:\n{}",
+        launch.text
+    );
+    assert!(
+        launch.text.contains(&federation.cloud_core_node),
+        "the failure must name the machine that could not be reached:\n{}",
+        launch.text
+    );
+
+    // Nothing was torn down on the coordinator: preflight refuses before the
+    // destructive phase, so an unreachable peer cannot cost you the stack you
+    // already had.
+    let robot_stack = federation.robot.stack_list(None).await;
+    assert!(
+        ROBOT_INSTANCES
+            .iter()
+            .all(|id| !robot_stack.text.contains(id)),
+        "a refused preflight must not have started anything:\n{}",
+        robot_stack.text
+    );
+}
+
+/// `--local` collapses a two-machine topology onto one box, unmodified. This is
+/// how you develop against a federated launcher with no second machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_runs_the_whole_topology_on_one_daemon() {
+    let federation = start_federation("peppy-fed-local").await;
+
+    let launch = federation
+        .robot
+        .peppy(&["stack", "launch", "--local", CONTAINER_LAUNCHER_PATH])
+        .await;
+    assert!(
+        launch.success(),
+        "`--local` must run the unmodified launcher on one daemon:\n{}",
+        launch.text
+    );
+
+    // No remote daemon is touched, so nothing is announced as being replaced.
+    assert!(
+        !launch.text.contains("REPLACE the node stack"),
+        "`--local` touches no remote daemon, so it must announce none:\n{}",
+        launch.text
+    );
+
+    let all_instances: Vec<&str> = ROBOT_INSTANCES
+        .iter()
+        .chain(CLOUD_INSTANCES.iter())
+        .copied()
+        .collect();
+    let robot_stack = federation
+        .robot
+        .wait_for_stack(|text| all_instances.iter().all(|id| text.contains(id)))
+        .await;
+    assert_holds_exactly(
+        &robot_stack,
+        &federation.robot_core_node,
+        &all_instances,
+        &[],
+    );
+
+    // The peer stayed empty throughout.
+    let cloud_stack = federation.cloud.stack_list(None).await;
+    assert!(
+        all_instances
+            .iter()
+            .all(|id| !cloud_stack.text.contains(id)),
+        "`--local` must leave the peer untouched:\n{}",
+        cloud_stack.text
     );
 }

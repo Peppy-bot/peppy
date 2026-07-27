@@ -19,6 +19,7 @@
 //! set per consumer instance, which the caller serializes into
 //! [`config::runtime::NodeInstanceConfig::slot_bindings`].
 
+use super::types::Placements;
 use crate::error::{
     BindingContractNotImplemented, BindingSlotUnfulfilled, BindingTargetMismatch,
     DuplicateInstanceIdAcrossStack, ParsingError, SlotKind,
@@ -76,15 +77,17 @@ pub struct ValidatedBindings {
 /// aggregated errors (ordering is deterministic across runs) plus the
 /// resolved per-slot bindings for each consumer instance.
 ///
-/// `producer_core_node` is the core_node of the daemon this stack
-/// deploys under. The raw `--link KEY@instance_id` syntax names
-/// producers by `instance_id` alone (unique within one stack); the wire
-/// addresses producers by the `(core_node, instance_id)` pair, so this
-/// validator is the single point where every resolved binding is
-/// stamped with the full [`ProducerRef`]. Stacks are daemon-scoped, so
-/// every producer in the snapshot lives on the launching daemon. If
-/// cross-daemon stacks ever land, the launcher knows each instance's
-/// target daemon and the stamp generalizes to a per-instance input.
+/// `placements` says where each instance runs. The raw
+/// `--link KEY@instance_id` syntax names producers by `instance_id` alone
+/// (unique within one stack); the wire addresses producers by the
+/// `(core_node, instance_id)` pair, so this validator is the single point
+/// where every resolved binding is stamped with the full [`ProducerRef`].
+///
+/// A stack can span daemons, so the stamp is per PRODUCER instance rather than
+/// per launch: a consumer on one machine bound to a producer on another gets
+/// that producer's core node, and a same-machine binding is the case where
+/// they happen to match. Nothing about the authoring surface changes, because
+/// placement is declared once on the instance and looked up here.
 ///
 /// This validator owns only the producer-binding slots
 /// (`depends_on.{nodes,contracts}`). A `links` key naming a pairing/observer
@@ -125,7 +128,7 @@ pub struct ValidatedBindings {
 ///    resolves to an explicit empty set.
 pub fn validate_bindings(
     items: &[BindingValidationItem<'_>],
-    producer_core_node: &str,
+    placements: &Placements,
 ) -> ValidatedBindings {
     let mut out = ValidatedBindings::default();
 
@@ -185,7 +188,7 @@ pub fn validate_bindings(
                         slot_failed = true;
                         continue;
                     }
-                    producers.push(ProducerRef::new(producer_core_node, target_id.clone()));
+                    producers.push(ProducerRef::new(placements.of(target_id), target_id.clone()));
                 }
                 if slot_failed {
                     continue;
@@ -434,6 +437,11 @@ mod tests {
     /// binding by these tests.
     const TEST_CORE: &str = "core_a";
 
+    /// Every test instance on one daemon, the single-machine shape.
+    fn all_local() -> Placements {
+        Placements::all_on(TEST_CORE)
+    }
+
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
         serde_json5::from_str(json5).expect("instances fixture should parse")
     }
@@ -511,7 +519,7 @@ mod tests {
 
     #[test]
     fn empty_planned_set_returns_no_errors() {
-        let out = validate_bindings(&[], TEST_CORE);
+        let out = validate_bindings(&[], &all_local());
         assert!(out.errors.is_empty());
         assert!(out.slot_bindings.is_empty());
     }
@@ -522,7 +530,7 @@ mod tests {
     fn consumer_without_depends_on_and_without_bindings_is_valid() {
         let instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
         let items = vec![item("cons", "v1", &instances, None)];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.slot_bindings.is_empty());
     }
@@ -548,7 +556,7 @@ mod tests {
             item("cons", "v1", &instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "main"),
@@ -567,7 +575,7 @@ mod tests {
             }"#,
         );
         let items = vec![item("cons", "v1", &instances, Some(&depends_on))];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(
             out.errors.len(),
             1,
@@ -614,7 +622,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         let unfulfilled: Vec<&str> = out
             .errors
             .iter()
@@ -656,7 +664,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "main"),
@@ -705,7 +713,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "main"),
@@ -746,7 +754,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "spare_cameras"),
@@ -783,7 +791,7 @@ mod tests {
                 item("cons", "v1", &cons_instances, Some(&depends_on)),
                 item("camera", "v1", &prod_instances, None),
             ];
-            let out = validate_bindings(&items, TEST_CORE);
+            let out = validate_bindings(&items, &all_local());
             assert_eq!(out.errors.len(), 1, "value {producers}: {:?}", out.errors);
             let ParsingError::BindingArrayOnOneSlot {
                 owner_instance_id,
@@ -835,7 +843,7 @@ mod tests {
                 item("cons", "v1", &cons_instances, Some(&depends_on)),
                 item("camera", "v1", &prod_instances, None),
             ];
-            let out = validate_bindings(&items, TEST_CORE);
+            let out = validate_bindings(&items, &all_local());
             assert_eq!(out.errors.len(), 1, "slot {link_id}: {:?}", out.errors);
             let ParsingError::BindingScalarOnMultiSlot {
                 owner_instance_id,
@@ -870,7 +878,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::BindingCardinalityUnmet {
             owner_instance_id,
@@ -891,7 +899,7 @@ mod tests {
         let cons_instances = parse_instances(r#"[{ instance_id: "cons1" }]"#);
         let depends_on = all_cardinalities_depends_on();
         let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         let unfulfilled: Vec<(&str, Cardinality)> = out
             .errors
             .iter()
@@ -941,7 +949,7 @@ mod tests {
             item("cons", "v1", &valid_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "main"),
@@ -969,7 +977,7 @@ mod tests {
             item("cons", "v1", &repeated_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::BindingSingleSlotMultipleTargets {
             owner_instance_id,
@@ -996,7 +1004,7 @@ mod tests {
             item("cons", "v1", &empty_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(matches!(
             out.errors.as_slice(),
             [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras"
@@ -1025,7 +1033,7 @@ mod tests {
             item("camera", "v1", &prod_instances, None),
             item("lidar", "v1", &lidar_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 2, "errors: {:?}", out.errors);
         let ParsingError::BindingTargetMismatch(mismatch) = &out.errors[0] else {
             panic!(
@@ -1079,7 +1087,7 @@ mod tests {
             item_with_implements("webcam", "v1", &webcam_instances, None, &webcam_implements),
             item("other", "v1", &other_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::BindingContractNotImplemented(info) = &out.errors[0] else {
             panic!(
@@ -1110,7 +1118,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("lidar", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1);
         let ParsingError::BindingTargetMismatch(info) = &out.errors[0] else {
             panic!("expected BindingTargetMismatch, got {:?}", out.errors[0]);
@@ -1147,7 +1155,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("whatever", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::BindingContractNotImplemented(info) = &out.errors[0] else {
             panic!(
@@ -1192,7 +1200,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item_with_implements("webcam", "v1", &prod_instances, None, &producer_implements),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "depth"),
@@ -1245,7 +1253,7 @@ mod tests {
                 &producer_implements,
             ),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         for link_id in ["wrist_left_camera", "wrist_right_camera"] {
             assert_eq!(
@@ -1295,7 +1303,7 @@ mod tests {
                 &producer_implements,
             ),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(
             out.errors.len(),
             1,
@@ -1361,7 +1369,7 @@ mod tests {
                 &contract_prod_implements,
             ),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "cons1", "cam"),
@@ -1388,7 +1396,7 @@ mod tests {
             }"#,
         );
         let items = vec![item("cons", "v1", &cons_instances, Some(&depends_on))];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1);
         let ParsingError::UnknownInstanceId {
             owner_instance_id,
@@ -1413,7 +1421,7 @@ mod tests {
             item("camera", "v1", &camera_instances, None),
             item("lidar", "v1", &lidar_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::DuplicateInstanceIdAcrossStack(info) = &out.errors[0] else {
             panic!(
@@ -1445,7 +1453,7 @@ mod tests {
             ]"#,
         );
         let items = vec![item("camera", "v1", &camera_instances, None)];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::DuplicateInstanceIdAcrossStack(info) = &out.errors[0] else {
             panic!(
@@ -1486,7 +1494,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(
             out.errors.len(),
             2,
@@ -1530,7 +1538,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item_with_implements("webcam", "v1", &prod_instances, None, &producer_implements),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert_eq!(out.errors.len(), 1, "errors: {:?}", out.errors);
         let ParsingError::BindingContractNotImplemented(info) = &out.errors[0] else {
             panic!(
@@ -1597,7 +1605,7 @@ mod tests {
                 &producer_implements,
             ),
         ];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             slot_binding(&out, "depth_cons", "feed"),
@@ -1626,17 +1634,19 @@ mod tests {
             &cons_instances,
             Some(&depends_on),
         )];
-        let out = validate_bindings(&items, TEST_CORE);
+        let out = validate_bindings(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.slot_bindings.is_empty());
     }
 
-    /// Stamping: every producer reference the validator emits carries
-    /// exactly the `producer_core_node` passed by the caller (the
-    /// launching daemon). This is the single point where the
-    /// instance-only `--link` syntax becomes a wire-complete address.
+    /// Stamping: every producer reference the validator emits carries the core
+    /// node ITS OWN producer runs on, not the one the launch was sent to.
+    ///
+    /// This is the single point where the instance-only `--link` syntax
+    /// becomes a wire-complete address, and it is what lets one consumer read
+    /// a local producer and a remote one through identically-spelled links.
     #[test]
-    fn every_resolved_binding_is_stamped_with_the_launching_core_node() {
+    fn each_resolved_binding_is_stamped_with_its_own_producers_core_node() {
         let cons_instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
@@ -1661,12 +1671,42 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, "daemon_west");
+        // `prod2` is placed on another machine; `prod1` and the consumer stay
+        // on the coordinator. The launcher text above names both producers
+        // identically, which is the point: placement is declared once on the
+        // instance and never repeated at the point of use.
+        let placements = Placements::new(
+            "daemon_west",
+            std::collections::BTreeMap::from([("prod2".to_owned(), "daemon_east".to_owned())]),
+        );
+        let out = validate_bindings(&items, &placements);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         let resolved = out.slot_bindings.get("cons1").expect("cons1 bindings");
         assert_eq!(resolved.len(), 2, "both slots must resolve");
-        for producer in resolved.values().flat_map(|bound| bound.iter()) {
-            assert_eq!(producer.core_node, "daemon_west");
-        }
+        assert_eq!(resolved["main"].as_slice()[0].core_node, "daemon_west");
+        assert_eq!(resolved["extra"].as_slice()[0].core_node, "daemon_east");
+    }
+
+    /// An instance that declared no placement runs on the coordinator, so a
+    /// launcher with no `core_nodes` stamps exactly as it always did.
+    #[test]
+    fn unplaced_producers_are_stamped_with_the_coordinator() {
+        let cons_instances = parse_instances(
+            r#"[{ instance_id: "cons1", links: { main: "prod1" } }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#,
+        );
+        let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
+        let items = vec![
+            item("cons", "v1", &cons_instances, Some(&depends_on)),
+            item("camera", "v1", &prod_instances, None),
+        ];
+        let out = validate_bindings(&items, &Placements::all_on("daemon_west"));
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            out.slot_bindings["cons1"]["main"].as_slice()[0].core_node,
+            "daemon_west"
+        );
     }
 }

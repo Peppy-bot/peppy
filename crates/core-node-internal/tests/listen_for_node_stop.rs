@@ -494,20 +494,12 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available");
-    let runtime_config_json5 = common::build_runtime_config_json5(
-        messaging_host.as_str(),
-        messaging_port,
-        &started.core_node_name,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        TARGET_INSTANCE_ID,
-        Default::default(),
-    );
+    let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        &runtime_config_json5,
+        instance_plan.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -761,16 +753,11 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config_json5 = common::default_runtime_config_json5(
-        &started.core_node_name,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        TARGET_INSTANCE_ID,
-    );
+    let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        &runtime_config_json5,
+        instance_plan.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {

@@ -8,7 +8,7 @@ use common::{
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
-use core_node_api::encoding::NodeResetRequest;
+use core_node_api::encoding::StackResetRequest;
 use peppylib::core_node::transport::poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -136,7 +136,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     drop(entity_a);
 
     let reset_response = poll(
-        &NodeResetRequest::new(),
+        &StackResetRequest::new(),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -253,7 +253,7 @@ async fn node_reset_force_kills_whole_process_group() {
     // force-kills its group, so the client timeout must exceed
     // force_kill_deadline(grace) + reap. Default grace is 5s.
     let reset_response = poll(
-        &NodeResetRequest::new(),
+        &StackResetRequest::new(),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -310,7 +310,7 @@ async fn listen_for_node_reset_is_idempotent() {
         .to_owned();
 
     let response = poll(
-        &NodeResetRequest::new(),
+        &StackResetRequest::new(),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -411,16 +411,11 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config_json5 = common::default_runtime_config_json5(
-        &started.core_node_name,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        TARGET_INSTANCE_ID,
-    );
+    let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        &runtime_config_json5,
+        instance_plan.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -449,7 +444,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
     let reset_response = poll(
-        &NodeResetRequest::new(),
+        &StackResetRequest::new(),
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,

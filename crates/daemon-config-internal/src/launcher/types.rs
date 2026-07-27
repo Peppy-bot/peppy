@@ -1,5 +1,6 @@
 use crate::error::StructuredError;
 use crate::internal::contract::validate_named_items;
+use crate::internal::core_node_name::{CoreNodeName, SELF_CORE_NODE};
 use config::{AnyType, consts::DEFAULT_LINK_ID_SENTINEL, runtime::Name, schema::PeppySchema};
 use serde::{
     Deserialize, Serialize,
@@ -15,6 +16,20 @@ pub use crate::source::{
 #[derive(Debug, Clone, Serialize)]
 pub struct PeppyLauncher {
     pub peppy_schema: PeppySchema,
+    /// Named placeholders for the machines this launcher spans, wired to
+    /// concrete federated core nodes at launch time by
+    /// `stack launch --place <core-node-link>@<core-node>`.
+    ///
+    /// The file describes a TOPOLOGY; the command binds it to today's
+    /// hardware. That separation is why the launcher names
+    /// `cloud_inference` rather than a machine: the same file works against a
+    /// rented accelerator today and your own rack tomorrow, and `--local`
+    /// collapses the whole thing onto one workstation.
+    ///
+    /// Empty for a single-machine launcher, in which case no instance may name
+    /// a `core_node`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub core_nodes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deployments: Vec<Deployment>,
 }
@@ -36,10 +51,34 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
             peppy_schema: PeppySchema,
             #[serde(default)]
+            core_nodes: Vec<String>,
+            #[serde(default)]
             deployments: Vec<Deployment>,
         }
 
         let raw = RawPeppyLauncher::deserialize(deserializer)?;
+
+        validate_core_node_links(&raw.core_nodes).map_err(de::Error::custom)?;
+
+        // A `core_node` must name a declared link. Checking it here, once the
+        // whole document is parsed, is what lets the error say WHICH links
+        // were available instead of just that this one was not one of them.
+        let declared: HashSet<&str> = raw.core_nodes.iter().map(String::as_str).collect();
+        for deployment in &raw.deployments {
+            for instance in &deployment.instances {
+                let Some(core_node) = &instance.core_node else {
+                    continue;
+                };
+                if declared.contains(core_node.as_str()) {
+                    continue;
+                }
+                return Err(de::Error::custom(undeclared_core_node_message(
+                    instance.instance_id.as_str(),
+                    core_node,
+                    &raw.core_nodes,
+                )));
+            }
+        }
 
         let known_ids: HashSet<&str> = raw
             .deployments
@@ -79,9 +118,67 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
         Ok(PeppyLauncher {
             peppy_schema: raw.peppy_schema,
+            core_nodes: raw.core_nodes,
             deployments: raw.deployments,
         })
     }
+}
+
+/// Core node link ids are unique, non-empty, and never the reserved `self`.
+///
+/// `self` is refused because it already means "the coordinator" at the
+/// `--place` surface; a link that was also called `self` would make
+/// `--place self@self` parse as something, and nothing about it would tell a
+/// reader which `self` was which.
+fn validate_core_node_links(core_nodes: &[String]) -> Result<(), String> {
+    let mut seen = HashSet::with_capacity(core_nodes.len());
+    for link_id in core_nodes {
+        if link_id.is_empty() {
+            return Err("`core_nodes` contains an empty core node link name".to_owned());
+        }
+        if CoreNodeName::is_self_keyword(link_id) {
+            return Err(format!(
+                "`core_nodes` declares `{SELF_CORE_NODE}`, which is reserved: it names the \
+                 daemon a launch is sent to, so it cannot also be a placeholder. Rename the \
+                 link and wire it with `--place <name>@{SELF_CORE_NODE}` instead."
+            ));
+        }
+        if !seen.insert(link_id.as_str()) {
+            return Err(format!(
+                "`core_nodes` declares `{link_id}` more than once; core node link names must \
+                 be unique"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Explains an instance placed on a link the launcher never declared, listing
+/// what it could have named. The two failure shapes are different problems: a
+/// document with no `core_nodes` at all is single-machine and the field simply
+/// does not apply, while one with a list has a typo or a missing entry.
+fn undeclared_core_node_message(
+    instance_id: &str,
+    core_node: &str,
+    declared: &[String],
+) -> String {
+    if declared.is_empty() {
+        return format!(
+            "instance `{instance_id}` sets `core_node: \"{core_node}\"`, but this launcher \
+             declares no `core_nodes`. Add a `core_nodes: [\"{core_node}\"]` list naming the \
+             machines this launcher spans, then wire it at launch with \
+             `--place {core_node}@<core-node>`."
+        );
+    }
+    format!(
+        "instance `{instance_id}` sets `core_node: \"{core_node}\"`, which is not a declared \
+         core node link. This launcher declares: {}",
+        declared
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Reject any `peppy_schema` value other than `launcher/v1` so a node
@@ -115,6 +212,7 @@ impl DeploymentInstance {
             framework: FrameworkOverrides::default(),
             links: BTreeMap::new(),
             defer_links: Vec::new(),
+            core_node: None,
         }
     }
 }
@@ -325,6 +423,22 @@ pub struct DeploymentInstance {
     /// deferred (`LinkDeferInvalid`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defer_links: Vec<String>,
+    /// Which declared core node link this instance is placed on, i.e. which
+    /// machine it runs on once `--place` has bound that link to a real core
+    /// node.
+    ///
+    /// OPTIONAL: an instance that omits it runs on the coordinator, the daemon
+    /// the launch was sent to.
+    ///
+    /// Deliberately a SEPARATE field from `instance_id` rather than a prefix
+    /// on it. Identity and placement are two different facts, so they get two
+    /// differently-typed fields: `instance_id` keeps its existing charset
+    /// untouched, nothing anywhere has to split a placement back out of an
+    /// instance id to use one, and a `links:` target stays a bare instance id
+    /// wherever it appears. Placement is declared once, here, and never
+    /// repeated at the point of use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_node: Option<String>,
 }
 
 /// The per-instance `links:` map: each key is a `link_id` literal declared
@@ -937,5 +1051,82 @@ mod tests {
             msg.contains("duplicate") && msg.contains("main"),
             "unexpected error: {msg}"
         );
+    }
+}
+
+/// Where every instance of one launch runs.
+///
+/// Producer addresses are `(core_node, instance_id)` pairs on the wire, so the
+/// validators need to stamp each resolved binding with the core node its
+/// PRODUCER sits on, not the one the launch was sent to. Before federation
+/// those were always the same daemon and a single `&str` sufficed; now a
+/// consumer on one machine can be bound to a producer on another, so the stamp
+/// is per instance.
+///
+/// Note what this does NOT change: a `links:` target is still a bare instance
+/// id. Placement is declared once on the instance and looked up here, so
+/// nothing at the point of use records which machine a producer sits on.
+#[derive(Debug, Clone)]
+pub struct Placements {
+    /// Where an instance that declared no `core_node` runs: the coordinator,
+    /// i.e. the daemon the launch was sent to.
+    coordinator: String,
+    by_instance: BTreeMap<String, String>,
+}
+
+impl Placements {
+    /// Every instance on one daemon. The single-machine case, and the shape
+    /// every non-federated path (`node run`, a launcher with no `core_nodes`)
+    /// uses.
+    pub fn all_on(core_node: impl Into<String>) -> Self {
+        Self {
+            coordinator: core_node.into(),
+            by_instance: BTreeMap::new(),
+        }
+    }
+
+    /// Placements resolved from a launcher document and its `--place` wiring.
+    /// `by_instance` holds only the instances that named a `core_node`;
+    /// everything else falls back to the coordinator.
+    pub fn new(coordinator: impl Into<String>, by_instance: BTreeMap<String, String>) -> Self {
+        Self {
+            coordinator: coordinator.into(),
+            by_instance,
+        }
+    }
+
+    /// The core node `instance_id` runs on.
+    pub fn of(&self, instance_id: &str) -> &str {
+        self.by_instance
+            .get(instance_id)
+            .map(String::as_str)
+            .unwrap_or(&self.coordinator)
+    }
+
+    /// The daemon that received the launch, where unplaced instances run.
+    pub fn coordinator(&self) -> &str {
+        &self.coordinator
+    }
+
+    /// Whether any instance is placed off the coordinator, i.e. whether this
+    /// launch actually spans machines.
+    pub fn is_federated(&self) -> bool {
+        self.by_instance
+            .values()
+            .any(|core_node| core_node != &self.coordinator)
+    }
+
+    /// Every core node hosting at least one instance, the coordinator
+    /// included, in a deterministic order.
+    pub fn participants(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .by_instance
+            .values()
+            .cloned()
+            .chain(std::iter::once(self.coordinator.clone()))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 }

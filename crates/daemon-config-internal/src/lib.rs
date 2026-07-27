@@ -29,6 +29,7 @@ mod internal {
     pub mod atomic_write;
     pub mod consts;
     pub mod contract;
+    pub mod core_node_name;
     pub mod launcher;
     pub mod pairing;
     pub mod peppy_config;
@@ -40,6 +41,16 @@ pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
     LinkUnknownSlot, ParsingError, SlotKind, format_bulleted,
 };
+
+// -- core_node_name --
+//
+// The ONE core-node-name validator. `peppy_config`, the daemon's serve flag,
+// the CLI's `--core-node` override, `--place` targets, and launcher core node
+// link ids all go through it, so the rules (charset, length cap, and the
+// `self` reservation) are stated once instead of re-derived per call site.
+pub mod core_node_name {
+    pub use crate::internal::core_node_name::{CoreNodeName, CoreNodeNameError, SELF_CORE_NODE};
+}
 
 // -- atomic_write --
 pub mod atomic_write {
@@ -71,7 +82,7 @@ pub mod launcher {
         AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentGitSource,
         DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
         DeploymentUrlSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
-        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, PlannedObservation,
+        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
         PlannedPairEndpoint, PlannedPairing, ValidatedBindings, ValidatedLinkPlan,
         ValidatedObservations, ValidatedPairings, split_link_target, validate_bindings,
         validate_link_plan, validate_link_slots, validate_observations, validate_pairings,

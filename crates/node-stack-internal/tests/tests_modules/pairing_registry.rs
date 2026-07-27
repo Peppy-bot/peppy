@@ -7,6 +7,11 @@ use std::path::PathBuf;
 use config::runtime::{Name, PairingSlotBinding};
 use node_stack::{NodeStack, NodeStackError, SlotAddr};
 
+/// The core-node name of the test stack's root entity. Slot addresses are
+/// core-node-qualified, and every instance in these tests lives on this one
+/// daemon.
+const TEST_CORE_NODE: &str = "core";
+
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::fixtures;
 use crate::helpers::real_lifecycle;
@@ -67,8 +72,8 @@ async fn pair_clear_repair_lifecycle() {
     )
     .await;
 
-    let arm_slot = SlotAddr::new("arm_1", "controller");
-    let ctrl_slot = SlotAddr::new("ctrl_1", "arm");
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
 
     // Both slots start unpaired.
     let unpaired = stack.unpaired_pairing_slots();
@@ -117,8 +122,8 @@ async fn pair_slots_validation_matrix() {
     // Unknown instance.
     let err = stack
         .pair_slots(
-            &SlotAddr::new("ghost", "arm"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ghost", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .unwrap_err();
     assert!(
@@ -129,8 +134,8 @@ async fn pair_slots_validation_matrix() {
     // Known instance, undeclared slot.
     let err = stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "ghost_slot"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "ghost_slot"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .unwrap_err();
     assert!(
@@ -149,8 +154,8 @@ async fn pair_slots_validation_matrix() {
     .await;
     let err = stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "arm"),
-            &SlotAddr::new("ctrl_2", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_2", "arm"),
         )
         .unwrap_err();
     assert!(
@@ -173,8 +178,8 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
     )
     .await;
 
-    let arm_slot = SlotAddr::new("arm_1", "controller");
-    let ctrl_slot = SlotAddr::new("ctrl_1", "arm");
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
     stack.pair_slots(&ctrl_slot, &arm_slot).expect("pair");
 
     // Eager path: the stop paths call dissolve_pairs_for_instance and
@@ -219,8 +224,8 @@ async fn reset_clears_the_registry() {
     .await;
     stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "arm"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .expect("pair");
     stack.reset();
@@ -254,8 +259,8 @@ async fn serialized_graph_overlays_pairing_slots() {
     // Paired: the binding carries the peer's full address + slot link_id.
     stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "arm"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .expect("pair");
     let graph = stack.to_serialized_graph();

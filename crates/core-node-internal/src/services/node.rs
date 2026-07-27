@@ -43,7 +43,9 @@ pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 pub(crate) use feedback::{FeedbackLine, FeedbackStream};
 pub(crate) use git_utils::{checkout_repo_ref, clone_with_progress, format_bytes};
 pub(crate) use logging::{create_action_log_file, write_error_to_log};
-pub(crate) use run::{NodeRunActionContext, resolve_mount_path_parameters, run_node_run};
+pub(crate) use run::{
+    NodeRunActionContext, assemble_runtime_config, resolve_mount_path_parameters, run_node_run,
+};
 pub(crate) use sync::resolve_contract_doc;
 
 // Intra-`services::node::` re-imports: bring helper names back into the
@@ -77,6 +79,23 @@ pub(crate) async fn resolve_node_config(
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeConfig, String> {
     info::resolve_node_config(source, peppy_dirs).await
+}
+
+/// SHA256 of a resolved node manifest, over its canonical pretty-printed
+/// serialization so two daemons that resolved the same manifest agree
+/// byte-for-byte regardless of how their sources were formatted.
+///
+/// One function because the fingerprint has two consumers that MUST agree: the
+/// `node_info` service reports it to a human, and a federated launch pins it in
+/// the instance plan so a participant can refuse a manifest that changed under
+/// it between preflight and dispatch. Computing it two ways would make that
+/// refusal fire on formatting.
+pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<String, String> {
+    let serialized = json5_pretty::to_string_pretty(config)
+        .map_err(|e| format!("failed to serialize node config for fingerprinting: {e}"))?;
+    Ok(config::fingerprint::fingerprint_for_bytes(
+        serialized.as_bytes(),
+    ))
 }
 
 /// The daemon authorities responsible for relationships between node instances.

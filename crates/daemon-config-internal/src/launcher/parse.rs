@@ -210,4 +210,121 @@ mod tests {
             "example launcher should contain deployments"
         );
     }
+
+    // ── Core node links (federation) ──────────────────────────────────────
+
+    fn parse_launcher(body: &str) -> Result<crate::internal::launcher::PeppyLauncher, String> {
+        serde_json5::from_str(body).map_err(|e| e.to_string())
+    }
+
+    fn split_compute(core_nodes: &str, placement: &str) -> String {
+        format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                {core_nodes}
+                deployments: [{{
+                    source: {{ name: "uvc_camera", tag: "v1" }},
+                    instances: [{{ instance_id: "wrist_cam_inst"{placement} }}]
+                }}]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn a_launcher_declaring_core_node_links_parses() {
+        let launcher = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "cloud_inference"],"#,
+            r#", core_node: "robot_onboard""#,
+        ))
+        .expect("valid launcher");
+        assert_eq!(launcher.core_nodes, ["robot_onboard", "cloud_inference"]);
+        assert_eq!(
+            launcher.deployments[0].instances[0].core_node.as_deref(),
+            Some("robot_onboard")
+        );
+    }
+
+    /// The field is optional: an instance that omits it runs on the
+    /// coordinator, so a single-machine launcher is unchanged.
+    #[test]
+    fn an_instance_may_omit_its_placement() {
+        let launcher = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard"],"#,
+            "",
+        ))
+        .expect("valid launcher");
+        assert_eq!(launcher.deployments[0].instances[0].core_node, None);
+    }
+
+    /// A launcher may declare links and place nothing on them. That is the
+    /// half-migrated state an author passes through, and it is not an error:
+    /// every declared link still has to be wired at launch.
+    #[test]
+    fn declaring_links_without_placing_anything_parses() {
+        let launcher = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "cloud_inference"],"#,
+            "",
+        ))
+        .expect("valid launcher");
+        assert_eq!(launcher.core_nodes.len(), 2);
+    }
+
+    #[test]
+    fn a_placement_with_no_core_nodes_list_is_refused_and_says_how_to_fix_it() {
+        let error = parse_launcher(&split_compute("", r#", core_node: "robot_onboard""#))
+            .expect_err("a placement needs a declared link");
+        assert!(error.contains("declares no `core_nodes`"), "got: {error}");
+        assert!(error.contains("--place robot_onboard@"), "got: {error}");
+    }
+
+    #[test]
+    fn a_placement_naming_an_undeclared_link_lists_the_declared_ones() {
+        let error = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "cloud_inference"],"#,
+            r#", core_node: "typo_onboard""#,
+        ))
+        .expect_err("undeclared link must fail");
+        assert!(error.contains("typo_onboard"), "got: {error}");
+        assert!(error.contains("`robot_onboard`"), "got: {error}");
+        assert!(error.contains("`cloud_inference`"), "got: {error}");
+    }
+
+    #[test]
+    fn duplicate_core_node_link_names_are_refused() {
+        let error = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "robot_onboard"],"#,
+            "",
+        ))
+        .expect_err("duplicate link must fail");
+        assert!(error.contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn an_empty_core_node_link_name_is_refused() {
+        let error = parse_launcher(&split_compute(r#"core_nodes: ["", "cloud"],"#, ""))
+            .expect_err("empty link must fail");
+        assert!(error.contains("empty core node link"), "got: {error}");
+    }
+
+    /// `self` already means "the coordinator" at the `--place` surface, so a
+    /// link of the same name would make `--place self@self` parse as something
+    /// with nothing to tell a reader which `self` was which.
+    #[test]
+    fn a_core_node_link_named_self_is_refused() {
+        let error = parse_launcher(&split_compute(r#"core_nodes: ["self"],"#, ""))
+            .expect_err("`self` must not be a link name");
+        assert!(error.contains("reserved"), "got: {error}");
+    }
+
+    /// The schema stays `launcher/v1`, so an older daemon rejects these keys
+    /// with its existing unknown-field error, which names the offending key
+    /// and so points at the version gap rather than reading as a typo.
+    #[test]
+    fn unknown_top_level_keys_are_still_refused() {
+        let error = parse_launcher(
+            r#"{ peppy_schema: "launcher/v1", core_node: "oops", deployments: [] }"#,
+        )
+        .expect_err("unknown key must fail");
+        assert!(error.contains("core_node"), "got: {error}");
+    }
 }

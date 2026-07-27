@@ -21,7 +21,7 @@ use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, LinkValue, PairingValidationItem, validate_pairings,
 };
-use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
+use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
 use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerPin, ProducerRef};
@@ -66,13 +66,18 @@ impl PairingCoordinator {
     /// `Starting`, and pins are only delivered once it commits to Running).
     /// All of `pair_slots`' validation applies: existence, liveness,
     /// same-pairing, complementary roles, sha pins, exclusivity.
-    pub async fn reserve(&self, a: &SlotAddr, b: &SlotAddr) -> std::result::Result<(), String> {
+    pub async fn reserve(&self, pair: &PlannedPair) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
-        self.updates
-            .node_stack()
-            .pair_slots(a, b)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let stack = self.updates.node_stack();
+        // A same-daemon pair validates both halves against local manifests. A
+        // cross-daemon one validates the half this daemon owns and takes the
+        // peer's identity from the coordinator, which checked both manifests
+        // before anything started.
+        let result = match &pair.peer_remote_meta {
+            None => stack.pair_slots(&pair.own, &pair.peer),
+            Some(meta) => stack.pair_slot_with_remote(&pair.own, &pair.peer, meta),
+        };
+        result.map(|_| ()).map_err(|e| e.to_string())
     }
 
     /// Delivers the current pin state of every pair involving `instance_id`
@@ -103,7 +108,7 @@ impl PairingCoordinator {
             .node_stack()
             .pairs()
             .into_iter()
-            .filter(|p| p.involves_instance(instance_id))
+            .filter(|p| p.involves(self.updates.core_node_name(), instance_id))
             .collect();
         if let Some(missing) = find_missing_planned_pair(&pairs, planned) {
             return Err(format!(
@@ -136,12 +141,7 @@ impl PairingCoordinator {
                 pairing.pairing_tag,
                 instance_id
             );
-            for endpoint in [&pairing.a, &pairing.b] {
-                if endpoint.slot.instance_id == instance_id {
-                    continue;
-                }
-                self.notify_unpaired_best_effort(&endpoint.slot).await;
-            }
+            self.notify_local_survivors(&pairing, instance_id).await;
         }
     }
 
@@ -181,6 +181,53 @@ impl PairingCoordinator {
     /// Best-effort absolute Unpaired delivery; failures are logged, never
     /// propagated (the target may be mid-death, and the boot default plus
     /// lazy registry pruning make the unpaired state eventually consistent).
+    /// Dissolves every pair involving an instance on ANOTHER daemon.
+    ///
+    /// The one relationship event that genuinely crosses daemons at runtime.
+    /// Dissolution stays authoritative on the daemon owning the dead instance;
+    /// this side converges on its report. Best-effort and idempotent: a
+    /// duplicate notification dissolves nothing further, and a lost one leaves
+    /// this side holding a pair to an instance that is gone, which the local
+    /// node's own staleness handling covers.
+    pub async fn dissolve_pairs_with_remote_instance(&self, core_node: &str, instance_id: &str) {
+        let _guard = self.op_lock.lock().await;
+        for pairing in self
+            .updates
+            .node_stack()
+            .dissolve_pairs_for_remote_instance(core_node, instance_id)
+        {
+            debug!(
+                "Dissolved cross-daemon pair `{}` ({}:{}) — instance '{}' on core node '{}' is gone",
+                pairing_label(&pairing),
+                pairing.pairing_name,
+                pairing.pairing_tag,
+                instance_id,
+                core_node
+            );
+            self.notify_local_survivors(&pairing, instance_id).await;
+        }
+    }
+
+    /// Tells this daemon's own endpoint of a dissolved pair that its slot is
+    /// now Unpaired.
+    ///
+    /// Only local endpoints are notified. A node accepts slot updates solely
+    /// from its own daemon, so an endpoint on another machine is that daemon's
+    /// to tell; reaching across would cross the trust boundary and duplicate
+    /// the notification its own daemon already sends.
+    async fn notify_local_survivors(&self, pairing: &Pairing, gone_instance_id: &str) {
+        let local_core_node = self.updates.core_node_name().to_owned();
+        for endpoint in [&pairing.a, &pairing.b] {
+            if endpoint.slot.instance_id == gone_instance_id {
+                continue;
+            }
+            if !endpoint.slot.is_on(&local_core_node) {
+                continue;
+            }
+            self.notify_unpaired_best_effort(&endpoint.slot).await;
+        }
+    }
+
     async fn notify_unpaired_best_effort(&self, slot: &SlotAddr) {
         if !self
             .updates
@@ -251,6 +298,10 @@ fn find_missing_planned_pair<'a>(
 pub struct PlannedPair {
     pub own: SlotAddr,
     pub peer: SlotAddr,
+    /// Set only when `peer` lives on another daemon. This daemon cannot read a
+    /// remote manifest, so the coordinator that validated the whole plan
+    /// supplies the peer's pairing identity and role here.
+    pub peer_remote_meta: Option<RemoteSlotMeta>,
 }
 
 /// The new instance's side of a plan-phase pairing check: its identity plus
@@ -302,6 +353,7 @@ pub fn plan_requested_pairs(
     snapshot: &[PairingNodeSnapshot],
     live_pairs: &[Pairing],
     request: &PairingRequest<'_>,
+    local_core_node: &str,
 ) -> std::result::Result<Vec<PlannedPair>, String> {
     let &PairingRequest {
         node_name,
@@ -441,9 +493,14 @@ pub fn plan_requested_pairs(
             // `a` is the declaring side, and the only declaring (non-
             // preexisting) item here is the new instance.
             debug_assert_eq!(pair.a.instance_id, instance_id);
+            // `node run` pairs within one daemon: both endpoints are
+            // instances of this stack, so both carry this core node and
+            // neither needs coordinator-supplied metadata. A federated launch
+            // builds its `PlannedPair`s from the coordinator's plan instead.
             PlannedPair {
-                own: SlotAddr::new(pair.a.instance_id, pair.a.link_id),
-                peer: SlotAddr::new(pair.b.instance_id, pair.b.link_id),
+                own: SlotAddr::new(local_core_node, pair.a.instance_id, pair.a.link_id),
+                peer: SlotAddr::new(local_core_node, pair.b.instance_id, pair.b.link_id),
+                peer_remote_meta: None,
             }
         })
         .collect())
@@ -452,6 +509,14 @@ pub fn plan_requested_pairs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every instance in these tests lives on one daemon, so slot addresses
+    /// and pair targets all carry the same core node.
+    const TEST_CORE: &str = "core_a";
+
+    fn slot(instance_id: &str, link_id: &str) -> SlotAddr {
+        SlotAddr::new(TEST_CORE, instance_id, link_id)
+    }
     use config::node::PairingDependency;
     use std::collections::BTreeMap;
 
@@ -513,6 +578,7 @@ mod tests {
                 deferred,
                 covered: &BTreeMap::new(),
             },
+            TEST_CORE,
         )
     }
 
@@ -523,15 +589,16 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("arm_1"))]),
+            &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
             &[],
         )
         .expect("unambiguous target resolves");
         assert_eq!(
             planned,
             vec![PlannedPair {
-                own: SlotAddr::new("ctrl_1", "arm"),
-                peer: SlotAddr::new("arm_1", "controller"),
+                own: SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+                peer: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
+                peer_remote_meta: None,
             }]
         );
     }
@@ -543,17 +610,17 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::pinned("arm_1", "controller"))]),
+            &requested(&[("arm", PairTarget::pinned("arm_1", "controller", TEST_CORE))]),
             &[],
         )
         .expect("pinned target resolves");
-        assert_eq!(planned[0].peer, SlotAddr::new("arm_1", "controller"));
+        assert_eq!(planned[0].peer, SlotAddr::new(TEST_CORE, "arm_1", "controller"));
 
         let err = plan(
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::pinned("arm_1", "nope"))]),
+            &requested(&[("arm", PairTarget::pinned("arm_1", "nope", TEST_CORE))]),
             &[],
         )
         .expect_err("wrong peer_link rejected");
@@ -608,6 +675,7 @@ mod tests {
                 deferred: &[],
                 covered,
             },
+            TEST_CORE,
         )
     }
 
@@ -616,7 +684,7 @@ mod tests {
     /// optional, while a covered key naming an unknown slot fails loudly.
     #[test]
     fn covered_slots_satisfy_coverage() {
-        let covered = requested(&[("arm", PairTarget::pinned("cmd_9", "left"))]);
+        let covered = requested(&[("arm", PairTarget::pinned("cmd_9", "left", TEST_CORE))]);
         for optional in [false, true] {
             let deps = [dep("controller", "arm", optional)];
             assert!(
@@ -628,8 +696,8 @@ mod tests {
 
         let deps = [dep("controller", "arm", false)];
         let covered = requested(&[
-            ("arm", PairTarget::pinned("cmd_9", "left")),
-            ("ghost", PairTarget::pinned("cmd_9", "right")),
+            ("arm", PairTarget::pinned("cmd_9", "left", TEST_CORE)),
+            ("ghost", PairTarget::pinned("cmd_9", "right", TEST_CORE)),
         ]);
         let err = plan_covered(&deps, &covered)
             .expect_err("a covered key naming an unknown slot is rejected");
@@ -661,7 +729,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("ghost", PairTarget::new("arm_1"))]),
+            &requested(&[("ghost", PairTarget::new("arm_1", TEST_CORE))]),
             &[],
         )
         .expect_err("unknown link_id rejected");
@@ -671,7 +739,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("arm_1"))]),
+            &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
             &["arm".to_string()],
         )
         .expect_err("request+defer overlap rejected");
@@ -695,7 +763,7 @@ mod tests {
             &snapshot,
             "arm_1",
             &deps,
-            &requested(&[("controller", PairTarget::new("cmd_1"))]),
+            &requested(&[("controller", PairTarget::new("cmd_1", TEST_CORE))]),
             &[],
         )
         .expect_err("two candidates is ambiguous");
@@ -720,7 +788,7 @@ mod tests {
             &snapshot,
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("other_1"))]),
+            &requested(&[("arm", PairTarget::new("other_1", TEST_CORE))]),
             &[],
         )
         .expect_err("same-role slots must not match");
@@ -730,7 +798,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("ctrl_1"))]),
+            &requested(&[("arm", PairTarget::new("ctrl_1", TEST_CORE))]),
             &[],
         )
         .expect_err("self-pairing rejected");
@@ -747,11 +815,11 @@ mod tests {
             pairing_name: "arm_link".to_string(),
             pairing_tag: "v1".to_string(),
             a: PairEndpoint {
-                slot: SlotAddr::new("arm_1", "controller"),
+                slot: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
                 role: "arm".to_string(),
             },
             b: PairEndpoint {
-                slot: SlotAddr::new("ctrl_0", "arm"),
+                slot: SlotAddr::new(TEST_CORE, "ctrl_0", "arm"),
                 role: "controller".to_string(),
             },
         }];
@@ -764,10 +832,11 @@ mod tests {
                 node_tag: "v1",
                 instance_id: "ctrl_1",
                 pairing_deps: &deps,
-                requested: &requested(&[("arm", PairTarget::new("arm_1"))]),
+                requested: &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
                 deferred: &[],
                 covered: &BTreeMap::new(),
             },
+            TEST_CORE,
         )
         .expect_err("a live-paired slot is exclusive");
         assert!(
@@ -793,19 +862,20 @@ mod tests {
             },
         };
         let planned = vec![PlannedPair {
-            own: SlotAddr::new("ctrl_1", "arm"),
-            peer: SlotAddr::new("arm_1", "controller"),
+            own: SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+            peer: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
+            peer_remote_meta: None,
         }];
 
         // Present as reserved: no missing pair, whichever side is `a`.
         let same_order = [registry_pair(
-            SlotAddr::new("ctrl_1", "arm"),
-            SlotAddr::new("arm_1", "controller"),
+            SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+            SlotAddr::new(TEST_CORE, "arm_1", "controller"),
         )];
         assert!(find_missing_planned_pair(&same_order, &planned).is_none());
         let swapped = [registry_pair(
-            SlotAddr::new("arm_1", "controller"),
-            SlotAddr::new("ctrl_1", "arm"),
+            SlotAddr::new(TEST_CORE, "arm_1", "controller"),
+            SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
         )];
         assert!(find_missing_planned_pair(&swapped, &planned).is_none());
 
@@ -817,8 +887,8 @@ mod tests {
             "an empty registry must flag the planned pair"
         );
         let unrelated = [registry_pair(
-            SlotAddr::new("ctrl_1", "arm"),
-            SlotAddr::new("arm_2", "controller"),
+            SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+            SlotAddr::new(TEST_CORE, "arm_2", "controller"),
         )];
         assert_eq!(
             find_missing_planned_pair(&unrelated, &planned),
@@ -840,8 +910,8 @@ mod tests {
             "cmd_1",
             &deps,
             &requested(&[
-                ("left", PairTarget::new("arm_1")),
-                ("right", PairTarget::new("arm_1")),
+                ("left", PairTarget::new("arm_1", TEST_CORE)),
+                ("right", PairTarget::new("arm_1", TEST_CORE)),
             ]),
             &[],
         )

@@ -7,7 +7,6 @@ use crate::services::node::{
     teardown_all_instances,
 };
 use chrono::Local;
-use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
 };
@@ -156,7 +155,6 @@ pub(super) async fn build_node_directly(
 pub(super) async fn start_node_directly(
     ctx: &ProcessLaunchContext,
     node_run_goal: NodeRunGoal,
-    runtime_config: RuntimeConfig,
     log_path: PathBuf,
     log_file: Arc<StdMutex<File>>,
 ) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
@@ -189,6 +187,18 @@ pub(super) async fn start_node_directly(
     // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
     // child + unregister its `Starting` entry) before we return the failure.
     let run_cancel_token = CancellationToken::new();
+
+    // Assemble here, from the daemon's own state, exactly as the action-server
+    // path does. The launch never builds a config it hands to something else.
+    let runtime_config = match crate::services::node::assemble_runtime_config(
+        &node_run_goal,
+        &action_context,
+    )
+    .await
+    {
+        Ok(config) => config,
+        Err(reason) => return (Err(reason), Some(log_path)),
+    };
 
     let result = run_phase(
         run_node_run(
@@ -260,6 +270,7 @@ pub(super) async fn validate_and_order_dependencies(
     ctx: &ProcessLaunchContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
+    placements: &daemon_config::launcher::Placements,
 ) -> std::result::Result<
     (
         Vec<NodeKey>,
@@ -344,6 +355,9 @@ pub(super) async fn validate_and_order_dependencies(
             framework: Default::default(),
             links: Default::default(),
             defer_links: Default::default(),
+            // The root entity is this daemon's own core node, so it is never
+            // placed anywhere else.
+            core_node: None,
         })
         .into_iter()
         .collect();
@@ -390,7 +404,7 @@ pub(super) async fn validate_and_order_dependencies(
         &binding_items,
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
-        ctx.bound_core_node.as_str(),
+        placements,
     );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
