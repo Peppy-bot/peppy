@@ -68,6 +68,7 @@ export default defineConfig({
 			customCss: ['./src/styles/tailwind.css', './src/styles/custom.css'],
 			components: {
 				SiteTitle: './src/components/SiteTitle.astro',
+				SocialIcons: './src/components/SocialIcons.astro',
 				ThemeSelect: './src/components/ThemeSelect.astro',
 			},
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/Peppy-bot/peppy' }],

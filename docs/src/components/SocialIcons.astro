@@ -1,0 +1,106 @@
+---
+/**
+ * Overrides Starlight's SocialIcons to place a "Try the platform" call to
+ * action immediately before the social links, i.e. to the left of the GitHub
+ * icon in the header. Starlight renders this component in both the desktop
+ * header and the mobile menu footer, so the CTA follows the icons to both.
+ * The link markup and styling below mirror Starlight's default component; only
+ * the CTA is new. It reuses the brand lime from the Tailwind accent scale so it
+ * reads as the primary action in both themes, like the landing page CTA.
+ */
+import config from 'virtual:starlight/user-config';
+import { Icon } from '@astrojs/starlight/components';
+
+const platformUrl = 'https://peppy.bot/';
+const links = config.social || [];
+---
+
+<a class="try-platform" href={platformUrl}>Try the platform</a>
+{
+	links.map(({ label, href, icon }) => (
+		<a {href} rel="me" class="social-link sl-flex">
+			<span class="sr-only">{label}</span>
+			<Icon name={icon} />
+		</a>
+	))
+}
+
+<style>
+	.try-platform {
+		/* position + overflow anchor the sheen sweep below. */
+		position: relative;
+		overflow: hidden;
+		display: inline-flex;
+		align-items: center;
+		white-space: nowrap;
+		padding: 0.4rem 0.85rem;
+		border-radius: 0.5rem;
+		border: 1px solid var(--color-accent-200);
+		background: var(--color-accent-200);
+		color: var(--color-accent-950);
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+		line-height: 1.2;
+		text-decoration: none;
+		box-shadow: 0 6px 24px -6px color-mix(in srgb, var(--color-accent-200) 45%, transparent);
+		/* Same easing and duration as the sticker, so the two feel related. */
+		transition:
+			transform 0.28s cubic-bezier(0.2, 0.8, 0.3, 1),
+			box-shadow 0.28s ease,
+			filter 0.28s ease;
+	}
+
+	.try-platform:hover {
+		transform: translateY(-2px);
+		filter: brightness(1.07);
+		box-shadow: 0 12px 28px -6px color-mix(in srgb, var(--color-accent-200) 70%, transparent);
+	}
+
+	/* Sheen that sweeps across on hover, ported from the landing page's
+	   "Powered by Peppy" sticker (PoweredBySticker.astro). Shorter travel time
+	   than the sticker's 0.75s: the button is narrower, so the same duration
+	   would read as a slower wipe. */
+	.try-platform::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(
+			100deg,
+			transparent 34%,
+			rgba(255, 255, 255, 0.55) 48%,
+			rgba(255, 255, 255, 0.12) 58%,
+			transparent 70%
+		);
+		transform: translateX(-115%);
+		transition: transform 0.6s ease;
+	}
+
+	.try-platform:hover::after {
+		transform: translateX(115%);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.try-platform {
+			transition:
+				box-shadow 0.28s ease,
+				filter 0.28s ease;
+		}
+		.try-platform:hover {
+			transform: none;
+		}
+		.try-platform::after {
+			display: none;
+		}
+	}
+
+	/* Starlight's default social link styling, kept so the icons look unchanged. */
+	.social-link {
+		color: var(--sl-color-text-accent);
+		padding: 0.5em;
+		margin: -0.5em;
+	}
+
+	.social-link:hover {
+		color: var(--sl-color-white);
+	}
+</style>
