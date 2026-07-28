@@ -171,8 +171,12 @@ Here is what `peppy node init --container` generates:
 
     %post
         set -eux
+        export DEBIAN_FRONTEND=noninteractive
+
+        export UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
         cd /opt/my_node
+        uv python install
         uv sync --no-editable
 
     %runscript
@@ -218,6 +222,10 @@ Each section serves a specific purpose:
 
 :::note
 The `%files` section copies the entire node directory into the container. Peppy automatically copies (rather than symlinks) internal libraries like `peppylib` so that they are fully available inside the image.
+:::
+
+:::caution
+Keep whatever the build produces out of the container user's home directory. At run time apptainer mounts the home of the user running the daemon over the image's own home, so anything the build left there is hidden. That is what `UV_PYTHON_INSTALL_DIR` above is for: uv installs managed interpreters under `$HOME`, so without it the interpreter lands in `/root` and a daemon running as root hides it, leaving the node to fail at startup with `./.venv/bin/python: not found`.
 :::
 
 ## Adding a container node
