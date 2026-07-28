@@ -206,13 +206,19 @@ launch.
 
 Each kind appears exactly once in the example.
 
-**Producer link.** The planner's `scene` slot is bound to `wrist_cam_inst`,
-the camera on the robot. The reflex policy reads the same instance locally.
-Both name it identically:
+**Producer link.** `wrist_cam_inst`, the camera on the robot, feeds two
+consumers. The reflex policy reads it locally through the slot its manifest
+calls `camera`; the planner reads it from the cloud through the slot its
+manifest calls `scene`. The slot names differ because each belongs to its own
+node, but both sides name the producer the same way and neither says where it
+is:
 
-```json5
-// on the robot                    // in the cloud
-links: { camera: "wrist_cam_inst" }  links: { scene: "wrist_cam_inst" }
+```json5 title="reflex_inst (on the robot)"
+links: { camera: "wrist_cam_inst" }
+```
+
+```json5 title="planner_inst (in the cloud)"
+links: { scene: "wrist_cam_inst" }
 ```
 
 Nothing at the point of use records which machine the producer sits on.
