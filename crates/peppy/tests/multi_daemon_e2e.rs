@@ -190,11 +190,17 @@ fn host_ubuntu_release() -> String {
 ///   run `uv sync`). Peppy vendors `ruff`, not `uv`, so the image provides it.
 /// - `ca-certificates` covers both `peppy repo refresh` cloning the hub
 ///   repositories and apptainer pulling a node's Docker base image.
+/// - `tzdata` exists for `/etc/localtime` alone. Apptainer binds it into every
+///   container it starts, and a bare Ubuntu image does not have it, so the
+///   node's own container fails to be created with a `mount source
+///   /etc/localtime doesn't exist` that says nothing about time zones.
 fn e2e_dockerfile(ubuntu_release: &str) -> String {
     format!(
         "FROM ubuntu:{ubuntu_release}\n\
          RUN apt-get update \\\n\
-         \x20&& apt-get install -y --no-install-recommends ca-certificates squashfs-tools \\\n\
+         \x20&& apt-get install -y --no-install-recommends \\\n\
+         \x20     ca-certificates squashfs-tools tzdata \\\n\
+         \x20&& ln -sf /usr/share/zoneinfo/UTC /etc/localtime \\\n\
          \x20&& rm -rf /var/lib/apt/lists/*\n\
          COPY --from=ghcr.io/astral-sh/uv:{UV_VERSION} /uv /uvx /usr/local/bin/\n\
          ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python\n\
