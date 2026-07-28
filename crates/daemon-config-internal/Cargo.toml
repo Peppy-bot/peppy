@@ -10,6 +10,11 @@ edition.workspace = true
 
 [dependencies]
 config = { workspace = true }
+# `FORBIDDEN_ENV_KEYS`, the protocol policy both sides of the core-node wire
+# enforce on environment variables. `env::check_env_var` applies it where a
+# launcher's `env_vars` are parsed so a rejected key is reported against the
+# file the user wrote, not at spawn time.
+core-node-api = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_json5 = "0.2"

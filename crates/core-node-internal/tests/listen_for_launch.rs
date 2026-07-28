@@ -1859,6 +1859,102 @@ sleep \"${1:-60}\"
     );
 }
 
+/// A launcher instance's `env_vars` reach the process the daemon spawns, and a
+/// key it declares wins over the caller environment the launch forwards. The
+/// node writes what it actually received to a file, so the assertion is on the
+/// value in the spawned process rather than on anything the daemon reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_applies_per_instance_env_vars() {
+    const NODE_NAME: &str = "env_probe_node";
+    const NODE_TAG: &str = "v1";
+    const INSTANCE_ID: &str = "probe_1";
+    const INSTANCE_DEVICE: &str = "/dev/ttyUSB0";
+    const CALLER_DEVICE: &str = "/dev/from_caller";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let nodes_dir = tempdir().expect("failed to create temp nodes directory");
+    let probe_path = nodes_dir.path().join("received_env.txt");
+    // Records the value the process was started with, then stays alive so the
+    // instance can reach Running like any other node.
+    let probe_script = format!(
+        "printf '%s' \"$ESP32_DEVICE\" > {}; exec sleep 60",
+        probe_path.display()
+    );
+    let _node_path = write_node_config(
+        nodes_dir.path(),
+        NODE_NAME,
+        NODE_TAG,
+        "test-hash",
+        &["sh", "-c", probe_script.as_str()],
+        false,
+        false,
+    );
+
+    let launcher_json5 = format!(
+        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ local: "./{NODE_NAME}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}", env_vars: {{ ESP32_DEVICE: "{INSTANCE_DEVICE}" }} }} ] }} ] }}"#
+    );
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
+
+    let node_messenger =
+        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
+    let _ready = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+        )
+        .await
+        .expect("health service should start"),
+    );
+
+    // Allow listeners to establish.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The caller environment carries the same key with a different value, so a
+    // matching probe can only come from the instance's own declaration.
+    let (_goal_response, result) = send_node_launch_and_wait_with_env(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        vec![("ESP32_DEVICE".to_string(), CALLER_DEVICE.to_string())],
+    )
+    .await
+    .expect("launch request should complete");
+
+    assert!(
+        result.success,
+        "launch should succeed, got error: {:?}",
+        result.error_message
+    );
+
+    let received = poll_until(
+        Duration::from_secs(10),
+        "the launched node should have recorded the env var it was started with",
+        || fs::read_to_string(&probe_path).ok(),
+    )
+    .await;
+    assert_eq!(
+        received, INSTANCE_DEVICE,
+        "the instance's `env_vars` value must reach the spawned process and \
+         override the forwarded caller environment"
+    );
+}
+
 /// `LauncherOrigin::Repository` resolves the launcher name through `launchers.json5`
 /// (the launcher repo cache) and uses the on-disk path it points at. The deployment
 /// itself uses a local source so we don't need to spin up a fake git repo.
