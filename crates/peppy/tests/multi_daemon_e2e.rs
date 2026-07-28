@@ -9,6 +9,7 @@ use daemon_config::peppy_config::{
     ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
 };
 use pmi::{RouterId, ZenohAdapter, ZenohNetProtocol, render_router_config};
+use testcontainers::bollard::models::DeviceMapping;
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::core::{AccessMode, CmdWaitFor, ExecCommand, Host, Mount};
 use testcontainers::runners::{AsyncBuilder, AsyncRunner};
@@ -28,6 +29,10 @@ const CONTAINER_PEPPY_HOME: &str = "/data";
 
 /// Name of the image this test builds for its daemon containers.
 const E2E_IMAGE_NAME: &str = "peppy-multi-daemon-e2e";
+
+/// The one device a daemon container needs beyond Docker's default set: every
+/// SIF is mounted through it. See the security options in `start_daemon`.
+const FUSE_DEVICE: &str = "/dev/fuse";
 
 /// Pinned `uv` release copied into the image. A moving `latest` would make a
 /// green run depend on what Astral published that morning. Must stay new
@@ -188,6 +193,12 @@ fn host_ubuntu_release() -> String {
 ///   node (`uvc_camera_python_mock`) cannot be built without it.
 /// - `uv` builds every native Python node (`my_python_robot_arm` and friends
 ///   run `uv sync`). Peppy vendors `ruff`, not `uv`, so the image provides it.
+/// - `squashfuse` is how apptainer mounts a SIF without full privileges, and
+///   this container has none (see `start_daemon`). Peppy builds apptainer
+///   `--without-suid`, so a run never gets to mount the image with the kernel's
+///   squashfs driver; without squashfuse apptainer unpacks the whole image into
+///   a temporary sandbox on every start instead, which needs a `/proc` Docker
+///   masks and fails part-way through with an unsquashfs exit code.
 /// - `ca-certificates` covers both `peppy repo refresh` cloning the hub
 ///   repositories and apptainer pulling a node's Docker base image.
 /// - `tzdata` exists for `/etc/localtime` alone. Apptainer binds it into every
@@ -199,7 +210,7 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
         "FROM ubuntu:{ubuntu_release}\n\
          RUN apt-get update \\\n\
          \x20&& apt-get install -y --no-install-recommends \\\n\
-         \x20     ca-certificates squashfs-tools tzdata \\\n\
+         \x20     ca-certificates squashfs-tools squashfuse tzdata \\\n\
          \x20&& ln -sf /usr/share/zoneinfo/UTC /etc/localtime \\\n\
          \x20&& rm -rf /var/lib/apt/lists/*\n\
          COPY --from=ghcr.io/astral-sh/uv:{UV_VERSION} /uv /uvx /usr/local/bin/\n\
@@ -442,16 +453,37 @@ async fn start_daemon(
     let mut request = GenericImage::new(launch.image_name, launch.image_tag)
         .with_container_name(name)
         .with_hostname(hostname)
-        // Apptainer builds and runs every container node through a user
-        // namespace and a pile of mounts. Under Docker's default profile that
-        // is blocked twice over: no CAP_SYS_ADMIN, and `docker-default`
-        // AppArmor denies unprivileged userns on Ubuntu 24.04+ (the same
-        // restriction `containers::apptainer` disables in peppy's Lima guest).
-        // A test-only container on a self-hosted runner is the one place where
-        // buying both with `privileged` is the proportionate answer; the
-        // alternative is three security-opt knobs that each drift with the
-        // host's kernel and AppArmor configuration.
-        .with_privileged(true)
+        // Peppy builds apptainer `--without-suid`, so every container node is
+        // built and run through a user namespace and its SIF is mounted with
+        // squashfuse. Docker's defaults forbid the first and provide nothing
+        // for the second:
+        //
+        // - `seccomp=unconfined` permits `unshare(CLONE_NEWUSER)`, which the
+        //   default profile denies. Without it a node's `%post` dies with "not
+        //   allowed to create user namespace".
+        // - `apparmor=unconfined` lifts the same denial from the other side on
+        //   Ubuntu 24.04+, where `docker-default` carries no `userns create`
+        //   permission for `apparmor_restrict_unprivileged_userns` to honour
+        //   (the restriction `containers::apptainer` turns off in peppy's Lima
+        //   guest).
+        // - `/dev/fuse` is what squashfuse mounts through, and nothing in the
+        //   default device set can stand in for it.
+        //
+        // Deliberately no added capabilities and deliberately not privileged:
+        // apptainer reads CAP_SYS_ADMIN as "I am privileged root", switches to
+        // the path that wants the whole capability set, and then refuses to run
+        // ("Requesting capability set 0x000001ffffffffff while permitted
+        // capability set is ..."). Docker's default set is both sufficient here
+        // and closer to what a rootless install has on a real host.
+        .with_security_opt("seccomp=unconfined")
+        .with_security_opt("apparmor=unconfined")
+        .with_host_config_modifier(|host_config| {
+            host_config.devices = Some(vec![DeviceMapping {
+                path_on_host: Some(FUSE_DEVICE.to_string()),
+                path_in_container: Some(FUSE_DEVICE.to_string()),
+                cgroup_permissions: Some(String::from("rwm")),
+            }]);
+        })
         .with_host("host.docker.internal", Host::HostGateway)
         .with_mount(read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY))
         .with_mount(read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"))
