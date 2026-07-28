@@ -860,16 +860,35 @@ fn assert_starts_before(feedback: &str, earlier: &str, later: &str) {
     );
 }
 
+/// Whether `stack` lists `instance_id` as one of its own instances.
+///
+/// Substring matching cannot answer this, and gets it backwards in exactly the
+/// case that matters. A daemon's rendering names the instances it holds AND the
+/// remote ones they are wired to: the planner's row on `cn-cloud` reads
+/// `scene → wrist_cam_inst@cn-robot`, so `contains("wrist_cam_inst")` reports
+/// the camera as held by the very daemon the launcher placed it away from. That
+/// reference is the federation working, not a placement error.
+///
+/// An instance a daemon holds fills a table cell by itself. A reference to one
+/// it does not hold is always qualified (`<instance>@<core-node>`) and sits
+/// inside a larger cell alongside the slot it feeds. So the question is cell
+/// equality, not containment.
+fn holds_instance(stack: &str, instance_id: &str) -> bool {
+    stack
+        .split(['│', '\n'])
+        .any(|cell| cell.trim() == instance_id)
+}
+
 fn assert_holds_exactly(stack: &str, daemon: &str, expected: &[&str], forbidden: &[&str]) {
     for instance in expected {
         assert!(
-            stack.contains(instance),
+            holds_instance(stack, instance),
             "`{daemon}` must hold `{instance}`; stack list was:\n{stack}"
         );
     }
     for instance in forbidden {
         assert!(
-            !stack.contains(instance),
+            !holds_instance(stack, instance),
             "`{daemon}` must NOT hold `{instance}`: it is placed on the other daemon. \
              Stack list was:\n{stack}"
         );
@@ -1086,11 +1105,11 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     // daemon about itself.
     federation
         .robot
-        .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| text.contains(id)))
+        .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| holds_instance(text, id)))
         .await;
     federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
         .await;
 
     let robot_stack = federation
@@ -1155,7 +1174,7 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         (&federation.cloud, CLOUD_INSTANCES.as_slice()),
     ] {
         daemon
-            .wait_for_stack(|text| instances.iter().all(|id| !text.contains(id)))
+            .wait_for_stack(|text| instances.iter().all(|id| !holds_instance(text, id)))
             .await;
     }
 }
@@ -1191,7 +1210,7 @@ async fn a_finished_launch_releases_its_participants_so_the_next_one_can_run() {
 
     federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
         .await;
 }
 
@@ -1206,7 +1225,7 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
     assert!(launch.success(), "launch must succeed:\n{}", launch.text);
     federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
         .await;
 
     // Restart the coordinator's daemon. Everything it knew in RAM is gone.
@@ -1219,7 +1238,7 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
     // The peer still holds its slice, and that slice still names the launch.
     let cloud_stack = federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
         .await;
     assert!(
         !cloud_stack.is_empty(),
@@ -1240,7 +1259,7 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
 
     federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| !text.contains(id)))
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| !holds_instance(text, id)))
         .await;
 }
 
@@ -1272,7 +1291,7 @@ async fn an_unreachable_peer_fails_the_launch_and_is_named() {
     assert!(
         ROBOT_INSTANCES
             .iter()
-            .all(|id| !robot_stack.text.contains(id)),
+            .all(|id| !holds_instance(&robot_stack.text, id)),
         "a refused preflight must not have started anything:\n{}",
         robot_stack.text
     );
@@ -1313,7 +1332,7 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
         .collect();
     federation
         .robot
-        .wait_for_stack(|text| all_instances.iter().all(|id| text.contains(id)))
+        .wait_for_stack(|text| all_instances.iter().all(|id| holds_instance(text, id)))
         .await;
     let robot_stack = federation
         .robot
@@ -1335,7 +1354,7 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
     assert!(
         all_instances
             .iter()
-            .all(|id| !cloud_stack.text.contains(id)),
+            .all(|id| !holds_instance(&cloud_stack.text, id)),
         "`--local` must leave the peer untouched:\n{}",
         cloud_stack.text
     );
