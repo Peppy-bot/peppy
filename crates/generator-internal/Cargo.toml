@@ -4,6 +4,19 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[features]
+# In a debug build, rust-embed does not embed: each `#[folder]` is read from
+# the filesystem at runtime, at the absolute path recorded when the crate was
+# compiled. That is a deliberate convenience for editing templates without a
+# rebuild, and it holds only while the build tree is still there. Anywhere it
+# is not, every template read fails with a bare `No such file or directory`.
+#
+# The multi-daemon e2e test is exactly that: it mounts a debug-built `peppy`
+# into a container that carries no repository, so `node add` cannot reach a
+# single peppygen template. Turning this on makes a debug build embed for real,
+# which is what a release build does unconditionally.
+debug-embed = ["rust-embed/debug-embed"]
+
 [dependencies]
 pmi = { workspace = true }
 config = { workspace = true }
