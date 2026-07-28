@@ -2,14 +2,72 @@ use super::feedback::{publish_stderr, publish_stdout};
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::resolve_node_config;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource,
+    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource, PlacementSpec,
 };
 use daemon_config::consts::PeppyDirs;
-use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
+use daemon_config::core_node_name::CoreNodeName;
+use daemon_config::format_quoted_list;
+use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use parking_lot::Mutex as StdMutex;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Translates a deployment source into one that any daemon in the federation
+/// can fetch for itself.
+///
+/// Two things make this different from
+/// [`node_source_from_deployment_source`], and both are about not letting one
+/// machine's filesystem leak into another's instructions:
+///
+/// - `local:` is REFUSED. Its path names a tree on the coordinator, so a peer
+///   resolving it would read a different tree or nothing at all.
+/// - `repo:` stays a `(name, tag)` reference instead of being resolved through
+///   the caller's own package cache. Resolving it here would pin whatever git
+///   URL or archive THIS machine happens to have cached and hand it to another
+///   machine as fact. Left as a reference, each daemon resolves it against its
+///   own cache, which is the same cache it will spawn from.
+///
+/// Called on both sides for that reason: by the coordinator when it builds a
+/// peer's `node_add`, and by the peer when it resolves its own manifests. Same
+/// function, so the two cannot drift into disagreeing about what a source means.
+pub(crate) fn portable_node_source(
+    source: &DeploymentSource,
+) -> std::result::Result<NodeSource, String> {
+    match source {
+        DeploymentSource::Local(spec) => Err(local_source_refusal(spec)),
+        DeploymentSource::Repo(spec) => NodeSource::repo_node(&spec.name, &spec.tag)
+            .map_err(|e| format!("invalid repo node `{}:{}`: {e}", spec.name, spec.tag)),
+        DeploymentSource::Git(spec) => Ok(NodeSource::Git {
+            repo_url: git_url_from_repo(&spec.repo)?,
+            repo_path: spec.path.clone(),
+            repo_ref: Some(spec.ref_.clone()),
+        }),
+        DeploymentSource::Url(spec) => Ok(NodeSource::Http {
+            url: url::Url::parse(&spec.url)
+                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?,
+            sha256: Some(spec.sha256.clone()),
+        }),
+    }
+}
+
+/// Why a `local:` source cannot cross a machine boundary.
+///
+/// Stated once because two sides refuse it at different moments: the
+/// coordinator before it even asks a peer to reserve, and
+/// [`portable_node_source`] when a source is translated for a peer. The two
+/// must say the same thing, or the same misconfiguration reads as two
+/// different problems depending on where it is caught.
+pub(crate) fn local_source_refusal(
+    spec: &daemon_config::launcher::DeploymentLocalSource,
+) -> String {
+    format!(
+        "`local:{}` cannot be placed on another core node: the path names a tree on the \
+         coordinator's filesystem. A `local:` deployment must keep all of its instances on \
+         one core node; publish the node to a repo or url source to split it across machines.",
+        spec.local.display()
+    )
+}
 
 fn deployment_label(deployment: &Deployment) -> String {
     match &deployment.source {
@@ -26,56 +84,24 @@ fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
         .map_err(|e| format!("invalid git repo URL `{repo}`: {e}"))
 }
 
-fn node_source_from_deployment_source(
+pub(crate) fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
-    let source = match &deployment.source {
-        DeploymentSource::Local(spec) => {
-            let resolved = if spec.local.is_absolute() {
-                spec.local.clone()
-            } else {
-                nodes_directory.join(&spec.local)
-            };
-            NodeSource::Fs(resolved)
-        }
-        DeploymentSource::Git(spec) => {
-            let repo_url = git_url_from_repo(&spec.repo)?;
-            NodeSource::Git {
-                repo_url,
-                repo_path: spec.path.clone(),
-                repo_ref: Some(spec.ref_.clone()),
-            }
-        }
-        DeploymentSource::Url(spec) => {
-            let url = url::Url::parse(&spec.url)
-                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
-            NodeSource::Http {
-                url,
-                sha256: Some(spec.sha256.clone()),
-            }
-        }
+    // Only the two host-dependent shapes are handled here; the rest are
+    // identical from any machine and come from `portable_node_source`, so the
+    // two functions cannot drift apart on what a `git:` or `url:` source means.
+    match &deployment.source {
+        DeploymentSource::Local(spec) => Ok(NodeSource::Fs(if spec.local.is_absolute() {
+            spec.local.clone()
+        } else {
+            nodes_directory.join(&spec.local)
+        })),
         DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
             &spec.name, &spec.tag, peppy_dirs,
-        )?,
-    };
-
-    Ok(source)
-}
-
-/// Collapse a per-instance launcher override and the daemon-wide default
-/// into a single resolved framework block. Centralizes the "per-instance
-/// value > daemon default > wall" precedence so the spawned node receives
-/// one concrete value and never has to re-implement the fallback.
-pub(super) fn resolve_framework(
-    overrides: &daemon_config::launcher::FrameworkOverrides,
-    daemon_default_use_sim_time: bool,
-) -> config::runtime::ResolvedFramework {
-    config::runtime::ResolvedFramework {
-        use_sim_time: overrides
-            .use_sim_time
-            .unwrap_or(daemon_default_use_sim_time),
+        ),
+        portable => portable_node_source(portable),
     }
 }
 
@@ -83,7 +109,7 @@ pub(super) fn resolve_framework(
 pub(super) async fn parse_launcher_config(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
-) -> std::result::Result<(Vec<Deployment>, PathBuf), LaunchResult> {
+) -> std::result::Result<(Vec<Deployment>, PathBuf, Placements), LaunchResult> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -133,8 +159,151 @@ pub(super) async fn parse_launcher_config(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
+    let placements = match resolve_placements(&peppy_launcher, goal, ctx.bound_core_node.as_str()) {
+        Ok(placements) => placements,
+        Err(msg) => {
+            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            return Err(LaunchResult::failure(&ctx.log_path, msg));
+        }
+    };
+
     let deployments = peppy_launcher.deployments.clone();
-    Ok((deployments, nodes_directory))
+    Ok((deployments, nodes_directory, placements))
+}
+
+/// Binds the launcher's declared core node links to the machines the caller
+/// asked for, then resolves every instance to the core node it runs on.
+///
+/// The coordinator owns this, not the CLI, and it owns the EXPANSION as well as
+/// the check. Only the daemon has the resolved document — a `Repository`
+/// launcher (the shape every hub launcher uses) is read from the daemon's own
+/// repo cache and the CLI may never have seen it — so `--local` arrives as an
+/// intent and is expanded here against what the document actually declares.
+/// Expanding it caller-side would work for a file launcher and silently do
+/// nothing for a repository one.
+pub(super) fn resolve_placements(
+    launcher: &daemon_config::launcher::PeppyLauncher,
+    goal: &LaunchGoal,
+    coordinator: &str,
+) -> std::result::Result<Placements, String> {
+    // The daemon's own name, re-parsed rather than assumed: this is the only
+    // way to obtain a `CoreNodeName`, and every name in a `Placements` is one.
+    let coordinator = CoreNodeName::new(coordinator)
+        .map_err(|reason| format!("this daemon's core node name is invalid: {reason}"))?;
+    let declared: BTreeSet<&str> = launcher.core_nodes.iter().map(String::as_str).collect();
+    let links = wire_core_node_links(&goal.placement, &declared, &coordinator)?;
+
+    let mut by_instance = BTreeMap::new();
+    for deployment in &launcher.deployments {
+        for instance in &deployment.instances {
+            let Some(link) = &instance.core_node else {
+                continue;
+            };
+            // The parser refuses a `core_node` naming an undeclared link and
+            // the checks above wire every declared one, so this lookup should
+            // not miss. It is reported rather than asserted because the launch
+            // runs in a spawned task: a panic here would take the task down
+            // with no message the operator could act on, whereas a refusal
+            // names the link that fell through.
+            let Some(core_node) = links.get(link.as_str()) else {
+                return Err(format!(
+                    "instance `{}` is placed on core node link `{link}`, which this launcher \
+                     does not declare. Add it to `core_nodes`, or remove the instance's \
+                     `core_node` field.",
+                    instance.instance_id
+                ));
+            };
+            by_instance.insert(instance.instance_id.to_string(), core_node.clone());
+        }
+    }
+
+    Ok(Placements::new(coordinator, by_instance))
+}
+
+/// Every declared core node link, wired to the machine it runs on.
+///
+/// Splitting this out is what lets `--local` be a real placement mode rather
+/// than a caller-side shortcut: both arms end in the same "every declared link
+/// has exactly one machine" post-condition, so nothing downstream has to know
+/// which flag produced it.
+///
+/// The `--place` targets are VALIDATED here, not taken on trust. They arrived
+/// on the wire, and while the CLI checks what a user types, a daemon cannot
+/// assume its caller was the CLI — this is where an unchecked name would
+/// otherwise enter the plan and be stamped onto every producer address.
+fn wire_core_node_links<'a>(
+    placement: &PlacementSpec,
+    declared: &BTreeSet<&'a str>,
+    coordinator: &CoreNodeName,
+) -> std::result::Result<BTreeMap<&'a str, CoreNodeName>, String> {
+    let places = match placement {
+        // `--local` collapses the whole topology onto this machine, whatever it
+        // turns out to be. A launcher that declares nothing is already entirely
+        // local, so this is a no-op there rather than an error.
+        PlacementSpec::Local => {
+            return Ok(declared
+                .iter()
+                .map(|link| (*link, coordinator.clone()))
+                .collect());
+        }
+        PlacementSpec::Places(places) => places,
+    };
+
+    if declared.is_empty() && !places.is_empty() {
+        let wired = format_quoted_list(places.keys());
+        return Err(format!(
+            "--place was given ({wired}) but this launcher declares no `core_nodes`. Either \
+             remove --place, or add a `core_nodes` list naming the machines the launcher spans."
+        ));
+    }
+
+    // Every declared link must be wired exactly once, and only declared links
+    // may be wired. A launcher describes a topology; refusing a partial wiring
+    // is what stops half of it from silently collapsing onto the coordinator.
+    let missing: Vec<&str> = declared
+        .iter()
+        .filter(|link| !places.contains_key(**link))
+        .copied()
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "these core node links are declared but not wired: {}. Wire each one with \
+             `--place <core-node-link>@<core-node>`, or run the whole launcher on this machine \
+             with `--local`.",
+            format_quoted_list(&missing)
+        ));
+    }
+    let undeclared: Vec<&str> = places
+        .keys()
+        .map(String::as_str)
+        .filter(|link| !declared.contains(link))
+        .collect();
+    if !undeclared.is_empty() {
+        return Err(format!(
+            "--place names core node links this launcher does not declare: {}. It declares: {}",
+            format_quoted_list(&undeclared),
+            if declared.is_empty() {
+                "nothing".to_owned()
+            } else {
+                format_quoted_list(declared)
+            }
+        ));
+    }
+
+    places
+        .iter()
+        .map(|(link, core_node)| {
+            let name = CoreNodeName::new(core_node.as_str()).map_err(|reason| {
+                format!("--place wires core node link `{link}` to `{core_node}`, which {reason}")
+            })?;
+            // Borrow the DECLARED spelling, not the request's: the two are
+            // equal here, and this keeps the map's keys tied to the document.
+            let link = declared
+                .get(link.as_str())
+                .expect("every wired link was just checked to be declared");
+            Ok((*link, name))
+        })
+        .collect()
 }
 
 /// Translate a `LauncherOrigin` into a concrete on-disk path.
@@ -177,10 +346,16 @@ async fn resolve_launcher_origin(
 }
 
 /// Step 2: Resolve deployments - retrieve node configs for each deployment.
+///
+/// A deployment placed wholly on a peer is NOT resolved here. The peer already
+/// resolved it during preflight and `delegated` carries what it read, so this
+/// daemon needs no reachability to a source it will never fetch, and the
+/// manifest it validates is provably the one that peer will spawn from.
 pub(super) async fn resolve_deployments(
     ctx: &ProcessLaunchContext,
     deployments: Vec<Deployment>,
     nodes_directory: &Path,
+    delegated: &BTreeMap<usize, super::federated::DelegatedManifest>,
 ) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
     publish_stdout(
         ctx,
@@ -193,7 +368,7 @@ pub(super) async fn resolve_deployments(
     let mut planning_errors: Vec<String> = Vec::new();
     let mut planned_keys: HashSet<NodeKey> = HashSet::new();
 
-    for deployment in deployments.into_iter() {
+    for (index, deployment) in deployments.into_iter().enumerate() {
         if deployment.instances.is_empty() {
             planning_errors.push(format!(
                 "deployment {} must have at least one instance",
@@ -202,36 +377,14 @@ pub(super) async fn resolve_deployments(
             continue;
         }
 
-        let source =
-            match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
-            {
-                Ok(result) => result,
-                Err(err) => {
-                    planning_errors.push(format!(
-                        "failed to resolve source for deployment {}: {err}",
-                        deployment_label(&deployment)
-                    ));
-                    continue;
-                }
-            };
-
-        publish_stdout(
-            ctx,
-            format!(
-                "Retrieving node config for {}",
-                deployment_label(&deployment)
-            ),
-            LaunchFeedbackStep::LauncherStep,
-        )
-        .await;
-
-        let config = match resolve_node_config(source.clone(), &ctx.peppy_dirs).await {
-            Ok(config) => config,
+        let resolved = match delegated.get(&index) {
+            Some(manifest) => adopt_delegated_manifest(ctx, &deployment, manifest).await,
+            None => resolve_here(ctx, &deployment, nodes_directory).await,
+        };
+        let (source, config, manifest_sha256) = match resolved {
+            Ok(resolved) => resolved,
             Err(err) => {
-                planning_errors.push(format!(
-                    "failed to retrieve node config for deployment {}: {err}",
-                    deployment_label(&deployment)
-                ));
+                planning_errors.push(err);
                 continue;
             }
         };
@@ -267,6 +420,8 @@ pub(super) async fn resolve_deployments(
             node_name,
             node_tag,
             config,
+            deployment_index: index,
+            manifest_sha256,
         });
     }
 
@@ -277,4 +432,275 @@ pub(super) async fn resolve_deployments(
     }
 
     Ok(planned)
+}
+
+/// What one resolved deployment contributes to the plan: how to fetch it, what
+/// its manifest says, and this daemon's own fingerprint of that manifest (only
+/// when this daemon read it, so a straddle can be cross-checked).
+type ResolvedDeployment = (NodeSource, config::node::NodeConfig, Option<String>);
+
+/// Takes a peer's resolved manifest at face value, but still derives the
+/// portable source: what the coordinator needs from it is the instruction to
+/// send back, not a path on the peer's disk.
+async fn adopt_delegated_manifest(
+    ctx: &ProcessLaunchContext,
+    deployment: &Deployment,
+    manifest: &super::federated::DelegatedManifest,
+) -> std::result::Result<ResolvedDeployment, String> {
+    publish_stdout(
+        ctx,
+        format!(
+            "Using the manifest `{}` resolved for {}",
+            manifest.core_node,
+            deployment_label(deployment)
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let config: config::node::NodeConfig =
+        serde_json5::from_str(&manifest.config_json5).map_err(|e| {
+            format!(
+                "`{}` sent an undecodable manifest for deployment {}: {e}",
+                manifest.core_node,
+                deployment_label(deployment)
+            )
+        })?;
+    let source = portable_node_source(&deployment.source)?;
+    // No local fingerprint: this daemon did not read the manifest, so it has
+    // nothing of its own to compare, and the straddle check must not compare a
+    // peer's answer against itself.
+    Ok((source, config, None))
+}
+
+async fn resolve_here(
+    ctx: &ProcessLaunchContext,
+    deployment: &Deployment,
+    nodes_directory: &Path,
+) -> std::result::Result<ResolvedDeployment, String> {
+    let source = node_source_from_deployment_source(deployment, nodes_directory, &ctx.peppy_dirs)
+        .map_err(|err| {
+        format!(
+            "failed to resolve source for deployment {}: {err}",
+            deployment_label(deployment)
+        )
+    })?;
+
+    publish_stdout(
+        ctx,
+        format!(
+            "Retrieving node config for {}",
+            deployment_label(deployment)
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let config = resolve_node_config(source.clone(), &ctx.peppy_dirs)
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to retrieve node config for deployment {}: {err}",
+                deployment_label(deployment)
+            )
+        })?;
+    let fingerprint = crate::services::node::manifest_fingerprint(&config)?;
+    Ok((source, config, Some(fingerprint)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(json5: &str) -> DeploymentSource {
+        serde_json5::from_str(json5).expect("valid deployment source")
+    }
+
+    /// The hazard this exists to avoid: resolving `repo:` through the caller's
+    /// own package cache would pin whatever git URL THIS machine happens to
+    /// have cached and hand it to another machine as fact. Left as a reference,
+    /// each daemon resolves it against the cache it will actually spawn from.
+    #[test]
+    fn a_repo_source_crosses_machines_as_a_reference_not_a_resolved_url() {
+        let resolved = portable_node_source(&source(r#"{ name: "planner", tag: "v1" }"#))
+            .expect("a repo source is portable");
+        assert_eq!(
+            resolved,
+            NodeSource::RepoNode {
+                name: "planner".to_owned(),
+                tag: "v1".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn git_and_url_sources_name_the_same_bytes_from_any_machine() {
+        assert!(matches!(
+            portable_node_source(&source(
+                r#"{ repo: "https://example.com/r.git", ref: "main", path: "nodes/a" }"#
+            )),
+            Ok(NodeSource::Git { .. })
+        ));
+        assert!(matches!(
+            portable_node_source(&source(
+                r#"{ url: "https://example.com/a.tar.zst", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#
+            )),
+            Ok(NodeSource::Http { .. })
+        ));
+    }
+
+    /// A path names a tree on the coordinator's disk, so a peer resolving it
+    /// would read a different tree or nothing at all.
+    #[test]
+    fn a_local_source_is_refused_rather_than_translated() {
+        let error = portable_node_source(&source(r#"{ local: "./nodes/planner" }"#))
+            .expect_err("a local path cannot cross machines");
+        assert!(error.contains("names a tree on"), "got: {error}");
+        assert!(error.contains("repo or url source"), "got: {error}");
+    }
+
+    /// The local resolver and the portable one must not drift apart on what a
+    /// host-independent source means, which is why the former delegates to the
+    /// latter for exactly those shapes.
+    #[test]
+    fn the_local_resolver_agrees_with_the_portable_one_on_host_independent_sources() {
+        for json5 in [
+            r#"{ repo: "https://example.com/r.git", ref: "main", path: "nodes/a" }"#,
+            r#"{ url: "https://example.com/a.tar.zst", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#,
+        ] {
+            let deployment = Deployment {
+                source: source(json5),
+                instances: Vec::new(),
+            };
+            let local = node_source_from_deployment_source(
+                &deployment,
+                std::path::Path::new("/nodes"),
+                &PeppyDirs::new("/tmp/peppy"),
+            )
+            .expect("resolvable locally");
+            let portable = portable_node_source(&deployment.source).expect("portable");
+            assert_eq!(local, portable, "for {json5}");
+        }
+    }
+
+    // --- Placement: binding a launcher's declared links to real machines ---
+
+    fn declared<'a>(links: &[&'a str]) -> BTreeSet<&'a str> {
+        links.iter().copied().collect()
+    }
+
+    fn core_node(name: &str) -> CoreNodeName {
+        CoreNodeName::new(name).expect("valid test core node name")
+    }
+
+    fn places(pairs: &[(&str, &str)]) -> PlacementSpec {
+        PlacementSpec::Places(
+            pairs
+                .iter()
+                .map(|(link, target)| ((*link).to_owned(), (*target).to_owned()))
+                .collect(),
+        )
+    }
+
+    /// The case the CLI cannot serve: `--local` against a launcher whose
+    /// document only the coordinator has read. Expanding here is what makes
+    /// `peppy stack launch --local <name>` work at all — a repository launcher
+    /// is the shape every hub launcher uses, and the CLI never sees it.
+    #[test]
+    fn local_wires_every_declared_link_to_the_coordinator() {
+        let wired = wire_core_node_links(
+            &PlacementSpec::Local,
+            &declared(&["robot_onboard", "cloud_inference"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect("--local always wires");
+
+        assert_eq!(wired.len(), 2);
+        assert!(wired.values().all(|target| target.as_str() == "cn-robot-7"));
+    }
+
+    /// A launcher that declares no links is already entirely local, so
+    /// `--local` is a no-op there rather than an error.
+    #[test]
+    fn local_on_a_single_machine_launcher_wires_nothing_and_is_accepted() {
+        let wired = wire_core_node_links(
+            &PlacementSpec::Local,
+            &declared(&[]),
+            &core_node("cn-robot-7"),
+        )
+        .expect("a single-machine launcher is trivially local");
+        assert!(wired.is_empty());
+    }
+
+    #[test]
+    fn place_wires_each_declared_link_to_its_named_machine() {
+        let placement = places(&[
+            ("robot_onboard", "cn-robot-7"),
+            ("cloud_inference", "cn-atlas-h100"),
+        ]);
+        let wired = wire_core_node_links(
+            &placement,
+            &declared(&["robot_onboard", "cloud_inference"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect("a full wiring");
+        assert_eq!(wired["cloud_inference"].as_str(), "cn-atlas-h100");
+        assert_eq!(wired["robot_onboard"].as_str(), "cn-robot-7");
+    }
+
+    /// A launcher describes a topology; refusing a partial wiring is what
+    /// stops half of it from silently collapsing onto the coordinator.
+    #[test]
+    fn a_declared_but_unwired_link_is_refused_and_names_local_as_the_way_out() {
+        let placement = places(&[("robot_onboard", "cn-robot-7")]);
+        let error = wire_core_node_links(
+            &placement,
+            &declared(&["robot_onboard", "cloud_inference"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("a partial wiring must be refused");
+        assert!(error.contains("cloud_inference"), "got: {error}");
+        assert!(error.contains("--local"), "got: {error}");
+    }
+
+    /// Every declared link is wired here, so the only thing left to object to
+    /// is the extra one — which is what isolates this rule from the
+    /// unwired-link check that runs before it.
+    #[test]
+    fn placing_a_link_the_launcher_does_not_declare_is_refused() {
+        let placement = places(&[
+            ("robot_onboard", "cn-robot-7"),
+            ("typo_onboard", "cn-atlas-h100"),
+        ]);
+        let error = wire_core_node_links(
+            &placement,
+            &declared(&["robot_onboard"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("only declared links may be wired");
+        assert!(error.contains("does not declare"), "got: {error}");
+        assert!(error.contains("typo_onboard"), "got: {error}");
+    }
+
+    #[test]
+    fn placing_against_a_launcher_that_declares_nothing_is_refused() {
+        let placement = places(&[("robot_onboard", "cn-robot-7")]);
+        let error = wire_core_node_links(&placement, &declared(&[]), &core_node("cn-robot-7"))
+            .expect_err("there is nothing to wire");
+        assert!(error.contains("declares no `core_nodes`"), "got: {error}");
+    }
+
+    /// No flag at all is not the same as `--local`: it leaves a declared link
+    /// unwired, which is refused. The distinction is why the intent travels as
+    /// an enum rather than as "an empty map means local".
+    #[test]
+    fn no_placement_flag_is_not_treated_as_local() {
+        let error = wire_core_node_links(
+            &PlacementSpec::default(),
+            &declared(&["robot_onboard"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("an unwired declared link must be refused");
+        assert!(error.contains("declared but not wired"), "got: {error}");
+    }
 }

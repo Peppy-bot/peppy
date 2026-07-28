@@ -1,11 +1,13 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
+use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::launcher::PeppyLauncherParser;
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
@@ -18,6 +20,15 @@ use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
 use peppylib::core_node::transport::send_goal;
+
+/// Mints the identity of one federated launch.
+///
+/// Random rather than derived from the launcher or the clock: two launches of
+/// the same file must be distinguishable (otherwise a reset would target the
+/// wrong one), and nothing may depend on clock agreement across machines.
+fn new_launch_id() -> String {
+    format!("launch-{}", names_generator2::get_random(rand::rng()))
+}
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
 // safety net never fires before the daemon's own per-phase timeout, so users see a precise
 // daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI
@@ -185,9 +196,72 @@ fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
     })
 }
 
+/// The `--place` / `--local` wiring as the user typed it.
+///
+/// `--local` is a flag rather than a launcher key because the launcher's author
+/// declares a TOPOLOGY and cannot know what machines the person running it has.
+/// Mixing the two is refused: they are two ways of saying where things go, and
+/// a launch that took some placements from one and some from the other would be
+/// legible to nobody.
+#[derive(Debug, Clone, Default)]
+pub struct PlacementArgs {
+    pub places: Vec<(String, String)>,
+    pub local: bool,
+}
+
+impl PlacementArgs {
+    /// Resolves the raw flags into the intent the goal carries, with `self`
+    /// replaced by the coordinator's real name.
+    ///
+    /// The CLI owns only the flag GRAMMAR (no repeats, no `--local` mixed with
+    /// `--place`, and `self` resolution). Which links a launcher declares,
+    /// whether the wired ones match, and whether each target is live on the
+    /// federation are all the coordinator's: it has the resolved document,
+    /// which for a `Repository` launcher the CLI may never have seen. That is
+    /// why `--local` travels as [`PlacementSpec::Local`] rather than as the
+    /// map it expands to — the CLI cannot expand what it cannot read.
+    fn resolve(&self, coordinator: &str) -> Result<PlacementSpec> {
+        if self.local && !self.places.is_empty() {
+            return Err(Error::ExecutionFailed(
+                "--local and --place cannot be combined: --local puts every core node link on \
+                 this machine, so there is nothing left for --place to decide. Drop one."
+                    .to_owned(),
+            ));
+        }
+
+        if self.local {
+            return Ok(PlacementSpec::Local);
+        }
+
+        let mut resolved = BTreeMap::new();
+        for (link, target) in &self.places {
+            let target = if CoreNodeName::is_self_keyword(target) {
+                coordinator.to_owned()
+            } else {
+                CoreNodeName::new(target.as_str())
+                    .map_err(|reason| {
+                        Error::ExecutionFailed(format!(
+                            "invalid --place target `{target}` for core node link `{link}`: \
+                             {reason}"
+                        ))
+                    })?
+                    .into_string()
+            };
+            if resolved.insert(link.clone(), target).is_some() {
+                return Err(Error::ExecutionFailed(format!(
+                    "--place wires core node link `{link}` more than once; each link takes \
+                     exactly one core node"
+                )));
+            }
+        }
+        Ok(PlacementSpec::Places(resolved))
+    }
+}
+
 pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
+    placement: PlacementArgs,
     node_add_idle_timeout_secs: u64,
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
@@ -196,6 +270,7 @@ pub fn launch(
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
+        placement,
         node_add_idle_timeout_secs,
         node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
@@ -206,6 +281,7 @@ pub fn launch(
 async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
+    placement: PlacementArgs,
     node_add_idle_timeout_secs: u64,
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
@@ -215,12 +291,54 @@ async fn launch_async(
 
     // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
-    // skip the local check rather than duplicate the lookup here.
+    // skip the local check rather than duplicate the lookup here. Only the parse verdict is
+    // used: placement is resolved against the document the COORDINATOR read, so that a
+    // repository launcher and a file one place identically.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
         PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
     }
 
     let conn = ctx.connect_to_daemon().await?;
+
+    // An `Fs` origin names a path on THIS machine's filesystem, so a peer
+    // daemon would open a different tree or nothing at all. Same guard the
+    // other daemon-scoped commands already apply.
+    if matches!(launcher_origin, LauncherOrigin::Fs(_)) {
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy stack launch").map_err(
+            |_| {
+                Error::ExecutionFailed(format!(
+                    "`peppy stack launch` with a launcher file path cannot target the remote \
+                     daemon `{}`: the path names a tree on this machine. Use a repository \
+                     launcher (`peppy stack launch <name>`), or run the command from the \
+                     machine that holds the file.",
+                    conn.target_core_node
+                ))
+            },
+        )?;
+    }
+
+    let placement = placement.resolve(&conn.target_core_node)?;
+
+    // State loudly which remote daemons are about to have their stacks
+    // replaced. A launch is destructive on every machine it touches, and the
+    // operator typed only one command. `--local` names none by construction,
+    // and a `--place` target the launcher does not declare is the
+    // coordinator's refusal to make, so this only reports what was asked for.
+    let remote: BTreeSet<&str> = match &placement {
+        PlacementSpec::Places(places) => places
+            .values()
+            .map(String::as_str)
+            .filter(|core_node| *core_node != conn.target_core_node)
+            .collect(),
+        PlacementSpec::Local => BTreeSet::new(),
+    };
+    if !remote.is_empty() {
+        println!(
+            "This launch will REPLACE the node stack on {} remote daemon(s): {}",
+            remote.len(),
+            remote.iter().copied().collect::<Vec<_>>().join(", ")
+        );
+    }
 
     match &launcher_origin {
         LauncherOrigin::Fs(path) => info!(
@@ -236,12 +354,17 @@ async fn launch_async(
 
     let goal = LaunchGoal::new(
         launcher_origin,
+        // The launch id is minted here, by the process that starts the launch,
+        // and recorded by every participant alongside its slice. That is what
+        // makes the global stack reconstructible by query afterwards.
+        new_launch_id(),
         node_add_idle_timeout_secs,
         node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
         max_timeout_secs,
     )
-    .with_env_vars(caller_env_overrides());
+    .with_env_vars(caller_env_overrides())
+    .with_placement(placement);
 
     // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
     // window to surface its own error first, but never less than the absolute floor in case the
@@ -531,5 +654,123 @@ mod tests {
             }
             other => panic!("expected Repository, got {other:?}"),
         }
+    }
+
+    fn places(pairs: &[(&str, &str)]) -> PlacementArgs {
+        PlacementArgs {
+            places: pairs
+                .iter()
+                .map(|(link, target)| ((*link).to_owned(), (*target).to_owned()))
+                .collect(),
+            local: false,
+        }
+    }
+
+    /// The wirings of a `--place` resolution, or a panic naming what came out
+    /// instead. Every `--place` case must produce explicit places; `--local`
+    /// has its own assertions.
+    fn resolved_places(args: PlacementArgs, coordinator: &str) -> BTreeMap<String, String> {
+        match args.resolve(coordinator).expect("valid wiring") {
+            PlacementSpec::Places(places) => places,
+            PlacementSpec::Local => panic!("expected explicit places, got --local"),
+        }
+    }
+
+    #[test]
+    fn place_wires_each_link_to_its_core_node() {
+        let resolved = resolved_places(
+            places(&[
+                ("robot_onboard", "cn-robot-7"),
+                ("cloud_inference", "cn-atlas-h100"),
+            ]),
+            "cn-robot-7",
+        );
+
+        assert_eq!(resolved["robot_onboard"], "cn-robot-7");
+        assert_eq!(resolved["cloud_inference"], "cn-atlas-h100");
+    }
+
+    /// `self` means "the daemon this launch is sent to", and it is resolved
+    /// CLI-side so a daemon only ever sees concrete names.
+    #[test]
+    fn self_resolves_to_the_coordinator() {
+        let resolved = resolved_places(places(&[("robot_onboard", "self")]), "cn-robot-7");
+        assert_eq!(resolved["robot_onboard"], "cn-robot-7");
+    }
+
+    /// Wiring two placeholders to one machine is legitimate: a launcher that
+    /// describes a two-machine topology must still be runnable on one box.
+    #[test]
+    fn two_links_may_share_one_core_node() {
+        let resolved = resolved_places(
+            places(&[("robot_onboard", "cn-solo"), ("cloud_inference", "cn-solo")]),
+            "cn-robot-7",
+        );
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved.values().all(|target| target == "cn-solo"));
+    }
+
+    #[test]
+    fn wiring_one_link_twice_is_refused() {
+        let error = places(&[
+            ("robot_onboard", "cn-robot-7"),
+            ("robot_onboard", "cn-atlas-h100"),
+        ])
+        .resolve("cn-robot-7")
+        .expect_err("a link takes exactly one core node");
+        assert!(error.to_string().contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn a_malformed_place_target_is_refused_by_the_shared_validator() {
+        let error = places(&[("robot_onboard", "has space")])
+            .resolve("cn-robot-7")
+            .expect_err("a bad core node name must fail");
+        assert!(error.to_string().contains("robot_onboard"), "got: {error}");
+        assert!(error.to_string().contains("characters"), "got: {error}");
+    }
+
+    /// `--local` travels as INTENT. The CLI never expands it, for either
+    /// launcher origin: which links exist is a property of the document, and
+    /// for a repository launcher only the coordinator has read it. Expanding
+    /// here would make `--local` work for a file path and quietly do nothing
+    /// for a name.
+    #[test]
+    fn local_travels_as_intent_rather_than_an_expansion() {
+        let resolved = PlacementArgs {
+            places: Vec::new(),
+            local: true,
+        }
+        .resolve("cn-robot-7")
+        .expect("valid wiring");
+        assert_eq!(resolved, PlacementSpec::Local);
+    }
+
+    #[test]
+    fn local_mixed_with_place_is_refused() {
+        let error = PlacementArgs {
+            places: vec![("robot_onboard".to_owned(), "cn-robot-7".to_owned())],
+            local: true,
+        }
+        .resolve("cn-robot-7")
+        .expect_err("--local and --place are two ways to say the same thing");
+        assert!(
+            error.to_string().contains("cannot be combined"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn no_placement_flags_wire_nothing() {
+        let resolved = resolved_places(PlacementArgs::default(), "cn-robot-7");
+        assert!(resolved.is_empty());
+    }
+
+    /// Two launches of the same file must be distinguishable, or a reset would
+    /// target the wrong one.
+    #[test]
+    fn launch_ids_are_distinct_per_launch() {
+        assert_ne!(new_launch_id(), new_launch_id());
+        assert!(new_launch_id().starts_with("launch-"));
     }
 }

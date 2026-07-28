@@ -13,6 +13,7 @@ mod init;
 mod logging;
 pub(crate) mod observation;
 pub(crate) mod pairing;
+mod relationship_notify;
 mod remove;
 mod run;
 mod stop;
@@ -31,6 +32,7 @@ pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 pub use observation::ObservationCoordinator;
 pub use pairing::PairingCoordinator;
+pub(crate) use relationship_notify::RelationshipNotifier;
 pub use remove::listen_for_node_remove;
 pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stop::{
@@ -43,7 +45,9 @@ pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 pub(crate) use feedback::{FeedbackLine, FeedbackStream};
 pub(crate) use git_utils::{checkout_repo_ref, clone_with_progress, format_bytes};
 pub(crate) use logging::{create_action_log_file, write_error_to_log};
-pub(crate) use run::{NodeRunActionContext, resolve_mount_path_parameters, run_node_run};
+pub(crate) use run::{
+    NodeRunActionContext, assemble_runtime_config, resolve_mount_path_parameters, run_node_run,
+};
 pub(crate) use sync::resolve_contract_doc;
 
 // Intra-`services::node::` re-imports: bring helper names back into the
@@ -79,6 +83,29 @@ pub(crate) async fn resolve_node_config(
     info::resolve_node_config(source, peppy_dirs).await
 }
 
+/// SHA256 of a resolved node manifest, over its canonical pretty-printed
+/// serialization so two daemons that resolved the same manifest agree
+/// byte-for-byte regardless of how their sources were formatted.
+///
+/// One function because the fingerprint has two consumers that MUST agree: the
+/// `node_info` service reports it to a human, and a federated launch pins it in
+/// the instance plan so a participant can refuse a manifest that changed under
+/// it between preflight and dispatch. Computing it two ways would make that
+/// refusal fire on formatting.
+pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<String, String> {
+    let serialized = json5_pretty::to_string_pretty(config)
+        .map_err(|e| format!("failed to serialize node config for fingerprinting: {e}"))?;
+    Ok(manifest_fingerprint_of_json5(&serialized))
+}
+
+/// The same fingerprint, for a caller that already holds the canonical
+/// serialization and would otherwise pay to produce it twice. The fingerprint
+/// is defined over exactly these bytes, so this is the same definition rather
+/// than a second one.
+pub(crate) fn manifest_fingerprint_of_json5(config_json5: &str) -> String {
+    config::fingerprint::fingerprint_for_bytes(config_json5.as_bytes())
+}
+
 /// The daemon authorities responsible for relationships between node instances.
 ///
 /// Keeping them together gives every lifecycle path one complete dependency for
@@ -88,16 +115,19 @@ pub(crate) async fn resolve_node_config(
 pub(crate) struct RelationshipCoordinators {
     pairing: Arc<PairingCoordinator>,
     observation: Arc<ObservationCoordinator>,
+    notifier: Arc<RelationshipNotifier>,
 }
 
 impl RelationshipCoordinators {
     pub(crate) fn new(
         pairing: Arc<PairingCoordinator>,
         observation: Arc<ObservationCoordinator>,
+        notifier: Arc<RelationshipNotifier>,
     ) -> Self {
         Self {
             pairing,
             observation,
+            notifier,
         }
     }
 
@@ -109,10 +139,20 @@ impl RelationshipCoordinators {
         &self.observation
     }
 
+    pub(crate) fn notifier(&self) -> &Arc<RelationshipNotifier> {
+        &self.notifier
+    }
+
     /// Tears down every cross-instance relationship held by `instance_id`.
-    /// Pairing is dissolved first because it may notify a live peer, then
-    /// observation notifies live observers and drops the instance's records.
+    ///
+    /// Order matters twice over. The remote announcement goes FIRST, while the
+    /// pairing registry still records who the peers were: dissolving locally
+    /// first would erase the very entries that say which daemons to tell.
+    /// Locally, pairing is dissolved before observation because it may notify a
+    /// live peer, and then observation notifies live observers and drops the
+    /// instance's records.
     pub(crate) async fn tear_down_instance(&self, instance_id: &str) {
+        self.notifier.announce_stopped(instance_id).await;
         self.pairing.dissolve_for_instance(instance_id).await;
         self.observation.on_instance_down(instance_id).await;
     }

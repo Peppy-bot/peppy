@@ -25,6 +25,22 @@ where
     items.into_iter().map(|e| format!("\n  - {e}")).collect()
 }
 
+/// Formats `items` as a comma-separated list of backtick-quoted names, for
+/// naming a set of offenders inline in a diagnostic ("core nodes `a`, `b`").
+/// Returns an empty string for an empty iterator; callers that need a word
+/// there ("nothing") should check emptiness themselves.
+pub fn format_quoted_list<T, I>(items: I) -> String
+where
+    T: core::fmt::Display,
+    I: IntoIterator<Item = T>,
+{
+    items
+        .into_iter()
+        .map(|item| format!("`{item}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Deserializes JSON5 content with field-path tracking.
 ///
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard

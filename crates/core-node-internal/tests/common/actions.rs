@@ -66,51 +66,27 @@ pub struct NodeRunTestResponse {
     pub result: NodeRunResult,
 }
 
-/// Builds a `RuntimeConfig` from the given parts and returns its JSON5 serialization,
-/// ready to be passed to a `node_run` request.
-pub fn build_runtime_config_json5(
-    host: &str,
-    port: u16,
-    core_node_name: &str,
-    node_name: &str,
-    node_tag: &str,
+/// Builds the instance plan a `node_run` goal carries.
+///
+/// Note what a test can no longer choose: the messaging endpoint, the bound
+/// core node, and the node identity. Those belong to the daemon that spawns the
+/// node, so the goal has nowhere to put them and a test cannot accidentally
+/// pin a node to the wrong daemon.
+pub fn instance_plan(
     instance_id: &str,
     arguments: std::collections::BTreeMap<String, config::AnyType>,
-) -> String {
-    let runtime_config = config::runtime::RuntimeConfig::new(
-        host,
-        port,
-        config::runtime::NodeInstanceConfig {
-            arguments,
-            ..config::runtime::NodeInstanceConfig::new(
-                config::runtime::Name::new(instance_id).expect("valid instance id"),
-            )
-        },
-        node_name,
-        node_tag,
-        core_node_name,
-    )
-    .expect("runtime config should be valid");
-    serde_json5::to_string(&runtime_config).expect("runtime config should serialize")
+) -> config::runtime::NodeInstancePlan {
+    config::runtime::NodeInstancePlan {
+        arguments,
+        ..config::runtime::NodeInstancePlan::new(
+            config::runtime::Name::new(instance_id).expect("valid instance id"),
+        )
+    }
 }
 
-/// Convenience wrapper around `build_runtime_config_json5` using `127.0.0.1`,
-/// the default messaging port, and no node arguments: the shape used by most tests.
-pub fn default_runtime_config_json5(
-    core_node_name: &str,
-    node_name: &str,
-    node_tag: &str,
-    instance_id: &str,
-) -> String {
-    build_runtime_config_json5(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        core_node_name,
-        node_name,
-        node_tag,
-        instance_id,
-        Default::default(),
-    )
+/// [`instance_plan`] with no node arguments: the shape most tests use.
+pub fn default_instance_plan(instance_id: &str) -> config::runtime::NodeInstancePlan {
+    instance_plan(instance_id, Default::default())
 }
 
 /// Why [`drain_node_run_feedback`] returned.
@@ -131,15 +107,14 @@ enum FeedbackDrainOutcome {
 async fn send_node_run_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    runtime_config_json5: &str,
+    instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
     goal_timeout: Duration,
     result_secs: u64,
     env_vars: Vec<(String, String)>,
 ) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
-    let goal =
-        NodeRunGoal::new(runtime_config_json5, node_name, tag, result_secs).with_env_vars(env_vars);
+    let goal = NodeRunGoal::new(instance_plan, node_name, tag, result_secs).with_env_vars(env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
@@ -239,7 +214,7 @@ async fn fetch_node_run_result(
 async fn send_node_run_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    runtime_config_json5: &str,
+    instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
     timeouts: &NodeRunTestTimeouts,
@@ -249,7 +224,7 @@ async fn send_node_run_and_wait_internal(
     let (mut action_handle, goal_response) = send_node_run_goal(
         messenger,
         core_node_name,
-        runtime_config_json5,
+        instance_plan,
         node_name,
         tag,
         timeouts.goal,
@@ -301,7 +276,7 @@ pub async fn send_node_run_with_delayed_health(
     caller_messenger: &MessengerHandle,
     node_messenger: &MessengerHandle,
     core_node_name: &str,
-    runtime_config_json5: &str,
+    instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
     instance_id: &str,
@@ -311,7 +286,7 @@ pub async fn send_node_run_with_delayed_health(
     let (mut action_handle, goal_response) = send_node_run_goal(
         caller_messenger,
         core_node_name,
-        runtime_config_json5,
+        instance_plan,
         node_name,
         tag,
         timeouts.goal,
@@ -839,7 +814,7 @@ pub async fn send_node_add_and_wait_with_force<'a>(
 pub async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    runtime_config_json5: &str,
+    instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
     timeouts: &NodeRunTestTimeouts,
@@ -848,7 +823,7 @@ pub async fn send_node_run_and_wait(
     send_node_run_and_wait_internal(
         messenger,
         core_node_name,
-        runtime_config_json5,
+        instance_plan,
         node_name,
         tag,
         timeouts,
@@ -862,7 +837,7 @@ pub async fn send_node_run_and_wait(
 pub async fn send_node_run_and_wait_with_env(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    runtime_config_json5: &str,
+    instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
     timeouts: &NodeRunTestTimeouts,
@@ -872,7 +847,7 @@ pub async fn send_node_run_and_wait_with_env(
     send_node_run_and_wait_internal(
         messenger,
         core_node_name,
-        runtime_config_json5,
+        instance_plan,
         node_name,
         tag,
         timeouts,

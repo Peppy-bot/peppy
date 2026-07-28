@@ -5,7 +5,6 @@ mod info;
 mod init;
 mod remove;
 mod run;
-mod runtime_config;
 pub(crate) mod source;
 mod stop;
 mod sync;
@@ -97,16 +96,8 @@ fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
 /// known here (it needs the manifest), so classification is deferred to
 /// validation.
 fn parse_link_kv(raw: &str) -> Result<(String, String), String> {
-    let (key, value) = raw
-        .split_once('@')
-        .ok_or_else(|| format!("invalid --link value '{raw}': expected KEY@TARGET"))?;
-    let key = key.trim();
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(format!(
-            "invalid --link value '{raw}': TARGET cannot be empty"
-        ));
-    }
+    let (key, value) = parse_key_at_target(raw, "--link", "KEY@TARGET")?;
+    let (key, value) = (key.as_str(), value.as_str());
     pmi::Segment::try_from(key).map_err(|e| format!("invalid --link KEY '{key}': {e}"))?;
     let (instance, link) = daemon_config::launcher::split_link_target(value);
     if instance.is_empty() {
@@ -119,6 +110,40 @@ fn parse_link_kv(raw: &str) -> Result<(String, String), String> {
             .map_err(|e| format!("invalid --link target slot '{link}': {e}"))?;
     }
     Ok((key.to_string(), value.to_string()))
+}
+
+/// Splits the `KEY@TARGET` grammar shared by `node run --link` and
+/// `stack launch --place`.
+///
+/// Only the GRAMMAR is shared. The two flags mean different things (`--link`
+/// wires a slot to a producer, `--place` wires a placeholder to a machine) and
+/// each validates its own halves; sharing the split keeps them from drifting on
+/// whitespace, empty halves, or which `@` separates them.
+pub(crate) fn parse_key_at_target(
+    raw: &str,
+    flag: &str,
+    shape: &str,
+) -> Result<(String, String), String> {
+    let (key, value) = raw
+        .split_once('@')
+        .ok_or_else(|| format!("invalid {flag} value '{raw}': expected {shape}"))?;
+    let key = key.trim();
+    let value = value.trim();
+    // Name each half with the caller's own vocabulary (`KEY`/`TARGET` for
+    // `--link`, `CORE_NODE_LINK`/`CORE_NODE` for `--place`) so a shared parser
+    // never makes one flag speak in the other's terms.
+    let (key_label, target_label) = shape.split_once('@').unwrap_or((shape, shape));
+    if key.is_empty() {
+        return Err(format!(
+            "invalid {flag} value '{raw}': {key_label} cannot be empty"
+        ));
+    }
+    if value.is_empty() {
+        return Err(format!(
+            "invalid {flag} value '{raw}': {target_label} cannot be empty"
+        ));
+    }
+    Ok((key.to_owned(), value.to_owned()))
 }
 
 /// Parses a `--defer-link` argument: a single pairing/observer slot `link_id`
@@ -328,19 +353,6 @@ pub enum NodeCommands {
         #[arg(short = 'b', long)]
         build: bool,
     },
-    /// Prints out the runtime config of a node instance
-    #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
-    RuntimeConfig {
-        /// Name of the node
-        #[arg(long)]
-        node_name: Option<String>,
-        /// Directory containing the peppy.json5 configuration file
-        node_dir: Option<PathBuf>,
-        /// Runtime arguments as key=value pairs (e.g., device.physical=/dev/video0 video.frame_rate=30)
-        /// Dot-separated keys create nested objects in the arguments
-        #[arg(value_parser = parse_key_value_arg)]
-        args: Vec<(String, String)>,
-    },
     /// Stop a running node instance
     Stop {
         /// Instance ID of the node to stop
@@ -504,11 +516,6 @@ impl Command for NodeCommand {
                     build,
                 )
             }
-            NodeCommands::RuntimeConfig {
-                node_name,
-                node_dir,
-                args,
-            } => runtime_config::print_runtime_config(ctx, node_name, node_dir, args),
             NodeCommands::Stop { instance_id } => {
                 info!("Stopping node instance {}...", instance_id);
                 stop::stop_node(ctx, instance_id)

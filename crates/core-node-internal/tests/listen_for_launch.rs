@@ -396,7 +396,15 @@ async fn send_launch_origin_and_wait(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
-    let goal = LaunchGoal::new(launcher_origin, 300, 300, 300, Some(3600)).with_env_vars(env_vars);
+    let goal = LaunchGoal::new(
+        launcher_origin,
+        "launch-test-fixture",
+        300,
+        300,
+        300,
+        Some(3600),
+    )
+    .with_env_vars(env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode launch goal: {e}"))?;

@@ -1,14 +1,17 @@
+mod federated;
 mod feedback;
 mod orchestrate;
 mod phases;
 mod resolve;
+
+pub(crate) use resolve::portable_node_source;
 
 use self::feedback::{publish_stderr, publish_stdout};
 use self::orchestrate::{
     add_node_directly, build_node_directly, fail_and_clear_stack, start_node_directly,
     teardown_and_reset_stack, validate_and_order_dependencies,
 };
-use self::resolve::{parse_launcher_config, resolve_deployments, resolve_framework};
+use self::resolve::{parse_launcher_config, resolve_deployments};
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
@@ -18,13 +21,13 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
-use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
-use config::runtime::RuntimeConfig;
 use containers::is_host_provided_mount_source;
 use core_node_api::ActionId;
+use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
-    NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, PairTarget,
+    NodeBuildGoal, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, ObservationTarget,
+    PairTarget, RemotePeerPairing,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -36,7 +39,7 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -70,13 +73,21 @@ pub struct StackLaunchTimeouts {
 /// "what the daemon would pick when the instance omits the override" half.
 pub struct StackLaunchDefaults {
     pub timeouts: StackLaunchTimeouts,
-    pub use_sim_time: bool,
-    /// Daemon-resolved defaults (messaging mode, subscriber buffers, liveness grace)
-    /// injected into every launched node.
+    /// Daemon-resolved defaults (messaging mode, subscriber buffers, liveness
+    /// grace, and the `use_sim_time` default) injected into every launched
+    /// node. The launch never resolves `use_sim_time` itself: it can place a
+    /// node on a machine whose default differs, so the resolution belongs to
+    /// whichever daemon spawns the node.
     pub daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor
     /// so it stops probing the instant a clean shutdown begins.
     pub shutdown_token: CancellationToken,
+    /// Which launch this daemon's slice belongs to. Shared with the federation
+    /// endpoints so a reservation and the slice it produces are one authority.
+    pub(crate) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    /// This daemon's peppy version, compared against each participant's during
+    /// a federated preflight.
+    pub peppy_version: String,
 }
 
 #[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
@@ -102,9 +113,10 @@ pub async fn listen_for_stack_launch(
 
     let StackLaunchDefaults {
         timeouts,
-        use_sim_time: daemon_use_sim_time,
         daemon_defaults,
         shutdown_token,
+        slice_ownership,
+        peppy_version,
     } = defaults;
     let handler = LaunchGoalHandler {
         context: LaunchActionContext {
@@ -114,7 +126,8 @@ pub async fn listen_for_stack_launch(
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
             timeouts,
-            daemon_use_sim_time,
+            slice_ownership,
+            peppy_version,
             daemon_defaults,
             shutdown_token,
             relationships,
@@ -163,9 +176,6 @@ struct ProcessLaunchContext {
     /// are enforced.
     launch_deadline: Option<Instant>,
     idle_timeouts: IdleTimeouts,
-    /// Daemon-wide default for `framework.use_sim_time` applied to instances
-    /// that omit the per-instance override.
-    daemon_use_sim_time: bool,
     /// Daemon-resolved defaults (messaging mode, subscriber buffers, liveness grace)
     /// injected into every launched node.
     daemon_defaults: DaemonDefaults,
@@ -174,6 +184,14 @@ struct ProcessLaunchContext {
     /// The daemon authorities forwarded into each instance's relationship
     /// lifecycle work.
     relationships: RelationshipCoordinators,
+    /// Which launch this daemon's slice belongs to. Recorded once the launch
+    /// commits, so `stack list` reports it and a coordinator can rediscover
+    /// every participant by query.
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    /// This daemon's peppy version, compared against each participant's during
+    /// preflight so a mixed-version federation is refused before any stack is
+    /// touched.
+    peppy_version: String,
 }
 
 #[derive(Clone)]
@@ -184,10 +202,11 @@ struct LaunchActionContext {
     core_instance_id: String,
     peppy_dirs: PeppyDirs,
     timeouts: StackLaunchTimeouts,
-    daemon_use_sim_time: bool,
     daemon_defaults: DaemonDefaults,
     shutdown_token: CancellationToken,
     relationships: RelationshipCoordinators,
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    peppy_version: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -216,6 +235,15 @@ struct PlannedDeployment {
     node_name: String,
     node_tag: String,
     config: config::node::NodeConfig,
+    /// Where this deployment sat in the launcher's list. Carried so a
+    /// participant's per-deployment answers (its manifest, its hash) can be
+    /// matched back to the entry they belong to.
+    deployment_index: usize,
+    /// This daemon's own fingerprint of the manifest, when this daemon read it.
+    /// `None` for a deployment whose manifest a participant resolved instead,
+    /// which is what keeps the straddle cross-check from comparing a peer's
+    /// answer against itself.
+    manifest_sha256: Option<String>,
 }
 
 /// Marker git_hash used for stack-launch operations.
@@ -224,11 +252,43 @@ struct PlannedDeployment {
 /// local filesystem sources without requiring `peppy node sync` beforehand.
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 
-/// Step 5: Add every node to the node stack in dependency order.
+/// Which core nodes host at least one instance of `key`, in a stable order.
+///
+/// A node is added and built on every machine that runs part of it, which is
+/// what "several placed instances under one deployment" means operationally:
+/// each daemon has to have the node present before it can start its share.
+fn hosts_of(
+    item: &PlannedDeployment,
+    placements: &daemon_config::launcher::Placements,
+) -> Vec<String> {
+    let mut hosts: Vec<String> = item
+        .deployment
+        .instances
+        .iter()
+        .map(|instance| placements.of(instance.instance_id.as_str()).to_owned())
+        .collect();
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+/// Step 6: Add and build every node, grouped by the machine that will run it.
+///
+/// The groups run CONCURRENTLY and each group runs in dependency order. That
+/// split is deliberate: nothing orders one machine's fetch-and-build against
+/// another's, and fetching plus building is where a launch spends nearly all
+/// of its wall clock, so serializing across machines would make a two-machine
+/// launch twice as slow for no invariant. Within a group the order is exactly
+/// what a single-machine launch does, because that is where the ordering
+/// actually matters (a node's transitive dependencies).
+#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 async fn add_nodes_to_stack(
     ctx: &ProcessLaunchContext,
+    goal: &LaunchGoal,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    placements: &daemon_config::launcher::Placements,
+    federated: &federated::FederatedLaunch,
     add_log_paths: &mut Vec<NodeAddLogEntry>,
     build_log_paths: &mut Vec<NodeBuildLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
@@ -239,17 +299,77 @@ async fn add_nodes_to_stack(
     )
     .await;
 
+    let mut by_core_node: BTreeMap<String, Vec<&NodeKey>> = BTreeMap::new();
     for key in ordered {
+        let Some(item) = planned_by_key.get(key) else {
+            continue;
+        };
+        for host in hosts_of(item, placements) {
+            by_core_node.entry(host).or_default().push(key);
+        }
+    }
+
+    let local = ctx.bound_core_node.as_str();
+    let groups = futures::future::join_all(by_core_node.iter().map(|(core_node, keys)| {
+        add_and_build_group(ctx, goal, core_node, keys, planned_by_key, local)
+    }))
+    .await;
+
+    let mut failure: Option<String> = None;
+    for group in groups {
+        add_log_paths.extend(group.add_logs);
+        build_log_paths.extend(group.build_logs);
+        // Report the FIRST failure but keep collecting every group's logs: a
+        // launch that failed on one machine still produced logs on the others,
+        // and those are usually what explains it.
+        if let Some(reason) = group.failure {
+            failure.get_or_insert(reason);
+        }
+    }
+
+    match failure {
+        Some(reason) => Err(fail_and_clear_stack(ctx, reason, &federated.core_nodes()).await),
+        None => Ok(()),
+    }
+}
+
+/// What one machine's add-and-build group produced.
+#[derive(Default)]
+struct GroupOutcome {
+    add_logs: Vec<NodeAddLogEntry>,
+    build_logs: Vec<NodeBuildLogEntry>,
+    failure: Option<String>,
+}
+
+async fn add_and_build_group(
+    ctx: &ProcessLaunchContext,
+    goal: &LaunchGoal,
+    core_node: &str,
+    keys: &[&NodeKey],
+    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    local: &str,
+) -> GroupOutcome {
+    let mut outcome = GroupOutcome::default();
+
+    for key in keys {
         let Some(item) = planned_by_key.get(key) else {
             continue;
         };
 
         publish_stdout(
             ctx,
-            format!("Adding {}", key.label()),
+            format!("Adding {} on `{core_node}`", key.label()),
             LaunchFeedbackStep::AddingNode,
         )
         .await;
+
+        if core_node != local {
+            if let Err(reason) = add_and_build_remotely(ctx, goal, core_node, item).await {
+                outcome.failure = Some(reason);
+                return outcome;
+            }
+            continue;
+        }
 
         let node_add_goal =
             NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
@@ -259,69 +379,129 @@ async fn add_nodes_to_stack(
 
         let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
         if let Some(path) = log_path {
-            add_log_paths.push(NodeAddLogEntry {
+            outcome.add_logs.push(NodeAddLogEntry {
                 node_label: key.label(),
                 log_path: path,
                 failed,
             });
         }
 
-        match result {
+        let added = match result {
+            Ok(result) if result.success => result,
             Ok(result) => {
-                if !result.success {
-                    let inner = result
+                outcome.failure = Some(format!(
+                    "failed to add node {}: {}",
+                    key.label(),
+                    result
                         .error_message
-                        .unwrap_or_else(|| "node_add failed".to_string());
-                    let reason = format!("failed to add node {}: {}", key.label(), inner);
-                    return Err(fail_and_clear_stack(ctx, reason).await);
-                }
-                let node_name = result.node_name.clone().unwrap_or_else(|| key.name.clone());
-                let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
-
-                // Stack launch chains directly from add into build, since the
-                // launcher's contract is "the stack is up and running"; an
-                // `Added` entity isn't actually buildable from the user's
-                // perspective until `node build` has run.
-                let (build_result, build_log_path) =
-                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
-
-                let build_failed = build_result.is_err();
-                if let Some(path) = build_log_path {
-                    build_log_paths.push(NodeBuildLogEntry {
-                        node_label: key.label(),
-                        log_path: path,
-                        failed: build_failed,
-                    });
-                }
-
-                if let Err(err) = build_result {
-                    let reason = format!("failed to build node {}: {}", key.label(), err);
-                    return Err(fail_and_clear_stack(ctx, reason).await);
-                }
+                        .unwrap_or_else(|| "node_add failed".to_string())
+                ));
+                return outcome;
             }
             Err(err) => {
-                let reason = format!("failed to add node {}: {}", key.label(), err);
-                return Err(fail_and_clear_stack(ctx, reason).await);
+                outcome.failure = Some(format!("failed to add node {}: {err}", key.label()));
+                return outcome;
             }
+        };
+
+        let node_name = added.node_name.clone().unwrap_or_else(|| key.name.clone());
+        let node_tag = added.node_tag.clone().unwrap_or_else(|| key.tag.clone());
+
+        // Stack launch chains directly from add into build, since the
+        // launcher's contract is "the stack is up and running"; an
+        // `Added` entity isn't actually buildable from the user's
+        // perspective until `node build` has run.
+        let (build_result, build_log_path) =
+            build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
+
+        let build_failed = build_result.is_err();
+        if let Some(path) = build_log_path {
+            outcome.build_logs.push(NodeBuildLogEntry {
+                node_label: key.label(),
+                log_path: path,
+                failed: build_failed,
+            });
+        }
+
+        if let Err(err) = build_result {
+            outcome.failure = Some(format!("failed to build node {}: {err}", key.label()));
+            return outcome;
         }
     }
 
-    Ok(())
+    outcome
 }
 
-/// Step 6: Prepare all host paths that containers in this stack will bind.
+/// Adds and builds one node on a peer, over the wire.
+///
+/// The peer's own log paths are not folded into this launch's log lists: they
+/// name files on that machine, and a path the operator cannot open is worse
+/// than no path. What the operator gets instead is the peer's output, relayed
+/// live into this launch's feedback stream and attributed to its core node.
+async fn add_and_build_remotely(
+    ctx: &ProcessLaunchContext,
+    goal: &LaunchGoal,
+    core_node: &str,
+    item: &PlannedDeployment,
+) -> std::result::Result<(), String> {
+    let source = crate::services::stack::portable_node_source(&item.deployment.source)?;
+    // A real budget, unlike the in-process path's zero: this goal passes
+    // through the peer's own concurrency gate, which reports the remaining time
+    // when it refuses a second caller.
+    let add_goal = NodeAddGoal::from_source(
+        source,
+        STACK_LAUNCH_GIT_HASH,
+        ctx.idle_timeouts.add.as_secs(),
+    )
+    .with_env_vars(ctx.env_vars.clone())
+    .with_launch_id(&goal.launch_id);
+    let added = federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add)
+        .await
+        .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
+
+    let build_goal = NodeBuildGoal::new(
+        added.node_name.unwrap_or_else(|| item.node_name.clone()),
+        added.node_tag.unwrap_or_else(|| item.node_tag.clone()),
+        ctx.idle_timeouts.build.as_secs(),
+    )
+    .with_env_vars(ctx.env_vars.clone())
+    .with_launch_id(&goal.launch_id);
+    federated::run_remote_goal(ctx, core_node, &build_goal, ctx.idle_timeouts.build)
+        .await
+        .map_err(|reason| format!("failed to build node {}: {reason}", item.node_name))
+}
+
+/// Step 7: Prepare the host paths that containers on THIS machine will bind.
+///
+/// Scoped to the coordinator's own instances. A peer's bind sources live on the
+/// peer's filesystem, so creating them here would make directories on the wrong
+/// machine and still leave the peer's missing. See the Federation guide's
+/// Limits section: a container node placed on a peer needs its bind sources to
+/// already exist there.
+///
+/// Its CLEANUP is not so scoped. This step runs after step 6, by which point
+/// every participant has had its stack replaced and its nodes added and built,
+/// so a failure here has to clear their slices too; only the preparation work
+/// belongs to the coordinator alone.
 async fn prepare_container_host_mounts(
     ctx: &ProcessLaunchContext,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    placements: &daemon_config::launcher::Placements,
+    participants: &[String],
 ) -> std::result::Result<(), LaunchResult> {
-    let mut mount_sources = match collect_container_mount_sources(ordered, planned_by_key) {
+    let mut mount_sources = match collect_container_mount_sources(
+        ordered,
+        planned_by_key,
+        placements,
+        ctx.bound_core_node.as_str(),
+    ) {
         Ok(paths) => paths,
-        Err(reason) => return Err(fail_and_clear_stack(ctx, reason).await),
+        Err(reason) => return Err(fail_and_clear_stack(ctx, reason, participants).await),
     };
 
     if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
-        return Err(fail_and_clear_stack(ctx, reason).await);
+        return Err(fail_and_clear_stack(ctx, reason, participants).await);
     }
 
     // The peppy data root hosts the container build working dirs (`tmp/`),
@@ -338,7 +518,7 @@ async fn prepare_container_host_mounts(
             Some(root) => mount_sources.push(root.to_owned()),
             None => {
                 let reason = "peppy root path is not valid UTF-8".to_string();
-                return Err(fail_and_clear_stack(ctx, reason).await);
+                return Err(fail_and_clear_stack(ctx, reason, participants).await);
             }
         }
     }
@@ -371,7 +551,7 @@ async fn prepare_container_host_mounts(
     .and_then(|result| result);
 
     if let Err(reason) = result {
-        return Err(fail_and_clear_stack(ctx, reason).await);
+        return Err(fail_and_clear_stack(ctx, reason, participants).await);
     }
 
     Ok(())
@@ -391,6 +571,8 @@ fn stack_has_container_nodes(
 fn collect_container_mount_sources(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    placements: &daemon_config::launcher::Placements,
+    coordinator: &str,
 ) -> std::result::Result<Vec<String>, String> {
     let mut seen = HashSet::new();
     let mut mount_sources = Vec::new();
@@ -408,6 +590,9 @@ fn collect_container_mount_sources(
         }
 
         for instance in &item.deployment.instances {
+            if placements.of(instance.instance_id.as_str()) != coordinator {
+                continue;
+            }
             let mut arguments = instance.arguments.clone();
             let missing =
                 apply_parameter_defaults(&mut arguments, &item.config.execution.parameters);
@@ -532,33 +717,100 @@ fn instance_environment(
         .collect()
 }
 
-/// Step 7: Start every instance in dependency order.
+/// Step 8: Start every instance in dependency order.
+///
+/// STRICTLY sequential, across machines as well as within one. The order is a
+/// single global topological order and each start waits for the previous one to
+/// reach Running, which is what makes "consumers start after their producers"
+/// hold across a daemon boundary with no extra machinery: the coordinator is
+/// the only thing sequencing, and it is sequencing one list.
+///
+/// It also keeps the pairing protocol intact. Each planned pair is established
+/// by the LATER-started endpoint, which relies on the earlier one already being
+/// Running and unpaired. Starting two instances of one wave concurrently would
+/// break that for any pair inside the wave, on one machine or across two.
+#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 async fn start_node_instances(
     ctx: &ProcessLaunchContext,
+    goal: &LaunchGoal,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
     resolved_slot_bindings: &std::collections::BTreeMap<String, config::runtime::SlotBindings>,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
     planned_observations: &[daemon_config::launcher::PlannedObservation],
+    placements: &daemon_config::launcher::Placements,
+    federated: &federated::FederatedLaunch,
 ) -> std::result::Result<(), LaunchResult> {
-    // Register every planned observation with the daemon's observation
-    // coordinator up front, keyed by observer instance. As each instance
-    // reaches Running its `node_run` notifies the coordinator, which delivers
-    // the source pin to observers whose source is live (and re-delivers to all
-    // observers of a source when that source reaches Running). Registering
-    // before any instance starts means a source that comes up first still
-    // finds its observers waiting.
+    // Register the planned observations whose OBSERVER runs on this daemon,
+    // keyed by observer instance. As each instance reaches Running its
+    // `node_run` notifies the coordinator, which delivers the source pin to
+    // observers whose source is live (and re-delivers to all observers of a
+    // source when that source reaches Running). Registering before any instance
+    // starts means a source that comes up first still finds its observers
+    // waiting.
+    //
+    // An observer placed on a peer is registered by THAT daemon instead, from
+    // the `planned_observations` riding its own `node_run` goal: an observation
+    // is a fact about the observing daemon's subscriptions, so it has to be
+    // recorded where the observer actually runs.
+    let (local_observations, remote_observations): (Vec<_>, Vec<_>) = planned_observations
+        .iter()
+        .cloned()
+        .partition(|observation| {
+            placements.of(observation.observer_instance_id.as_str()) == ctx.bound_core_node
+        });
     ctx.relationships
         .observation()
-        .register_planned(planned_observations);
+        .register_planned(&local_observations);
+
+    let mut observations_by_instance: HashMap<
+        &str,
+        std::collections::BTreeMap<String, core_node_api::encoding::ObservationTarget>,
+    > = HashMap::new();
+    // Which daemons must hear about each source's lifecycle. Only the planner
+    // can answer this: an observer claims no slot on its source and the source
+    // is deliberately unaware of it, so the daemon that owns the source has no
+    // record it could consult. Computed over EVERY planned observation, not
+    // just the remote-observer ones, because what matters is whether the
+    // observer and its source sit on different machines.
+    let mut watchers_by_source: HashMap<&str, Vec<String>> = HashMap::new();
+    for observation in planned_observations {
+        let observer_core_node = placements.of(observation.observer_instance_id.as_str());
+        if observer_core_node == observation.source.core_node {
+            continue;
+        }
+        let watchers = watchers_by_source
+            .entry(observation.source.instance_id.as_str())
+            .or_default();
+        if !watchers
+            .iter()
+            .any(|existing| existing == observer_core_node)
+        {
+            watchers.push(observer_core_node.to_owned());
+        }
+    }
+
+    for observation in &remote_observations {
+        observations_by_instance
+            .entry(observation.observer_instance_id.as_str())
+            .or_default()
+            .insert(
+                observation.observer_link_id.clone(),
+                ObservationTarget::new(
+                    observation.source.instance_id.clone(),
+                    observation.source_link_id.clone(),
+                    observation.source.core_node.clone(),
+                ),
+            );
+    }
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
     // Each planned pair is established by the LATER-started endpoint's
     // `node_run` (instances start strictly sequentially in `ordered`, so at
     // that point the earlier endpoint is already Running and unpaired). The
     // later endpoint carries the fully-pinned pair request; the earlier
-    // endpoint's slot rides `covered_pairs` — naming that future peer — so
+    // endpoint's slot rides `covered_pairs`, naming that future peer, so
     // its own coverage re-check passes and its feedback states the plan.
     // Only explicit `defer_links:` entries ride `deferred_pairs`.
     let mut start_index: HashMap<&str, usize> = HashMap::new();
@@ -605,29 +857,44 @@ async fn start_node_instances(
         } else {
             (&pairing.b, &pairing.a)
         };
+        // A pair whose two endpoints sit on different machines cannot be
+        // validated by either daemon: each holds one manifest. This
+        // coordinator holds both and has already checked them against each
+        // other, so it sends that verdict along with the request. A
+        // same-daemon pair carries none, and the receiver's own manifests
+        // decide as before.
+        // `host` is the machine running the instance that receives the goal;
+        // `peer` is the endpoint on the other end of the pair.
+        let pair_target =
+            |host: &daemon_config::launcher::PlannedPairEndpoint,
+             peer: &daemon_config::launcher::PlannedPairEndpoint| {
+                let peer_core_node = placements.of(peer.instance_id.as_str());
+                let target = PairTarget::pinned(
+                    peer.instance_id.clone(),
+                    peer.link_id.clone(),
+                    peer_core_node,
+                );
+                if peer_core_node == placements.of(host.instance_id.as_str()) {
+                    return target;
+                }
+                target.with_remote_peer(RemotePeerPairing {
+                    pairing_name: pairing.pairing_name.clone(),
+                    pairing_tag: pairing.pairing_tag.clone(),
+                    peer_role: peer.role.clone(),
+                })
+            };
+
         requested_by_instance
             .entry(later.instance_id.as_str())
             .or_default()
-            .insert(
-                later.link_id.clone(),
-                PairTarget::pinned(earlier.instance_id.clone(), earlier.link_id.clone()),
-            );
+            .insert(later.link_id.clone(), pair_target(later, earlier));
         covered_by_instance
             .entry(earlier.instance_id.as_str())
             .or_default()
-            .insert(
-                earlier.link_id.clone(),
-                PairTarget::pinned(later.instance_id.clone(), later.link_id.clone()),
-            );
+            .insert(earlier.link_id.clone(), pair_target(earlier, later));
     }
 
-    // Compute runtime config host/port.
-    let (messaging_host, messaging_port) = ctx
-        .messenger
-        .messaging_endpoint()
-        .await
-        .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
-
+    let participants = federated.core_nodes();
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -635,9 +902,13 @@ async fn start_node_instances(
 
         for instance in &item.deployment.instances {
             let instance_id = instance.instance_id.as_str();
+            let core_node = placements.of(instance_id).to_owned();
             publish_stdout(
                 ctx,
-                format!("Starting {} instance {}", key.label(), instance_id),
+                format!(
+                    "Starting {} instance {instance_id} on `{core_node}`",
+                    key.label()
+                ),
                 LaunchFeedbackStep::RunningNode,
             )
             .await;
@@ -646,42 +917,35 @@ async fn start_node_instances(
                 .get(instance.instance_id.as_str())
                 .cloned()
                 .unwrap_or_default();
-            let node_instance = config::runtime::NodeInstanceConfig {
+            // A PLAN, not an assembled config. `node_run` supplies the
+            // messaging endpoint, the bound core node, and the resolved
+            // framework values from the daemon that actually spawns the node,
+            // on this path exactly as on every other. One assembly site, and it
+            // is what lets a peer start a node this daemon planned.
+            let instance_plan = config::runtime::NodeInstancePlan {
                 arguments: instance.arguments.clone(),
-                framework: resolve_framework(&instance.framework, ctx.daemon_use_sim_time),
+                use_sim_time: instance.framework.use_sim_time,
                 slot_bindings,
-                ..config::runtime::NodeInstanceConfig::new(instance.instance_id.clone())
-            };
-            let runtime_config = match RuntimeConfig::new(
-                messaging_host.as_str(),
-                messaging_port,
-                node_instance,
-                item.node_name.as_str(),
-                item.node_tag.as_str(),
-                ctx.bound_core_node.as_str(),
-            ) {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    return Err(fail_and_clear_stack(ctx, e.to_string()).await);
-                }
+                ..config::runtime::NodeInstancePlan::new(instance.instance_id.clone())
             };
 
-            let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
-                Ok(json) => json,
-                Err(e) => {
-                    return Err(fail_and_clear_stack(
-                        ctx,
-                        format!("failed to serialize runtime config: {e}"),
-                    )
-                    .await);
-                }
-            };
-
-            let node_run_goal = NodeRunGoal::for_internal_execution(
-                &runtime_config_json5,
-                item.node_name.as_str(),
-                item.node_tag.as_str(),
-            )
+            let local = core_node == ctx.bound_core_node;
+            let node_run_goal = if local {
+                NodeRunGoal::for_internal_execution(
+                    instance_plan,
+                    item.node_name.as_str(),
+                    item.node_tag.as_str(),
+                )
+            } else {
+                // Dispatched goals pass through the peer's concurrency gate,
+                // which reports remaining time from this budget.
+                NodeRunGoal::new(
+                    instance_plan,
+                    item.node_name.as_str(),
+                    item.node_tag.as_str(),
+                    ctx.idle_timeouts.run.as_secs(),
+                )
+            }
             .with_env_vars(instance_environment(&ctx.env_vars, &instance.env_vars))
             .with_requested_pairs(
                 requested_by_instance
@@ -689,60 +953,93 @@ async fn start_node_instances(
                     .unwrap_or_default(),
             )
             .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default())
-            .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default());
+            .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default())
+            .with_planned_observations(
+                observations_by_instance
+                    .remove(instance_id)
+                    .unwrap_or_default(),
+            )
+            .with_lifecycle_watchers(watchers_by_source.remove(instance_id).unwrap_or_default());
 
-            // Create log file for this node start
-            let log_dir = ctx.peppy_dirs.logs_dir_run();
-            let log_filename = format!("{}.log", instance_id);
-            let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Err(fail_and_clear_stack(ctx, e).await);
-                }
+            let outcome = if local {
+                start_locally(ctx, key, instance_id, node_run_goal, run_log_paths).await
+            } else {
+                start_remotely(
+                    ctx,
+                    goal,
+                    &core_node,
+                    node_run_goal,
+                    federated.manifest_sha256(&core_node, item.deployment_index),
+                )
+                .await
             };
 
-            let (result, log_path) =
-                start_node_directly(ctx, node_run_goal, runtime_config, log_path, log_file).await;
-
-            let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
-            if let Some(path) = log_path {
-                run_log_paths.push(NodeRunLogEntry {
-                    instance_id: instance_id.to_string(),
-                    node_label: key.label(),
-                    log_path: path,
-                    failed,
-                });
-            }
-
-            match result {
-                Ok(result) => {
-                    if !result.success {
-                        let inner = result
-                            .error_message
-                            .unwrap_or_else(|| "node_run failed".to_string());
-                        let reason = format!(
-                            "failed to start node {} instance {}: {}",
-                            key.label(),
-                            instance_id,
-                            inner
-                        );
-                        return Err(fail_and_clear_stack(ctx, reason).await);
-                    }
-                }
-                Err(err) => {
-                    let reason = format!(
-                        "failed to start node {} instance {}: {}",
-                        key.label(),
-                        instance_id,
-                        err
-                    );
-                    return Err(fail_and_clear_stack(ctx, reason).await);
-                }
+            if let Err(reason) = outcome {
+                let reason = format!(
+                    "failed to start node {} instance {instance_id} on `{core_node}`: {reason}",
+                    key.label()
+                );
+                return Err(fail_and_clear_stack(ctx, reason, &participants).await);
             }
         }
     }
 
     Ok(())
+}
+
+/// Starts one instance on this daemon, in process, recording its log entry.
+async fn start_locally(
+    ctx: &ProcessLaunchContext,
+    key: &NodeKey,
+    instance_id: &str,
+    node_run_goal: NodeRunGoal,
+    run_log_paths: &mut Vec<NodeRunLogEntry>,
+) -> std::result::Result<(), String> {
+    let log_dir = ctx.peppy_dirs.logs_dir_run();
+    let log_filename = format!("{}.log", instance_id);
+    let (log_file, log_path) = create_action_log_file(&log_dir, &log_filename)?;
+
+    let (result, log_path) = start_node_directly(ctx, node_run_goal, log_path, log_file).await;
+
+    let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
+    if let Some(path) = log_path {
+        run_log_paths.push(NodeRunLogEntry {
+            instance_id: instance_id.to_string(),
+            node_label: key.label(),
+            log_path: path,
+            failed,
+        });
+    }
+
+    match result {
+        Ok(result) if result.success => Ok(()),
+        Ok(result) => Err(result
+            .error_message
+            .unwrap_or_else(|| "node_run failed".to_string())),
+        Err(err) => Err(err),
+    }
+}
+
+/// Starts one instance on a peer, pinning the manifest that peer reported
+/// during preflight.
+///
+/// The hash is the whole point of pinning: the peer re-resolves the manifest
+/// from its own cache when the goal lands, and refuses if it no longer hashes
+/// the same. That closes the window between preflight and dispatch in which a
+/// `repo refresh` on the peer could have moved the node out from under a plan
+/// that was validated against the old one.
+async fn start_remotely(
+    ctx: &ProcessLaunchContext,
+    goal: &LaunchGoal,
+    core_node: &str,
+    node_run_goal: NodeRunGoal,
+    manifest_sha256: Option<&str>,
+) -> std::result::Result<(), String> {
+    let mut node_run_goal = node_run_goal.with_launch_id(&goal.launch_id);
+    if let Some(sha) = manifest_sha256 {
+        node_run_goal = node_run_goal.with_manifest_sha256(sha);
+    }
+    federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await
 }
 
 async fn handle_goal_request(
@@ -842,7 +1139,8 @@ async fn handle_goal_request(
             node_stack,
             peppy_dirs,
             timeouts,
-            daemon_use_sim_time,
+            slice_ownership,
+            peppy_version,
             daemon_defaults,
             shutdown_token,
             relationships,
@@ -869,10 +1167,11 @@ async fn handle_goal_request(
                 build: Duration::from_secs(goal.node_build_idle_timeout_secs),
                 run: Duration::from_secs(goal.node_run_idle_timeout_secs),
             },
-            daemon_use_sim_time,
             daemon_defaults,
             shutdown_token,
             relationships,
+            slice_ownership,
+            peppy_version,
         };
         // Catch panics so a panic inside the launch sequence still completes the
         // goal with a failure result, rather than leaving the client to wait out
@@ -910,29 +1209,116 @@ async fn handle_goal_request(
 /// 6. Prepare stack-wide container host mounts
 /// 7. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
-    // Step 1: Parse launcher configuration
-    let (deployments, nodes_directory) = match parse_launcher_config(&ctx, &goal).await {
+    // Step 1: Parse the launcher and bind its core node links to machines.
+    let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await
+    {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };
 
-    // Step 2: Resolve deployments
-    let planned = match resolve_deployments(&ctx, deployments, &nodes_directory).await {
+    // Step 2: Federated preflight. Reachability, reservations, and each
+    // participant's own manifests, all BEFORE anything is resolved or torn
+    // down. Reserving first is what makes every later refusal free: no machine,
+    // including this one, has been touched yet.
+    let federated =
+        match federated::preflight(&ctx, &goal.launch_id, &deployments, &placements).await {
+            Ok(federated) => federated,
+            Err(reason) => {
+                publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+                return LaunchResult::failure(&ctx.log_path, reason);
+            }
+        };
+    let participants = federated.core_nodes();
+
+    // Step 3: Resolve deployments. Anything placed wholly on a peer takes the
+    // manifest that peer resolved; the rest this daemon resolves itself.
+    let planned = match resolve_deployments(
+        &ctx,
+        deployments,
+        &nodes_directory,
+        &federated.delegated_manifests(),
+    )
+    .await
+    {
         Ok(result) => result,
-        Err(launch_result) => return launch_result,
+        Err(launch_result) => {
+            return release_and_fail(&ctx, &goal, &participants, launch_result).await;
+        }
     };
 
-    // Step 3: Validate dependencies and compute topological order
+    // Step 3b: A node whose instances straddle two machines must be the same
+    // node on both, or the graph validated below describes neither. A planned
+    // instance id must also not collide with a participant's own root entity,
+    // which occupies that machine's namespace before this launch touches it.
+    let mut refusals = federated.root_instance_collisions(
+        &planned
+            .iter()
+            .flat_map(|item| &item.deployment.instances)
+            .map(|instance| instance.instance_id.as_str())
+            .collect(),
+    );
+    refusals.extend(
+        federated.disagreeing_manifests(
+            ctx.bound_core_node.as_str(),
+            &planned
+                .iter()
+                .filter_map(|item| {
+                    item.manifest_sha256
+                        .as_ref()
+                        .map(|sha| (item.deployment_index, sha.clone()))
+                })
+                .collect(),
+        ),
+    );
+    if !refusals.is_empty() {
+        let msg = daemon_config::format_bulleted(&refusals);
+        publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return release_and_fail(
+            &ctx,
+            &goal,
+            &participants,
+            LaunchResult::failure(&ctx.log_path, msg),
+        )
+        .await;
+    }
+
+    // Step 4: Validate dependencies and compute one global topological order,
+    // across every machine. There is exactly one planner.
     let root_config = ctx.node_stack.root().read().config().clone();
     let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
-        match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
+        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements).await {
             Ok(result) => result,
-            Err(launch_result) => return launch_result,
+            Err(launch_result) => {
+                return release_and_fail(&ctx, &goal, &participants, launch_result).await;
+            }
         };
 
-    // Step 4: Stop and clear the currently-running stack. A launch replaces it,
-    // so the old instances are torn down here before the new ones are built.
+    // Step 5: The commit point. Every participant is reserved and the whole
+    // plan is validated, so now, and only now, do stacks get replaced. Peers
+    // first: if one refuses, this daemon still has its own stack.
+    if let Err(reason) =
+        federated::begin_participant_slices(&ctx, &goal.launch_id, &participants).await
+    {
+        publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+        federated::clear_participant_slices(&ctx, &participants).await;
+        return release_and_fail(
+            &ctx,
+            &goal,
+            &participants,
+            LaunchResult::failure(&ctx.log_path, reason),
+        )
+        .await;
+    }
     teardown_and_reset_stack(&ctx).await;
+
+    // Record which launch this daemon's slice belongs to, so the slice is
+    // self-describing from here on and `stack reset` / a relaunch can
+    // rediscover the whole launch by query. Each participant recorded its own
+    // when it began its slice.
+    ctx.slice_ownership.record_slice(LaunchIdentity::new(
+        goal.launch_id.clone(),
+        ctx.bound_core_node.as_str(),
+    ));
 
     // Build lookup map
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> = planned
@@ -944,68 +1330,98 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
     let mut run_log_paths: Vec<NodeRunLogEntry> = Vec::new();
 
-    // Step 5: Add nodes in dependency order
-    let add_result = add_nodes_to_stack(
-        &ctx,
-        &ordered,
-        &planned_by_key,
-        &mut add_log_paths,
-        &mut build_log_paths,
-    )
+    // Step 6: Add and build, one group per machine. The groups run
+    // concurrently because nothing orders one machine's add against another's,
+    // and fetching plus building is where a launch spends its time; within a
+    // group the dependency order is preserved exactly as on a single machine.
+    //
+    // Steps 6-8 short-circuit: each phase appends to the log vectors before
+    // returning `Err`, so the logs collected up to a failure are reported
+    // whichever phase failed.
+    let outcome = async {
+        add_nodes_to_stack(
+            &ctx,
+            &goal,
+            &ordered,
+            &planned_by_key,
+            &placements,
+            &federated,
+            &mut add_log_paths,
+            &mut build_log_paths,
+        )
+        .await?;
+
+        // Step 7: Prepare any Lima host mounts before the first container
+        // starts. Updating Lima's mount table can restart the VM; doing it
+        // lazily during a later instance start would kill containers already
+        // launched by this stack operation.
+        prepare_container_host_mounts(&ctx, &ordered, &planned_by_key, &placements, &participants)
+            .await?;
+
+        // Step 8: Start instances in dependency order.
+        start_node_instances(
+            &ctx,
+            &goal,
+            &ordered,
+            &planned_by_key,
+            &mut run_log_paths,
+            &resolved_slot_bindings,
+            &planned_pairings,
+            &planned_observations,
+            &placements,
+            &federated,
+        )
+        .await
+    }
     .await;
 
-    // Step 6: Prepare any Lima host mounts before the first container starts.
-    // Updating Lima's mount table can restart the VM; doing it lazily during
-    // a later instance start would kill containers already launched by this
-    // stack operation.
-    let mount_result = if add_result.is_ok() {
-        Some(prepare_container_host_mounts(&ctx, &ordered, &planned_by_key).await)
-    } else {
-        None
-    };
-
-    // Step 7: Start instances in dependency order (only if add and mount
-    // preparation succeeded)
-    let start_result = if add_result.is_ok() && mount_result.as_ref().is_none_or(|r| r.is_ok()) {
-        Some(
-            start_node_instances(
-                &ctx,
-                &ordered,
-                &planned_by_key,
-                &mut run_log_paths,
-                &resolved_slot_bindings,
-                &planned_pairings,
-                &planned_observations,
-            )
-            .await,
-        )
-    } else {
-        None
-    };
-
-    if let Err(mut launch_result) = add_result {
-        launch_result.node_add_logs = add_log_paths;
-        launch_result.node_build_logs = build_log_paths;
-        return launch_result;
-    }
-    if let Some(Err(mut launch_result)) = mount_result {
-        launch_result.node_add_logs = add_log_paths;
-        launch_result.node_build_logs = build_log_paths;
-        return launch_result;
-    }
-    if let Some(Err(mut launch_result)) = start_result {
+    if let Err(mut launch_result) = outcome {
         launch_result.node_add_logs = add_log_paths;
         launch_result.node_build_logs = build_log_paths;
         launch_result.node_run_logs = run_log_paths;
-        return launch_result;
+        return release_and_fail(&ctx, &goal, &participants, launch_result).await;
     }
 
     publish_stdout(&ctx, "Launch complete", LaunchFeedbackStep::LauncherStep).await;
+    // Release every participant now that the launch is done. The SLICE record
+    // stays: the reservation guards the launch, the slice describes its result,
+    // and rediscovery needs the latter long after the former is gone.
+    federated::release_participants(
+        &ctx.messenger,
+        ctx.bound_core_node.as_str(),
+        ctx.core_instance_id.as_str(),
+        &goal.launch_id,
+        &participants,
+    )
+    .await;
     LaunchResult::success(&ctx.log_path).with_node_logs(
         add_log_paths,
         build_log_paths,
         run_log_paths,
     )
+}
+
+/// Releases every participant and returns the failure.
+///
+/// Every failure path funnels through here so a launch can never end while
+/// still holding a machine. Whether the participants' stacks were also cleared
+/// is a separate question the caller answers, because it depends on whether
+/// anything had been dispatched to them yet.
+async fn release_and_fail(
+    ctx: &ProcessLaunchContext,
+    goal: &LaunchGoal,
+    participants: &[String],
+    launch_result: LaunchResult,
+) -> LaunchResult {
+    federated::release_participants(
+        &ctx.messenger,
+        ctx.bound_core_node.as_str(),
+        ctx.core_instance_id.as_str(),
+        &goal.launch_id,
+        participants,
+    )
+    .await;
+    launch_result
 }
 
 /// Regression tests for the run-phase cancel-and-drain contract.
@@ -1167,28 +1583,34 @@ mod tests {
         );
     }
 
+    fn plan_with(use_sim_time: Option<bool>) -> config::runtime::NodeInstancePlan {
+        config::runtime::NodeInstancePlan {
+            use_sim_time,
+            ..config::runtime::NodeInstancePlan::new(
+                config::runtime::Name::new("inst_1").expect("valid name"),
+            )
+        }
+    }
+
     /// Per-instance override beats the daemon default in either direction.
     /// `Some(true)` forces sim even when the daemon default is wall;
     /// `Some(false)` forces wall even when the daemon default is sim.
+    ///
+    /// Resolution happens on the daemon that spawns the node, because only it
+    /// knows its own default. A plan shipped from another machine carries the
+    /// override unresolved, which is why this is tested on the plan rather than
+    /// on a launcher-side helper.
     #[test]
-    fn resolve_framework_per_instance_wins() {
-        let force_sim = daemon_config::launcher::FrameworkOverrides {
-            use_sim_time: Some(true),
-        };
-        assert!(resolve_framework(&force_sim, false).use_sim_time);
-
-        let force_wall = daemon_config::launcher::FrameworkOverrides {
-            use_sim_time: Some(false),
-        };
-        assert!(!resolve_framework(&force_wall, true).use_sim_time);
+    fn a_per_instance_use_sim_time_override_wins_over_the_daemon_default() {
+        assert!(plan_with(Some(true)).resolve(false).framework.use_sim_time);
+        assert!(!plan_with(Some(false)).resolve(true).framework.use_sim_time);
     }
 
-    /// When the instance omits the override, the daemon default decides.
+    /// When the instance omits the override, the spawning daemon decides.
     #[test]
-    fn resolve_framework_falls_through_to_daemon_default() {
-        let none = daemon_config::launcher::FrameworkOverrides::default();
-        assert!(!resolve_framework(&none, false).use_sim_time);
-        assert!(resolve_framework(&none, true).use_sim_time);
+    fn an_absent_override_falls_through_to_the_daemon_default() {
+        assert!(!plan_with(None).resolve(false).framework.use_sim_time);
+        assert!(plan_with(None).resolve(true).framework.use_sim_time);
     }
 
     #[test]

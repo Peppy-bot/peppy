@@ -68,7 +68,7 @@ default = []
 test-support = ["dep:tempfile", "config/fingerprint_test_helpers", "core-node/test-support"]
 # Docker black-box coverage for two daemons sharing one real zenohd. Opting in
 # also builds pmi's bundled router support used by the test host.
-multi_daemon_e2e = ["pmi/build_zenoh", "dep:testcontainers"]
+multi_daemon_e2e = ["pmi/build_zenoh", "dep:testcontainers", "core-node/debug-embed"]
 
 [dev-dependencies]
 tempfile = "3.8"

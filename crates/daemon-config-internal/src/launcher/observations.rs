@@ -12,6 +12,7 @@
 //! form), so each must be linked to a source or explicitly deferred, or the
 //! plan is rejected (`ObservationSlotUncovered`).
 
+use super::types::Placements;
 use crate::error::{
     ObservationSlotUncovered, ObservationTargetAmbiguous, ObservationTargetNotObservable,
     PairingSha256Mismatch, ParsingError,
@@ -82,7 +83,7 @@ pub struct ValidatedObservations {
 ///    listed in `defer_links` (`ObservationSlotUncovered`).
 pub fn validate_observations(
     items: &[PairingValidationItem<'_>],
-    producer_core_node: &str,
+    placements: &Placements,
 ) -> ValidatedObservations {
     let mut out = ValidatedObservations::default();
 
@@ -114,14 +115,7 @@ pub fn validate_observations(
                     });
                     continue;
                 };
-                match resolve_observation(
-                    owner_id,
-                    own_dep,
-                    key,
-                    target,
-                    &lookup,
-                    producer_core_node,
-                ) {
+                match resolve_observation(owner_id, own_dep, key, target, &lookup, placements) {
                     Ok(planned) => out.planned.push(planned),
                     Err(error) => out.errors.push(error),
                 }
@@ -142,7 +136,7 @@ fn resolve_observation(
     key: &str,
     target: &str,
     lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
-    producer_core_node: &str,
+    placements: &Placements,
 ) -> Result<PlannedObservation, ParsingError> {
     let (source_instance, requested_source_link) = split_link_target(target);
     let Some(source_item) = lookup.get(source_instance) else {
@@ -228,7 +222,7 @@ fn resolve_observation(
         pairing_name: own_dep.name.as_str().to_string(),
         pairing_tag: own_dep.tag.clone(),
         observed_role: own_dep.observes_role.clone(),
-        source: ProducerRef::new(producer_core_node, source_instance),
+        source: ProducerRef::new(placements.of(source_instance), source_instance),
         source_link_id: source_dep.link_id.clone(),
     })
 }
@@ -264,6 +258,13 @@ mod tests {
     use super::*;
 
     const TEST_CORE: &str = "core_a";
+
+    /// Every test instance on one daemon, the single-machine shape.
+    fn all_local() -> Placements {
+        Placements::all_on(
+            crate::core_node_name::CoreNodeName::new(TEST_CORE).expect("valid test core node name"),
+        )
+    }
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
         serde_json5::from_str(json5).expect("instances fixture should parse")
@@ -313,7 +314,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_deps),
             item("recorder", &rec_instances, &rec_deps),
         ];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
         let obs = &out.planned[0];
@@ -330,7 +331,7 @@ mod tests {
         let rec_instances = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
         let rec_deps = recorder_deps();
         let items = vec![item("recorder", &rec_instances, &rec_deps)];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         let info = out
             .errors
             .iter()
@@ -354,7 +355,7 @@ mod tests {
             parse_instances(r#"[{ instance_id: "rec_1", defer_links: ["observed_arm"] }]"#);
         let rec_deps = recorder_deps();
         let items = vec![item("recorder", &rec_instances, &rec_deps)];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.planned.is_empty());
     }
@@ -373,7 +374,7 @@ mod tests {
             item("arm_controller", &ctrl_instances, &ctrl_deps),
             item("recorder", &rec_instances, &rec_deps),
         ];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         let info = out
             .errors
             .iter()
@@ -403,7 +404,7 @@ mod tests {
             item("dual_arm", &dual_instances, &dual_deps),
             item("recorder", &rec_instances, &rec_deps),
         ];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         let info = out
             .errors
             .iter()
@@ -422,7 +423,7 @@ mod tests {
             item("dual_arm", &dual_instances, &dual_deps),
             item("recorder", &rec_instances, &rec_deps),
         ];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned[0].source_link_id, "right_ctl");
     }
@@ -442,7 +443,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_deps),
             item("recorder", &rec_instances, &rec_deps),
         ];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 2, "observation is not exclusive");
     }
@@ -458,7 +459,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_deps),
             item("recorder", &rec_instances, &rec_deps),
         ];
-        let out = validate_observations(&items, TEST_CORE);
+        let out = validate_observations(&items, &all_local());
         assert!(
             out.errors
                 .iter()

@@ -43,6 +43,7 @@ use ureq::Error as HttpError;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use peppylib::messaging::SenderTarget;
 
+#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -51,6 +52,7 @@ pub async fn listen_for_node_add(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     relationships: super::RelationshipCoordinators,
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -72,6 +74,7 @@ pub async fn listen_for_node_add(
             relationships,
         },
         gate: ConcurrencyGate::new(),
+        slice_ownership,
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -83,11 +86,22 @@ pub async fn listen_for_node_add(
 struct NodeAddGoalHandler {
     context: NodeAddActionContext,
     gate: ConcurrencyGate,
+    /// Consulted before admission: while a federated launch holds this machine,
+    /// only that launch's own dispatch may touch the stack. Lives on the
+    /// handler rather than the action context because the in-process launch
+    /// path calls the runner directly and is the coordinator's own work.
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 impl GoalHandler for NodeAddGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
+        handle_goal_request(
+            pending,
+            self.context.clone(),
+            self.gate.clone(),
+            &self.slice_ownership,
+        )
+        .await
     }
 }
 
@@ -1087,6 +1101,7 @@ async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeAddActionContext,
     gate: ConcurrencyGate,
+    slice_ownership: &crate::services::federation::SliceOwnership,
 ) {
     let sender_instance_id = pending.instance_id().to_string();
 
@@ -1101,6 +1116,14 @@ async fn handle_goal_request(
             return;
         }
     };
+
+    // Before the gate, because the gate is per-action and this exclusion is
+    // per-machine: a coordinator halfway through replacing this stack must not
+    // race a locally-typed `peppy node add`.
+    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(&goal) {
+        reject_goal(pending, encode_rejected_goal(reason)).await;
+        return;
+    }
 
     let generation = match admit_node_add_goal(&gate, &goal) {
         Ok(generation) => generation,

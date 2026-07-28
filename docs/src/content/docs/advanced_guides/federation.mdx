@@ -1,0 +1,319 @@
+---
+title: Federation
+description: Run one Peppy stack across several machines. Declare core node links in a launcher, wire them with stack launch --place, and let producer links, pairings, and observations cross daemon boundaries.
+sidebar:
+  order: 16
+---
+
+import { Code } from '@astrojs/starlight/components';
+import splitComputeLauncher from '../guides/snippets/launchers/split_compute_manipulation.json5?raw';
+
+Two machines logged into the same workspace share one namespace and can address
+each other. A core node is one machine, and typically one robot, so a federation
+is a network of robots and the machines that support them. Federation is what
+lets a single stack span that network: one launcher file, one command, and one
+graph whose instances are spread across several core nodes.
+
+## The problem it solves
+
+Consider a manipulation system with two very different pieces.
+
+A **large vision-language-action model** plans over tens of seconds. Its weights
+are proprietary and are not shipped to customer hardware, it wants a datacenter
+accelerator that no mobile platform carries, and it thinks at roughly 1 Hz, so a
+WAN round trip is a small fraction of its own cycle. Latency is close to free for
+it.
+
+A **small reactive policy** closes a 200 Hz loop against hardware it must reach
+in microseconds. A link outage has to degrade it, not stop it.
+
+Those two want opposite machines. Before federation you had to pick one and
+compromise, or hand-roll a bridge between two independent stacks and give up
+Peppy's wiring, ordering, and lifecycle guarantees at the seam.
+
+**What Peppy provides:** one launcher describes both halves, one command starts
+them, producer links and pairings and observations all work across the boundary,
+and consumers still start after their producers no matter which machine each is
+on.
+
+**What it deliberately does not:** it does not make a network partition
+invisible. See [Ordering, degradation, and failure](#ordering-degradation-and-failure).
+
+## Prerequisites
+
+Both machines must be logged into the same workspace and visible to each other:
+
+```bash
+peppy platform list
+```
+
+```
+CORE NODE           HOST         NETWORK   APPLICATION
+cn-robot-7          robot-7      linked    online
+cn-atlas-h100       atlas        linked    online
+```
+
+Both rows must read `linked` and `online`. `linked` means the machine's router
+has joined the workspace router; `online` means its daemon is answering right
+now. A machine that is `linked` but not `online` has a stopped daemon (`peppy
+service serve`); one that is not `linked` has not completed [`peppy platform
+login`](/advanced_guides/platform/).
+
+`peppy platform list` is the human-facing view. A launch does not depend on it:
+liveness is checked against the live federation at launch time, because what
+matters is whether the coordinator can *talk to* a machine right now.
+
+## Core node links
+
+A launcher does not name machines. It declares **core node links**, which are
+placeholders:
+
+```json5
+core_nodes: ["robot_onboard", "cloud_inference"],
+```
+
+and each instance says which one it runs on:
+
+```json5
+{ instance_id: "planner_inst", core_node: "cloud_inference", /* ... */ }
+```
+
+The file describes a *topology*; the command binds it to today's hardware:
+
+```bash
+peppy stack launch --place robot_onboard@self \
+                   --place cloud_inference@cn-atlas-h100 \
+                   split_compute_manipulation
+```
+
+That separation is the point. The same file works against a rented H100 today
+and your own rack tomorrow, and nobody edits the launcher to redeploy it.
+
+Rules, all checked before anything starts:
+
+- Every declared link must be wired exactly once. A partial wiring is refused
+  rather than silently collapsing half the topology onto the coordinator.
+- `--place` may only name links the launcher declares.
+- Two links may share one machine. A two-machine topology must still be
+  runnable on one box.
+- `self` means the daemon the launch is sent to. It is reserved: no core node
+  may be named `self`.
+- `core_node` is **optional** on an instance. One that omits it runs on the
+  coordinator.
+
+### Developing without a second machine
+
+```bash
+peppy stack launch --local split_compute_manipulation
+```
+
+`--local` wires every declared link to this daemon, so the whole topology runs
+on your workstation with no cloud account and no uplink. The launcher is
+unmodified.
+
+It is a flag rather than a key in the file because the launcher's author
+declares a topology and cannot know what machines the person running it has.
+Mixing `--local` with `--place` is an error: pick one way to say where things go.
+
+## The worked example
+
+<Code code={splitComputeLauncher} lang="json5" title="split_compute_manipulation.json5" />
+
+Run it from either machine. The daemon you send it to coordinates, and the only
+thing that changes is what `self` binds to: from the robot that is
+`--place robot_onboard@self`, from the cloud instance the same launch reads
+`--place robot_onboard@cn-robot-7 --place cloud_inference@self`. Coordinating is
+a planning role, not a privileged one, so the topology does not depend on where
+the command was typed.
+
+Two things do follow the coordinator, and both argue for the robot here: an
+instance that omits `core_node` runs there, and container bind sources are
+created only for the instances that machine runs itself (see [Limits](#limits)).
+
+```bash
+peppy stack launch --place robot_onboard@self \
+                   --place cloud_inference@cn-atlas-h100 \
+                   split_compute_manipulation
+```
+
+```
+This launch will REPLACE the node stack on 1 remote daemon(s): cn-atlas-h100
+Parsing launcher configuration
+Resolving 5 deployment(s)
+Using the manifest cn-atlas-h100 resolved for repo:deliberative_planner:v1
+Validating dependencies
+Adding uvc_camera_python_mock:v1 on `cn-robot-7`
+Adding deliberative_planner:v1 on `cn-atlas-h100`
+[cn-atlas-h100] Fetching deliberative_planner:v1
+...
+Starting uvc_camera_python_mock:v1 instance wrist_cam_inst on `cn-robot-7`
+Starting my_python_robot_arm:v1 instance arm_inst on `cn-robot-7`
+Starting reactive_policy:v1 instance reflex_inst on `cn-robot-7`
+Starting deliberative_planner:v1 instance planner_inst on `cn-atlas-h100`
+Starting episode_recorder:v1 instance recorder_inst on `cn-atlas-h100`
+Launch completed successfully
+```
+
+Two things in that output are worth pointing at. The first line: a launch is
+destructive on every machine it touches, and you typed one command, so Peppy
+names the remote daemons whose stacks are about to be replaced before it
+replaces them. And the `[cn-atlas-h100]` prefix: the peer's own output is
+relayed into this one stream and attributed, because a launch that ran half its
+work somewhere you cannot see is not one you can debug.
+
+## Verifying placement
+
+`peppy stack list` from either machine shows both slices, each attributed to the
+daemon serving it:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-robot-7 (host: robot-7)                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Instance bindings                                                            │
+│                                                                              │
+│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
+│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
+│ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
+│ │ uvc_camera_python_mock:v1  │ wrist_cam_inst   │ Running │ Healthy │        │
+│ │ my_python_robot_arm:v1     │ arm_inst         │ Running │ Healthy │        │
+│ │ reactive_policy:v1         │ reflex_inst      │ Running │ Healthy │        │
+│ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-atlas-h100 (host: atlas)                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Instance bindings                                                            │
+│                                                                              │
+│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
+│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
+│ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
+│ │ deliberative_planner:v1    │ planner_inst     │ Running │ Healthy │        │
+│ │ episode_recorder:v1        │ recorder_inst    │ Running │ Healthy │        │
+│ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+(Abridged: the real output also carries a `Node stack` table per section and a
+`BINDINGS` column, both trimmed here to keep the placement visible.)
+
+Both slices report the same launch id and the same coordinator. That is what
+ties them together, and it is recorded on each slice rather than in the
+coordinator's memory, which is why a coordinator restart does not lose the
+launch.
+
+## What crosses a daemon boundary
+
+Each kind appears exactly once in the example.
+
+**Producer link.** `wrist_cam_inst`, the camera on the robot, feeds two
+consumers. The reflex policy reads it locally through the slot its manifest
+calls `camera`; the planner reads it from the cloud through the slot its
+manifest calls `scene`. The slot names differ because each belongs to its own
+node, but both sides name the producer the same way and neither says where it
+is:
+
+```json5 title="reflex_inst (on the robot)"
+links: { camera: "wrist_cam_inst" }
+```
+
+```json5 title="planner_inst (in the cloud)"
+links: { scene: "wrist_cam_inst" }
+```
+
+Nothing at the point of use records which machine the producer sits on.
+Placement is declared once, on the instance. See [Node stack](/guides/node_stack/).
+
+**Pairing.** `deliberation` connects the policy and the planner. It is a
+pairing rather than two producer links because the relationship is genuinely
+bidirectional and exclusive: the policy pushes its situation up and escalates
+what it cannot solve, the planner pushes subgoals back down, and each side holds
+a pinned view of the other. Declaring the pair on one side covers both
+endpoints' slots. See [Pairing](/advanced_guides/pairing/).
+
+A pair is recorded on both machines, because only the daemon hosting a node can
+hand that node its peer. The later-starting side establishes the pair and asks
+the other daemon to record its half; if that is refused, the first side undoes
+its own, so a pair is never established on one machine and missing on the
+other.
+
+**Observation.** The recorder taps the executor side of that pairing without
+joining it. An observer claims no slot and holds no peer, so it cannot perturb
+control however it behaves.
+
+Because the source is not told its observers exist, it cannot report to them on
+its own. The launch works out which machines are watching each instance and
+tells that instance's daemon, which is what makes a source restart drop and
+redeclare a remote observer's subscription exactly as it does a local one.
+
+The thing to notice is that none of this looks different from the
+single-machine case. Federation changes where instances run, not how they are
+wired.
+
+## Ordering, degradation, and failure
+
+**Consumers still start after producers, across machines.** `wrist_cam_inst` is
+Running on the robot before `planner_inst` starts in the cloud, because the
+planner's `scene` slot is bound to it. The coordinator computes one global order
+and starts instances strictly one at a time along it, whichever machine each one
+is on, so the guarantee is the same one a single-machine launch gives.
+
+Fetching and building do run concurrently across machines, since nothing orders
+one machine's build against another's. That is where a launch spends its time,
+so a two-machine launch is not two launches long.
+
+**Peppy guarantees the servo path never crosses the WAN.** Placement puts the
+camera, the arm, and the policy on one daemon, so the 200 Hz loop is entirely
+local by construction.
+
+**Peppy does not guarantee instant notification of a partition.** A cleanly
+stopped or dead peer instance produces a cross-daemon dissolution notification,
+but an unreachable daemon cannot send one. A node whose correctness depends on
+freshness therefore owns a staleness watchdog. In the example that is
+`subgoal_ttl_ms`: a subgoal is authoritative for two seconds after the policy
+adopts it, and then the policy falls back to its own local behavior. The uplink
+is an *enhancement path*, not a dependency.
+
+**On failure, the launch stops and clears every slice it started.** There is no
+rollback, because a launch REPLACES the previous stack: by the time anything can
+fail there is nothing to roll back to. What Peppy does instead is leave an empty
+slice on every machine it touched and name each one. If a machine cannot be
+reached to be cleared, that machine is named too, so you know exactly where to
+run:
+
+```bash
+peppy stack reset --federated
+```
+
+which tears down every slice of the launch. It works from any machine in the
+federation, and after a coordinator restart, because it *rediscovers* the
+participants by asking the federation who holds a slice of that launch id rather
+than reading a remembered list.
+
+Without `--federated`, `peppy stack reset` clears one daemon's slice and tells
+you what it left running:
+
+```
+Note: `cn-atlas-h100` holds one slice of launch `launch-brave-otter`,
+coordinated by `cn-robot-7`. This clears only this daemon's slice; the other
+participants keep running.
+```
+
+## Limits
+
+- **Same Peppy version on every participant.** A mixed-version federation is
+  refused during preflight, before any stack is touched.
+- **`local:` sources cannot cross machines.** The path names a tree on the
+  coordinator's filesystem. A `local:` deployment must keep all of its instances
+  on one core node; publish the node to a repo or url source to split it. That
+  is why the proprietary planner in the example is a registry source.
+- **A launcher file path cannot target a remote daemon.** `peppy stack launch
+  ./my_launcher.json5 --core-node cn-atlas-h100` is refused for the same reason.
+  Use a repository launcher, or run the command from the machine holding the
+  file.
+- **No re-placement of a running instance.** Moving an instance to another
+  machine means launching again.
+- **A peer prepares no container bind mounts.** The coordinator creates missing
+  bind sources for the instances it runs itself, but a path on another machine
+  is that machine's to provide. A container node placed on a peer needs its bind
+  sources to already exist there.

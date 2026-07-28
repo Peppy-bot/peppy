@@ -1,6 +1,7 @@
 mod action_loop;
 mod clock;
 mod datastore;
+pub(crate) mod federation;
 mod health;
 mod info;
 mod node;
@@ -183,6 +184,9 @@ pub struct CoreNode {
     /// messaging session closes). A `std` mutex suffices: the slot is written
     /// once in [`CoreNode::start_with_ready`] and never read, only dropped.
     presence_token: std::sync::Mutex<Option<LivelinessToken>>,
+    /// Which federated launch this daemon is committed to, and which launch its
+    /// current slice came from. See `services::federation`.
+    slice_ownership: Arc<federation::SliceOwnership>,
     /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
     /// instance is rejected rather than silently re-registering listeners.
     started: AtomicBool,
@@ -366,6 +370,7 @@ impl CoreNode {
             namespace,
             shutdown_token,
             presence_token: std::sync::Mutex::new(None),
+            slice_ownership: federation::SliceOwnership::new(),
             started: AtomicBool::new(false),
         }
     }
@@ -415,6 +420,26 @@ impl CoreNode {
 
     pub fn node_config(&self) -> &NodeConfig {
         &self.node_config
+    }
+
+    /// Bundles what the federation endpoints need from the daemon. Built per
+    /// listener rather than stored so it always reflects the current
+    /// generation's messenger and shutdown token.
+    fn federation_context(&self, ctx: &ListenerCtx<'_>) -> federation::FederationServiceContext {
+        federation::FederationServiceContext {
+            messenger: self.messenger.clone(),
+            core_node_name: ctx.core_node_name.to_owned(),
+            peppy_dirs: self.peppy_dirs.clone(),
+            ownership: Arc::clone(&self.slice_ownership),
+            relationships: ctx.relationships.clone(),
+            node_stack: Arc::clone(&self.node_stack),
+            // Same string the `info` service reports: one source of truth for
+            // "what version is that daemon", so a coordinator comparing
+            // versions never has two answers to choose between.
+            peppy_version: CORE_NODE_TAG.to_owned(),
+            root_instance_id: self.instance_id().to_owned(),
+            shutdown_token: self.shutdown_token.clone(),
+        }
     }
 
     pub fn node_name(&self) -> &str {
@@ -501,6 +526,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 Arc::clone(ctx.relationships.observation()),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ServiceId::StackList => stack::listen_for_stack_list(
@@ -509,6 +535,31 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                Arc::clone(&self.slice_ownership),
+            )
+            .boxed(),
+            ServiceId::ParticipantReserve => federation::listen_for_participant_reserve(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
+            ServiceId::ParticipantSliceBegin => federation::listen_for_participant_slice_begin(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
+            ServiceId::PairCommit => {
+                federation::listen_for_pair_commit(self.federation_context(ctx), self.node_name())
+                    .boxed()
+            }
+            ServiceId::ParticipantRelease => federation::listen_for_participant_release(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
+            ServiceId::RelationshipNotify => federation::listen_for_relationship_notify(
+                self.federation_context(ctx),
+                self.node_name(),
             )
             .boxed(),
             ServiceId::NodeInit => node::listen_for_node_init(
@@ -611,12 +662,14 @@ impl CoreNode {
                         health_monitor_interval: self.health_monitor_interval,
                         health_monitor_timeout: self.health_monitor_timeout,
                     },
-                    use_sim_time: self.daemon_use_sim_time,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),
+                        self.daemon_use_sim_time,
                     ),
                     shutdown_token: self.shutdown_token.clone(),
+                    slice_ownership: Arc::clone(&self.slice_ownership),
+                    peppy_version: CORE_NODE_TAG.to_owned(),
                 },
                 ctx.relationships.clone(),
             )
@@ -638,6 +691,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
                 ctx.relationships.clone(),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ActionId::NodeBuild => node::listen_for_node_build(
@@ -647,6 +701,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ActionId::NodeRun => node::listen_for_node_run(
@@ -664,9 +719,11 @@ impl CoreNode {
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),
+                        self.daemon_use_sim_time,
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     relationships: ctx.relationships.clone(),
+                    slice_ownership: Arc::clone(&self.slice_ownership),
                 },
             )
             .boxed(),
@@ -790,18 +847,25 @@ impl CoreNode {
         } else {
             Arc::new(WallClockSource)
         };
+        let pairing = Arc::new(node::PairingCoordinator::new(
+            Arc::clone(&self.node_stack),
+            self.messenger.clone(),
+            core_node_name,
+            self.instance_id(),
+        ));
         let relationships = node::RelationshipCoordinators::new(
-            Arc::new(node::PairingCoordinator::new(
-                Arc::clone(&self.node_stack),
-                self.messenger.clone(),
-                core_node_name,
-                self.instance_id(),
-            )),
+            Arc::clone(&pairing),
             Arc::new(node::ObservationCoordinator::new(
                 Arc::clone(&self.node_stack),
                 self.messenger.clone(),
                 core_node_name,
                 self.instance_id(),
+            )),
+            Arc::new(node::RelationshipNotifier::new(
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+                pairing,
             )),
         );
         let ctx = ListenerCtx {

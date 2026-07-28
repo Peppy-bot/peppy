@@ -1,0 +1,114 @@
+// Split-compute manipulation: a fast reactive policy on the robot, a large
+// deliberative planner in the cloud, wired as one stack.
+//
+// Launch from the robot:
+//   peppy stack launch --place robot_onboard@self \
+//                      --place cloud_inference@cn-atlas-h100 \
+//                      split_compute_manipulation
+//
+// Or, to run the whole topology on one machine with no cloud account and no
+// uplink, which is how you develop against it:
+//   peppy stack launch --local split_compute_manipulation
+{
+  peppy_schema: "launcher/v1",
+  // Core node links: placeholders this file names, wired to real machines at
+  // launch time via `stack launch --place <core-node-link>@<core-node>`.
+  // The file describes a topology; the command binds it to today's hardware,
+  // so the same launcher works against a rented H100 now and your own rack
+  // later. Every declared link must be wired, and every wired core node must
+  // be live in the federation, or the launch is refused.
+  core_nodes: ["robot_onboard", "cloud_inference"],
+  deployments: [
+    // ---- On the robot: everything the control loop touches ----
+    {
+      source: { name: "uvc_camera_python_mock", tag: "v1" },
+      instances: [
+        {
+          instance_id: "wrist_cam_inst",
+          // Places this instance on the daemon wired to `robot_onboard`.
+          // OPTIONAL: an instance that omits it runs on the coordinator.
+          core_node: "robot_onboard",
+          arguments: {
+            device_path: "/dev/video0",
+            video: {
+              frame_rate: 30,
+              resolution: { width: 1280, height: 720 },
+              camera_encoding: "mjpeg",
+              topic_encoding: "rgb8",
+            },
+          },
+        },
+      ],
+    },
+    {
+      source: { name: "my_python_robot_arm", tag: "v1" },
+      instances: [
+        { instance_id: "arm_inst", core_node: "robot_onboard" },
+      ],
+    },
+    {
+      // The small onboard model. Closes the servo loop at 200 Hz against
+      // hardware that is one process away, and escalates anything it cannot
+      // resolve within its horizon to the planner over the `deliberation` pair.
+      source: { name: "reactive_policy", tag: "v1" },
+      instances: [
+        {
+          instance_id: "reflex_inst",
+          core_node: "robot_onboard",
+          arguments: {
+            control_rate_hz: 200,
+            // How long a subgoal from the planner stays authoritative before
+            // this node falls back to its own local behavior. Bounds how much
+            // a slow or severed uplink can affect the robot.
+            subgoal_ttl_ms: 2000,
+          },
+          links: {
+            // Both on this machine: the servo loop never crosses the WAN.
+            camera: "wrist_cam_inst",
+            arm: "arm_inst",
+            // Cross-daemon PAIRING. Bidirectional by nature: this node pushes
+            // the current situation up, the planner pushes subgoals back down.
+            // Declaring the pair on one side covers both endpoints' slots.
+            deliberation: "planner_inst/deliberation",
+          },
+        },
+      ],
+    },
+    // ---- In the cloud: the parts that want a datacenter GPU ----
+    {
+      // The large vision-language-action / world model. Proprietary weights,
+      // multi-second horizon, ~1 Hz. Never a `local:` source: the path would
+      // name a tree on the robot's filesystem, and the plan rejects that for
+      // any deployment placed off-coordinator.
+      source: { name: "deliberative_planner", tag: "v1" },
+      instances: [
+        {
+          instance_id: "planner_inst",
+          core_node: "cloud_inference",
+          arguments: { plan_rate_hz: 1, horizon_s: 30 },
+          links: {
+            // Cross-daemon PRODUCER LINK. The same camera instance the reflex
+            // policy reads locally, named exactly the same way. Placement is
+            // declared once, on the instance, and never repeated at the point
+            // of use.
+            scene: "wrist_cam_inst",
+          },
+        },
+      ],
+    },
+    {
+      // Captures what the robot actually did, for later training. Taps the
+      // executor side of the pairing without joining it.
+      source: { name: "episode_recorder", tag: "v1" },
+      instances: [
+        {
+          instance_id: "recorder_inst",
+          core_node: "cloud_inference",
+          // Cross-daemon OBSERVATION. An observer link names the instance it
+          // watches; passive, so it claims no slot and cannot perturb control.
+          links: { observed_execution: "reflex_inst" },
+        },
+      ],
+    },
+  ],
+}

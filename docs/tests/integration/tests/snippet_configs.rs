@@ -9,7 +9,6 @@
 //! If this fails, the config types in `config` have drifted from the documented
 //! snippets; either the code or the snippets need updating.
 
-use config::consts::NODE_CONFIG_FILE;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use daemon_config::contract::PeppyContractParser;
@@ -19,16 +18,23 @@ use std::path::{Path, PathBuf};
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets";
 
-/// Walk `root` recursively and collect every file named `peppy.json5`.
-fn find_node_configs(root: &Path) -> Vec<PathBuf> {
+/// Walk `root` recursively and collect every peppy document.
+///
+/// Any `.json5` file, not just `peppy.json5`: a launcher, a contract, and a
+/// pairing all have their own conventional names, and filtering on the node
+/// filename silently excluded every one of them. The schema is what decides how
+/// a file is parsed (see [`assert_parses_with_matching_schema`]), so the walk
+/// only has to find the files.
+fn find_peppy_documents(root: &Path) -> Vec<PathBuf> {
     walkdir::WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|name| name == NODE_CONFIG_FILE)
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "json5")
         })
         .map(|e| e.into_path())
         .collect()
@@ -79,10 +85,18 @@ fn assert_parses_with_matching_schema(path: &Path) {
                 result.unwrap_err()
             );
         }
-        PeppySchema::LauncherV1 => panic!(
-            "unexpected launcher/v1 among node/contract/pairing snippets: {}",
-            path.display()
-        ),
+        PeppySchema::LauncherV1 => {
+            // The federation guide's worked launcher is the headline example
+            // of a whole feature. Before this arm parsed it, it was the one
+            // piece of documented syntax nothing checked.
+            let result = daemon_config::launcher::PeppyLauncherParser::from_path(path);
+            assert!(
+                result.is_ok(),
+                "failed to parse launcher {}: {:?}",
+                path.display(),
+                result.unwrap_err()
+            );
+        }
     }
 }
 
@@ -96,7 +110,7 @@ fn docs_snippet_configs_parse() {
         snippets_root.display()
     );
 
-    let configs = find_node_configs(&snippets_root);
+    let configs = find_peppy_documents(&snippets_root);
 
     assert!(
         configs.len() >= 9,

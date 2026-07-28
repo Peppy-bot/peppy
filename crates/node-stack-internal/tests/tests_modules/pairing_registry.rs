@@ -5,7 +5,12 @@
 use std::path::PathBuf;
 
 use config::runtime::{Name, PairingSlotBinding};
-use node_stack::{NodeStack, NodeStackError, SlotAddr};
+use node_stack::{NodeStack, NodeStackError, RemoteSlotMeta, SlotAddr};
+
+/// The core-node name of the test stack's root entity. Slot addresses are
+/// core-node-qualified, and every instance in these tests lives on this one
+/// daemon.
+const TEST_CORE_NODE: &str = "core";
 
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::fixtures;
@@ -67,8 +72,8 @@ async fn pair_clear_repair_lifecycle() {
     )
     .await;
 
-    let arm_slot = SlotAddr::new("arm_1", "controller");
-    let ctrl_slot = SlotAddr::new("ctrl_1", "arm");
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
 
     // Both slots start unpaired.
     let unpaired = stack.unpaired_pairing_slots();
@@ -117,8 +122,8 @@ async fn pair_slots_validation_matrix() {
     // Unknown instance.
     let err = stack
         .pair_slots(
-            &SlotAddr::new("ghost", "arm"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ghost", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .unwrap_err();
     assert!(
@@ -129,8 +134,8 @@ async fn pair_slots_validation_matrix() {
     // Known instance, undeclared slot.
     let err = stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "ghost_slot"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "ghost_slot"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .unwrap_err();
     assert!(
@@ -149,8 +154,8 @@ async fn pair_slots_validation_matrix() {
     .await;
     let err = stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "arm"),
-            &SlotAddr::new("ctrl_2", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_2", "arm"),
         )
         .unwrap_err();
     assert!(
@@ -173,8 +178,8 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
     )
     .await;
 
-    let arm_slot = SlotAddr::new("arm_1", "controller");
-    let ctrl_slot = SlotAddr::new("ctrl_1", "arm");
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
     stack.pair_slots(&ctrl_slot, &arm_slot).expect("pair");
 
     // Eager path: the stop paths call dissolve_pairs_for_instance and
@@ -204,6 +209,120 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
     );
 }
 
+/// The cross-daemon counterpart of the lazy prune above, and the reason that
+/// prune is deliberately local-only: this daemon cannot see whether
+/// `planner_inst` on `core_b` is alive, so "cannot see" must not read as
+/// "dead". The pair therefore survives every registry read, and only the
+/// owning daemon's explicit death notification removes it.
+#[tokio::test]
+async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let _arm =
+        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
+
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let remote_slot = SlotAddr::new("core_b", "ctrl_remote", "arm");
+    let remote_meta = RemoteSlotMeta {
+        pairing_name: "arm_link".to_string(),
+        pairing_tag: "v1".to_string(),
+        role: "controller".to_string(),
+    };
+    stack
+        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
+        .expect("the coordinator's verdict authorizes the far half");
+
+    // Repeated reads must not prune it: the local endpoint is alive, and the
+    // remote one is not this daemon's to judge.
+    for _ in 0..2 {
+        assert_eq!(
+            stack.pairs().len(),
+            1,
+            "a remote pair must survive registry reads"
+        );
+    }
+    assert!(
+        !stack
+            .unpaired_pairing_slots()
+            .iter()
+            .any(|(slot, _)| slot == &arm_slot),
+        "the local slot stays claimed while the pair stands"
+    );
+
+    // A same-named instance on a DIFFERENT daemon dying must not touch it.
+    assert!(
+        stack
+            .dissolve_pairs_for_remote_instance("core_c", "ctrl_remote")
+            .is_empty(),
+        "dissolution is addressed by core node as well as instance id"
+    );
+    assert_eq!(stack.pairs().len(), 1);
+
+    let dissolved = stack.dissolve_pairs_for_remote_instance("core_b", "ctrl_remote");
+    assert_eq!(dissolved.len(), 1);
+    assert_eq!(
+        dissolved[0].peer_of(&arm_slot).map(|e| e.slot.clone()),
+        Some(remote_slot)
+    );
+    assert!(stack.pairs().is_empty());
+    assert!(
+        stack
+            .unpaired_pairing_slots()
+            .iter()
+            .any(|(slot, _)| slot == &arm_slot),
+        "the survivor's slot must be claimable again"
+    );
+}
+
+/// The daemon's teardown seam asks "who else needs to hear about this
+/// instance?" (via `with_pairs`) BEFORE it dissolves, and by then the stop
+/// path has already removed the instance from the stack. A pruning read there
+/// would drop the very pair that names the recipients, and the survivor would
+/// never be told its peer died — so `with_pairs` must report the registry as
+/// recorded, leaving dissolution the only thing that removes a pair.
+#[tokio::test]
+async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let _arm =
+        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
+    let _ctrl = fixtures::push_started(
+        &stack,
+        &harness,
+        arm_controller_config(),
+        Some(&name("ctrl_1")),
+    )
+    .await;
+
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
+    stack.pair_slots(&ctrl_slot, &arm_slot).expect("pair");
+
+    // What `node stop` does before tearing relationships down.
+    assert!(fixtures::stop_instance_in_stack(
+        &stack,
+        "arm_controller",
+        "v1",
+        &name("ctrl_1")
+    ));
+
+    assert_eq!(
+        stack.with_pairs(|pairs| pairs.len()),
+        1,
+        "the notification path must still see the pair of an instance that is already gone"
+    );
+    let dissolved = stack.dissolve_pairs_for_instance("ctrl_1");
+    assert_eq!(
+        dissolved.len(),
+        1,
+        "dissolution must still return the pair, so the survivor gets notified"
+    );
+    assert_eq!(
+        dissolved[0].peer_of(&ctrl_slot).map(|e| e.slot.clone()),
+        Some(arm_slot)
+    );
+}
+
 #[tokio::test]
 async fn reset_clears_the_registry() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
@@ -219,8 +338,8 @@ async fn reset_clears_the_registry() {
     .await;
     stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "arm"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .expect("pair");
     stack.reset();
@@ -254,8 +373,8 @@ async fn serialized_graph_overlays_pairing_slots() {
     // Paired: the binding carries the peer's full address + slot link_id.
     stack
         .pair_slots(
-            &SlotAddr::new("ctrl_1", "arm"),
-            &SlotAddr::new("arm_1", "controller"),
+            &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
+            &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .expect("pair");
     let graph = stack.to_serialized_graph();

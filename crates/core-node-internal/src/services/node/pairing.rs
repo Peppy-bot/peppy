@@ -17,11 +17,12 @@
 //! restart rejects stale re-deliveries from the old daemon's queue.
 
 use config::runtime::Name;
+use core_node_api::encoding::PairCommitRequest;
 use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, LinkValue, PairingValidationItem, validate_pairings,
 };
-use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, SlotAddr};
+use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
 use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerPin, ProducerRef};
@@ -35,6 +36,14 @@ use super::common::SlotUpdateClient;
 /// treated as failed and reverted. The service is pre-setup (registered
 /// before the node's ready signal), so a healthy endpoint answers promptly.
 const PEER_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a cross-daemon `pair_commit` may take. Strictly longer than
+/// [`PEER_UPDATE_TIMEOUT`] because it CONTAINS one: the receiving daemon
+/// commits to its registry, pins its own node over `peer_update`, and answers.
+/// Reusing the inner budget for the outer call would let the requester give up
+/// on a peer that is still inside a delivery it was granted the full time for,
+/// and then revert a pair the peer goes on to establish.
+const PAIR_COMMIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct PairingCoordinator {
     updates: SlotUpdateClient,
@@ -66,13 +75,18 @@ impl PairingCoordinator {
     /// `Starting`, and pins are only delivered once it commits to Running).
     /// All of `pair_slots`' validation applies: existence, liveness,
     /// same-pairing, complementary roles, sha pins, exclusivity.
-    pub async fn reserve(&self, a: &SlotAddr, b: &SlotAddr) -> std::result::Result<(), String> {
+    pub async fn reserve(&self, pair: &PlannedPair) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
-        self.updates
-            .node_stack()
-            .pair_slots(a, b)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let stack = self.updates.node_stack();
+        // A same-daemon pair validates both halves against local manifests. A
+        // cross-daemon one validates the half this daemon owns and takes the
+        // peer's identity from the coordinator, which checked both manifests
+        // before anything started.
+        let result = match &pair.peer_remote_meta {
+            None => stack.pair_slots(&pair.own, &pair.peer),
+            Some(meta) => stack.pair_slot_with_remote(&pair.own, &pair.peer, meta),
+        };
+        result.map(|_| ()).map_err(|e| e.to_string())
     }
 
     /// Delivers the current pin state of every pair involving `instance_id`
@@ -103,7 +117,7 @@ impl PairingCoordinator {
             .node_stack()
             .pairs()
             .into_iter()
-            .filter(|p| p.involves_instance(instance_id))
+            .filter(|p| p.involves(self.updates.core_node_name(), instance_id))
             .collect();
         if let Some(missing) = find_missing_planned_pair(&pairs, planned) {
             return Err(format!(
@@ -130,38 +144,79 @@ impl PairingCoordinator {
             .dissolve_pairs_for_instance(instance_id)
         {
             debug!(
-                "Dissolved pair `{}` ({}:{}) — instance '{}' is gone",
+                "Dissolved pair `{}` ({}:{}): instance '{}' is gone",
                 pairing_label(&pairing),
                 pairing.pairing_name,
                 pairing.pairing_tag,
                 instance_id
             );
-            for endpoint in [&pairing.a, &pairing.b] {
-                if endpoint.slot.instance_id == instance_id {
-                    continue;
-                }
-                self.notify_unpaired_best_effort(&endpoint.slot).await;
-            }
+            self.notify_local_survivors(&pairing, self.updates.core_node_name(), instance_id)
+                .await;
         }
+    }
+
+    /// Every core node, other than this one, hosting the peer of a pair
+    /// `instance_id` holds.
+    ///
+    /// Derived rather than remembered: a pair records both endpoints and the
+    /// core node each runs on, so the registry already answers this. That is
+    /// what makes cross-daemon dissolution work for a pair formed outside a
+    /// launch, by a `peppy node run --pair` naming a peer on another machine,
+    /// with no planner involved.
+    ///
+    /// Asked on the stop path about an instance the stack has already dropped,
+    /// so it reads the registry as recorded ([`NodeStack::with_pairs`]) rather
+    /// than through a liveness-pruning view, which would delete the pair before
+    /// [`Self::dissolve_for_instance`] could notify its survivor.
+    pub fn remote_peer_core_nodes(&self, instance_id: &str) -> std::collections::BTreeSet<String> {
+        let local = self.updates.core_node_name();
+        self.updates
+            .node_stack()
+            .with_pairs(|pairs| remote_peer_core_nodes_of(pairs, local, instance_id))
     }
 
     /// Sends both endpoints of `pairing` their pins; reverts on failure per
     /// the module-level protocol.
+    ///
+    /// An endpoint on ANOTHER daemon is handed over rather than skipped. Only
+    /// the daemon hosting a node can deliver a pin to it, and only that daemon's
+    /// registry can record the pair, so the far half is committed by a
+    /// `pair_commit` request. Skipping it would leave the far node permanently
+    /// unpaired while this side reported the pair established: the exact
+    /// half-established state the protocol exists to prevent.
+    ///
+    /// That far half is therefore committed LAST. The revert this loop performs
+    /// is local-only, by construction: a node accepts slot updates solely from
+    /// its own daemon, so nothing here can take back a commit another daemon
+    /// has already made. Ordering the local delivery first means the only step
+    /// that could fail after a remote commit is one that no longer exists,
+    /// rather than one compensated for by a rollback request that can itself
+    /// fail. At least one endpoint of a pair in this registry is local, so this
+    /// only ever reorders the two sides; it never leaves the remote one out.
     async fn deliver_pair(&self, pairing: &Pairing) -> std::result::Result<(), String> {
-        let sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
+        let sides = local_first_delivery_order(pairing, self.updates.core_node_name());
         for (idx, (endpoint, peer)) in sides.into_iter().enumerate() {
-            if !self
-                .updates
-                .node_stack()
-                .instance_is_live_for_pairing(&endpoint.slot.instance_id)
-            {
-                continue;
-            }
-            let pin = PeerPin {
-                producer: ProducerRef::new(self.updates.core_node_name(), &peer.slot.instance_id),
-                peer_link_id: peer.slot.link_id.clone(),
+            let outcome = if endpoint.slot.is_on(self.updates.core_node_name()) {
+                if !self
+                    .updates
+                    .node_stack()
+                    .instance_is_live_for_pairing(&endpoint.slot.instance_id)
+                {
+                    continue;
+                }
+                let pin = PeerPin {
+                    // The peer's OWN core node, not this daemon's: a pin names
+                    // where the peer actually runs, and for a cross-daemon pair
+                    // those differ.
+                    producer: ProducerRef::new(peer.slot.core_node.clone(), &peer.slot.instance_id),
+                    peer_link_id: peer.slot.link_id.clone(),
+                };
+                self.send_peer_update(&endpoint.slot, Some(pin)).await
+            } else {
+                self.commit_pair_remotely(pairing, endpoint, peer).await
             };
-            if let Err(reason) = self.send_peer_update(&endpoint.slot, Some(pin)).await {
+
+            if let Err(reason) = outcome {
                 // Revert the commit; if the OTHER side already acked its pin,
                 // best-effort roll it back to Unpaired.
                 self.updates.node_stack().clear_pair(&endpoint.slot);
@@ -176,6 +231,189 @@ impl PairingCoordinator {
             }
         }
         Ok(())
+    }
+
+    /// Reads a peer's commit request as this daemon's own slot plus the remote
+    /// one it pairs with.
+    ///
+    /// Pulled out of the handler because getting the two directions the wrong
+    /// way round would pair a local slot with a local address that happens to
+    /// share a name, and no I/O is needed to check that it does not.
+    ///
+    /// The request states which machine its `local` endpoint lives on, so this
+    /// CHECKS that it is this one rather than taking the receiver's identity as
+    /// given. A request that reached the wrong daemon then fails loudly instead
+    /// of pairing whatever same-named instance happens to live here.
+    fn slots_from_commit_request(
+        request: &PairCommitRequest,
+        local_core_node: &str,
+    ) -> std::result::Result<(SlotAddr, SlotAddr, RemoteSlotMeta), String> {
+        if request.local.core_node != local_core_node {
+            return Err(format!(
+                "this request names `{}` as the daemon hosting `{}`, but it was answered by \
+                 `{local_core_node}`: a pair commit must reach the machine that hosts its \
+                 local endpoint",
+                request.local.core_node, request.local.instance_id
+            ));
+        }
+        Ok((
+            SlotAddr::new(
+                &request.local.core_node,
+                &request.local.instance_id,
+                &request.local_link_id,
+            ),
+            SlotAddr::new(
+                &request.peer.core_node,
+                &request.peer.instance_id,
+                &request.peer_link_id,
+            ),
+            RemoteSlotMeta {
+                pairing_name: request.pairing_name.clone(),
+                pairing_tag: request.pairing_tag.clone(),
+                role: request.peer_role.clone(),
+            },
+        ))
+    }
+
+    /// Asks the daemon hosting `endpoint` to record its half of `pairing` and
+    /// pin its own node.
+    ///
+    /// The receiving daemon does not re-derive the pairing rules: it cannot
+    /// read this daemon's manifests, and the launch coordinator already checked
+    /// both sides against each other before either started. What crosses here
+    /// is that verdict, not a request to re-litigate it.
+    async fn commit_pair_remotely(
+        &self,
+        pairing: &Pairing,
+        endpoint: &node_stack::PairEndpoint,
+        peer: &node_stack::PairEndpoint,
+    ) -> std::result::Result<(), String> {
+        let request = PairCommitRequest {
+            pairing_name: pairing.pairing_name.clone(),
+            pairing_tag: pairing.pairing_tag.clone(),
+            // `local` is relative to the RECEIVER, so it names the endpoint's
+            // own core node — which is also the machine this request is routed
+            // to. Stating it lets the receiver verify the routing instead of
+            // assuming "local means me".
+            local: ProducerRef::new(&endpoint.slot.core_node, &endpoint.slot.instance_id),
+            local_link_id: endpoint.slot.link_id.clone(),
+            local_role: endpoint.role.clone(),
+            peer: ProducerRef::new(&peer.slot.core_node, &peer.slot.instance_id),
+            peer_link_id: peer.slot.link_id.clone(),
+            peer_role: peer.role.clone(),
+        };
+        let response = peppylib::core_node::transport::poll(
+            &request,
+            self.updates.messenger(),
+            self.updates.core_node_name(),
+            self.updates.caller_instance_id(),
+            &endpoint.slot.core_node,
+            PAIR_COMMIT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("`{}` did not answer: {e}", endpoint.slot.core_node))?;
+
+        if response.ok {
+            return Ok(());
+        }
+        Err(response
+            .rejection_reason
+            .unwrap_or_else(|| format!("`{}` refused the pair", endpoint.slot.core_node)))
+    }
+
+    /// Records this daemon's half of a cross-daemon pair on behalf of the
+    /// daemon that started the other endpoint, and pins the local node.
+    ///
+    /// The mirror image of [`Self::commit_pair_remotely`]. Refusing here makes
+    /// the requester revert its own half, so a pair is never left established
+    /// on one machine and absent on the other.
+    pub async fn commit_pair_from_peer(
+        &self,
+        request: &PairCommitRequest,
+    ) -> std::result::Result<(), String> {
+        let _guard = self.op_lock.lock().await;
+        let (local, remote, remote_meta) =
+            Self::slots_from_commit_request(request, self.updates.core_node_name())?;
+        self.updates
+            .node_stack()
+            .pair_slot_with_remote(&local, &remote, &remote_meta)
+            .map_err(|e| e.to_string())?;
+
+        let pin = PeerPin {
+            producer: request.peer.clone(),
+            peer_link_id: request.peer_link_id.clone(),
+        };
+        if let Err(reason) = self.send_peer_update(&local, Some(pin)).await {
+            // Undo the commit before answering: a pair this daemon recorded but
+            // could not deliver is worse than none, because the node would
+            // report a slot it never received.
+            self.updates.node_stack().clear_pair(&local);
+            return Err(format!(
+                "could not pin `{}` on this daemon: {reason}",
+                request.local.instance_id
+            ));
+        }
+        Ok(())
+    }
+
+    /// Dissolves every pair involving an instance on ANOTHER daemon.
+    ///
+    /// The one relationship event that genuinely crosses daemons at runtime.
+    /// Dissolution stays authoritative on the daemon owning the dead instance;
+    /// this side converges on its report. Best-effort and idempotent: a
+    /// duplicate notification dissolves nothing further, and a lost one leaves
+    /// this side holding a pair to an instance that is gone, which the local
+    /// node's own staleness handling covers.
+    pub async fn dissolve_pairs_with_remote_instance(&self, core_node: &str, instance_id: &str) {
+        let _guard = self.op_lock.lock().await;
+        for pairing in self
+            .updates
+            .node_stack()
+            .dissolve_pairs_for_remote_instance(core_node, instance_id)
+        {
+            debug!(
+                "Dissolved cross-daemon pair `{}` ({}:{}) — instance '{}' on core node '{}' is gone",
+                pairing_label(&pairing),
+                pairing.pairing_name,
+                pairing.pairing_tag,
+                instance_id,
+                core_node
+            );
+            self.notify_local_survivors(&pairing, core_node, instance_id)
+                .await;
+        }
+    }
+
+    /// Tells this daemon's own endpoint of a dissolved pair that its slot is
+    /// now Unpaired.
+    ///
+    /// Only local endpoints are notified. A node accepts slot updates solely
+    /// from its own daemon, so an endpoint on another machine is that daemon's
+    /// to tell; reaching across would cross the trust boundary and duplicate
+    /// the notification its own daemon already sends.
+    ///
+    /// The gone endpoint is identified by its FULL address, core node included,
+    /// for the same reason [`Pairing::involves`] takes both: two daemons can
+    /// host same-named instances, so a remote `planner_inst` dying must not be
+    /// mistaken for the local `planner_inst` and cost that one its notice.
+    async fn notify_local_survivors(
+        &self,
+        pairing: &Pairing,
+        gone_core_node: &str,
+        gone_instance_id: &str,
+    ) {
+        let local_core_node = self.updates.core_node_name().to_owned();
+        for endpoint in [&pairing.a, &pairing.b] {
+            if endpoint.slot.core_node == gone_core_node
+                && endpoint.slot.instance_id == gone_instance_id
+            {
+                continue;
+            }
+            if !endpoint.slot.is_on(&local_core_node) {
+                continue;
+            }
+            self.notify_unpaired_best_effort(&endpoint.slot).await;
+        }
     }
 
     /// Best-effort absolute Unpaired delivery; failures are logged, never
@@ -225,6 +463,44 @@ impl PairingCoordinator {
     }
 }
 
+/// The pair's two `(endpoint, its peer)` deliveries, local endpoints first.
+///
+/// Free-standing so the ordering the rollback protocol depends on is checkable
+/// without a messenger: everything [`PairingCoordinator::deliver_pair`] can
+/// undo is local, so the one delivery it cannot undo has to be the last one it
+/// makes.
+fn local_first_delivery_order<'a>(
+    pairing: &'a Pairing,
+    local_core_node: &str,
+) -> [(&'a node_stack::PairEndpoint, &'a node_stack::PairEndpoint); 2] {
+    let mut sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
+    // `false` sorts first, and the sort is stable, so a pair with both
+    // endpoints on this daemon keeps its declared order.
+    sides.sort_by_key(|(endpoint, _)| !endpoint.slot.is_on(local_core_node));
+    sides
+}
+
+/// Every core node other than `local` hosting an endpoint of a pair that
+/// `instance_id` (on `local`) is in.
+///
+/// Free-standing so the set arithmetic is checkable without a stack: the
+/// recipients of a cross-daemon dissolution are derived from here, and getting
+/// them wrong means either notifying nobody or notifying this daemon about its
+/// own instance.
+fn remote_peer_core_nodes_of(
+    pairs: &[Pairing],
+    local: &str,
+    instance_id: &str,
+) -> std::collections::BTreeSet<String> {
+    pairs
+        .iter()
+        .filter(|pairing| pairing.involves(local, instance_id))
+        .flat_map(|pairing| [&pairing.a.slot.core_node, &pairing.b.slot.core_node])
+        .filter(|core_node| core_node.as_str() != local)
+        .cloned()
+        .collect()
+}
+
 /// `a_inst:a_link ⇌ b_inst:b_link`, the human-readable pair label used in
 /// logs and error messages (matches `peppy stack list`).
 fn pairing_label(pairing: &Pairing) -> String {
@@ -251,6 +527,10 @@ fn find_missing_planned_pair<'a>(
 pub struct PlannedPair {
     pub own: SlotAddr,
     pub peer: SlotAddr,
+    /// Set only when `peer` lives on another daemon. This daemon cannot read a
+    /// remote manifest, so the coordinator that validated the whole plan
+    /// supplies the peer's pairing identity and role here.
+    pub peer_remote_meta: Option<RemoteSlotMeta>,
 }
 
 /// The new instance's side of a plan-phase pairing check: its identity plus
@@ -302,6 +582,7 @@ pub fn plan_requested_pairs(
     snapshot: &[PairingNodeSnapshot],
     live_pairs: &[Pairing],
     request: &PairingRequest<'_>,
+    local_core_node: &str,
 ) -> std::result::Result<Vec<PlannedPair>, String> {
     let &PairingRequest {
         node_name,
@@ -313,7 +594,7 @@ pub fn plan_requested_pairs(
         covered,
     } = request;
     for (link_id, target) in requested {
-        if target.peer_instance_id == instance_id {
+        if target.peer.instance_id == instance_id {
             return Err(format!(
                 "pairing slot `{link_id}` targets its own instance '{instance_id}'; \
                  a pair joins two distinct instances"
@@ -350,28 +631,48 @@ pub fn plan_requested_pairs(
         }
     }
 
+    // A peer on ANOTHER machine cannot go through the local validator: every
+    // one of its rules reads the peer's manifest, and this daemon holds only
+    // its own. The planner that dispatched this goal holds both and already
+    // checked them against each other, so those pairs are split out here and
+    // built from that verdict. The local ones are validated exactly as before.
+    let (remote_requested, local_requested): (Vec<_>, Vec<_>) = requested
+        .iter()
+        .partition(|(_, target)| target.peer.core_node != local_core_node);
+
+    let is_optional = |link: &str| {
+        pairing_deps.iter().any(|d| {
+            matches!(
+                d,
+                config::node::PairingDependency::Participant(p)
+                    if p.link_id == link && p.optional
+            )
+        })
+    };
     let defer_like: Vec<String> = deferred
         .iter()
-        .chain(covered.keys().filter(|link| {
-            // Only a required (non-optional) participant slot needs a
-            // defer-like entry; observer slots are not participants.
-            !pairing_deps.iter().any(|d| {
-                matches!(
-                    d,
-                    config::node::PairingDependency::Participant(p)
-                        if p.link_id == **link && p.optional
-                )
-            })
-        }))
+        // Only a required (non-optional) participant slot needs a defer-like
+        // entry; observer slots are not participants.
+        .chain(covered.keys().filter(|link| !is_optional(link)))
+        // A remotely-paired slot IS paired, just not by anything this daemon
+        // can see. It rides here for the same reason a covered slot does:
+        // without it the coverage rule would report a slot uncovered that the
+        // planner has already satisfied.
+        .chain(
+            remote_requested
+                .iter()
+                .map(|(link, _)| *link)
+                .filter(|link| !is_optional(link)),
+        )
         .cloned()
         .collect();
     let own_instances = vec![DeploymentInstance {
         // Rendered into the validator's launcher target grammar
         // (`peer[/peer_link]`) as a scalar link value; lossless, since
         // instance ids and link_ids are `/`-free names.
-        links: requested
+        links: local_requested
             .iter()
-            .map(|(link_id, target)| (link_id.clone(), LinkValue::Scalar(target.to_string())))
+            .map(|(link_id, target)| ((*link_id).clone(), LinkValue::Scalar(target.to_string())))
             .collect(),
         defer_links: defer_like,
         ..DeploymentInstance::empty(
@@ -434,24 +735,84 @@ pub fn plan_requested_pairs(
         return Err(daemon_config::format_bulleted(&errors));
     }
 
-    Ok(validated
+    let mut planned: Vec<PlannedPair> = validated
         .planned
         .into_iter()
         .map(|pair| {
             // `a` is the declaring side, and the only declaring (non-
             // preexisting) item here is the new instance.
             debug_assert_eq!(pair.a.instance_id, instance_id);
+            // Both endpoints came out of the local validator, so both are
+            // instances of this stack and the local manifests already decided
+            // everything about them.
             PlannedPair {
-                own: SlotAddr::new(pair.a.instance_id, pair.a.link_id),
-                peer: SlotAddr::new(pair.b.instance_id, pair.b.link_id),
+                own: SlotAddr::new(local_core_node, pair.a.instance_id, pair.a.link_id),
+                peer: SlotAddr::new(local_core_node, pair.b.instance_id, pair.b.link_id),
+                peer_remote_meta: None,
             }
         })
-        .collect())
+        .collect();
+
+    for (link_id, target) in remote_requested {
+        planned.push(remote_planned_pair(
+            local_core_node,
+            instance_id,
+            link_id,
+            target,
+        )?);
+    }
+    Ok(planned)
+}
+
+/// One pair whose peer lives on another daemon, built from the planner's
+/// verdict rather than from a manifest this daemon cannot read.
+///
+/// Both pieces it needs are the planner's to supply, so a request missing
+/// either is refused rather than guessed at: pairing with the wrong slot
+/// across a machine boundary is not something the far daemon can catch either.
+fn remote_planned_pair(
+    local_core_node: &str,
+    instance_id: &str,
+    link_id: &str,
+    target: &PairTarget,
+) -> std::result::Result<PlannedPair, String> {
+    let peer_core_node = target.peer.core_node.as_str();
+    let peer_instance_id = target.peer.instance_id.as_str();
+    let peer_link_id = target.peer_link_id.as_deref().ok_or_else(|| {
+        format!(
+            "pairing slot `{link_id}` names peer `{peer_instance_id}` on `{peer_core_node}` \
+             without pinning its slot. An unpinned peer slot is resolved by reading the peer's \
+             manifest, which this daemon has no way to do for another machine; the planner must \
+             pin it."
+        )
+    })?;
+    let remote = target.remote_peer.as_ref().ok_or_else(|| {
+        format!(
+            "pairing slot `{link_id}` names peer `{peer_instance_id}` on `{peer_core_node}`, but \
+             carries no pairing verdict for it. This daemon holds no manifest for another \
+             machine's node, so only the planner that validated both sides can authorize the \
+             pair."
+        )
+    })?;
+    Ok(PlannedPair {
+        own: SlotAddr::new(local_core_node, instance_id, link_id),
+        peer: SlotAddr::new(peer_core_node, peer_instance_id, peer_link_id),
+        peer_remote_meta: Some(RemoteSlotMeta {
+            pairing_name: remote.pairing_name.clone(),
+            pairing_tag: remote.pairing_tag.clone(),
+            role: remote.peer_role.clone(),
+        }),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use node_stack::PairEndpoint;
+
+    /// Every instance in these tests lives on one daemon, so slot addresses
+    /// and pair targets all carry the same core node.
+    const TEST_CORE: &str = "core_a";
     use config::node::PairingDependency;
     use std::collections::BTreeMap;
 
@@ -485,6 +846,176 @@ mod tests {
         )]
     }
 
+    fn endpoint(core_node: &str, instance_id: &str, link_id: &str, role: &str) -> PairEndpoint {
+        PairEndpoint {
+            slot: SlotAddr::new(core_node, instance_id, link_id),
+            role: role.to_owned(),
+        }
+    }
+
+    fn pair(a: PairEndpoint, b: PairEndpoint) -> Pairing {
+        Pairing {
+            pairing_name: "task_delegation".to_owned(),
+            pairing_tag: "v1".to_owned(),
+            a,
+            b,
+        }
+    }
+
+    /// The recipients of a cross-daemon dissolution. Getting this wrong means
+    /// either telling nobody that an instance died, or telling this daemon
+    /// about its own.
+    #[test]
+    fn only_the_far_side_of_a_cross_daemon_pair_is_a_remote_peer() {
+        let pairs = vec![pair(
+            endpoint(TEST_CORE, "reflex_inst", "delegation", "executor"),
+            endpoint("core_b", "planner_inst", "delegation", "planner"),
+        )];
+        assert_eq!(
+            remote_peer_core_nodes_of(&pairs, TEST_CORE, "reflex_inst"),
+            std::collections::BTreeSet::from(["core_b".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_same_daemon_pair_has_no_remote_peers() {
+        let pairs = vec![pair(
+            endpoint(TEST_CORE, "reflex_inst", "delegation", "executor"),
+            endpoint(TEST_CORE, "planner_inst", "delegation", "planner"),
+        )];
+        assert!(
+            remote_peer_core_nodes_of(&pairs, TEST_CORE, "reflex_inst").is_empty(),
+            "a pair entirely on this daemon needs no notification"
+        );
+    }
+
+    /// Pairs this instance is not in belong to somebody else's lifecycle.
+    #[test]
+    fn pairs_not_involving_the_instance_are_ignored() {
+        let pairs = vec![pair(
+            endpoint(TEST_CORE, "other_inst", "delegation", "executor"),
+            endpoint("core_b", "planner_inst", "delegation", "planner"),
+        )];
+        assert!(remote_peer_core_nodes_of(&pairs, TEST_CORE, "reflex_inst").is_empty());
+    }
+
+    /// One instance can hold several cross-daemon pairs, and each far daemon
+    /// has to hear about it exactly once.
+    #[test]
+    fn every_distinct_far_daemon_is_collected_once() {
+        let pairs = vec![
+            pair(
+                endpoint(TEST_CORE, "reflex_inst", "delegation", "executor"),
+                endpoint("core_b", "planner_inst", "delegation", "planner"),
+            ),
+            pair(
+                endpoint("core_c", "logger_inst", "audit", "auditor"),
+                endpoint(TEST_CORE, "reflex_inst", "audit", "audited"),
+            ),
+        ];
+        assert_eq!(
+            remote_peer_core_nodes_of(&pairs, TEST_CORE, "reflex_inst"),
+            std::collections::BTreeSet::from(["core_b".to_owned(), "core_c".to_owned()])
+        );
+    }
+
+    /// The far half of a cross-daemon pair is committed last, because it is
+    /// the one thing this daemon cannot take back: every revert in
+    /// `deliver_pair` is a local registry clear plus a local `peer_update`, and
+    /// a node accepts slot updates only from its own daemon. Delivering the
+    /// remote side first would leave a peer holding a pair this side had
+    /// already abandoned.
+    #[test]
+    fn a_cross_daemon_pair_delivers_its_local_endpoint_before_the_remote_one() {
+        let local = endpoint(TEST_CORE, "reflex_inst", "delegation", "executor");
+        let remote = endpoint("core_b", "planner_inst", "delegation", "planner");
+
+        for pairing in [
+            pair(remote.clone(), local.clone()),
+            pair(local.clone(), remote.clone()),
+        ] {
+            let [(first, first_peer), (second, _)] =
+                local_first_delivery_order(&pairing, TEST_CORE);
+            assert_eq!(first.slot, local.slot, "the local endpoint goes first");
+            assert_eq!(first_peer.slot, remote.slot, "paired with its peer");
+            assert_eq!(second.slot, remote.slot, "the remote commit goes last");
+        }
+    }
+
+    /// Both endpoints local: nothing to reorder, and the declared order is
+    /// preserved so the delivery protocol reads the same as before.
+    #[test]
+    fn a_same_daemon_pair_keeps_its_declared_delivery_order() {
+        let pairing = pair(
+            endpoint(TEST_CORE, "reflex_inst", "delegation", "executor"),
+            endpoint(TEST_CORE, "planner_inst", "delegation", "planner"),
+        );
+        let [(first, _), (second, _)] = local_first_delivery_order(&pairing, TEST_CORE);
+        assert_eq!(first.slot, pairing.a.slot);
+        assert_eq!(second.slot, pairing.b.slot);
+    }
+
+    /// The request's field names are relative to the RECEIVER, so `local_*`
+    /// must land on this daemon and `peer_*` on the sender's. Swapping them
+    /// would pair a local slot with a local address that merely shares a name.
+    #[test]
+    fn a_peers_commit_request_is_read_from_the_receivers_point_of_view() {
+        let request = PairCommitRequest {
+            pairing_name: "task_delegation".to_owned(),
+            pairing_tag: "v1".to_owned(),
+            local: ProducerRef::new(TEST_CORE, "reflex_inst"),
+            local_link_id: "delegation".to_owned(),
+            local_role: "executor".to_owned(),
+            peer: ProducerRef::new("core_b", "planner_inst"),
+            peer_link_id: "delegation".to_owned(),
+            peer_role: "planner".to_owned(),
+        };
+
+        let (local, remote, meta) =
+            PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)
+                .expect("the request names this daemon as its local host");
+
+        assert_eq!(local, SlotAddr::new(TEST_CORE, "reflex_inst", "delegation"));
+        assert_eq!(
+            remote,
+            SlotAddr::new("core_b", "planner_inst", "delegation")
+        );
+        assert_eq!(
+            meta,
+            RemoteSlotMeta {
+                pairing_name: "task_delegation".to_owned(),
+                pairing_tag: "v1".to_owned(),
+                // The PEER's role: this daemon can read its own manifest, but
+                // not the one across the boundary.
+                role: "planner".to_owned(),
+            }
+        );
+    }
+
+    /// The request states which machine hosts its local endpoint, so a commit
+    /// that reached the wrong daemon is refused instead of silently pairing a
+    /// same-named instance that happens to live here. Without the explicit
+    /// `local.core_node`, "local" would just mean "whoever opened the envelope"
+    /// and this mis-route would succeed against the wrong node.
+    #[test]
+    fn a_commit_request_routed_to_the_wrong_daemon_is_refused() {
+        let request = PairCommitRequest {
+            pairing_name: "task_delegation".to_owned(),
+            pairing_tag: "v1".to_owned(),
+            local: ProducerRef::new("core_elsewhere", "reflex_inst"),
+            local_link_id: "delegation".to_owned(),
+            local_role: "executor".to_owned(),
+            peer: ProducerRef::new("core_b", "planner_inst"),
+            peer_link_id: "delegation".to_owned(),
+            peer_role: "planner".to_owned(),
+        };
+
+        let error = PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)
+            .expect_err("a request for another daemon must be refused");
+        assert!(error.contains("core_elsewhere"), "got: {error}");
+        assert!(error.contains(TEST_CORE), "got: {error}");
+    }
+
     fn requested(entries: &[(&str, PairTarget)]) -> BTreeMap<String, PairTarget> {
         entries
             .iter()
@@ -513,7 +1044,123 @@ mod tests {
                 deferred,
                 covered: &BTreeMap::new(),
             },
+            TEST_CORE,
         )
+    }
+
+    // --- Pairs whose peer lives on another daemon ---
+
+    /// A peer this daemon hosts nothing for: the launcher's flagship shape,
+    /// a reflex policy on the robot paired with a planner in the cloud.
+    fn remote_planner_target() -> PairTarget {
+        PairTarget::pinned("planner_inst", "deliberation", "core_b").with_remote_peer(
+            core_node_api::encoding::RemotePeerPairing {
+                pairing_name: "deliberation_link".to_owned(),
+                pairing_tag: "v1".to_owned(),
+                peer_role: "planner".to_owned(),
+            },
+        )
+    }
+
+    /// The whole point of the cross-machine path: the peer is not in this
+    /// daemon's stack, so every local rule would report it unknown. The
+    /// planner's verdict stands in for the manifest this daemon cannot read,
+    /// and the resulting pair addresses the peer on ITS machine rather than
+    /// on this one.
+    #[test]
+    fn a_peer_on_another_daemon_is_planned_from_the_coordinators_verdict() {
+        let deps = [dep("executor", "deliberation", false)];
+        let planned = plan(
+            &[],
+            "reflex_inst",
+            &deps,
+            &requested(&[("deliberation", remote_planner_target())]),
+            &[],
+        )
+        .expect("a remote peer is authorized by the planner, not by local manifests");
+
+        assert_eq!(
+            planned,
+            vec![PlannedPair {
+                own: SlotAddr::new(TEST_CORE, "reflex_inst", "deliberation"),
+                peer: SlotAddr::new("core_b", "planner_inst", "deliberation"),
+                peer_remote_meta: Some(RemoteSlotMeta {
+                    pairing_name: "deliberation_link".to_owned(),
+                    pairing_tag: "v1".to_owned(),
+                    role: "planner".to_owned(),
+                }),
+            }]
+        );
+    }
+
+    /// A required slot paired across machines is PAIRED, so the coverage rule
+    /// must not report it uncovered. Without this the flagship launcher would
+    /// fail on the very slot federation exists to support.
+    #[test]
+    fn a_remotely_paired_required_slot_satisfies_coverage() {
+        let deps = [
+            dep("executor", "deliberation", false),
+            dep("controller", "arm", false),
+        ];
+        let planned = plan(
+            &arm_snapshot(),
+            "reflex_inst",
+            &deps,
+            &requested(&[
+                ("deliberation", remote_planner_target()),
+                ("arm", PairTarget::new("arm_1", TEST_CORE)),
+            ]),
+            &[],
+        )
+        .expect("a remotely-paired required slot is covered");
+
+        assert_eq!(
+            planned.len(),
+            2,
+            "both the local and the remote pair: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|p| p.peer == SlotAddr::new("core_b", "planner_inst", "deliberation")),
+            "got: {planned:?}"
+        );
+    }
+
+    /// Resolving an unpinned peer slot means reading the peer's manifest.
+    /// This daemon has none for another machine, so the planner must pin it
+    /// rather than have the daemon guess which slot was meant.
+    #[test]
+    fn an_unpinned_remote_peer_slot_is_refused() {
+        let deps = [dep("executor", "deliberation", false)];
+        let error = plan(
+            &[],
+            "reflex_inst",
+            &deps,
+            &requested(&[("deliberation", PairTarget::new("planner_inst", "core_b"))]),
+            &[],
+        )
+        .expect_err("an unpinned remote slot cannot be resolved here");
+        assert!(error.contains("without pinning its slot"), "got: {error}");
+    }
+
+    /// A remote pair with no verdict is refused rather than committed on
+    /// trust: neither daemon can check it, so nothing downstream would.
+    #[test]
+    fn a_remote_peer_without_a_planner_verdict_is_refused() {
+        let deps = [dep("executor", "deliberation", false)];
+        let error = plan(
+            &[],
+            "reflex_inst",
+            &deps,
+            &requested(&[(
+                "deliberation",
+                PairTarget::pinned("planner_inst", "deliberation", "core_b"),
+            )]),
+            &[],
+        )
+        .expect_err("an unauthorized cross-machine pair must be refused");
+        assert!(error.contains("no pairing verdict"), "got: {error}");
     }
 
     #[test]
@@ -523,15 +1170,16 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("arm_1"))]),
+            &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
             &[],
         )
         .expect("unambiguous target resolves");
         assert_eq!(
             planned,
             vec![PlannedPair {
-                own: SlotAddr::new("ctrl_1", "arm"),
-                peer: SlotAddr::new("arm_1", "controller"),
+                own: SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+                peer: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
+                peer_remote_meta: None,
             }]
         );
     }
@@ -543,17 +1191,20 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::pinned("arm_1", "controller"))]),
+            &requested(&[("arm", PairTarget::pinned("arm_1", "controller", TEST_CORE))]),
             &[],
         )
         .expect("pinned target resolves");
-        assert_eq!(planned[0].peer, SlotAddr::new("arm_1", "controller"));
+        assert_eq!(
+            planned[0].peer,
+            SlotAddr::new(TEST_CORE, "arm_1", "controller")
+        );
 
         let err = plan(
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::pinned("arm_1", "nope"))]),
+            &requested(&[("arm", PairTarget::pinned("arm_1", "nope", TEST_CORE))]),
             &[],
         )
         .expect_err("wrong peer_link rejected");
@@ -608,6 +1259,7 @@ mod tests {
                 deferred: &[],
                 covered,
             },
+            TEST_CORE,
         )
     }
 
@@ -616,7 +1268,7 @@ mod tests {
     /// optional, while a covered key naming an unknown slot fails loudly.
     #[test]
     fn covered_slots_satisfy_coverage() {
-        let covered = requested(&[("arm", PairTarget::pinned("cmd_9", "left"))]);
+        let covered = requested(&[("arm", PairTarget::pinned("cmd_9", "left", TEST_CORE))]);
         for optional in [false, true] {
             let deps = [dep("controller", "arm", optional)];
             assert!(
@@ -628,8 +1280,8 @@ mod tests {
 
         let deps = [dep("controller", "arm", false)];
         let covered = requested(&[
-            ("arm", PairTarget::pinned("cmd_9", "left")),
-            ("ghost", PairTarget::pinned("cmd_9", "right")),
+            ("arm", PairTarget::pinned("cmd_9", "left", TEST_CORE)),
+            ("ghost", PairTarget::pinned("cmd_9", "right", TEST_CORE)),
         ]);
         let err = plan_covered(&deps, &covered)
             .expect_err("a covered key naming an unknown slot is rejected");
@@ -661,7 +1313,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("ghost", PairTarget::new("arm_1"))]),
+            &requested(&[("ghost", PairTarget::new("arm_1", TEST_CORE))]),
             &[],
         )
         .expect_err("unknown link_id rejected");
@@ -671,7 +1323,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("arm_1"))]),
+            &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
             &["arm".to_string()],
         )
         .expect_err("request+defer overlap rejected");
@@ -695,7 +1347,7 @@ mod tests {
             &snapshot,
             "arm_1",
             &deps,
-            &requested(&[("controller", PairTarget::new("cmd_1"))]),
+            &requested(&[("controller", PairTarget::new("cmd_1", TEST_CORE))]),
             &[],
         )
         .expect_err("two candidates is ambiguous");
@@ -720,7 +1372,7 @@ mod tests {
             &snapshot,
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("other_1"))]),
+            &requested(&[("arm", PairTarget::new("other_1", TEST_CORE))]),
             &[],
         )
         .expect_err("same-role slots must not match");
@@ -730,7 +1382,7 @@ mod tests {
             &arm_snapshot(),
             "ctrl_1",
             &deps,
-            &requested(&[("arm", PairTarget::new("ctrl_1"))]),
+            &requested(&[("arm", PairTarget::new("ctrl_1", TEST_CORE))]),
             &[],
         )
         .expect_err("self-pairing rejected");
@@ -747,11 +1399,11 @@ mod tests {
             pairing_name: "arm_link".to_string(),
             pairing_tag: "v1".to_string(),
             a: PairEndpoint {
-                slot: SlotAddr::new("arm_1", "controller"),
+                slot: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
                 role: "arm".to_string(),
             },
             b: PairEndpoint {
-                slot: SlotAddr::new("ctrl_0", "arm"),
+                slot: SlotAddr::new(TEST_CORE, "ctrl_0", "arm"),
                 role: "controller".to_string(),
             },
         }];
@@ -764,10 +1416,11 @@ mod tests {
                 node_tag: "v1",
                 instance_id: "ctrl_1",
                 pairing_deps: &deps,
-                requested: &requested(&[("arm", PairTarget::new("arm_1"))]),
+                requested: &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
                 deferred: &[],
                 covered: &BTreeMap::new(),
             },
+            TEST_CORE,
         )
         .expect_err("a live-paired slot is exclusive");
         assert!(
@@ -793,19 +1446,20 @@ mod tests {
             },
         };
         let planned = vec![PlannedPair {
-            own: SlotAddr::new("ctrl_1", "arm"),
-            peer: SlotAddr::new("arm_1", "controller"),
+            own: SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+            peer: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
+            peer_remote_meta: None,
         }];
 
         // Present as reserved: no missing pair, whichever side is `a`.
         let same_order = [registry_pair(
-            SlotAddr::new("ctrl_1", "arm"),
-            SlotAddr::new("arm_1", "controller"),
+            SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+            SlotAddr::new(TEST_CORE, "arm_1", "controller"),
         )];
         assert!(find_missing_planned_pair(&same_order, &planned).is_none());
         let swapped = [registry_pair(
-            SlotAddr::new("arm_1", "controller"),
-            SlotAddr::new("ctrl_1", "arm"),
+            SlotAddr::new(TEST_CORE, "arm_1", "controller"),
+            SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
         )];
         assert!(find_missing_planned_pair(&swapped, &planned).is_none());
 
@@ -817,8 +1471,8 @@ mod tests {
             "an empty registry must flag the planned pair"
         );
         let unrelated = [registry_pair(
-            SlotAddr::new("ctrl_1", "arm"),
-            SlotAddr::new("arm_2", "controller"),
+            SlotAddr::new(TEST_CORE, "ctrl_1", "arm"),
+            SlotAddr::new(TEST_CORE, "arm_2", "controller"),
         )];
         assert_eq!(
             find_missing_planned_pair(&unrelated, &planned),
@@ -840,8 +1494,8 @@ mod tests {
             "cmd_1",
             &deps,
             &requested(&[
-                ("left", PairTarget::new("arm_1")),
-                ("right", PairTarget::new("arm_1")),
+                ("left", PairTarget::new("arm_1", TEST_CORE)),
+                ("right", PairTarget::new("arm_1", TEST_CORE)),
             ]),
             &[],
         )

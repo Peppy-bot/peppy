@@ -6,13 +6,18 @@
 //! only listened for SIGINT, so `systemctl stop` would not run the node
 //! teardown at all.
 //!
-//! These are `#[ignore]`d: they launch a real daemon (and on Linux run the
-//! Apptainer preflight), so they are gated behind an explicit
-//! `cargo test -- --ignored` run rather than the default suite. The daemon-side
-//! teardown of node *processes* is covered without a separate binary by
-//! `core-node`'s `teardown_all_instances` test, and the watchdog timing by
-//! `peppylib`'s `daemon_watchdog` tests; this file proves the signal wiring in
-//! the shipped binary.
+//! These run in the default suite. Spawning a real binary sounds expensive but
+//! is not: `--messaging-engine mock` needs no router, `service serve` startup
+//! touches no container tooling, and both cases together take a fraction of a
+//! second. Gating them behind `--ignored` only meant nothing ever ran them —
+//! CI's sole `--ignored` invocation is scoped to `core-node`'s latency suite —
+//! which is a poor place for the one test that would have caught the SIGTERM
+//! regression above.
+//!
+//! The daemon-side teardown of node *processes* is covered without a separate
+//! binary by `core-node`'s `teardown_all_instances` test, and the watchdog
+//! timing by `peppylib`'s `daemon_watchdog` tests; this file proves the signal
+//! wiring in the shipped binary.
 
 use crate::common::{spawn_daemon, wait_for_exit};
 use peppy::test_support::wait_for_log;
@@ -42,13 +47,11 @@ fn run_shutdown_signal_case(signal: rustix::process::Signal) {
 }
 
 #[test]
-#[ignore = "spawns a real peppy daemon; run with --ignored"]
 fn serve_shuts_down_on_sigint() {
     run_shutdown_signal_case(rustix::process::Signal::INT);
 }
 
 #[test]
-#[ignore = "spawns a real peppy daemon; run with --ignored"]
 fn serve_shuts_down_on_sigterm() {
     run_shutdown_signal_case(rustix::process::Signal::TERM);
 }

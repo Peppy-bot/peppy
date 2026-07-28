@@ -112,20 +112,12 @@ mod container_e2e_tests {
             .await
             .expect("zenoh endpoint should be available");
 
-        let runtime_config_json5 = common::build_runtime_config_json5(
-            messaging_host.as_str(),
-            messaging_port,
-            &started.core_node_name,
-            NODE_NAME,
-            NODE_TAG,
-            INSTANCE_ID,
-            Default::default(),
-        );
+        let instance_plan = common::instance_plan(INSTANCE_ID, Default::default());
 
         let start_response = send_node_run_and_wait(
             &started.caller_handle,
             &started.core_node_name,
-            &runtime_config_json5,
+            instance_plan.clone(),
             NODE_NAME,
             NODE_TAG,
             &NodeRunTestTimeouts {
@@ -278,20 +270,12 @@ mod container_e2e_tests {
             .await
             .expect("zenoh endpoint should be available");
 
-        let runtime_config_json5 = common::build_runtime_config_json5(
-            messaging_host.as_str(),
-            messaging_port,
-            &started.core_node_name,
-            NODE_NAME,
-            NODE_TAG,
-            INSTANCE_ID,
-            Default::default(),
-        );
+        let instance_plan = common::instance_plan(INSTANCE_ID, Default::default());
 
         let start_response = send_node_run_and_wait(
             &started.caller_handle,
             &started.core_node_name,
-            &runtime_config_json5,
+            instance_plan.clone(),
             NODE_NAME,
             NODE_TAG,
             &NodeRunTestTimeouts {

@@ -4,10 +4,8 @@ use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_action_log_file,
     log_label_from_source, run_node_add, run_node_build_for_entity, run_node_run,
-    teardown_all_instances,
 };
 use chrono::Local;
-use config::runtime::RuntimeConfig;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
 };
@@ -156,7 +154,6 @@ pub(super) async fn build_node_directly(
 pub(super) async fn start_node_directly(
     ctx: &ProcessLaunchContext,
     node_run_goal: NodeRunGoal,
-    runtime_config: RuntimeConfig,
     log_path: PathBuf,
     log_file: Arc<StdMutex<File>>,
 ) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
@@ -189,6 +186,15 @@ pub(super) async fn start_node_directly(
     // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
     // child + unregister its `Starting` entry) before we return the failure.
     let run_cancel_token = CancellationToken::new();
+
+    // Assemble here, from the daemon's own state, exactly as the action-server
+    // path does. The launch never builds a config it hands to something else.
+    let runtime_config =
+        match crate::services::node::assemble_runtime_config(&node_run_goal, &action_context).await
+        {
+            Ok(config) => config,
+            Err(reason) => return (Err(reason), Some(log_path)),
+        };
 
     let result = run_phase(
         run_node_run(
@@ -233,6 +239,7 @@ pub(super) async fn start_node_directly(
 pub(super) async fn fail_and_clear_stack(
     ctx: &ProcessLaunchContext,
     reason: String,
+    participants: &[String],
 ) -> LaunchResult {
     publish_stderr(
         ctx,
@@ -242,6 +249,11 @@ pub(super) async fn fail_and_clear_stack(
     .await;
 
     teardown_and_reset_stack(ctx).await;
+    // Every machine this launch touched gets the same treatment, and is named
+    // while it happens. A federated failure that cleaned up only the
+    // coordinator would leave half a topology running on machines the operator
+    // never typed the name of.
+    super::federated::clear_participant_slices(ctx, participants).await;
 
     LaunchResult::failure(&ctx.log_path, reason)
 }
@@ -260,6 +272,7 @@ pub(super) async fn validate_and_order_dependencies(
     ctx: &ProcessLaunchContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
+    placements: &daemon_config::launcher::Placements,
 ) -> std::result::Result<
     (
         Vec<NodeKey>,
@@ -337,14 +350,7 @@ pub(super) async fn validate_and_order_dependencies(
         .map(|inst| inst.instance_id().as_str().to_owned());
     let root_instances: Vec<daemon_config::launcher::DeploymentInstance> = root_instance_id_str
         .and_then(|id_str| config::runtime::Name::new(id_str).ok())
-        .map(|instance_id| daemon_config::launcher::DeploymentInstance {
-            instance_id,
-            arguments: Default::default(),
-            env_vars: Default::default(),
-            framework: Default::default(),
-            links: Default::default(),
-            defer_links: Default::default(),
-        })
+        .map(daemon_config::launcher::DeploymentInstance::empty)
         .into_iter()
         .collect();
 
@@ -390,7 +396,7 @@ pub(super) async fn validate_and_order_dependencies(
         &binding_items,
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
-        ctx.bound_core_node.as_str(),
+        placements,
     );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
@@ -533,13 +539,12 @@ pub(super) async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
-    teardown_all_instances(
+    crate::services::stack::clear_stack_slice(
         &ctx.messenger,
         &ctx.bound_core_node,
         &ctx.core_instance_id,
         &ctx.node_stack,
+        ctx.relationships.observation(),
     )
     .await;
-    ctx.node_stack.reset();
-    ctx.relationships.observation().clear();
 }

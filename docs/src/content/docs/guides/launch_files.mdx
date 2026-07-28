@@ -226,6 +226,10 @@ Framework knobs owned by peppylib rather than by the node author, so they mean t
 
 An unknown key inside `framework` is an error rather than a no-op, so a typo like `use_simulation_time` fails the launch instead of silently leaving the instance on wall time.
 
+### `core_node` (optional)
+
+The machine this instance runs on, named by one of the placeholders the launcher declares under `core_nodes`. An instance that omits it runs on the daemon you launched from. See [Running one launcher across several machines](#running-one-launcher-across-several-machines).
+
 ### `links` (optional)
 
 One map filling every kind of `depends_on` slot the node declares, keyed by the slot's `link_id`. A value is interpreted against the slot it names:
@@ -239,3 +243,12 @@ Every target must name an `instance_id` declared somewhere in the same launcher.
 ### `defer_links` (optional)
 
 The `link_id`s of required pairing or observer slots this instance should start with left unresolved, listed by name. Every required participant slot must either be paired or appear here, and every observer slot must either be linked or appear here; a producer-binding slot cannot be deferred. Use it when the peer arrives later, at runtime, rather than in this launch.
+
+## Running one launcher across several machines
+
+A launcher can span machines. It declares named placeholders under `core_nodes`,
+each instance says which one it runs on via `core_node`, and
+`peppy stack launch --place <core-node-link>@<core-node>` binds those
+placeholders to real hardware at launch time. Producer links, pairings, and
+observations all work across the boundary, and consumers still start after their
+producers. See [Federation](/advanced_guides/federation/).

@@ -40,7 +40,6 @@ use config::peppy_config::{
     DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
     DEFAULT_STANDARD_BUFFER_SIZE, SubscriberBufferConfig,
 };
-use config::runtime::Name;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -833,14 +832,14 @@ impl PeppyConfig {
     fn validate(&self) -> Result<()> {
         // An explicit core-node name ends up in `Name::new(...)` when the core
         // node boots, so a value serde accepted as a plain string must be
-        // checked here to fail at load time instead of at boot.
+        // checked here to fail at load time instead of at boot. One shared
+        // validator, so this refusal and the CLI's and the serve flag's all
+        // state the same rules in the same words.
         if let Some(name) = &self.core_node_name
-            && (Name::new(name.as_str()).is_err() || name.len() > MAX_CORE_NODE_NAME_LEN)
+            && let Err(reason) = crate::internal::core_node_name::CoreNodeName::new(name.as_str())
         {
             return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
-                "{PEPPY_CONFIG_FILE}: invalid core_node_name {name:?}: must be \
-                 non-empty, at most {MAX_CORE_NODE_NAME_LEN} characters, and use \
-                 only characters from \"{ALLOWED_CONFIG_CHARS}\""
+                "{PEPPY_CONFIG_FILE}: invalid core_node_name {name:?}: {reason}"
             ))));
         }
 

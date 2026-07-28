@@ -73,6 +73,10 @@ tracing-subscriber = "0.3"
 
 [features]
 container_e2e = []
+# Embed this crate's node-init templates, and the generator's, even in a debug
+# build. Needed by any test that runs a debug binary away from its build tree;
+# see the feature's own comment in generator-internal.
+debug-embed = ["rust-embed/debug-embed", "generator/debug-embed"]
 # Test-only scaffolding (`test_support` module) for downstream crates' tests;
 # this crate's own unit tests see the module via `cfg(test)` instead.
 test-support = ["dep:tracing-subscriber"]

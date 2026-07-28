@@ -33,6 +33,7 @@ pub async fn listen_for_node_build(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -50,6 +51,7 @@ pub async fn listen_for_node_build(
             peppy_dirs,
         },
         gate: ConcurrencyGate::new(),
+        slice_ownership,
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -146,6 +148,8 @@ pub(crate) struct NodeBuildActionContext {
 struct NodeBuildGoalHandler {
     context: NodeBuildActionContext,
     gate: ConcurrencyGate,
+    /// See `NodeAddGoalHandler::slice_ownership`.
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 impl GoalHandler for NodeBuildGoalHandler {
@@ -176,6 +180,14 @@ impl NodeBuildGoalHandler {
                 return;
             }
         };
+
+        // Before the gate, because the gate is per-action and this exclusion is
+        // per-machine: a coordinator halfway through replacing this stack must
+        // not race a locally-typed `peppy node build`.
+        if let Err(reason) = self.slice_ownership.refuse_if_reserved_elsewhere(&goal) {
+            reject_goal(pending, encode_rejected_goal(reason)).await;
+            return;
+        }
 
         if goal.force {
             debug!("Force flag set: superseding any previous node_build task");

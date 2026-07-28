@@ -226,6 +226,8 @@ async fn node_launch_command_succeed() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -425,6 +427,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
 
     let launch_result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -564,6 +568,8 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 1,
@@ -601,6 +607,8 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -646,6 +654,8 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -893,6 +903,8 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1107,6 +1119,8 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1234,6 +1248,8 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
 
     let err = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1324,6 +1340,8 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1608,6 +1626,8 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1747,6 +1767,8 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1881,6 +1903,8 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2143,6 +2167,8 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2291,6 +2317,8 @@ async fn stack_launch_rejects_unbound_slot() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2475,6 +2503,8 @@ async fn stack_launch_establishes_launcher_pairings() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2659,6 +2689,8 @@ async fn stack_launch_delivers_observer_source_pin() {
 
     StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2746,6 +2778,8 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
 
     let err = StackCommand {
         command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,

@@ -60,7 +60,10 @@ export default defineConfig({
 					tag: 'link',
 					attrs: {
 						rel: 'stylesheet',
-						href: 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap',
+						// Space Grotesk only. JetBrains Mono is self-hosted from
+						// `public/fonts/` because Google's subset drops the box-drawing
+						// block every CLI table in the docs is made of; see tailwind.css.
+						href: 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap',
 					},
 				},
 			],
