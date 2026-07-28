@@ -209,6 +209,55 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
     );
 }
 
+/// The daemon's teardown seam asks "who else needs to hear about this
+/// instance?" (via `with_pairs`) BEFORE it dissolves, and by then the stop
+/// path has already removed the instance from the stack. A pruning read there
+/// would drop the very pair that names the recipients, and the survivor would
+/// never be told its peer died — so `with_pairs` must report the registry as
+/// recorded, leaving dissolution the only thing that removes a pair.
+#[tokio::test]
+async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let _arm =
+        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
+    let _ctrl = fixtures::push_started(
+        &stack,
+        &harness,
+        arm_controller_config(),
+        Some(&name("ctrl_1")),
+    )
+    .await;
+
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
+    stack.pair_slots(&ctrl_slot, &arm_slot).expect("pair");
+
+    // What `node stop` does before tearing relationships down.
+    assert!(fixtures::stop_instance_in_stack(
+        &stack,
+        "arm_controller",
+        "v1",
+        &name("ctrl_1")
+    ));
+
+    assert_eq!(
+        stack.with_pairs(|pairs| pairs.len()),
+        1,
+        "the notification path must still see the pair of an instance that is already gone"
+    );
+    let dissolved = stack.dissolve_pairs_for_instance("ctrl_1");
+    assert_eq!(
+        dissolved.len(),
+        1,
+        "dissolution must still return the pair, so the survivor gets notified"
+    );
+    assert_eq!(
+        dissolved[0].peer_of(&ctrl_slot).map(|e| e.slot.clone()),
+        Some(arm_slot)
+    );
+}
+
 #[tokio::test]
 async fn reset_clears_the_registry() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));

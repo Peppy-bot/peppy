@@ -154,6 +154,11 @@ impl PairingCoordinator {
     /// what makes cross-daemon dissolution work for a pair formed outside a
     /// launch, by a `peppy node run --pair` naming a peer on another machine,
     /// with no planner involved.
+    ///
+    /// Asked on the stop path about an instance the stack has already dropped,
+    /// so it reads the registry as recorded ([`NodeStack::with_pairs`]) rather
+    /// than through a liveness-pruning view, which would delete the pair before
+    /// [`Self::dissolve_for_instance`] could notify its survivor.
     pub fn remote_peer_core_nodes(&self, instance_id: &str) -> std::collections::BTreeSet<String> {
         let local = self.updates.core_node_name();
         self.updates

@@ -1315,17 +1315,22 @@ impl NodeStack {
         guard.pairs_impl()
     }
 
-    /// [`Self::pairs`] without the copy, for callers that only want to derive
-    /// something from the set and then drop it.
+    /// The registry exactly as recorded, without the copy, for callers that
+    /// only want to derive something from the set and then drop it.
     ///
     /// The lifecycle paths ask "who else needs to hear about this instance?"
     /// on every start and stop, and cloning the whole registry to answer a
     /// question about one instance is the bulk of that cost — on stacks with
-    /// no pairs at all as much as on federated ones. `f` runs under the
-    /// registry guard, so it must not touch this stack.
+    /// no pairs at all as much as on federated ones.
+    ///
+    /// Deliberately NOT pruned, unlike [`Self::pairs`]. The question is asked
+    /// about an instance that has just been removed from the stack, so pruning
+    /// would drop the very pairs that name the recipients and the answer would
+    /// always be "nobody". Dissolution is the explicit step that removes them,
+    /// and it must be the one that observes them first. `f` runs under the
+    /// stack guard, so it must not touch this stack.
     pub fn with_pairs<R>(&self, f: impl FnOnce(&[Pairing]) -> R) -> R {
-        let mut guard = self.shared.write();
-        guard.prune_dead_pairs();
+        let guard = self.shared.read();
         f(guard.pairing_registry.pairs())
     }
 
