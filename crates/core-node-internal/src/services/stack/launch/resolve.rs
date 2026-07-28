@@ -2,9 +2,10 @@ use super::feedback::{publish_stderr, publish_stdout};
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::resolve_node_config;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource,
+    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource, PlacementSpec,
 };
 use daemon_config::consts::PeppyDirs;
+use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use parking_lot::Mutex as StdMutex;
@@ -170,23 +171,77 @@ pub(super) async fn parse_launcher_config(
     Ok((deployments, nodes_directory, placements))
 }
 
-/// Binds the launcher's declared core node links to the machines named by
-/// `--place`, then resolves every instance to the core node it runs on.
+/// Binds the launcher's declared core node links to the machines the caller
+/// asked for, then resolves every instance to the core node it runs on.
 ///
-/// The coordinator owns this, not the CLI. The CLI passes the raw pairs
-/// through and renders feedback; only the daemon has the resolved document,
-/// which matters because a `Repository` launcher (the shape every hub launcher
-/// uses) is resolved from the daemon's own repo cache and the CLI may never
-/// have seen it.
+/// The coordinator owns this, not the CLI, and it owns the EXPANSION as well as
+/// the check. Only the daemon has the resolved document — a `Repository`
+/// launcher (the shape every hub launcher uses) is read from the daemon's own
+/// repo cache and the CLI may never have seen it — so `--local` arrives as an
+/// intent and is expanded here against what the document actually declares.
+/// Expanding it caller-side would work for a file launcher and silently do
+/// nothing for a repository one.
 pub(super) fn resolve_placements(
     launcher: &daemon_config::launcher::PeppyLauncher,
     goal: &LaunchGoal,
     coordinator: &str,
 ) -> std::result::Result<Placements, String> {
+    // The daemon's own name, re-parsed rather than assumed: this is the only
+    // way to obtain a `CoreNodeName`, and every name in a `Placements` is one.
+    let coordinator = CoreNodeName::new(coordinator)
+        .map_err(|reason| format!("this daemon's core node name is invalid: {reason}"))?;
     let declared: BTreeSet<&str> = launcher.core_nodes.iter().map(String::as_str).collect();
+    let links = wire_core_node_links(&goal.placement, &declared, &coordinator)?;
 
-    if declared.is_empty() && !goal.core_node_links.is_empty() {
-        let wired = format_quoted_list(goal.core_node_links.keys());
+    let mut by_instance = BTreeMap::new();
+    for deployment in &launcher.deployments {
+        for instance in &deployment.instances {
+            let Some(link) = &instance.core_node else {
+                continue;
+            };
+            // The parser already refused a `core_node` naming an undeclared
+            // link, and every declared link is wired by the checks above.
+            let core_node = links
+                .get(link.as_str())
+                .expect("every declared link is wired and every core_node names a declared link");
+            by_instance.insert(instance.instance_id.to_string(), core_node.clone());
+        }
+    }
+
+    Ok(Placements::new(coordinator, by_instance))
+}
+
+/// Every declared core node link, wired to the machine it runs on.
+///
+/// Splitting this out is what lets `--local` be a real placement mode rather
+/// than a caller-side shortcut: both arms end in the same "every declared link
+/// has exactly one machine" post-condition, so nothing downstream has to know
+/// which flag produced it.
+///
+/// The `--place` targets are VALIDATED here, not taken on trust. They arrived
+/// on the wire, and while the CLI checks what a user types, a daemon cannot
+/// assume its caller was the CLI — this is where an unchecked name would
+/// otherwise enter the plan and be stamped onto every producer address.
+fn wire_core_node_links<'a>(
+    placement: &PlacementSpec,
+    declared: &BTreeSet<&'a str>,
+    coordinator: &CoreNodeName,
+) -> std::result::Result<BTreeMap<&'a str, CoreNodeName>, String> {
+    let places = match placement {
+        // `--local` collapses the whole topology onto this machine, whatever it
+        // turns out to be. A launcher that declares nothing is already entirely
+        // local, so this is a no-op there rather than an error.
+        PlacementSpec::Local => {
+            return Ok(declared
+                .iter()
+                .map(|link| (*link, coordinator.clone()))
+                .collect());
+        }
+        PlacementSpec::Places(places) => places,
+    };
+
+    if declared.is_empty() && !places.is_empty() {
+        let wired = format_quoted_list(places.keys());
         return Err(format!(
             "--place was given ({wired}) but this launcher declares no `core_nodes`. Either \
              remove --place, or add a `core_nodes` list naming the machines the launcher spans."
@@ -196,12 +251,11 @@ pub(super) fn resolve_placements(
     // Every declared link must be wired exactly once, and only declared links
     // may be wired. A launcher describes a topology; refusing a partial wiring
     // is what stops half of it from silently collapsing onto the coordinator.
-    let mut missing: Vec<&str> = Vec::new();
-    for link in &declared {
-        if !goal.core_node_links.contains_key(*link) {
-            missing.push(link);
-        }
-    }
+    let missing: Vec<&str> = declared
+        .iter()
+        .filter(|link| !places.contains_key(**link))
+        .copied()
+        .collect();
     if !missing.is_empty() {
         return Err(format!(
             "these core node links are declared but not wired: {}. Wire each one with \
@@ -210,8 +264,7 @@ pub(super) fn resolve_placements(
             format_quoted_list(&missing)
         ));
     }
-    let undeclared: Vec<&str> = goal
-        .core_node_links
+    let undeclared: Vec<&str> = places
         .keys()
         .map(String::as_str)
         .filter(|link| !declared.contains(link))
@@ -223,28 +276,25 @@ pub(super) fn resolve_placements(
             if declared.is_empty() {
                 "nothing".to_owned()
             } else {
-                format_quoted_list(&declared)
+                format_quoted_list(declared)
             }
         ));
     }
 
-    let mut by_instance = BTreeMap::new();
-    for deployment in &launcher.deployments {
-        for instance in &deployment.instances {
-            let Some(link) = &instance.core_node else {
-                continue;
-            };
-            // The parser already refused a `core_node` naming an undeclared
-            // link, and every declared link is wired by the checks above.
-            let core_node = goal
-                .core_node_links
-                .get(link)
-                .expect("every declared link is wired and every core_node names a declared link");
-            by_instance.insert(instance.instance_id.to_string(), core_node.clone());
-        }
-    }
-
-    Ok(Placements::new(coordinator, by_instance))
+    places
+        .iter()
+        .map(|(link, core_node)| {
+            let name = CoreNodeName::new(core_node.as_str()).map_err(|reason| {
+                format!("--place wires core node link `{link}` to `{core_node}`, which {reason}")
+            })?;
+            // Borrow the DECLARED spelling, not the request's: the two are
+            // equal here, and this keeps the map's keys tied to the document.
+            let link = declared
+                .get(link.as_str())
+                .expect("every wired link was just checked to be declared");
+            Ok((*link, name))
+        })
+        .collect()
 }
 
 /// Translate a `LauncherOrigin` into a concrete on-disk path.
@@ -522,5 +572,126 @@ mod tests {
             let portable = portable_node_source(&deployment.source).expect("portable");
             assert_eq!(local, portable, "for {json5}");
         }
+    }
+
+    // --- Placement: binding a launcher's declared links to real machines ---
+
+    fn declared<'a>(links: &[&'a str]) -> BTreeSet<&'a str> {
+        links.iter().copied().collect()
+    }
+
+    fn core_node(name: &str) -> CoreNodeName {
+        CoreNodeName::new(name).expect("valid test core node name")
+    }
+
+    fn places(pairs: &[(&str, &str)]) -> PlacementSpec {
+        PlacementSpec::Places(
+            pairs
+                .iter()
+                .map(|(link, target)| ((*link).to_owned(), (*target).to_owned()))
+                .collect(),
+        )
+    }
+
+    /// The case the CLI cannot serve: `--local` against a launcher whose
+    /// document only the coordinator has read. Expanding here is what makes
+    /// `peppy stack launch --local <name>` work at all — a repository launcher
+    /// is the shape every hub launcher uses, and the CLI never sees it.
+    #[test]
+    fn local_wires_every_declared_link_to_the_coordinator() {
+        let wired = wire_core_node_links(
+            &PlacementSpec::Local,
+            &declared(&["robot_onboard", "cloud_inference"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect("--local always wires");
+
+        assert_eq!(wired.len(), 2);
+        assert!(wired.values().all(|target| target.as_str() == "cn-robot-7"));
+    }
+
+    /// A launcher that declares no links is already entirely local, so
+    /// `--local` is a no-op there rather than an error.
+    #[test]
+    fn local_on_a_single_machine_launcher_wires_nothing_and_is_accepted() {
+        let wired = wire_core_node_links(
+            &PlacementSpec::Local,
+            &declared(&[]),
+            &core_node("cn-robot-7"),
+        )
+        .expect("a single-machine launcher is trivially local");
+        assert!(wired.is_empty());
+    }
+
+    #[test]
+    fn place_wires_each_declared_link_to_its_named_machine() {
+        let placement = places(&[
+            ("robot_onboard", "cn-robot-7"),
+            ("cloud_inference", "cn-atlas-h100"),
+        ]);
+        let wired = wire_core_node_links(
+            &placement,
+            &declared(&["robot_onboard", "cloud_inference"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect("a full wiring");
+        assert_eq!(wired["cloud_inference"].as_str(), "cn-atlas-h100");
+        assert_eq!(wired["robot_onboard"].as_str(), "cn-robot-7");
+    }
+
+    /// A launcher describes a topology; refusing a partial wiring is what
+    /// stops half of it from silently collapsing onto the coordinator.
+    #[test]
+    fn a_declared_but_unwired_link_is_refused_and_names_local_as_the_way_out() {
+        let placement = places(&[("robot_onboard", "cn-robot-7")]);
+        let error = wire_core_node_links(
+            &placement,
+            &declared(&["robot_onboard", "cloud_inference"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("a partial wiring must be refused");
+        assert!(error.contains("cloud_inference"), "got: {error}");
+        assert!(error.contains("--local"), "got: {error}");
+    }
+
+    /// Every declared link is wired here, so the only thing left to object to
+    /// is the extra one — which is what isolates this rule from the
+    /// unwired-link check that runs before it.
+    #[test]
+    fn placing_a_link_the_launcher_does_not_declare_is_refused() {
+        let placement = places(&[
+            ("robot_onboard", "cn-robot-7"),
+            ("typo_onboard", "cn-atlas-h100"),
+        ]);
+        let error = wire_core_node_links(
+            &placement,
+            &declared(&["robot_onboard"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("only declared links may be wired");
+        assert!(error.contains("does not declare"), "got: {error}");
+        assert!(error.contains("typo_onboard"), "got: {error}");
+    }
+
+    #[test]
+    fn placing_against_a_launcher_that_declares_nothing_is_refused() {
+        let placement = places(&[("robot_onboard", "cn-robot-7")]);
+        let error = wire_core_node_links(&placement, &declared(&[]), &core_node("cn-robot-7"))
+            .expect_err("there is nothing to wire");
+        assert!(error.contains("declares no `core_nodes`"), "got: {error}");
+    }
+
+    /// No flag at all is not the same as `--local`: it leaves a declared link
+    /// unwired, which is refused. The distinction is why the intent travels as
+    /// an enum rather than as "an empty map means local".
+    #[test]
+    fn no_placement_flag_is_not_treated_as_local() {
+        let error = wire_core_node_links(
+            &PlacementSpec::default(),
+            &declared(&["robot_onboard"]),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("an unwired declared link must be refused");
+        assert!(error.contains("declared but not wired"), "got: {error}");
     }
 }

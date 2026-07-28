@@ -578,28 +578,48 @@ pub fn plan_requested_pairs(
         }
     }
 
+    // A peer on ANOTHER machine cannot go through the local validator: every
+    // one of its rules reads the peer's manifest, and this daemon holds only
+    // its own. The planner that dispatched this goal holds both and already
+    // checked them against each other, so those pairs are split out here and
+    // built from that verdict. The local ones are validated exactly as before.
+    let (remote_requested, local_requested): (Vec<_>, Vec<_>) = requested
+        .iter()
+        .partition(|(_, target)| target.peer.core_node != local_core_node);
+
+    let is_optional = |link: &str| {
+        pairing_deps.iter().any(|d| {
+            matches!(
+                d,
+                config::node::PairingDependency::Participant(p)
+                    if p.link_id == link && p.optional
+            )
+        })
+    };
     let defer_like: Vec<String> = deferred
         .iter()
-        .chain(covered.keys().filter(|link| {
-            // Only a required (non-optional) participant slot needs a
-            // defer-like entry; observer slots are not participants.
-            !pairing_deps.iter().any(|d| {
-                matches!(
-                    d,
-                    config::node::PairingDependency::Participant(p)
-                        if p.link_id == **link && p.optional
-                )
-            })
-        }))
+        // Only a required (non-optional) participant slot needs a defer-like
+        // entry; observer slots are not participants.
+        .chain(covered.keys().filter(|link| !is_optional(link)))
+        // A remotely-paired slot IS paired, just not by anything this daemon
+        // can see. It rides here for the same reason a covered slot does:
+        // without it the coverage rule would report a slot uncovered that the
+        // planner has already satisfied.
+        .chain(
+            remote_requested
+                .iter()
+                .map(|(link, _)| *link)
+                .filter(|link| !is_optional(link)),
+        )
         .cloned()
         .collect();
     let own_instances = vec![DeploymentInstance {
         // Rendered into the validator's launcher target grammar
         // (`peer[/peer_link]`) as a scalar link value; lossless, since
         // instance ids and link_ids are `/`-free names.
-        links: requested
+        links: local_requested
             .iter()
-            .map(|(link_id, target)| (link_id.clone(), LinkValue::Scalar(target.to_string())))
+            .map(|(link_id, target)| ((*link_id).clone(), LinkValue::Scalar(target.to_string())))
             .collect(),
         defer_links: defer_like,
         ..DeploymentInstance::empty(
@@ -662,24 +682,74 @@ pub fn plan_requested_pairs(
         return Err(daemon_config::format_bulleted(&errors));
     }
 
-    Ok(validated
+    let mut planned: Vec<PlannedPair> = validated
         .planned
         .into_iter()
         .map(|pair| {
             // `a` is the declaring side, and the only declaring (non-
             // preexisting) item here is the new instance.
             debug_assert_eq!(pair.a.instance_id, instance_id);
-            // `node run` pairs within one daemon: both endpoints are
-            // instances of this stack, so both carry this core node and
-            // neither needs coordinator-supplied metadata. A federated launch
-            // builds its `PlannedPair`s from the coordinator's plan instead.
+            // Both endpoints came out of the local validator, so both are
+            // instances of this stack and the local manifests already decided
+            // everything about them.
             PlannedPair {
                 own: SlotAddr::new(local_core_node, pair.a.instance_id, pair.a.link_id),
                 peer: SlotAddr::new(local_core_node, pair.b.instance_id, pair.b.link_id),
                 peer_remote_meta: None,
             }
         })
-        .collect())
+        .collect();
+
+    for (link_id, target) in remote_requested {
+        planned.push(remote_planned_pair(
+            local_core_node,
+            instance_id,
+            link_id,
+            target,
+        )?);
+    }
+    Ok(planned)
+}
+
+/// One pair whose peer lives on another daemon, built from the planner's
+/// verdict rather than from a manifest this daemon cannot read.
+///
+/// Both pieces it needs are the planner's to supply, so a request missing
+/// either is refused rather than guessed at: pairing with the wrong slot
+/// across a machine boundary is not something the far daemon can catch either.
+fn remote_planned_pair(
+    local_core_node: &str,
+    instance_id: &str,
+    link_id: &str,
+    target: &PairTarget,
+) -> std::result::Result<PlannedPair, String> {
+    let peer_core_node = target.peer.core_node.as_str();
+    let peer_instance_id = target.peer.instance_id.as_str();
+    let peer_link_id = target.peer_link_id.as_deref().ok_or_else(|| {
+        format!(
+            "pairing slot `{link_id}` names peer `{peer_instance_id}` on `{peer_core_node}` \
+             without pinning its slot. An unpinned peer slot is resolved by reading the peer's \
+             manifest, which this daemon has no way to do for another machine; the planner must \
+             pin it."
+        )
+    })?;
+    let remote = target.remote_peer.as_ref().ok_or_else(|| {
+        format!(
+            "pairing slot `{link_id}` names peer `{peer_instance_id}` on `{peer_core_node}`, but \
+             carries no pairing verdict for it. This daemon holds no manifest for another \
+             machine's node, so only the planner that validated both sides can authorize the \
+             pair."
+        )
+    })?;
+    Ok(PlannedPair {
+        own: SlotAddr::new(local_core_node, instance_id, link_id),
+        peer: SlotAddr::new(peer_core_node, peer_instance_id, peer_link_id),
+        peer_remote_meta: Some(RemoteSlotMeta {
+            pairing_name: remote.pairing_name.clone(),
+            pairing_tag: remote.pairing_tag.clone(),
+            role: remote.peer_role.clone(),
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -887,6 +957,121 @@ mod tests {
             },
             TEST_CORE,
         )
+    }
+
+    // --- Pairs whose peer lives on another daemon ---
+
+    /// A peer this daemon hosts nothing for: the launcher's flagship shape,
+    /// a reflex policy on the robot paired with a planner in the cloud.
+    fn remote_planner_target() -> PairTarget {
+        PairTarget::pinned("planner_inst", "deliberation", "core_b").with_remote_peer(
+            core_node_api::encoding::RemotePeerPairing {
+                pairing_name: "deliberation_link".to_owned(),
+                pairing_tag: "v1".to_owned(),
+                peer_role: "planner".to_owned(),
+            },
+        )
+    }
+
+    /// The whole point of the cross-machine path: the peer is not in this
+    /// daemon's stack, so every local rule would report it unknown. The
+    /// planner's verdict stands in for the manifest this daemon cannot read,
+    /// and the resulting pair addresses the peer on ITS machine rather than
+    /// on this one.
+    #[test]
+    fn a_peer_on_another_daemon_is_planned_from_the_coordinators_verdict() {
+        let deps = [dep("executor", "deliberation", false)];
+        let planned = plan(
+            &[],
+            "reflex_inst",
+            &deps,
+            &requested(&[("deliberation", remote_planner_target())]),
+            &[],
+        )
+        .expect("a remote peer is authorized by the planner, not by local manifests");
+
+        assert_eq!(
+            planned,
+            vec![PlannedPair {
+                own: SlotAddr::new(TEST_CORE, "reflex_inst", "deliberation"),
+                peer: SlotAddr::new("core_b", "planner_inst", "deliberation"),
+                peer_remote_meta: Some(RemoteSlotMeta {
+                    pairing_name: "deliberation_link".to_owned(),
+                    pairing_tag: "v1".to_owned(),
+                    role: "planner".to_owned(),
+                }),
+            }]
+        );
+    }
+
+    /// A required slot paired across machines is PAIRED, so the coverage rule
+    /// must not report it uncovered. Without this the flagship launcher would
+    /// fail on the very slot federation exists to support.
+    #[test]
+    fn a_remotely_paired_required_slot_satisfies_coverage() {
+        let deps = [
+            dep("executor", "deliberation", false),
+            dep("controller", "arm", false),
+        ];
+        let planned = plan(
+            &arm_snapshot(),
+            "reflex_inst",
+            &deps,
+            &requested(&[
+                ("deliberation", remote_planner_target()),
+                ("arm", PairTarget::new("arm_1", TEST_CORE)),
+            ]),
+            &[],
+        )
+        .expect("a remotely-paired required slot is covered");
+
+        assert_eq!(
+            planned.len(),
+            2,
+            "both the local and the remote pair: {planned:?}"
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|p| p.peer == SlotAddr::new("core_b", "planner_inst", "deliberation")),
+            "got: {planned:?}"
+        );
+    }
+
+    /// Resolving an unpinned peer slot means reading the peer's manifest.
+    /// This daemon has none for another machine, so the planner must pin it
+    /// rather than have the daemon guess which slot was meant.
+    #[test]
+    fn an_unpinned_remote_peer_slot_is_refused() {
+        let deps = [dep("executor", "deliberation", false)];
+        let error = plan(
+            &[],
+            "reflex_inst",
+            &deps,
+            &requested(&[("deliberation", PairTarget::new("planner_inst", "core_b"))]),
+            &[],
+        )
+        .expect_err("an unpinned remote slot cannot be resolved here");
+        assert!(error.contains("without pinning its slot"), "got: {error}");
+    }
+
+    /// A remote pair with no verdict is refused rather than committed on
+    /// trust: neither daemon can check it, so nothing downstream would.
+    #[test]
+    fn a_remote_peer_without_a_planner_verdict_is_refused() {
+        let deps = [dep("executor", "deliberation", false)];
+        let error = plan(
+            &[],
+            "reflex_inst",
+            &deps,
+            &requested(&[(
+                "deliberation",
+                PairTarget::pinned("planner_inst", "deliberation", "core_b"),
+            )]),
+            &[],
+        )
+        .expect_err("an unauthorized cross-machine pair must be refused");
+        assert!(error.contains("no pairing verdict"), "got: {error}");
     }
 
     #[test]

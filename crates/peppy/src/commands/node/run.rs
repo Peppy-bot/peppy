@@ -7,6 +7,7 @@ use core_node_api::encoding::{
     NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
+use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, LinkTargets, LinkValue, PairingValidationItem,
     Placements, split_link_target, validate_link_plan,
@@ -550,7 +551,11 @@ async fn validate_links_against_stack(
         &pairing_items,
         &already_paired,
         // `node run` targets one daemon, so every instance it can see is on it.
-        &Placements::all_on(core_node_name),
+        &Placements::all_on(CoreNodeName::new(core_node_name).map_err(|reason| {
+            Error::ExecutionFailed(format!(
+                "the target daemon reports an invalid core node name `{core_node_name}`: {reason}"
+            ))
+        })?),
     );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();

@@ -8,15 +8,23 @@
 //! is reserved) and two more call sites (launcher core node link ids and
 //! `--place` targets), so three copies would have become six.
 //!
-//! Parse, don't validate: everything downstream takes a [`CoreNodeName`], so
-//! there is no way to reach a call site holding a name nobody checked. That is
-//! what makes "`self` is rejected everywhere peppy validates a core node name"
-//! a property of the type rather than a rule six places have to remember.
+//! Parse, don't validate, where it buys something: [`Placements`] — the record
+//! of which machine every instance of a launch runs on — holds
+//! [`CoreNodeName`]s, so a name that nobody checked cannot reach the plan that
+//! stamps producer addresses. That matters because a launch goal arrives over
+//! the wire: the CLI validates what a user types, but a daemon cannot assume
+//! its caller was the CLI, and `--place` targets would otherwise be taken on
+//! trust.
+//!
+//! Elsewhere the parsed value is discarded and only the verdict is used (the
+//! daemon's `--core-node-name` flag, `PeppyConfig::validate`), because those
+//! names go on to live in configuration structs that predate this type.
+//!
+//! [`Placements`]: crate::launcher::Placements
 
 use crate::peppy_config::MAX_CORE_NODE_NAME_LEN;
 use config::consts::ALLOWED_CONFIG_CHARS;
 use config::runtime::Name;
-use serde::{Deserialize, Deserializer, Serialize};
 
 /// The reserved name meaning "the daemon this command is aimed at".
 ///
@@ -33,8 +41,7 @@ pub const SELF_CORE_NODE: &str = "self";
 /// Construction is the only way to get one, so holding a `CoreNodeName` is
 /// proof that the charset, the length cap, and the `self` reservation were all
 /// checked.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CoreNodeName(String);
 
 /// Why a candidate core-node name was refused. Separate variants (rather than
@@ -73,7 +80,8 @@ impl std::error::Error for CoreNodeNameError {}
 
 impl CoreNodeName {
     /// The single validator. Every other core-node-name check in peppy calls
-    /// this; a test pins that there is exactly one.
+    /// this rather than re-deriving the charset, the length cap, or the `self`
+    /// reservation.
     pub fn new(value: impl Into<String>) -> Result<Self, CoreNodeNameError> {
         let value = value.into();
         if value == SELF_CORE_NODE {
@@ -109,16 +117,6 @@ impl std::fmt::Display for CoreNodeName {
 impl AsRef<str> for CoreNodeName {
     fn as_ref(&self) -> &str {
         &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for CoreNodeName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        Self::new(raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -180,26 +178,22 @@ mod tests {
         assert!(!CoreNodeName::is_self_keyword("Self"));
     }
 
-    /// Deserialization runs the same validator, so a hand-edited config or a
-    /// launcher document cannot smuggle an unchecked name past the type.
+    /// The reason this is a type and not a free function: a `Placements` is
+    /// the record of which machine every instance runs on, and it is built
+    /// from `--place` targets that arrived over the wire. Requiring parsed
+    /// names to construct one means an unchecked target cannot reach it.
     #[test]
-    fn deserialization_applies_the_same_rules() {
-        let name: CoreNodeName = serde_json5::from_str(r#""cn-robot-7""#).expect("valid");
-        assert_eq!(name.as_str(), "cn-robot-7");
-
-        let error = serde_json5::from_str::<CoreNodeName>(r#""self""#)
-            .expect_err("`self` must not deserialize");
-        assert!(error.to_string().contains("reserved"), "got: {error}");
-    }
-
-    #[test]
-    fn round_trips_through_serde() {
-        let name = CoreNodeName::new("cn-robot-7").expect("valid");
-        let encoded = serde_json5::to_string(&name).expect("serialize");
-        assert_eq!(encoded, r#""cn-robot-7""#);
-        assert_eq!(
-            serde_json5::from_str::<CoreNodeName>(&encoded).expect("deserialize"),
-            name
+    fn placements_can_only_be_built_from_parsed_names() {
+        let coordinator = CoreNodeName::new("cn-robot-7").expect("valid");
+        let placements = crate::launcher::Placements::new(
+            coordinator,
+            std::collections::BTreeMap::from([(
+                "planner_inst".to_owned(),
+                CoreNodeName::new("cn-atlas-h100").expect("valid"),
+            )]),
         );
+        assert_eq!(placements.of("planner_inst"), "cn-atlas-h100");
+        assert_eq!(placements.of("anything_else"), "cn-robot-7");
+        assert!(placements.is_federated());
     }
 }

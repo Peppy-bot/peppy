@@ -440,9 +440,15 @@ mod tests {
     /// binding by these tests.
     const TEST_CORE: &str = "core_a";
 
+    use crate::core_node_name::CoreNodeName;
+
+    fn core_node(name: &str) -> CoreNodeName {
+        CoreNodeName::new(name).expect("valid test core node name")
+    }
+
     /// Every test instance on one daemon, the single-machine shape.
     fn all_local() -> Placements {
-        Placements::all_on(TEST_CORE)
+        Placements::all_on(core_node(TEST_CORE))
     }
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
@@ -1679,8 +1685,8 @@ mod tests {
         // identically, which is the point: placement is declared once on the
         // instance and never repeated at the point of use.
         let placements = Placements::new(
-            "daemon_west",
-            std::collections::BTreeMap::from([("prod2".to_owned(), "daemon_east".to_owned())]),
+            core_node("daemon_west"),
+            std::collections::BTreeMap::from([("prod2".to_owned(), core_node("daemon_east"))]),
         );
         let out = validate_bindings(&items, &placements);
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
@@ -1703,7 +1709,7 @@ mod tests {
             item("cons", "v1", &cons_instances, Some(&depends_on)),
             item("camera", "v1", &prod_instances, None),
         ];
-        let out = validate_bindings(&items, &Placements::all_on("daemon_west"));
+        let out = validate_bindings(&items, &Placements::all_on(core_node("daemon_west")));
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(
             out.slot_bindings["cons1"]["main"].as_slice()[0].core_node,

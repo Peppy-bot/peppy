@@ -524,12 +524,16 @@ mod tests {
         PlacedDeployment { index, deployment }
     }
 
+    fn core_node(name: &str) -> daemon_config::core_node_name::CoreNodeName {
+        daemon_config::core_node_name::CoreNodeName::new(name).expect("valid test core node name")
+    }
+
     fn placements(pairs: &[(&str, &str)]) -> Placements {
         Placements::new(
-            "cn-robot",
+            core_node("cn-robot"),
             pairs
                 .iter()
-                .map(|(id, core_node)| ((*id).to_owned(), (*core_node).to_owned()))
+                .map(|(id, target)| ((*id).to_owned(), core_node(target)))
                 .collect(),
         )
     }
@@ -537,8 +541,11 @@ mod tests {
     #[test]
     fn a_single_machine_launch_partitions_onto_the_coordinator() {
         let deployments = vec![deployment("uvc_camera", vec![instance("cam_1")])];
-        let partitioned =
-            partition_deployments(&deployments, &Placements::all_on("cn-robot"), "cn-robot");
+        let partitioned = partition_deployments(
+            &deployments,
+            &Placements::all_on(core_node("cn-robot")),
+            "cn-robot",
+        );
         assert_eq!(partitioned.len(), 1);
         assert_eq!(partitioned["cn-robot"].len(), 1);
         assert_eq!(partitioned["cn-robot"][0].index, 0);

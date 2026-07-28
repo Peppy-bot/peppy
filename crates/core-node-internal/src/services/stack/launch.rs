@@ -27,7 +27,7 @@ use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
     NodeBuildGoal, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, ObservationTarget,
-    PairTarget,
+    PairTarget, RemotePeerPairing,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -821,28 +821,41 @@ async fn start_node_instances(
         } else {
             (&pairing.b, &pairing.a)
         };
+        // A pair whose two endpoints sit on different machines cannot be
+        // validated by either daemon: each holds one manifest. This
+        // coordinator holds both and has already checked them against each
+        // other, so it sends that verdict along with the request. A
+        // same-daemon pair carries none, and the receiver's own manifests
+        // decide as before.
+        // `host` is the machine running the instance that receives the goal;
+        // `peer` is the endpoint on the other end of the pair.
+        let pair_target =
+            |host: &daemon_config::launcher::PlannedPairEndpoint,
+             peer: &daemon_config::launcher::PlannedPairEndpoint| {
+                let peer_core_node = placements.of(peer.instance_id.as_str());
+                let target = PairTarget::pinned(
+                    peer.instance_id.clone(),
+                    peer.link_id.clone(),
+                    peer_core_node,
+                );
+                if peer_core_node == placements.of(host.instance_id.as_str()) {
+                    return target;
+                }
+                target.with_remote_peer(RemotePeerPairing {
+                    pairing_name: pairing.pairing_name.clone(),
+                    pairing_tag: pairing.pairing_tag.clone(),
+                    peer_role: peer.role.clone(),
+                })
+            };
+
         requested_by_instance
             .entry(later.instance_id.as_str())
             .or_default()
-            .insert(
-                later.link_id.clone(),
-                PairTarget::pinned(
-                    earlier.instance_id.clone(),
-                    earlier.link_id.clone(),
-                    placements.of(earlier.instance_id.as_str()),
-                ),
-            );
+            .insert(later.link_id.clone(), pair_target(later, earlier));
         covered_by_instance
             .entry(earlier.instance_id.as_str())
             .or_default()
-            .insert(
-                earlier.link_id.clone(),
-                PairTarget::pinned(
-                    later.instance_id.clone(),
-                    later.link_id.clone(),
-                    placements.of(later.instance_id.as_str()),
-                ),
-            );
+            .insert(earlier.link_id.clone(), pair_target(earlier, later));
     }
 
     let participants = federated.core_nodes();

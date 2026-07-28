@@ -1058,21 +1058,28 @@ mod tests {
 /// Note what this does NOT change: a `links:` target is still a bare instance
 /// id. Placement is declared once on the instance and looked up here, so
 /// nothing at the point of use records which machine a producer sits on.
+///
+/// Every name in here is a [`CoreNodeName`], which is what makes placement the
+/// point where core-node names are checked. A launch goal arrives over the wire
+/// carrying whatever its sender put in it; the CLI validates what a user types,
+/// but the daemon cannot assume its caller was the CLI. Taking parsed names
+/// means an unchecked one cannot reach a `Placements` at all, rather than each
+/// consumer being trusted to re-check.
 #[derive(Debug, Clone)]
 pub struct Placements {
     /// Where an instance that declared no `core_node` runs: the coordinator,
     /// i.e. the daemon the launch was sent to.
-    coordinator: String,
-    by_instance: BTreeMap<String, String>,
+    coordinator: CoreNodeName,
+    by_instance: BTreeMap<String, CoreNodeName>,
 }
 
 impl Placements {
     /// Every instance on one daemon. The single-machine case, and the shape
     /// every non-federated path (`node run`, a launcher with no `core_nodes`)
     /// uses.
-    pub fn all_on(core_node: impl Into<String>) -> Self {
+    pub fn all_on(core_node: CoreNodeName) -> Self {
         Self {
-            coordinator: core_node.into(),
+            coordinator: core_node,
             by_instance: BTreeMap::new(),
         }
     }
@@ -1080,9 +1087,9 @@ impl Placements {
     /// Placements resolved from a launcher document and its `--place` wiring.
     /// `by_instance` holds only the instances that named a `core_node`;
     /// everything else falls back to the coordinator.
-    pub fn new(coordinator: impl Into<String>, by_instance: BTreeMap<String, String>) -> Self {
+    pub fn new(coordinator: CoreNodeName, by_instance: BTreeMap<String, CoreNodeName>) -> Self {
         Self {
-            coordinator: coordinator.into(),
+            coordinator,
             by_instance,
         }
     }
@@ -1091,8 +1098,8 @@ impl Placements {
     pub fn of(&self, instance_id: &str) -> &str {
         self.by_instance
             .get(instance_id)
-            .map(String::as_str)
             .unwrap_or(&self.coordinator)
+            .as_str()
     }
 
     /// Whether any instance is placed off the coordinator, i.e. whether this
