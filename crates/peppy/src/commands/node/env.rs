@@ -1,4 +1,4 @@
-use core_node_api::FORBIDDEN_ENV_KEYS;
+use daemon_config::env::{is_forbidden_env_name, is_safe_env_value, is_valid_env_name};
 
 /// Env vars that are meaningless or misleading when forwarded to a spawned node
 /// because the node runs somewhere the caller's paths do not describe: a
@@ -18,65 +18,29 @@ use core_node_api::FORBIDDEN_ENV_KEYS;
 /// runs both kinds of node.
 const CALLER_ONLY_ENV_KEYS: [&str; 5] = ["PWD", "OLDPWD", "TMPDIR", "TEMP", "TMP"];
 
-/// Whether `name` is a valid POSIX shell identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+/// Whether a caller env var should be forwarded to a spawned node: it must
+/// carry a name and a value a node can receive intact (see [`daemon_config::env`],
+/// which states why and is the same rule the launcher's `env_vars` are parsed
+/// against), must not be a code injection vector, and must not be a caller-only
+/// var that is wrong in the node's working directory.
 ///
-/// Only such names can be forwarded to a containerized node. A node runs under
-/// apptainer, which writes every forwarded `--env NAME=value` into a generated
-/// `/.inject-apptainer-env.sh` that the container sources at startup. A name
-/// that is not a shell identifier makes that `source` abort with "invalid var
-/// name", and because the abort happens mid-script every later var is dropped,
-/// including `PEPPY_RUNTIME_CONFIG`. The node then silently falls back to its
-/// standalone defaults instead of the daemon-provided parameters.
-///
-/// The caller's environment routinely contains such names: bash exports shell
-/// functions under keys like `BASH_FUNC_foo%%`, and other tooling uses keys
-/// with `%`, `(`, or `.`. None of these are meaningful to a node, so dropping
-/// them is both safe and necessary.
-fn is_valid_env_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
-        _ => return false,
-    }
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
-}
-
-/// Whether `value` is safe to forward to a containerized node.
-///
-/// Same root cause as [`is_valid_env_name`]: apptainer writes each forwarded
-/// `--env NAME=value` UNQUOTED into the `/.inject-apptainer-env.sh` the
-/// container sources, effectively `export NAME=value`. A value with whitespace
-/// makes the shell read trailing words as further export targets (`export X=a b`
-/// tries to export `b`), which aborts the script with "invalid var name" and
-/// drops every later var, including `PEPPY_RUNTIME_CONFIG`. Worse, a value with
-/// shell metacharacters is a command-injection vector (`X=a;cmd` would run
-/// `cmd` inside the container). Neither shape is meaningful for a node's
-/// environment, so we forward only values built from characters that survive an
-/// unquoted assignment unchanged.
-fn is_safe_env_value(value: &str) -> bool {
-    value.chars().all(|c| {
-        c.is_ascii_alphanumeric()
-            || matches!(c, '_' | '-' | '.' | '/' | ':' | ',' | '=' | '@' | '+' | '%')
-    })
-}
-
-/// Whether a caller env var should be forwarded to a spawned node: it must have
-/// a valid shell-identifier name (see [`is_valid_env_name`]) and a value safe to
-/// inject unquoted (see [`is_safe_env_value`]), not be a code injection vector,
-/// and not be a caller-only var that is wrong in the node's working directory.
+/// This side filters rather than rejects. The caller environment is ambient and
+/// full of entries nobody asked a node to see, so a failing entry is dropped
+/// silently; an `env_vars` entry a user wrote in a launcher file meets the same
+/// rules but fails loudly, while the file is being parsed.
 fn should_forward_env(key: &str, value: &str) -> bool {
     let normalized = key.trim().to_ascii_uppercase();
     is_valid_env_name(key)
         && is_safe_env_value(value)
-        && !FORBIDDEN_ENV_KEYS.contains(&normalized.as_str())
+        && !is_forbidden_env_name(key)
         && !CALLER_ONLY_ENV_KEYS.contains(&normalized.as_str())
 }
 
 /// Collects environment variables from the caller's environment to pass to the daemon.
 /// Filters out forbidden env vars that could be used for code injection,
 /// caller-only vars that would be incorrect in the node's working directory,
-/// vars whose names are not valid shell identifiers (see [`is_valid_env_name`]),
-/// and vars whose values are not safe to inject unquoted (see [`is_safe_env_value`]).
+/// and vars whose name or value a node could not receive intact (see
+/// [`should_forward_env`]).
 pub fn caller_env_overrides() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(key, value)| should_forward_env(key, value))
@@ -86,18 +50,6 @@ pub fn caller_env_overrides() -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_non_identifier_env_names() {
-        // Bash exports functions under names like this; they break the
-        // container's env-injection script if forwarded.
-        assert!(!is_valid_env_name("BASH_FUNC_foo%%"));
-        assert!(!is_valid_env_name("foo bar"));
-        assert!(!is_valid_env_name("foo.bar"));
-        assert!(!is_valid_env_name("foo("));
-        assert!(!is_valid_env_name("1foo"));
-        assert!(!is_valid_env_name(""));
-    }
 
     /// The caller's temp dir describes the host, not the container. On macOS
     /// it is `/var/folders/…`, which the guest cannot write, so forwarding it
@@ -122,38 +74,6 @@ mod tests {
     fn keeps_env_vars_that_merely_mention_temp() {
         assert!(should_forward_env("TMPDIR_OVERRIDE", "/opt/scratch"));
         assert!(should_forward_env("PEPPY_TMP", "/opt/scratch"));
-    }
-
-    #[test]
-    fn accepts_valid_identifier_env_names() {
-        assert!(is_valid_env_name("PATH"));
-        assert!(is_valid_env_name("PEPPY_RUNTIME_CONFIG"));
-        assert!(is_valid_env_name("_underscore"));
-        assert!(is_valid_env_name("ROS_DOMAIN_ID"));
-        assert!(is_valid_env_name("X1"));
-    }
-
-    #[test]
-    fn rejects_unsafe_env_values() {
-        // Whitespace splits an unquoted `export X=a b` and aborts the script.
-        assert!(!is_safe_env_value("user:inference user:file_upload"));
-        assert!(!is_safe_env_value("a\tb"));
-        assert!(!is_safe_env_value("line1\nline2"));
-        // Shell metacharacters are command-injection vectors.
-        assert!(!is_safe_env_value("a;rm -rf /"));
-        assert!(!is_safe_env_value("$(whoami)"));
-        assert!(!is_safe_env_value("`id`"));
-        assert!(!is_safe_env_value("a|b"));
-    }
-
-    #[test]
-    fn accepts_safe_env_values() {
-        // Real-world safe values: paths, lists, ids, urls, ratios.
-        assert!(is_safe_env_value("/opt/node/.venv/bin:/usr/bin"));
-        assert!(is_safe_env_value("42"));
-        assert!(is_safe_env_value("sentry-release=app%401.2,public_key=abc"));
-        assert!(is_safe_env_value("https://example.com/path"));
-        assert!(is_safe_env_value(""));
     }
 
     #[test]
