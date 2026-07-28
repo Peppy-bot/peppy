@@ -223,19 +223,32 @@ impl PairingCoordinator {
     /// Pulled out of the handler because getting the two directions the wrong
     /// way round would pair a local slot with a local address that happens to
     /// share a name, and no I/O is needed to check that it does not.
+    ///
+    /// The request states which machine its `local` endpoint lives on, so this
+    /// CHECKS that it is this one rather than taking the receiver's identity as
+    /// given. A request that reached the wrong daemon then fails loudly instead
+    /// of pairing whatever same-named instance happens to live here.
     fn slots_from_commit_request(
         request: &PairCommitRequest,
         local_core_node: &str,
-    ) -> (SlotAddr, SlotAddr, RemoteSlotMeta) {
-        (
+    ) -> std::result::Result<(SlotAddr, SlotAddr, RemoteSlotMeta), String> {
+        if request.local.core_node != local_core_node {
+            return Err(format!(
+                "this request names `{}` as the daemon hosting `{}`, but it was answered by \
+                 `{local_core_node}`: a pair commit must reach the machine that hosts its \
+                 local endpoint",
+                request.local.core_node, request.local.instance_id
+            ));
+        }
+        Ok((
             SlotAddr::new(
-                local_core_node,
-                &request.local_instance_id,
+                &request.local.core_node,
+                &request.local.instance_id,
                 &request.local_link_id,
             ),
             SlotAddr::new(
-                &request.peer_core_node,
-                &request.peer_instance_id,
+                &request.peer.core_node,
+                &request.peer.instance_id,
                 &request.peer_link_id,
             ),
             RemoteSlotMeta {
@@ -243,7 +256,7 @@ impl PairingCoordinator {
                 pairing_tag: request.pairing_tag.clone(),
                 role: request.peer_role.clone(),
             },
-        )
+        ))
     }
 
     async fn commit_pair_remotely(
@@ -255,11 +268,14 @@ impl PairingCoordinator {
         let request = PairCommitRequest {
             pairing_name: pairing.pairing_name.clone(),
             pairing_tag: pairing.pairing_tag.clone(),
-            local_instance_id: endpoint.slot.instance_id.clone(),
+            // `local` is relative to the RECEIVER, so it names the endpoint's
+            // own core node — which is also the machine this request is routed
+            // to. Stating it lets the receiver verify the routing instead of
+            // assuming "local means me".
+            local: ProducerRef::new(&endpoint.slot.core_node, &endpoint.slot.instance_id),
             local_link_id: endpoint.slot.link_id.clone(),
             local_role: endpoint.role.clone(),
-            peer_core_node: peer.slot.core_node.clone(),
-            peer_instance_id: peer.slot.instance_id.clone(),
+            peer: ProducerRef::new(&peer.slot.core_node, &peer.slot.instance_id),
             peer_link_id: peer.slot.link_id.clone(),
             peer_role: peer.role.clone(),
         };
@@ -274,7 +290,7 @@ impl PairingCoordinator {
         .await
         .map_err(|e| format!("`{}` did not answer: {e}", endpoint.slot.core_node))?;
 
-        if response.committed {
+        if response.ok {
             return Ok(());
         }
         Err(response
@@ -294,14 +310,14 @@ impl PairingCoordinator {
     ) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
         let (local, remote, remote_meta) =
-            Self::slots_from_commit_request(request, self.updates.core_node_name());
+            Self::slots_from_commit_request(request, self.updates.core_node_name())?;
         self.updates
             .node_stack()
             .pair_slot_with_remote(&local, &remote, &remote_meta)
             .map_err(|e| e.to_string())?;
 
         let pin = PeerPin {
-            producer: ProducerRef::new(&request.peer_core_node, &request.peer_instance_id),
+            producer: request.peer.clone(),
             peer_link_id: request.peer_link_id.clone(),
         };
         if let Err(reason) = self.send_peer_update(&local, Some(pin)).await {
@@ -311,7 +327,7 @@ impl PairingCoordinator {
             self.updates.node_stack().clear_pair(&local);
             return Err(format!(
                 "could not pin `{}` on this daemon: {reason}",
-                request.local_instance_id
+                request.local.instance_id
             ));
         }
         Ok(())
@@ -525,7 +541,7 @@ pub fn plan_requested_pairs(
         covered,
     } = request;
     for (link_id, target) in requested {
-        if target.peer_instance_id == instance_id {
+        if target.peer.instance_id == instance_id {
             return Err(format!(
                 "pairing slot `{link_id}` targets its own instance '{instance_id}'; \
                  a pair joins two distinct instances"
@@ -788,17 +804,17 @@ mod tests {
         let request = PairCommitRequest {
             pairing_name: "task_delegation".to_owned(),
             pairing_tag: "v1".to_owned(),
-            local_instance_id: "reflex_inst".to_owned(),
+            local: ProducerRef::new(TEST_CORE, "reflex_inst"),
             local_link_id: "delegation".to_owned(),
             local_role: "executor".to_owned(),
-            peer_core_node: "core_b".to_owned(),
-            peer_instance_id: "planner_inst".to_owned(),
+            peer: ProducerRef::new("core_b", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
         };
 
         let (local, remote, meta) =
-            PairingCoordinator::slots_from_commit_request(&request, TEST_CORE);
+            PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)
+                .expect("the request names this daemon as its local host");
 
         assert_eq!(local, SlotAddr::new(TEST_CORE, "reflex_inst", "delegation"));
         assert_eq!(
@@ -815,6 +831,30 @@ mod tests {
                 role: "planner".to_owned(),
             }
         );
+    }
+
+    /// The request states which machine hosts its local endpoint, so a commit
+    /// that reached the wrong daemon is refused instead of silently pairing a
+    /// same-named instance that happens to live here. Without the explicit
+    /// `local.core_node`, "local" would just mean "whoever opened the envelope"
+    /// and this mis-route would succeed against the wrong node.
+    #[test]
+    fn a_commit_request_routed_to_the_wrong_daemon_is_refused() {
+        let request = PairCommitRequest {
+            pairing_name: "task_delegation".to_owned(),
+            pairing_tag: "v1".to_owned(),
+            local: ProducerRef::new("core_elsewhere", "reflex_inst"),
+            local_link_id: "delegation".to_owned(),
+            local_role: "executor".to_owned(),
+            peer: ProducerRef::new("core_b", "planner_inst"),
+            peer_link_id: "delegation".to_owned(),
+            peer_role: "planner".to_owned(),
+        };
+
+        let error = PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)
+            .expect_err("a request for another daemon must be refused");
+        assert!(error.contains("core_elsewhere"), "got: {error}");
+        assert!(error.contains(TEST_CORE), "got: {error}");
     }
 
     fn requested(entries: &[(&str, PairTarget)]) -> BTreeMap<String, PairTarget> {

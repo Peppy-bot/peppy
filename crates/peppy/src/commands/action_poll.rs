@@ -1,6 +1,5 @@
-use peppylib::MessengerHandle;
-use peppylib::core_node::transport::take_goal_result;
 use peppylib::messaging::ActionGoalHandle;
+use peppylib::{ActionMessenger, MessengerHandle};
 use tracing::info;
 
 use super::node::TimeoutConfig;
@@ -149,14 +148,13 @@ pub(crate) async fn poll_action_to_completion<R>(
     let result_timeout = absolute_deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    // The `ResultStatus` mapping lives in peppylib because the daemon relaying
-    // a peer's goal owes the operator the same four explanations this does, and
-    // "abandoned" and "expired" are too easy to lump in with a transport error
-    // in one of two copies.
-    let outcome = take_goal_result(messenger, action_handle, result_timeout)
+    // `request_result_body` maps the terminal-but-bodiless outcomes to typed
+    // peppylib errors, so "abandoned" and "expired" reach the operator as
+    // themselves rather than as one generic "failed to get result".
+    let body = ActionMessenger::request_result_body(messenger, action_handle, result_timeout)
         .await
-        .and_then(|body| decode_result(body.as_ref()));
-    match outcome {
+        .inspect_err(|_| scrolling_output.clear())?;
+    match decode_result(body.as_ref()) {
         Ok(result) => Ok(result),
         Err(reason) => {
             scrolling_output.clear();

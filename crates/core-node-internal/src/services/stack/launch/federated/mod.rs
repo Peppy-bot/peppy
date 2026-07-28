@@ -316,11 +316,22 @@ pub(crate) async fn release_participants(
             RELEASE_TIMEOUT,
         )
         .await;
-        if let Err(e) = result {
-            tracing::warn!(
+        match result {
+            Ok(verdict) if verdict.ok => {}
+            // A refusal is not a transport failure: the participant is holding
+            // a reservation for a DIFFERENT launch, so this one never owned it
+            // and the presence lease will not clear it either. Worth its own
+            // line, because it means two coordinators overlapped.
+            Ok(verdict) => tracing::warn!(
+                "`{core_node}` refused to release launch `{launch_id}`: {}",
+                verdict
+                    .rejection_reason
+                    .unwrap_or_else(|| "no reason given".to_owned())
+            ),
+            Err(e) => tracing::warn!(
                 "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
                  reservation drops on its own when this coordinator leaves the federation"
-            );
+            ),
         }
     }))
     .await;

@@ -31,7 +31,8 @@ use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback,
     NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ParticipantSliceBeginRequest,
 };
-use peppylib::core_node::transport::{poll, send_goal, take_goal_result};
+use peppylib::ActionMessenger;
+use peppylib::core_node::transport::{poll, send_goal};
 
 use super::super::ProcessLaunchContext;
 use super::super::feedback::{publish_stderr, publish_stdout};
@@ -211,7 +212,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
                 .max(Duration::from_secs(1))
         })
         .unwrap_or(GOAL_ACCEPT_TIMEOUT);
-    let payload = take_goal_result(&ctx.messenger, &handle, result_timeout)
+    let payload = ActionMessenger::request_result_body(&ctx.messenger, &handle, result_timeout)
         .await
         .map_err(|reason| format!("`{core_node}` {}: {reason}", G::label()))?;
 
@@ -251,7 +252,7 @@ pub(in crate::services::stack) async fn begin_participant_slices(
     let mut refusals = Vec::new();
     for (core_node, outcome) in outcomes {
         match outcome {
-            Ok(response) if response.began => {}
+            Ok(response) if response.ok => {}
             Ok(response) => refusals.push(format!(
                 "`{core_node}` refused: {}",
                 response

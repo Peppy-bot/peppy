@@ -192,10 +192,7 @@ impl ObservationCoordinator {
                 ObserverRecord {
                     observer_link_id: observer_link_id.clone(),
                     pin: ObservationPin {
-                        producer: ProducerRef::new(
-                            &target.source_core_node,
-                            &target.source_instance_id,
-                        ),
+                        producer: target.source.clone(),
                         source_link_id: target.source_link_id.clone(),
                     },
                 },

@@ -21,10 +21,9 @@ use crate::services::node::{
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    LaunchIdentity, PairCommitRequest, PairCommitResponse, ParticipantReleaseRequest,
-    ParticipantReleaseResponse, ParticipantReserveRequest, ParticipantReserveResponse,
-    ParticipantSliceBeginRequest, ParticipantSliceBeginResponse, RelationshipEvent,
-    RelationshipNotification, RelationshipNotificationAck, ResolvedManifest,
+    FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantReleaseRequest,
+    ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
+    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck, ResolvedManifest,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -296,7 +295,7 @@ async fn slice_begin_inner(
     let decoded = ParticipantSliceBeginRequest::decode(request.message().payload().as_ref())?;
 
     let Some((held_launch, coordinator)) = context.ownership.held_reservation() else {
-        return ParticipantSliceBeginResponse::refused(format!(
+        return FederationVerdict::refused(format!(
             "this daemon holds no reservation, so it will not replace its stack for launch \
              `{}`. The reservation is a lease on the coordinator's presence; if the coordinator \
              dropped off the federation it was released, and the launch has to start over.",
@@ -306,7 +305,7 @@ async fn slice_begin_inner(
         .map_err(Into::into);
     };
     if held_launch != decoded.launch_id {
-        return ParticipantSliceBeginResponse::refused(format!(
+        return FederationVerdict::refused(format!(
             "this daemon is reserved for launch `{held_launch}` driven by core node \
              `{coordinator}`, not `{}`",
             decoded.launch_id
@@ -338,9 +337,7 @@ async fn slice_begin_inner(
         .ownership
         .record_slice(LaunchIdentity::new(decoded.launch_id.clone(), coordinator));
 
-    ParticipantSliceBeginResponse::began()
-        .encode()
-        .map_err(Into::into)
+    FederationVerdict::ok().encode().map_err(Into::into)
 }
 
 /// Records this daemon's half of a cross-daemon pair, on behalf of the daemon
@@ -356,10 +353,10 @@ async fn pair_commit_inner(
 
     debug!(
         "Received `pair_commit` for `{}`:`{}` with `{}` on `{}`",
-        decoded.local_instance_id,
+        decoded.local.instance_id,
         decoded.local_link_id,
-        decoded.peer_instance_id,
-        decoded.peer_core_node
+        decoded.peer.instance_id,
+        decoded.peer.core_node
     );
 
     let response = match context
@@ -368,8 +365,8 @@ async fn pair_commit_inner(
         .commit_pair_from_peer(&decoded)
         .await
     {
-        Ok(()) => PairCommitResponse::committed(),
-        Err(reason) => PairCommitResponse::refused(reason),
+        Ok(()) => FederationVerdict::ok(),
+        Err(reason) => FederationVerdict::refused(reason),
     };
     response.encode().map_err(Into::into)
 }
@@ -382,14 +379,14 @@ async fn release_inner(
 
     let response = if context.ownership.release(&decoded.launch_id) {
         debug!("Released reservation for launch `{}`", decoded.launch_id);
-        ParticipantReleaseResponse::released()
+        FederationVerdict::ok()
     } else {
         let held = context
             .ownership
             .held_reservation()
             .map(|(launch_id, _)| launch_id)
             .unwrap_or_default();
-        ParticipantReleaseResponse::refused(format!(
+        FederationVerdict::refused(format!(
             "this daemon is reserved for launch `{held}`, not `{}`",
             decoded.launch_id
         ))
@@ -412,7 +409,7 @@ async fn notify_inner(
 
     debug!(
         "Received `relationship_notify` for `{}` on `{}`: {:?}",
-        decoded.instance_id, decoded.core_node, decoded.event
+        decoded.instance.instance_id, decoded.instance.core_node, decoded.event
     );
 
     match decoded.event {
@@ -424,7 +421,10 @@ async fn notify_inner(
             context
                 .relationships
                 .observation()
-                .remote_source_reached_running(&decoded.core_node, &decoded.instance_id)
+                .remote_source_reached_running(
+                    &decoded.instance.core_node,
+                    &decoded.instance.instance_id,
+                )
                 .await;
         }
         // Death-driven dissolution, the one relationship event that genuinely
@@ -434,17 +434,20 @@ async fn notify_inner(
             context
                 .relationships
                 .observation()
-                .remote_source_stopped(&decoded.core_node, &decoded.instance_id)
+                .remote_source_stopped(&decoded.instance.core_node, &decoded.instance.instance_id)
                 .await;
             context
                 .relationships
                 .pairing()
-                .dissolve_pairs_with_remote_instance(&decoded.core_node, &decoded.instance_id)
+                .dissolve_pairs_with_remote_instance(
+                    &decoded.instance.core_node,
+                    &decoded.instance.instance_id,
+                )
                 .await;
         }
     }
 
-    RelationshipNotificationAck::received()
+    RelationshipNotificationAck::new()
         .encode()
         .map_err(Into::into)
 }

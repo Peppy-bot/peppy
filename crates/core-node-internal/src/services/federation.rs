@@ -45,6 +45,7 @@ pub(crate) use service::{
     listen_for_relationship_notify,
 };
 
+use core_node_api::LaunchScoped;
 use core_node_api::encoding::LaunchIdentity;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -158,9 +159,15 @@ impl SliceOwnership {
     /// The refusal a node action owes its caller when this machine is
     /// committed to a federated launch other than the one asking.
     ///
+    /// Takes the goal itself, bounded on [`LaunchScoped`], rather than a bare
+    /// `Option<&str>`: which actions are launch-scoped is declared once in the
+    /// core-node registry (`scope: launch`), and that declaration is what emits
+    /// the impl. An action that carries no launch scope therefore cannot be
+    /// passed here at all, and no call site gets to decide for itself where a
+    /// goal's launch id comes from.
+    ///
     /// Every node action shares it so the three cannot explain the same
-    /// situation three different ways. `launch_id` is the goal's own: `None`
-    /// for anything a user typed, `Some` for a coordinator's dispatch.
+    /// situation three different ways.
     ///
     /// The reservation covers the WHOLE machine, so local `node add` / `node
     /// run` consult this too. Without that, a federated launch would only
@@ -173,8 +180,9 @@ impl SliceOwnership {
     /// separately would let the reservation change between the two.
     pub fn refuse_if_reserved_elsewhere(
         &self,
-        launch_id: Option<&str>,
+        goal: &impl LaunchScoped,
     ) -> std::result::Result<(), String> {
+        let launch_id = goal.launch_id();
         let state = self.state.lock();
         let Some(held) = state.reservation.as_ref() else {
             return Ok(());
@@ -224,6 +232,20 @@ impl SliceOwnership {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stands in for a real launch-scoped goal. The gate only ever reads
+    /// `launch_id()`, so exercising it does not need a whole `NodeRunGoal`.
+    struct Goal(Option<&'static str>);
+
+    impl LaunchScoped for Goal {
+        fn launch_id(&self) -> Option<&str> {
+            self.0
+        }
+    }
+
+    /// A goal a user typed: no launch of its own, so any held reservation
+    /// excludes it.
+    const LOCAL: Goal = Goal(None);
 
     #[test]
     fn a_free_daemon_accepts_a_reservation() {
@@ -356,12 +378,12 @@ mod tests {
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
         let ownership = SliceOwnership::new();
-        assert!(ownership.refuse_if_reserved_elsewhere(None).is_ok());
+        assert!(ownership.refuse_if_reserved_elsewhere(&LOCAL).is_ok());
 
         ownership.try_reserve("launch-a", "cn-robot-7");
 
         let refusal = ownership
-            .refuse_if_reserved_elsewhere(None)
+            .refuse_if_reserved_elsewhere(&LOCAL)
             .expect_err("a local action names no launch, so it is excluded");
         assert!(refusal.contains("launch-a"), "got: {refusal}");
         assert!(
@@ -371,13 +393,13 @@ mod tests {
 
         assert!(
             ownership
-                .refuse_if_reserved_elsewhere(Some("launch-a"))
+                .refuse_if_reserved_elsewhere(&Goal(Some("launch-a")))
                 .is_ok(),
             "the reserving launch's own dispatch must pass"
         );
         assert!(
             ownership
-                .refuse_if_reserved_elsewhere(Some("launch-b"))
+                .refuse_if_reserved_elsewhere(&Goal(Some("launch-b")))
                 .is_err()
         );
     }
@@ -392,14 +414,14 @@ mod tests {
     fn a_refused_local_action_names_the_launch_and_its_coordinator() {
         let ownership = SliceOwnership::new();
         assert!(
-            ownership.refuse_if_reserved_elsewhere(None).is_ok(),
+            ownership.refuse_if_reserved_elsewhere(&LOCAL).is_ok(),
             "an unreserved daemon refuses nothing"
         );
 
         ownership.try_reserve("launch-a", "cn-robot-7");
 
         let refusal = ownership
-            .refuse_if_reserved_elsewhere(None)
+            .refuse_if_reserved_elsewhere(&LOCAL)
             .expect_err("a user-typed action must be refused while a launch holds the machine");
         assert!(refusal.contains("launch-a"), "got: {refusal}");
         assert!(refusal.contains("cn-robot-7"), "got: {refusal}");
@@ -407,13 +429,13 @@ mod tests {
 
         assert!(
             ownership
-                .refuse_if_reserved_elsewhere(Some("launch-a"))
+                .refuse_if_reserved_elsewhere(&Goal(Some("launch-a")))
                 .is_ok(),
             "the holding launch's own dispatch must pass"
         );
         assert!(
             ownership
-                .refuse_if_reserved_elsewhere(Some("launch-b"))
+                .refuse_if_reserved_elsewhere(&Goal(Some("launch-b")))
                 .is_err(),
             "another launch's dispatch is still excluded"
         );

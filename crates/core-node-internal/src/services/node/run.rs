@@ -548,7 +548,7 @@ async fn handle_goal_request(
     // Before the gate, because the gate is per-action and this exclusion is
     // per-machine: a coordinator halfway through replacing this stack must not
     // race a locally-typed `peppy node run`.
-    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(goal.launch_id.as_deref()) {
+    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(&goal) {
         reject_goal(pending, encode_rejected_start_goal(reason)).await;
         return;
     }
