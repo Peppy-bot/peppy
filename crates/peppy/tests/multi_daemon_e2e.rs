@@ -11,14 +11,32 @@ use daemon_config::peppy_config::{
 use pmi::{RouterId, ZenohAdapter, ZenohNetProtocol, render_router_config};
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::core::{AccessMode, CmdWaitFor, ExecCommand, Host, Mount};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use testcontainers::runners::{AsyncBuilder, AsyncRunner};
+use testcontainers::{ContainerAsync, GenericBuildableImage, GenericImage, ImageExt};
+use tokio::sync::OnceCell;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const IMAGE_OVERRIDE_ENV: &str = "PEPPY_MULTI_DAEMON_E2E_IMAGE";
 const MANAGED_ROUTER_PORT: u16 = 7447;
 const CONTAINER_ROUTER_CONFIG: &str = "/etc/peppy/router.json5";
 const CONTAINER_PEPPY_BINARY: &str = "/usr/local/bin/peppy";
+
+/// `PEPPY_HOME` inside every daemon container. Used verbatim as the data root,
+/// so a run log is `$CONTAINER_PEPPY_HOME/logs/run/<instance>.log` with no
+/// `.peppy` segment in between.
+const CONTAINER_PEPPY_HOME: &str = "/data";
+
+/// Name of the image this test builds for its daemon containers.
+const E2E_IMAGE_NAME: &str = "peppy-multi-daemon-e2e";
+
+/// Pinned `uv` release copied into the image. A moving `latest` would make a
+/// green run depend on what Astral published that morning. Must stay new
+/// enough to read the hub nodes' lockfiles (`revision = 3`).
+const UV_VERSION: &str = "0.11.33";
+
+/// The interpreter the hub's Python nodes ask for (`requires-python
+/// ">=3.13,<3.14"`). Baked into the image so no node build has to fetch one.
+const NODE_PYTHON_VERSION: &str = "3.13";
 
 async fn require_docker() {
     let client = docker_client_instance()
@@ -141,16 +159,12 @@ fn bundled_zenohd_binary() -> PathBuf {
         .unwrap_or_else(|| executable_on_path("zenohd"))
 }
 
-/// Uses the runner's Ubuntu release so a host-built binary never targets a
-/// newer glibc than the container provides. Non-Ubuntu runners must select a
-/// compatible image explicitly with `PEPPY_MULTI_DAEMON_E2E_IMAGE`.
-fn host_compatible_image() -> (String, String) {
-    if let Ok(image) = std::env::var(IMAGE_OVERRIDE_ENV)
-        && !image.trim().is_empty()
-    {
-        return split_image_reference(image.trim());
-    }
-
+/// The Ubuntu release the e2e image is based on.
+///
+/// Matching the runner keeps a host-built binary from targeting a newer glibc
+/// than the container provides. Non-Ubuntu runners must select a compatible
+/// image explicitly with `PEPPY_MULTI_DAEMON_E2E_IMAGE`.
+fn host_ubuntu_release() -> String {
     let release = std::fs::read_to_string("/etc/os-release")
         .expect("read /etc/os-release or set PEPPY_MULTI_DAEMON_E2E_IMAGE");
     let value = |key: &str| {
@@ -165,7 +179,59 @@ fn host_compatible_image() -> (String, String) {
         distro, "ubuntu",
         "set {IMAGE_OVERRIDE_ENV} to a container image compatible with this {distro} runner"
     );
-    (String::from("ubuntu"), version)
+    version
+}
+
+/// The image body. A bare Ubuntu image cannot run this repository's nodes:
+///
+/// - `squashfs-tools` is what apptainer calls to pack a SIF, so a container
+///   node (`uvc_camera_python_mock`) cannot be built without it.
+/// - `uv` builds every native Python node (`my_python_robot_arm` and friends
+///   run `uv sync`). Peppy vendors `ruff`, not `uv`, so the image provides it.
+/// - `ca-certificates` covers both `peppy repo refresh` cloning the hub
+///   repositories and apptainer pulling a node's Docker base image.
+fn e2e_dockerfile(ubuntu_release: &str) -> String {
+    format!(
+        "FROM ubuntu:{ubuntu_release}\n\
+         RUN apt-get update \\\n\
+         \x20&& apt-get install -y --no-install-recommends ca-certificates squashfs-tools \\\n\
+         \x20&& rm -rf /var/lib/apt/lists/*\n\
+         COPY --from=ghcr.io/astral-sh/uv:{UV_VERSION} /uv /uvx /usr/local/bin/\n\
+         ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python\n\
+         RUN uv python install {NODE_PYTHON_VERSION}\n"
+    )
+}
+
+/// The daemon image, built once per test binary.
+///
+/// Every test starts several containers and they all want the same image;
+/// building it per container would serialize seven redundant Docker builds
+/// behind each other. `PEPPY_MULTI_DAEMON_E2E_IMAGE` bypasses the build
+/// entirely for runs that supply a prepared image.
+async fn e2e_image() -> (String, String) {
+    static IMAGE: OnceCell<(String, String)> = OnceCell::const_new();
+    IMAGE
+        .get_or_init(|| async {
+            if let Ok(image) = std::env::var(IMAGE_OVERRIDE_ENV)
+                && !image.trim().is_empty()
+            {
+                return split_image_reference(image.trim());
+            }
+
+            let release = host_ubuntu_release();
+            // The build tags the image `E2E_IMAGE_NAME:release` in the local
+            // daemon, which is the part every container needs; the returned
+            // handle is just another way to name what is now on disk, and
+            // `start_daemon` builds its own request per container anyway.
+            let _tagged = GenericBuildableImage::new(E2E_IMAGE_NAME, &release)
+                .with_dockerfile_string(e2e_dockerfile(&release))
+                .build_image()
+                .await
+                .expect("building the e2e daemon image must succeed");
+            (String::from(E2E_IMAGE_NAME), release)
+        })
+        .await
+        .clone()
 }
 
 /// `GenericImage` wants the name and tag separately and joins them back with a
@@ -318,6 +384,28 @@ impl Daemon {
             .unwrap_or_else(|error| panic!("stopping {}: {error}", self.name));
     }
 
+    /// Populates this daemon's node cache from its configured repositories.
+    ///
+    /// A fresh container has `repositories.json5` (the daemon writes the
+    /// bundled defaults at startup) but no cache, and the cache is the only
+    /// thing a launcher's `repo:` sources resolve against. Skipping this fails
+    /// a launch in preflight with "not found in
+    /// `$PEPPY_HOME/cache/nodes.json5`" before any stack is touched.
+    async fn refresh_repos(&self) {
+        require_success(
+            self.peppy(&["repo", "refresh"]).await,
+            &format!("refreshing repositories in {}", self.name),
+        );
+    }
+
+    /// Blocks until this daemon answers a request at all.
+    ///
+    /// `stack list` is the cheapest thing every daemon serves, and it is
+    /// already how the restart test waits for a new generation to come up.
+    async fn wait_until_serving(&self) {
+        self.wait_for_stack(|_| true).await;
+    }
+
     /// Restarts the daemon process by cycling its container.
     ///
     /// The container's command IS `peppy service serve`, so this is the whole
@@ -348,11 +436,21 @@ async fn start_daemon(
     let mut request = GenericImage::new(launch.image_name, launch.image_tag)
         .with_container_name(name)
         .with_hostname(hostname)
+        // Apptainer builds and runs every container node through a user
+        // namespace and a pile of mounts. Under Docker's default profile that
+        // is blocked twice over: no CAP_SYS_ADMIN, and `docker-default`
+        // AppArmor denies unprivileged userns on Ubuntu 24.04+ (the same
+        // restriction `containers::apptainer` disables in peppy's Lima guest).
+        // A test-only container on a self-hosted runner is the one place where
+        // buying both with `privileged` is the proportionate answer; the
+        // alternative is three security-opt knobs that each drift with the
+        // host's kernel and AppArmor configuration.
+        .with_privileged(true)
         .with_host("host.docker.internal", Host::HostGateway)
         .with_mount(read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY))
         .with_mount(read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"))
         .with_mount(read_only_bind(launch.newuidmap, "/usr/local/bin/newuidmap"))
-        .with_env_var(PEPPY_HOME_ENV, "/data")
+        .with_env_var(PEPPY_HOME_ENV, CONTAINER_PEPPY_HOME)
         .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
         .with_env_var(PEPPY_CONFIG_ENV, config)
         .with_cmd([CONTAINER_PEPPY_BINARY, "service", "serve"]);
@@ -383,7 +481,7 @@ async fn start_daemon(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
+    let (image_name, image_tag) = e2e_image().await;
 
     let _router = ZenohAdapter::start_router_ephemeral_in_mode(
         "0.0.0.0",
@@ -511,7 +609,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_are_refused() {
     require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
+    let (image_name, image_tag) = e2e_image().await;
 
     let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
     let zenohd_binary = bundled_zenohd_binary();
@@ -651,12 +749,42 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
 // exactly as flaky as the host it ran on.
 
 /// The launcher the `Federation` guide documents, driven from the peppy repo
-/// rather than from `launchers-hub` over the network. Same file: a superproject
-/// check keeps the two copies byte-identical.
+/// rather than from `launchers-hub` over the network. Testing the guide's own
+/// file is the point: a launcher that only this test can run would prove
+/// nothing about the documented one.
 const SPLIT_COMPUTE_LAUNCHER: &str =
     "docs/src/content/docs/guides/snippets/launchers/split_compute_manipulation.json5";
 
-const CONTAINER_LAUNCHER_PATH: &str = "/etc/peppy/split_compute_manipulation.json5";
+/// Where the federated tests' launchers are mounted inside a container. A
+/// directory rather than a single file, so a test can pick which launcher it
+/// drives without changing what any daemon mounts.
+const CONTAINER_LAUNCHER_DIR: &str = "/etc/peppy/launchers";
+const SPLIT_COMPUTE_LAUNCHER_FILE: &str = "split_compute_manipulation.json5";
+const HUB_NODE_PROBE_LAUNCHER_FILE: &str = "hub_node_probe.json5";
+
+fn container_launcher(file_name: &str) -> String {
+    format!("{CONTAINER_LAUNCHER_DIR}/{file_name}")
+}
+
+/// Two nodes that already exist in `nodes-hub`, one per execution path the
+/// documented launcher needs: `uvc_camera_python_mock` is a container node
+/// (apptainer builds a SIF) and `my_python_robot_arm` is a native one (`uv`
+/// builds a venv). Written here rather than kept in the docs snippets because
+/// it documents nothing; it only proves the machine works.
+const HUB_NODE_PROBE_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "uvc_camera_python_mock", tag: "v1" },
+      instances: [{ instance_id: "probe_cam_inst" }],
+    },
+    {
+      source: { name: "my_python_robot_arm", tag: "v1" },
+      instances: [{ instance_id: "probe_arm_inst" }],
+    },
+  ],
+}
+"#;
 
 /// Instances the launcher places on `robot_onboard`, i.e. everything the
 /// control loop touches.
@@ -675,7 +803,7 @@ impl Daemon {
     /// is bounded by the same `TIMEOUT` as every other wait here and does not
     /// depend on how fast the host is.
     async fn wait_for_node_log(&self, instance_id: &str, marker: &str) -> String {
-        let path = format!("/data/.peppy/logs/run/{instance_id}.log");
+        let path = format!("{CONTAINER_PEPPY_HOME}/logs/run/{instance_id}.log");
         let started = Instant::now();
         let mut last = String::new();
         while started.elapsed() < TIMEOUT {
@@ -755,7 +883,7 @@ struct Federation {
 
 async fn start_federation(prefix: &str) -> Federation {
     require_docker().await;
-    let (image_name, image_tag) = host_compatible_image();
+    let (image_name, image_tag) = e2e_image().await;
 
     let router = ZenohAdapter::start_router_ephemeral_in_mode(
         "0.0.0.0",
@@ -788,19 +916,27 @@ async fn start_federation(prefix: &str) -> Federation {
             .as_millis()
     );
 
-    // The launcher the guide documents, copied into a mountable directory so
-    // the coordinator can launch it by path.
+    // Every launcher these tests drive, in one mountable directory: the file
+    // the guide documents, plus the probe launcher beside it.
     let launcher_dir = tempfile::tempdir().expect("create launcher mount directory");
-    let launcher_source = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let documented_launcher = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(SPLIT_COMPUTE_LAUNCHER);
-    let launcher_target = launcher_dir.path().join("split_compute_manipulation.json5");
-    std::fs::copy(&launcher_source, &launcher_target).unwrap_or_else(|error| {
+    std::fs::copy(
+        &documented_launcher,
+        launcher_dir.path().join(SPLIT_COMPUTE_LAUNCHER_FILE),
+    )
+    .unwrap_or_else(|error| {
         panic!(
             "copying {} into the launcher mount: {error}",
-            launcher_source.display()
+            documented_launcher.display()
         )
     });
+    std::fs::write(
+        launcher_dir.path().join(HUB_NODE_PROBE_LAUNCHER_FILE),
+        HUB_NODE_PROBE_LAUNCHER,
+    )
+    .expect("writing the probe launcher into the launcher mount");
 
     let robot = start_daemon(
         &launch,
@@ -808,7 +944,7 @@ async fn start_federation(prefix: &str) -> Federation {
         "robo-robot",
         &external_daemon_config("cn-robot", router_port),
         None,
-        Some((launcher_target.as_path(), CONTAINER_LAUNCHER_PATH)),
+        Some((launcher_dir.path(), CONTAINER_LAUNCHER_DIR)),
     )
     .await;
     let cloud = start_daemon(
@@ -817,9 +953,18 @@ async fn start_federation(prefix: &str) -> Federation {
         "robo-cloud",
         &external_daemon_config("cn-cloud", router_port),
         None,
-        Some((launcher_target.as_path(), CONTAINER_LAUNCHER_PATH)),
+        Some((launcher_dir.path(), CONTAINER_LAUNCHER_DIR)),
     )
     .await;
+
+    // Each daemon resolves the deployments placed on it against its OWN cache,
+    // so both halves need one. A coordinator-only refresh leaves the peer
+    // refusing the launch in preflight, which is exactly the failure this
+    // fixture used to produce.
+    for daemon in [&robot, &cloud] {
+        daemon.wait_until_serving().await;
+        daemon.refresh_repos().await;
+    }
 
     Federation {
         robot,
@@ -843,10 +988,51 @@ impl Federation {
                 "robot_onboard@self",
                 "--place",
                 &format!("cloud_inference@{}", self.cloud_core_node),
-                CONTAINER_LAUNCHER_PATH,
+                &container_launcher(SPLIT_COMPUTE_LAUNCHER_FILE),
             ])
             .await
     }
+}
+
+/// The substrate every federated test stands on: a node built and started
+/// INSIDE a daemon container.
+///
+/// Deliberately narrow, and deliberately using nodes that already exist. It
+/// covers the two execution paths the documented launcher needs and nothing
+/// else: `uvc_camera_python_mock` is a container node, so apptainer has to
+/// build a SIF under Docker, and `my_python_robot_arm` is a native one, so
+/// `uv` has to build a venv from the image's toolchain.
+///
+/// Both assertions read the node's own run log rather than its status, because
+/// an instance can reach Running and still be silent. When a federated launch
+/// test fails, this test is what says whether the cause is the federation or
+/// the machine underneath it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hub_nodes_build_and_run_inside_a_daemon_container() {
+    let federation = start_federation("peppy-probe").await;
+
+    let launch = federation
+        .robot
+        .peppy(&[
+            "stack",
+            "launch",
+            &container_launcher(HUB_NODE_PROBE_LAUNCHER_FILE),
+        ])
+        .await;
+    assert!(
+        launch.success(),
+        "a hub node must build and start inside the daemon container:\n{}",
+        launch.text
+    );
+
+    federation
+        .robot
+        .wait_for_node_log("probe_cam_inst", "[uvc_camera] Emitted frame")
+        .await;
+    federation
+        .robot
+        .wait_for_node_log("probe_arm_inst", "[arm] published joint_states")
+        .await;
 }
 
 /// The whole thing, end to end: one command on the robot, two machines running
@@ -1094,7 +1280,12 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
 
     let launch = federation
         .robot
-        .peppy(&["stack", "launch", "--local", CONTAINER_LAUNCHER_PATH])
+        .peppy(&[
+            "stack",
+            "launch",
+            "--local",
+            &container_launcher(SPLIT_COMPUTE_LAUNCHER_FILE),
+        ])
         .await;
     assert!(
         launch.success(),
