@@ -38,7 +38,7 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `links` (one map filling every kind of `depends_on` slot, keyed by `link_id`), and `defer_links` (explicitly starting a required pairing or observer slot unresolved). A `links` value is interpreted against the slot it names: a producer slot (`depends_on.{nodes,contracts}`) takes a producer instance (a scalar for a `one` slot, an array for a multi-cardinality slot); a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance (`"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate); and an observer slot takes a single source instance to observe (`"<source>"` or `"<source>/<source_link_id>"`)
+ 3. Each deployment requires a `source` (where the node comes from) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `links`, and `defer_links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
 The `source` attribute supports four formats:
  - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
@@ -153,6 +153,96 @@ $ peppy stack list
 ```
 
 The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality).
+
+## Instance attributes
+
+Every entry in an `instances` array configures one running copy of the deployment's node. Two instances of the same node are independent: they get their own arguments, their own environment, and their own bindings.
+
+```json5 title="peppy_launcher.json5"
+{
+  source: { local: "./uvc_camera" },
+  instances: [
+    {
+      instance_id: "camera_front",
+      arguments: { device: { path: "/dev/video0" }, frame_rate: 30 },
+      env_vars: { GST_DEBUG: "2" },
+      framework: { use_sim_time: false },
+    },
+    {
+      instance_id: "camera_rear",
+      arguments: { device: { path: "/dev/video1" }, frame_rate: 15 },
+    },
+  ],
+}
+```
+
+### `instance_id` (required)
+
+The name this copy runs under. It labels the instance in `peppy stack list`, in its log file, and in every `links` value that points at it.
+
+Allowed characters are letters, digits, `_` and `-`. The id must be unique across the whole stack, not just within its own deployment: two deployments cannot both declare `camera_front`, and no instance may take the core node's own id. A collision is reported before anything starts.
+
+### `arguments` (optional)
+
+Values for the parameters the node declares in its `execution.parameters` block, written with the same nesting as that schema. See the [Parameters reference](/reference/parameters/) for the full syntax.
+
+A parameter that declares a `$default` may be omitted, and the daemon fills it in before the node starts. A required parameter left without a value fails the launch as that instance starts, naming the leaf it is missing (`Missing required parameters: device.serial`). Unknown keys and type mismatches are caught by the node itself as it boots, so they surface as that instance failing to come up.
+
+A [container node](/advanced_guides/containers/) can also reference these values in its `mount_paths` with `${parameters:<path>}`, which is how two instances of one node mount two different host devices.
+
+### `env_vars` (optional)
+
+Environment variables for this instance's process.
+
+`peppy stack launch` forwards your own shell environment to every node it starts, so a node already sees your `PATH` and the rest. `env_vars` is layered on top of that for what differs per instance (a device path, a board serial, a log level), and a name declared here replaces the forwarded value:
+
+```json5
+{
+  source: { local: "./esp32_board" },
+  instances: [
+    { instance_id: "esp32_left",  env_vars: { ESP32_DEVICE: "/dev/ttyUSB0" } },
+    { instance_id: "esp32_right", env_vars: { ESP32_DEVICE: "/dev/ttyUSB1" } },
+  ],
+}
+```
+
+Entries are checked when the launcher file is read, before the running stack is touched:
+
+- **Names** must be shell identifiers: a letter or `_` first, then letters, digits and `_`. `ESP32_DEVICE` is fine, `esp32-device` is not.
+- **Values** may hold letters, digits and `` _ - . / : , = @ + % ``. Whitespace, quotes and shell metacharacters (`;`, `$`, `` ` ``, `|`, and friends) are rejected, so a value like `"--flag other"` has to reach the node another way, typically as an [argument](#arguments-optional).
+- **Injection-prone names** are rejected outright: the dynamic-linker and shell hooks (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `IFS`, and the rest of that family).
+
+:::note
+The name and value rules exist because a container node receives its environment through Apptainer, which writes each variable unquoted into a script the container sources at startup. A name or value that does not survive that step would take `PEPPY_RUNTIME_CONFIG` down with it and leave the node running on its standalone defaults. The same rule applies to process nodes so that adding a `container` block to a node later cannot break the launchers that already deploy it.
+:::
+
+`env_vars` reach the instance when it starts. Fetching and building a node happen once for the node, not once per instance, so a variable your build needs (a registry token, a toolchain path) belongs in the shell you run `peppy stack launch` from, where it is forwarded to those steps too.
+
+### `framework` (optional)
+
+Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. Today the block holds one:
+
+- `use_sim_time`: read the clock from a simulator or bag replay instead of the daemon's wall clock. Setting it here wins over the daemon's `--clock-source` flag; omitting it falls through to that flag (which defaults to `wall`). See [System clock](/advanced_guides/system_clock/#sim-and-replay-clocks).
+
+An unknown key inside `framework` is an error rather than a no-op, so a typo like `use_simulation_time` fails the launch instead of silently leaving the instance on wall time.
+
+### `core_node` (optional)
+
+The machine this instance runs on, named by one of the placeholders the launcher declares under `core_nodes`. An instance that omits it runs on the daemon you launched from. See [Running one launcher across several machines](#running-one-launcher-across-several-machines).
+
+### `links` (optional)
+
+One map filling every kind of `depends_on` slot the node declares, keyed by the slot's `link_id`. A value is interpreted against the slot it names:
+
+- a producer slot (`depends_on.nodes` / `depends_on.contracts`) takes the producer instance to bind: a scalar for a `one` slot, an array for a multi-cardinality slot;
+- a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance, `"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate which of the peer's slots to use;
+- an observer slot takes the single source instance to observe, `"<source>"` or `"<source>/<source_link_id>"`.
+
+Every target must name an `instance_id` declared somewhere in the same launcher.
+
+### `defer_links` (optional)
+
+The `link_id`s of required pairing or observer slots this instance should start with left unresolved, listed by name. Every required participant slot must either be paired or appear here, and every observer slot must either be linked or appear here; a producer-binding slot cannot be deferred. Use it when the peer arrives later, at runtime, rather than in this launch.
 
 ## Running one launcher across several machines
 

@@ -1079,6 +1079,7 @@ name = "daemon-config"
 version = "0.0.1"
 dependencies = [
  "const_format",
+ "core-node-api",
  "dirs 6.0.0",
  "peppy-config-model",
  "serde",

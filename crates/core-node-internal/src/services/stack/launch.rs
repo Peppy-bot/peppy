@@ -687,6 +687,36 @@ fn mount_source(mount: &str) -> &str {
     mount.split(':').next().unwrap_or(mount)
 }
 
+/// The environment one launched instance is started with: the caller
+/// environment the launch goal forwards to every node, with the instance's own
+/// `env_vars` layered on top so a deployment can pin what differs per instance
+/// (a device path, a board id) without depending on whoever ran the launch.
+///
+/// A key declared by the instance replaces the forwarded one rather than
+/// appearing twice: the spawn paths differ on duplicates (a process node's
+/// `Command::env` keeps the last, apptainer's `--env` flags are order-dependent
+/// in their own way), so the ambiguity is resolved here, once. Forwarded order
+/// is preserved and the instance's own entries follow in name order, which
+/// keeps the resulting command line stable for a given launcher file.
+///
+/// Only `node_run` takes this: `env_vars` belong to an instance, while adding
+/// and building a node happen once for every instance that deploys it.
+fn instance_environment(
+    forwarded: &[(String, String)],
+    instance_env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    forwarded
+        .iter()
+        .filter(|(key, _)| !instance_env.contains_key(key))
+        .cloned()
+        .chain(
+            instance_env
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        )
+        .collect()
+}
+
 /// Step 8: Start every instance in dependency order.
 ///
 /// STRICTLY sequential, across machines as well as within one. The order is a
@@ -916,7 +946,7 @@ async fn start_node_instances(
                     ctx.idle_timeouts.run.as_secs(),
                 )
             }
-            .with_env_vars(ctx.env_vars.clone())
+            .with_env_vars(instance_environment(&ctx.env_vars, &instance.env_vars))
             .with_requested_pairs(
                 requested_by_instance
                     .remove(instance_id)
@@ -1601,6 +1631,46 @@ mod tests {
 
         assert_eq!(resolved, vec!["/tmp/video_reconstruction:/frames:rw"]);
         assert_eq!(mount_source(&resolved[0]), "/tmp/video_reconstruction");
+    }
+
+    /// An instance's `env_vars` are added to the forwarded caller environment
+    /// and win on a shared key, leaving exactly one entry per key so the spawn
+    /// path has nothing to disambiguate.
+    #[test]
+    fn instance_env_vars_override_the_forwarded_caller_environment() {
+        let forwarded = vec![
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("ESP32_DEVICE".to_string(), "/dev/from_caller".to_string()),
+        ];
+        let mut instance_env = BTreeMap::new();
+        instance_env.insert("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string());
+        instance_env.insert("BOARD_ID".to_string(), "3".to_string());
+
+        let merged = instance_environment(&forwarded, &instance_env);
+
+        assert_eq!(
+            merged,
+            vec![
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("BOARD_ID".to_string(), "3".to_string()),
+                ("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string()),
+            ]
+        );
+    }
+
+    /// An instance that declares nothing is started with the forwarded
+    /// environment unchanged, in the order it arrived.
+    #[test]
+    fn instance_without_env_vars_keeps_the_forwarded_environment() {
+        let forwarded = vec![
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("HOME".to_string(), "/home/user".to_string()),
+        ];
+
+        assert_eq!(
+            instance_environment(&forwarded, &BTreeMap::new()),
+            forwarded
+        );
     }
 
     #[test]

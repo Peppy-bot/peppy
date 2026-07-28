@@ -391,7 +391,12 @@ pub struct DeploymentInstance {
     pub instance_id: Name,
     #[serde(default)]
     pub arguments: BTreeMap<String, AnyType>,
-    #[serde(default)]
+    /// Environment variables handed to this instance's process, layered over
+    /// the caller environment the daemon forwards to every node (the instance
+    /// wins on a shared key). Validated at parse time against [`crate::env`],
+    /// so a launcher that parses carries only entries a node can actually
+    /// receive.
+    #[serde(default, deserialize_with = "deserialize_env_vars")]
     pub env_vars: BTreeMap<String, String>,
     #[serde(default)]
     pub framework: FrameworkOverrides,
@@ -486,6 +491,22 @@ where
         out.insert(key, value);
     }
     Ok(out)
+}
+
+/// The per-instance `env_vars` map. Every entry is checked here rather than at
+/// spawn time: `peppy stack launch` clears the running stack before it starts
+/// anything, so a name or value a node could not receive must fail while the
+/// file is being read (the CLI parses it locally first) instead of halfway
+/// through a launch that already tore the previous stack down.
+fn deserialize_env_vars<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let env_vars = BTreeMap::<String, String>::deserialize(deserializer)?;
+    for (name, value) in &env_vars {
+        crate::internal::env::check_env_var(name, value).map_err(de::Error::custom)?;
+    }
+    Ok(env_vars)
 }
 
 /// Splits a launcher `links` scalar target (or CLI `--link` right-hand side)
@@ -628,6 +649,35 @@ mod tests {
             with_env.env_vars.get("ESP32_DEVICE").map(String::as_str),
             Some("/dev/ttyUSB0")
         );
+    }
+
+    /// An `env_vars` entry a node could not receive intact is rejected while
+    /// the launcher is being parsed, and the message names the variable so the
+    /// user knows which line to fix.
+    #[test]
+    fn env_vars_reject_entries_a_node_cannot_receive() {
+        let cases = [
+            (
+                "{ \"has-dash\": \"ok\" }",
+                "`has-dash` is not a valid shell identifier",
+            ),
+            (
+                "{ LD_PRELOAD: \"/tmp/evil.so\" }",
+                "`LD_PRELOAD` is reserved",
+            ),
+            (
+                "{ GREETING: \"hello world\" }",
+                "value of env var `GREETING`",
+            ),
+            ("{ \"\": \"ok\" }", "not a valid shell identifier"),
+        ];
+        for (env_vars, expected) in cases {
+            let json5 = format!("{{ instance_id: \"esp32_1\", env_vars: {env_vars} }}");
+            let err = serde_json5::from_str::<DeploymentInstance>(&json5)
+                .expect_err(&format!("`{env_vars}` must be rejected"));
+            let msg = err.to_string();
+            assert!(msg.contains(expected), "expected `{expected}`, got: {msg}");
+        }
     }
 
     /// Per-instance framework overrides parse cleanly and round-trip back

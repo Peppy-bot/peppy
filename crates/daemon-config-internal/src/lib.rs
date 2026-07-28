@@ -30,6 +30,7 @@ mod internal {
     pub mod consts;
     pub mod contract;
     pub mod core_node_name;
+    pub mod env;
     pub mod launcher;
     pub mod pairing;
     pub mod peppy_config;
@@ -55,6 +56,13 @@ pub mod core_node_name {
 // -- atomic_write --
 pub mod atomic_write {
     pub use crate::internal::atomic_write::publish_atomic;
+}
+
+// -- env --
+pub mod env {
+    pub use crate::internal::env::{
+        InvalidEnvVar, check_env_var, is_forbidden_env_name, is_safe_env_value, is_valid_env_name,
+    };
 }
 
 // -- consts --
