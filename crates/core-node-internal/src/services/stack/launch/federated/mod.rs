@@ -210,7 +210,21 @@ async fn reserve_participants(
         match outcome {
             Ok(response) if response.accepted => {
                 reserved.push(core_node.clone());
+                // The positional mapping below is the ONLY thing tying a
+                // manifest to the deployment it describes, so a count mismatch
+                // is not a partial answer to salvage: zipping would silently
+                // pair manifests with the wrong deployments, or drop the tail
+                // and let this daemon resolve those sources itself against a
+                // plan the peer validated differently. The reservation is
+                // already recorded above, so failing here still releases it.
+                let counts_agree = deployments.len() == response.manifests.len();
                 match check_version(&core_node, &response, own_version) {
+                    Ok(()) if !counts_agree => refusals.push(format!(
+                        "`{core_node}` was asked about {} deployment(s) but answered with {} \
+                         manifest(s); the reply cannot be matched to what was asked",
+                        deployments.len(),
+                        response.manifests.len()
+                    )),
                     // The peer answers in the order it was asked, so zipping the
                     // requested deployments back onto the manifests is what
                     // recovers each one's index in the coordinator's plan.

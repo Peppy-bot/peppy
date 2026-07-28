@@ -37,6 +37,14 @@ use super::common::SlotUpdateClient;
 /// before the node's ready signal), so a healthy endpoint answers promptly.
 const PEER_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a cross-daemon `pair_commit` may take. Strictly longer than
+/// [`PEER_UPDATE_TIMEOUT`] because it CONTAINS one: the receiving daemon
+/// commits to its registry, pins its own node over `peer_update`, and answers.
+/// Reusing the inner budget for the outer call would let the requester give up
+/// on a peer that is still inside a delivery it was granted the full time for,
+/// and then revert a pair the peer goes on to establish.
+const PAIR_COMMIT_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub struct PairingCoordinator {
     updates: SlotUpdateClient,
     /// Serializes every pairing operation end-to-end (registry commit AND
@@ -142,7 +150,8 @@ impl PairingCoordinator {
                 pairing.pairing_tag,
                 instance_id
             );
-            self.notify_local_survivors(&pairing, instance_id).await;
+            self.notify_local_survivors(&pairing, self.updates.core_node_name(), instance_id)
+                .await;
         }
     }
 
@@ -175,8 +184,17 @@ impl PairingCoordinator {
     /// `pair_commit` request. Skipping it would leave the far node permanently
     /// unpaired while this side reported the pair established: the exact
     /// half-established state the protocol exists to prevent.
+    ///
+    /// That far half is therefore committed LAST. The revert this loop performs
+    /// is local-only, by construction: a node accepts slot updates solely from
+    /// its own daemon, so nothing here can take back a commit another daemon
+    /// has already made. Ordering the local delivery first means the only step
+    /// that could fail after a remote commit is one that no longer exists,
+    /// rather than one compensated for by a rollback request that can itself
+    /// fail. At least one endpoint of a pair in this registry is local, so this
+    /// only ever reorders the two sides; it never leaves the remote one out.
     async fn deliver_pair(&self, pairing: &Pairing) -> std::result::Result<(), String> {
-        let sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
+        let sides = local_first_delivery_order(pairing, self.updates.core_node_name());
         for (idx, (endpoint, peer)) in sides.into_iter().enumerate() {
             let outcome = if endpoint.slot.is_on(self.updates.core_node_name()) {
                 if !self
@@ -215,13 +233,6 @@ impl PairingCoordinator {
         Ok(())
     }
 
-    /// Asks the daemon hosting `endpoint` to record its half of `pairing` and
-    /// pin its own node.
-    ///
-    /// The receiving daemon does not re-derive the pairing rules: it cannot
-    /// read this daemon's manifests, and the launch coordinator already checked
-    /// both sides against each other before either started. What crosses here
-    /// is that verdict, not a request to re-litigate it.
     /// Reads a peer's commit request as this daemon's own slot plus the remote
     /// one it pairs with.
     ///
@@ -264,6 +275,13 @@ impl PairingCoordinator {
         ))
     }
 
+    /// Asks the daemon hosting `endpoint` to record its half of `pairing` and
+    /// pin its own node.
+    ///
+    /// The receiving daemon does not re-derive the pairing rules: it cannot
+    /// read this daemon's manifests, and the launch coordinator already checked
+    /// both sides against each other before either started. What crosses here
+    /// is that verdict, not a request to re-litigate it.
     async fn commit_pair_remotely(
         &self,
         pairing: &Pairing,
@@ -290,7 +308,7 @@ impl PairingCoordinator {
             self.updates.core_node_name(),
             self.updates.caller_instance_id(),
             &endpoint.slot.core_node,
-            PEER_UPDATE_TIMEOUT,
+            PAIR_COMMIT_TIMEOUT,
         )
         .await
         .map_err(|e| format!("`{}` did not answer: {e}", endpoint.slot.core_node))?;
@@ -338,9 +356,6 @@ impl PairingCoordinator {
         Ok(())
     }
 
-    /// Best-effort absolute Unpaired delivery; failures are logged, never
-    /// propagated (the target may be mid-death, and the boot default plus
-    /// lazy registry pruning make the unpaired state eventually consistent).
     /// Dissolves every pair involving an instance on ANOTHER daemon.
     ///
     /// The one relationship event that genuinely crosses daemons at runtime.
@@ -364,7 +379,8 @@ impl PairingCoordinator {
                 instance_id,
                 core_node
             );
-            self.notify_local_survivors(&pairing, instance_id).await;
+            self.notify_local_survivors(&pairing, core_node, instance_id)
+                .await;
         }
     }
 
@@ -375,10 +391,22 @@ impl PairingCoordinator {
     /// from its own daemon, so an endpoint on another machine is that daemon's
     /// to tell; reaching across would cross the trust boundary and duplicate
     /// the notification its own daemon already sends.
-    async fn notify_local_survivors(&self, pairing: &Pairing, gone_instance_id: &str) {
+    ///
+    /// The gone endpoint is identified by its FULL address, core node included,
+    /// for the same reason [`Pairing::involves`] takes both: two daemons can
+    /// host same-named instances, so a remote `planner_inst` dying must not be
+    /// mistaken for the local `planner_inst` and cost that one its notice.
+    async fn notify_local_survivors(
+        &self,
+        pairing: &Pairing,
+        gone_core_node: &str,
+        gone_instance_id: &str,
+    ) {
         let local_core_node = self.updates.core_node_name().to_owned();
         for endpoint in [&pairing.a, &pairing.b] {
-            if endpoint.slot.instance_id == gone_instance_id {
+            if endpoint.slot.core_node == gone_core_node
+                && endpoint.slot.instance_id == gone_instance_id
+            {
                 continue;
             }
             if !endpoint.slot.is_on(&local_core_node) {
@@ -388,6 +416,9 @@ impl PairingCoordinator {
         }
     }
 
+    /// Best-effort absolute Unpaired delivery; failures are logged, never
+    /// propagated (the target may be mid-death, and the boot default plus
+    /// lazy registry pruning make the unpaired state eventually consistent).
     async fn notify_unpaired_best_effort(&self, slot: &SlotAddr) {
         if !self
             .updates
@@ -430,6 +461,23 @@ impl PairingCoordinator {
             )
             .await
     }
+}
+
+/// The pair's two `(endpoint, its peer)` deliveries, local endpoints first.
+///
+/// Free-standing so the ordering the rollback protocol depends on is checkable
+/// without a messenger: everything [`PairingCoordinator::deliver_pair`] can
+/// undo is local, so the one delivery it cannot undo has to be the last one it
+/// makes.
+fn local_first_delivery_order<'a>(
+    pairing: &'a Pairing,
+    local_core_node: &str,
+) -> [(&'a node_stack::PairEndpoint, &'a node_stack::PairEndpoint); 2] {
+    let mut sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
+    // `false` sorts first, and the sort is stable, so a pair with both
+    // endpoints on this daemon keeps its declared order.
+    sides.sort_by_key(|(endpoint, _)| !endpoint.slot.is_on(local_core_node));
+    sides
 }
 
 /// Every core node other than `local` hosting an endpoint of a pair that
@@ -869,6 +917,42 @@ mod tests {
             remote_peer_core_nodes_of(&pairs, TEST_CORE, "reflex_inst"),
             std::collections::BTreeSet::from(["core_b".to_owned(), "core_c".to_owned()])
         );
+    }
+
+    /// The far half of a cross-daemon pair is committed last, because it is
+    /// the one thing this daemon cannot take back: every revert in
+    /// `deliver_pair` is a local registry clear plus a local `peer_update`, and
+    /// a node accepts slot updates only from its own daemon. Delivering the
+    /// remote side first would leave a peer holding a pair this side had
+    /// already abandoned.
+    #[test]
+    fn a_cross_daemon_pair_delivers_its_local_endpoint_before_the_remote_one() {
+        let local = endpoint(TEST_CORE, "reflex_inst", "delegation", "executor");
+        let remote = endpoint("core_b", "planner_inst", "delegation", "planner");
+
+        for pairing in [
+            pair(remote.clone(), local.clone()),
+            pair(local.clone(), remote.clone()),
+        ] {
+            let [(first, first_peer), (second, _)] =
+                local_first_delivery_order(&pairing, TEST_CORE);
+            assert_eq!(first.slot, local.slot, "the local endpoint goes first");
+            assert_eq!(first_peer.slot, remote.slot, "paired with its peer");
+            assert_eq!(second.slot, remote.slot, "the remote commit goes last");
+        }
+    }
+
+    /// Both endpoints local: nothing to reorder, and the declared order is
+    /// preserved so the delivery protocol reads the same as before.
+    #[test]
+    fn a_same_daemon_pair_keeps_its_declared_delivery_order() {
+        let pairing = pair(
+            endpoint(TEST_CORE, "reflex_inst", "delegation", "executor"),
+            endpoint(TEST_CORE, "planner_inst", "delegation", "planner"),
+        );
+        let [(first, _), (second, _)] = local_first_delivery_order(&pairing, TEST_CORE);
+        assert_eq!(first.slot, pairing.a.slot);
+        assert_eq!(second.slot, pairing.b.slot);
     }
 
     /// The request's field names are relative to the RECEIVER, so `local_*`

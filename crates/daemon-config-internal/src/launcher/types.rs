@@ -124,12 +124,19 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
     }
 }
 
-/// Core node link ids are unique, non-empty, and never the reserved `self`.
+/// Core node link ids are unique, never the reserved `self`, and spelled like
+/// the core node names they stand in for.
 ///
 /// `self` is refused because it already means "the coordinator" at the
 /// `--place` surface; a link that was also called `self` would make
 /// `--place self@self` parse as something, and nothing about it would tell a
 /// reader which `self` was which.
+///
+/// The rest of the grammar comes from [`CoreNodeName`] rather than being
+/// invented here. A link id is one half of `--place <link>@<core-node>`, so a
+/// name carrying a space, a `/`, or an `@` would be unwireable from the very
+/// surface it exists for, and the two halves having different rules is a
+/// distinction no author could guess.
 fn validate_core_node_links(core_nodes: &[String]) -> Result<(), String> {
     let mut seen = HashSet::with_capacity(core_nodes.len());
     for link_id in core_nodes {
@@ -143,6 +150,8 @@ fn validate_core_node_links(core_nodes: &[String]) -> Result<(), String> {
                  link and wire it with `--place <name>@{SELF_CORE_NODE}` instead."
             ));
         }
+        CoreNodeName::new(link_id.as_str())
+            .map_err(|reason| format!("`core_nodes` declares `{link_id}`, which {reason}"))?;
         if !seen.insert(link_id.as_str()) {
             return Err(format!(
                 "`core_nodes` declares `{link_id}` more than once; core node link names must \

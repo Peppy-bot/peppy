@@ -682,11 +682,6 @@ impl NodeStackInner {
         })
     }
 
-    /// Establishes a pair between two complementary slots. Validates that
-    /// both instances are live (Running, or Starting for the
-    /// reserve-before-spawn path), that both manifests declare the slots,
-    /// that both reference the same pairing with complementary roles and
-    /// compatible sha256 pins, and that neither slot is already paired.
     /// One endpoint's pairing identity, from whichever authority can supply
     /// it: this daemon's own manifests for a slot it hosts, or the
     /// coordinator's already-validated [`RemoteSlotMeta`] for one it does not.
@@ -707,6 +702,16 @@ impl NodeStackInner {
                 sha256: None,
             });
         }
+        // No verdict means the local manifests are the authority, so the slot
+        // has to actually be one this daemon hosts. `pairing_slot_meta` matches
+        // on instance id alone, and two daemons can host same-named instances:
+        // without this, a remote slot arriving with no verdict would resolve
+        // against whichever local instance happens to share its name.
+        if !slot.is_on(&self.root_core_node_name()) {
+            return Err(Error::PairingInstanceNotRunning {
+                instance_id: slot.instance_id.clone(),
+            });
+        }
         let dep = self.pairing_slot_meta(slot)?;
         Ok(EndpointMeta {
             name: dep.name.as_str().to_string(),
@@ -716,6 +721,11 @@ impl NodeStackInner {
         })
     }
 
+    /// Establishes a pair between two complementary slots. Validates that
+    /// both instances are live (Running, or Starting for the
+    /// reserve-before-spawn path), that both manifests declare the slots,
+    /// that both reference the same pairing with complementary roles and
+    /// compatible sha256 pins, and that neither slot is already paired.
     fn pair_slots_impl(
         &mut self,
         a: &SlotAddr,

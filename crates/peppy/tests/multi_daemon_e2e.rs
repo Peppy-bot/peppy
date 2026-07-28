@@ -317,6 +317,22 @@ impl Daemon {
             .await
             .unwrap_or_else(|error| panic!("stopping {}: {error}", self.name));
     }
+
+    /// Restarts the daemon process by cycling its container.
+    ///
+    /// The container's command IS `peppy service serve`, so this is the whole
+    /// daemon generation going away and a new one coming back: exactly what a
+    /// coordinator-restart test needs, and the only form of restart available
+    /// here. `peppy service stop` / `install` drive a systemd unit that this
+    /// image does not run.
+    async fn restart(&self) {
+        self.stop().await;
+        self.wait_for_exit().await;
+        self.container
+            .start()
+            .await
+            .unwrap_or_else(|error| panic!("restarting {}: {error}", self.name));
+    }
 }
 
 async fn start_daemon(
@@ -872,12 +888,25 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         launch.text
     );
 
-    let robot_stack = federation
+    // An untargeted `stack list` fans out over the whole federation and prints
+    // every machine's section, so proving an instance is NOT on a daemon takes
+    // that daemon's own slice. Wait for the fan-out to settle, then ask each
+    // daemon about itself.
+    federation
         .robot
         .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| text.contains(id)))
         .await;
+    federation
+        .cloud
+        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .await;
+
+    let robot_stack = federation
+        .robot
+        .stack_list(Some(&federation.robot_core_node))
+        .await;
     assert_holds_exactly(
-        &robot_stack,
+        &robot_stack.text,
         &federation.robot_core_node,
         &ROBOT_INSTANCES,
         &CLOUD_INSTANCES,
@@ -885,10 +914,10 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
 
     let cloud_stack = federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| text.contains(id)))
+        .stack_list(Some(&federation.cloud_core_node))
         .await;
     assert_holds_exactly(
-        &cloud_stack,
+        &cloud_stack.text,
         &federation.cloud_core_node,
         &CLOUD_INSTANCES,
         &ROBOT_INSTANCES,
@@ -989,12 +1018,11 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
         .await;
 
     // Restart the coordinator's daemon. Everything it knew in RAM is gone.
-    let restart = federation.robot.peppy(&["service", "restart"]).await;
-    assert!(
-        restart.success(),
-        "restarting the coordinator daemon must succeed:\n{}",
-        restart.text
-    );
+    federation.robot.restart().await;
+    // Wait for the new generation to answer before asking it anything: an
+    // untargeted `stack list` needs the coordinator's own daemon up to fan out
+    // at all.
+    federation.robot.wait_for_stack(|_| true).await;
 
     // The peer still holds its slice, and that slice still names the launch.
     let cloud_stack = federation
@@ -1086,19 +1114,27 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
         .chain(CLOUD_INSTANCES.iter())
         .copied()
         .collect();
-    let robot_stack = federation
+    federation
         .robot
         .wait_for_stack(|text| all_instances.iter().all(|id| text.contains(id)))
         .await;
+    let robot_stack = federation
+        .robot
+        .stack_list(Some(&federation.robot_core_node))
+        .await;
     assert_holds_exactly(
-        &robot_stack,
+        &robot_stack.text,
         &federation.robot_core_node,
         &all_instances,
         &[],
     );
 
-    // The peer stayed empty throughout.
-    let cloud_stack = federation.cloud.stack_list(None).await;
+    // The peer stayed empty throughout. Its OWN slice, not the federation-wide
+    // listing, which would show the coordinator's instances too.
+    let cloud_stack = federation
+        .cloud
+        .stack_list(Some(&federation.cloud_core_node))
+        .await;
     assert!(
         all_instances
             .iter()

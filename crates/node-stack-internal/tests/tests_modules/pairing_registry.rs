@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use config::runtime::{Name, PairingSlotBinding};
-use node_stack::{NodeStack, NodeStackError, SlotAddr};
+use node_stack::{NodeStack, NodeStackError, RemoteSlotMeta, SlotAddr};
 
 /// The core-node name of the test stack's root entity. Slot addresses are
 /// core-node-qualified, and every instance in these tests lives on this one
@@ -206,6 +206,71 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
             .iter()
             .any(|(slot, _)| slot == &arm_slot),
         "the survivor's slot must be released"
+    );
+}
+
+/// The cross-daemon counterpart of the lazy prune above, and the reason that
+/// prune is deliberately local-only: this daemon cannot see whether
+/// `planner_inst` on `core_b` is alive, so "cannot see" must not read as
+/// "dead". The pair therefore survives every registry read, and only the
+/// owning daemon's explicit death notification removes it.
+#[tokio::test]
+async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let _arm =
+        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
+
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let remote_slot = SlotAddr::new("core_b", "ctrl_remote", "arm");
+    let remote_meta = RemoteSlotMeta {
+        pairing_name: "arm_link".to_string(),
+        pairing_tag: "v1".to_string(),
+        role: "controller".to_string(),
+    };
+    stack
+        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
+        .expect("the coordinator's verdict authorizes the far half");
+
+    // Repeated reads must not prune it: the local endpoint is alive, and the
+    // remote one is not this daemon's to judge.
+    for _ in 0..2 {
+        assert_eq!(
+            stack.pairs().len(),
+            1,
+            "a remote pair must survive registry reads"
+        );
+    }
+    assert!(
+        !stack
+            .unpaired_pairing_slots()
+            .iter()
+            .any(|(slot, _)| slot == &arm_slot),
+        "the local slot stays claimed while the pair stands"
+    );
+
+    // A same-named instance on a DIFFERENT daemon dying must not touch it.
+    assert!(
+        stack
+            .dissolve_pairs_for_remote_instance("core_c", "ctrl_remote")
+            .is_empty(),
+        "dissolution is addressed by core node as well as instance id"
+    );
+    assert_eq!(stack.pairs().len(), 1);
+
+    let dissolved = stack.dissolve_pairs_for_remote_instance("core_b", "ctrl_remote");
+    assert_eq!(dissolved.len(), 1);
+    assert_eq!(
+        dissolved[0].peer_of(&arm_slot).map(|e| e.slot.clone()),
+        Some(remote_slot)
+    );
+    assert!(stack.pairs().is_empty());
+    assert!(
+        stack
+            .unpaired_pairing_slots()
+            .iter()
+            .any(|(slot, _)| slot == &arm_slot),
+        "the survivor's slot must be claimable again"
     );
 }
 

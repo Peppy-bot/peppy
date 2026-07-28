@@ -93,6 +93,17 @@ struct Registry {
     /// drop and redeclare across a remote restart the same way it does across
     /// a local one.
     source_generation: BTreeMap<SourceKey, u64>,
+    /// Sources on OTHER daemons currently reported up.
+    ///
+    /// Tracked separately from [`Self::source_generation`] because the two
+    /// answer different questions: the generation is an incarnation counter
+    /// that is deliberately RETAINED across a source's own down/up (so a
+    /// restart is strictly newer), while this is the up/down state itself.
+    /// Reading liveness off the retained generation reported a remote source
+    /// live for as long as anything still observed it, which is precisely
+    /// after it went down. A local source needs no entry here: the node stack
+    /// is the authority for instances this daemon runs.
+    remote_live: std::collections::BTreeSet<SourceKey>,
 }
 
 #[derive(Debug)]
@@ -268,6 +279,7 @@ impl ObservationCoordinator {
         // comes up and reads it. Under `stack launch` observers are registered
         // first, so this already held; making it unconditional makes the two
         // paths deliver identically regardless of start order.
+        let is_local_source = source.core_node == self.updates.core_node_name();
         let (source_deliveries, observer_deliveries) = {
             let mut registry = self.registry.lock().unwrap();
             let generation = {
@@ -278,6 +290,11 @@ impl ObservationCoordinator {
                 *counter += 1;
                 *counter
             };
+            // A remote source has no local authority to ask, so its report of
+            // reaching Running IS the record that it is up.
+            if !is_local_source {
+                registry.remote_live.insert(source.clone());
+            }
             let source_deliveries =
                 Self::deliveries_for_source(&registry, source, generation, true);
             let observer_deliveries: Vec<Delivery> = local_observer_instance
@@ -313,8 +330,7 @@ impl ObservationCoordinator {
 
         // As an observer: deliver each record whose source is already live.
         // A remote source's liveness cannot be read from the local stack, so it
-        // is taken from its last reported incarnation: a source with a
-        // generation has reported Running and not since reported stopped.
+        // is taken from the last transition its own daemon reported.
         self.deliver_many(
             observer_deliveries
                 .into_iter()
@@ -324,8 +340,8 @@ impl ObservationCoordinator {
     }
 
     /// Whether a source is currently up, from whichever authority owns it: the
-    /// local node stack for a local source, and the last notification received
-    /// for a remote one.
+    /// local node stack for a local source, and the last notification its
+    /// owning daemon sent for a remote one.
     fn source_is_live(
         &self,
         source: &SourceKey,
@@ -334,11 +350,7 @@ impl ObservationCoordinator {
         if source.core_node == self.updates.core_node_name() {
             return live_local_instances.contains(&source.instance_id);
         }
-        self.registry
-            .lock()
-            .unwrap()
-            .source_generation
-            .contains_key(source)
+        self.registry.lock().unwrap().remote_live.contains(source)
     }
 
     /// An instance stopped or was removed. If it is a source, its live
@@ -368,6 +380,10 @@ impl ObservationCoordinator {
         let deliveries = {
             let mut registry = self.registry.lock().unwrap();
             let deliveries = Self::source_down_deliveries_locked(&mut registry, source);
+            // Unconditionally, unlike the generation: whether anything still
+            // observes this source has no bearing on whether it is up. A
+            // no-op for a local source, which never gets a marker.
+            registry.remote_live.remove(source);
             Self::forget_unobserved_source_locked(&mut registry, source);
             deliveries
         };

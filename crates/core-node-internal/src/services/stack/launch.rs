@@ -478,11 +478,17 @@ async fn add_and_build_remotely(
 /// machine and still leave the peer's missing. See the Federation guide's
 /// Limits section: a container node placed on a peer needs its bind sources to
 /// already exist there.
+///
+/// Its CLEANUP is not so scoped. This step runs after step 6, by which point
+/// every participant has had its stack replaced and its nodes added and built,
+/// so a failure here has to clear their slices too; only the preparation work
+/// belongs to the coordinator alone.
 async fn prepare_container_host_mounts(
     ctx: &ProcessLaunchContext,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     placements: &daemon_config::launcher::Placements,
+    participants: &[String],
 ) -> std::result::Result<(), LaunchResult> {
     let mut mount_sources = match collect_container_mount_sources(
         ordered,
@@ -491,11 +497,11 @@ async fn prepare_container_host_mounts(
         ctx.bound_core_node.as_str(),
     ) {
         Ok(paths) => paths,
-        Err(reason) => return Err(fail_and_clear_stack(ctx, reason, &[]).await),
+        Err(reason) => return Err(fail_and_clear_stack(ctx, reason, participants).await),
     };
 
     if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
-        return Err(fail_and_clear_stack(ctx, reason, &[]).await);
+        return Err(fail_and_clear_stack(ctx, reason, participants).await);
     }
 
     // The peppy data root hosts the container build working dirs (`tmp/`),
@@ -512,7 +518,7 @@ async fn prepare_container_host_mounts(
             Some(root) => mount_sources.push(root.to_owned()),
             None => {
                 let reason = "peppy root path is not valid UTF-8".to_string();
-                return Err(fail_and_clear_stack(ctx, reason, &[]).await);
+                return Err(fail_and_clear_stack(ctx, reason, participants).await);
             }
         }
     }
@@ -545,7 +551,7 @@ async fn prepare_container_host_mounts(
     .and_then(|result| result);
 
     if let Err(reason) = result {
-        return Err(fail_and_clear_stack(ctx, reason, &[]).await);
+        return Err(fail_and_clear_stack(ctx, reason, participants).await);
     }
 
     Ok(())
@@ -1319,7 +1325,8 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         // starts. Updating Lima's mount table can restart the VM; doing it
         // lazily during a later instance start would kill containers already
         // launched by this stack operation.
-        prepare_container_host_mounts(&ctx, &ordered, &planned_by_key, &placements).await?;
+        prepare_container_host_mounts(&ctx, &ordered, &planned_by_key, &placements, &participants)
+            .await?;
 
         // Step 8: Start instances in dependency order.
         start_node_instances(

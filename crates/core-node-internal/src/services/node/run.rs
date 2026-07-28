@@ -694,6 +694,41 @@ fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload>
     )
 }
 
+/// Closes the preflight-to-dispatch window.
+///
+/// A federated coordinator validated this instance's whole plan (slots,
+/// cardinality, pairing roles, sha pins) against the manifest THIS daemon
+/// resolved during preflight. If the add phase has since replaced that
+/// manifest, the plan was never checked against what is about to be spawned,
+/// so refuse rather than start a node under a validation that no longer
+/// applies.
+///
+/// `planned` is `None` on the in-process launch path, where planner and spawner
+/// are the same daemon reading the same entity and there is no window to close.
+///
+/// Free-standing so the refusal can be exercised without a spawn: the branch
+/// exists precisely to stop a spawn, and a mistake in it is invisible until a
+/// federated launch silently runs the wrong manifest.
+fn refuse_stale_manifest(
+    node_name: &str,
+    tag: &str,
+    planned: Option<&str>,
+    node_config: &config::node::NodeConfig,
+) -> std::result::Result<(), String> {
+    let Some(expected) = planned else {
+        return Ok(());
+    };
+    let actual = super::manifest_fingerprint(node_config)?;
+    if actual == expected {
+        return Ok(());
+    }
+    Err(format!(
+        "manifest for `{node_name}:{tag}` changed since the launch was planned \
+         (planned against {expected}, this daemon now resolves {actual}). \
+         Re-run the launch so the plan is validated against the current manifest."
+    ))
+}
+
 async fn process_node_run(
     goal: NodeRunGoal,
     mut runtime_config: RuntimeConfig,
@@ -787,32 +822,11 @@ async fn process_node_run(
         guard.config().clone()
     };
 
-    // Close the preflight-to-dispatch window. A federated coordinator
-    // validated this instance's whole plan (slots, cardinality, pairing roles,
-    // sha pins) against the manifest THIS daemon resolved during preflight. If
-    // the add phase since replaced that manifest, the plan was never checked
-    // against what is about to be spawned, so refuse rather than start a node
-    // under a validation that no longer applies.
-    //
-    // Absent on the in-process launch path, where planner and spawner are the
-    // same daemon reading the same entity and there is no window to close.
-    if let Some(expected) = &manifest_sha256 {
-        let actual = match super::manifest_fingerprint(&node_config) {
-            Ok(fingerprint) => fingerprint,
-            Err(msg) => {
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeRunResult::failure(msg);
-            }
-        };
-        if &actual != expected {
-            let msg = format!(
-                "manifest for `{node_name}:{tag}` changed since the launch was planned \
-                 (planned against {expected}, this daemon now resolves {actual}). \
-                 Re-run the launch so the plan is validated against the current manifest."
-            );
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeRunResult::failure(msg);
-        }
+    if let Err(msg) =
+        refuse_stale_manifest(&node_name, &tag, manifest_sha256.as_deref(), &node_config)
+    {
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeRunResult::failure(msg);
     }
 
     // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
@@ -1937,6 +1951,50 @@ mod tests {
             "core_node",
         )
         .expect("valid test runtime config")
+    }
+
+    fn node_config_for_test() -> config::node::NodeConfig {
+        serde_json5::from_str(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "camera", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["camera"] }
+            }"#,
+        )
+        .expect("valid test node config")
+    }
+
+    /// The in-process launch path plans and spawns from the same entity, so
+    /// there is no window to close and nothing to compare against.
+    #[test]
+    fn a_run_with_no_planned_fingerprint_is_never_refused() {
+        assert!(refuse_stale_manifest("camera", "v1", None, &node_config_for_test()).is_ok());
+    }
+
+    #[test]
+    fn a_run_whose_manifest_still_matches_the_plan_proceeds() {
+        let config = node_config_for_test();
+        let planned = super::super::manifest_fingerprint(&config).expect("fingerprintable");
+        assert!(refuse_stale_manifest("camera", "v1", Some(&planned), &config).is_ok());
+    }
+
+    /// The whole point of the check: the add phase replaced the manifest the
+    /// coordinator validated, so the plan was never checked against what is
+    /// about to be spawned. Refusing is what stops the spawn.
+    #[test]
+    fn a_manifest_replaced_since_the_plan_refuses_the_run_and_names_both_fingerprints() {
+        let config = node_config_for_test();
+        let actual = super::super::manifest_fingerprint(&config).expect("fingerprintable");
+        let planned = "0".repeat(64);
+
+        let refusal = refuse_stale_manifest("camera", "v1", Some(&planned), &config)
+            .expect_err("a stale plan must not reach a spawn");
+        assert!(refusal.contains("camera:v1"), "got: {refusal}");
+        assert!(
+            refusal.contains(&planned) && refusal.contains(&actual),
+            "the operator needs both fingerprints to see what moved; got: {refusal}"
+        );
+        assert!(refusal.contains("Re-run the launch"), "got: {refusal}");
     }
 
     #[test]

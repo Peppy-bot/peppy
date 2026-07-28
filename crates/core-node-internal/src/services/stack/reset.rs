@@ -101,7 +101,7 @@ async fn handle_stack_reset_request(
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
-        handle_node_reset_request_inner(
+        handle_stack_reset_request_inner(
             &context,
             &messenger,
             &core_node_node,
@@ -114,7 +114,7 @@ async fn handle_stack_reset_request(
     )
 }
 
-async fn handle_node_reset_request_inner(
+async fn handle_stack_reset_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -128,7 +128,7 @@ async fn handle_node_reset_request_inner(
 
     let _request = StackResetRequest::decode(payload.as_ref())?;
 
-    debug!("Received `node_reset` request from {sender_instance_id}");
+    debug!("Received `stack_reset` request from {sender_instance_id}");
     clear_stack_slice(
         messenger,
         core_node_node,

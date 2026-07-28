@@ -132,28 +132,37 @@ async fn reserve_inner(
         decoded.launch_id, decoded.coordinator_core_node
     );
 
-    if let ReserveOutcome::HeldByAnotherLaunch {
-        launch_id,
-        coordinator_core_node,
-    } = context
+    match context
         .ownership
         .try_reserve(&decoded.launch_id, &decoded.coordinator_core_node)
     {
-        // Refuse before resolving anything. The coordinator releases whatever
-        // it did obtain and fails the launch, so no machine is left with a
-        // half-replaced stack by a launch that never had a chance.
-        return ParticipantReserveResponse::rejected(
-            format!(
-                "already reserved for launch `{launch_id}` driven by core node \
-                 `{coordinator_core_node}`"
-            ),
-            &context.peppy_version,
-        )
-        .encode()
-        .map_err(Into::into);
+        ReserveOutcome::HeldByAnotherLaunch {
+            launch_id,
+            coordinator_core_node,
+        } => {
+            // Refuse before resolving anything. The coordinator releases
+            // whatever it did obtain and fails the launch, so no machine is
+            // left with a half-replaced stack by a launch that never had a
+            // chance.
+            return ParticipantReserveResponse::rejected(
+                format!(
+                    "already reserved for launch `{launch_id}` driven by core node \
+                     `{coordinator_core_node}`"
+                ),
+                &context.peppy_version,
+            )
+            .encode()
+            .map_err(Into::into);
+        }
+        // Only a FRESH reservation needs a watch. A coordinator retrying a
+        // dropped reply re-reserves what it already holds, and the watch its
+        // first attempt spawned is still supervising that same reservation, so
+        // watching again would leave a presence subscription per retry.
+        ReserveOutcome::Reserved => {
+            watch_coordinator_presence(context, &decoded.coordinator_core_node)
+        }
+        ReserveOutcome::AlreadyHeld => {}
     }
-
-    watch_coordinator_presence(context, &decoded.coordinator_core_node);
 
     // Resolve this slice's manifests here rather than accepting the
     // coordinator's. The coordinator then needs no reachability to sources it
@@ -257,7 +266,19 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
                 _ = shutdown.cancelled() => return,
                 event = watch.rx.recv_async() => match event {
                     Ok(event) => event,
-                    Err(_) => return,
+                    // The presence stream ended, so this reservation has lost
+                    // its lease. Same verdict as failing to open the watch at
+                    // all: release rather than hold one nothing supervises,
+                    // which only a daemon restart could then clear.
+                    Err(_) => {
+                        warn!(
+                            "presence stream for coordinator `{coordinator}` ended; releasing \
+                             its reservation rather than holding one this daemon can no longer \
+                             supervise"
+                        );
+                        ownership.release_because_coordinator_gone(&coordinator);
+                        return;
+                    }
                 },
             };
 

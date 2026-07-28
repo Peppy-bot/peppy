@@ -303,6 +303,26 @@ mod tests {
         assert!(error.contains("empty core node link"), "got: {error}");
     }
 
+    /// A link id is one half of `--place <link>@<core-node>`, so it obeys the
+    /// same name grammar as the other half. A link carrying a space, a `/`, or
+    /// an `@` would be unwireable from the very surface it exists for.
+    #[test]
+    fn a_core_node_link_name_that_could_not_be_wired_is_refused() {
+        for malformed in [
+            "has space".to_owned(),
+            "has/slash".to_owned(),
+            "has@at".to_owned(),
+            "n".repeat(300),
+        ] {
+            let error = parse_launcher(&split_compute(
+                &format!(r#"core_nodes: ["{malformed}"],"#),
+                "",
+            ))
+            .expect_err("a link name that cannot be wired must be refused");
+            assert!(error.contains(&malformed), "got: {error}");
+        }
+    }
+
     /// `self` already means "the coordinator" at the `--place` surface, so a
     /// link of the same name would make `--place self@self` parse as something
     /// with nothing to tell a reader which `self` was which.

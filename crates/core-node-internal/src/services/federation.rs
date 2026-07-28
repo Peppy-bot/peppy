@@ -70,10 +70,14 @@ struct OwnershipState {
 /// Outcome of [`SliceOwnership::try_reserve`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReserveOutcome {
-    /// The reservation is now held for the requesting launch. Also returned
-    /// when the same launch reserves twice, so a coordinator retrying a
-    /// dropped reply does not refuse itself.
+    /// The reservation was just taken for the requesting launch.
     Reserved,
+    /// The requesting launch already held it. Distinct from [`Self::Reserved`]
+    /// because the two owe the caller different work: a coordinator retrying a
+    /// dropped reply must not refuse itself, but it must not get a second
+    /// coordinator-presence watch either, since the one the first attempt
+    /// spawned is still supervising this same reservation.
+    AlreadyHeld,
     /// Another launch holds it. The coordinator that receives this releases
     /// every reservation it did obtain and fails the launch, so no machine is
     /// left half-replaced.
@@ -97,13 +101,14 @@ impl SliceOwnership {
 
     /// Reserves this daemon for `launch_id`, driven by `coordinator`.
     ///
-    /// Re-reserving for the same launch succeeds: the exchange is a network
-    /// round trip, so a coordinator whose reply was lost must be able to retry
-    /// without deadlocking against its own reservation.
+    /// Re-reserving for the same launch succeeds (as
+    /// [`ReserveOutcome::AlreadyHeld`]): the exchange is a network round trip,
+    /// so a coordinator whose reply was lost must be able to retry without
+    /// deadlocking against its own reservation.
     pub fn try_reserve(&self, launch_id: &str, coordinator: &str) -> ReserveOutcome {
         let mut state = self.state.lock();
         match &state.reservation {
-            Some(held) if held.launch_id == launch_id => ReserveOutcome::Reserved,
+            Some(held) if held.launch_id == launch_id => ReserveOutcome::AlreadyHeld,
             Some(held) => ReserveOutcome::HeldByAnotherLaunch {
                 launch_id: held.launch_id.clone(),
                 coordinator_core_node: held.coordinator_core_node.clone(),
@@ -282,14 +287,19 @@ mod tests {
     }
 
     /// The exchange is a network round trip, so a coordinator whose reply was
-    /// lost has to be able to retry without deadlocking against itself.
+    /// lost has to be able to retry without deadlocking against itself. The
+    /// retry is reported as `AlreadyHeld` so the handler knows not to spawn a
+    /// second presence watch over the one reservation.
     #[test]
-    fn re_reserving_the_same_launch_succeeds() {
+    fn re_reserving_the_same_launch_reports_the_reservation_as_already_held() {
         let ownership = SliceOwnership::new();
-        ownership.try_reserve("launch-a", "cn-robot-7");
         assert_eq!(
             ownership.try_reserve("launch-a", "cn-robot-7"),
             ReserveOutcome::Reserved
+        );
+        assert_eq!(
+            ownership.try_reserve("launch-a", "cn-robot-7"),
+            ReserveOutcome::AlreadyHeld
         );
     }
 
@@ -374,7 +384,9 @@ mod tests {
     /// The reservation covers the whole machine, not just the launch action:
     /// a coordinator dispatching to a peer drives the NODE actions, which have
     /// their own gates, so local node work has to consult this to stay out of
-    /// the way.
+    /// the way. The refusal also has to say which launch holds the machine,
+    /// which coordinator is driving it, and how to clear it, or the operator
+    /// has no way to tell a stuck reservation from a busy one.
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
         let ownership = SliceOwnership::new();
@@ -389,6 +401,10 @@ mod tests {
         assert!(
             refusal.contains("cn-robot-7"),
             "the refusal must name the coordinator to wait on; got: {refusal}"
+        );
+        assert!(
+            refusal.contains("stack reset"),
+            "the refusal must name the escape hatch; got: {refusal}"
         );
 
         assert!(
@@ -407,40 +423,6 @@ mod tests {
     /// The slice record outlives the reservation: the reservation guards the
     /// launch, the slice describes its result, and rediscovery needs the
     /// latter long after the former is gone.
-    /// The user-facing half of the exclusion above. A refusal has to say which
-    /// launch holds the machine and which coordinator is driving it, or the
-    /// operator has no way to tell a stuck reservation from a busy one.
-    #[test]
-    fn a_refused_local_action_names_the_launch_and_its_coordinator() {
-        let ownership = SliceOwnership::new();
-        assert!(
-            ownership.refuse_if_reserved_elsewhere(&LOCAL).is_ok(),
-            "an unreserved daemon refuses nothing"
-        );
-
-        ownership.try_reserve("launch-a", "cn-robot-7");
-
-        let refusal = ownership
-            .refuse_if_reserved_elsewhere(&LOCAL)
-            .expect_err("a user-typed action must be refused while a launch holds the machine");
-        assert!(refusal.contains("launch-a"), "got: {refusal}");
-        assert!(refusal.contains("cn-robot-7"), "got: {refusal}");
-        assert!(refusal.contains("stack reset"), "got: {refusal}");
-
-        assert!(
-            ownership
-                .refuse_if_reserved_elsewhere(&Goal(Some("launch-a")))
-                .is_ok(),
-            "the holding launch's own dispatch must pass"
-        );
-        assert!(
-            ownership
-                .refuse_if_reserved_elsewhere(&Goal(Some("launch-b")))
-                .is_err(),
-            "another launch's dispatch is still excluded"
-        );
-    }
-
     #[test]
     fn the_slice_record_outlives_the_reservation() {
         let ownership = SliceOwnership::new();

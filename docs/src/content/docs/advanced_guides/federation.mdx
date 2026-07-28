@@ -158,15 +158,35 @@ work somewhere you cannot see is not one you can debug.
 daemon serving it:
 
 ```
-cn-robot-7 (robot-7)
-  wrist_cam_inst    uvc_camera_python_mock:v1   Running
-  arm_inst          my_python_robot_arm:v1      Running
-  reflex_inst       reactive_policy:v1          Running
-
-cn-atlas-h100 (atlas)
-  planner_inst      deliberative_planner:v1     Running
-  recorder_inst     episode_recorder:v1         Running
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-robot-7 (host: robot-7)                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Instance bindings                                                            │
+│                                                                              │
+│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
+│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
+│ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
+│ │ uvc_camera_python_mock:v1  │ wrist_cam_inst   │ Running │ Healthy │        │
+│ │ my_python_robot_arm:v1     │ arm_inst         │ Running │ Healthy │        │
+│ │ reactive_policy:v1         │ reflex_inst      │ Running │ Healthy │        │
+│ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-atlas-h100 (host: atlas)                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Instance bindings                                                            │
+│                                                                              │
+│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
+│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
+│ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
+│ │ deliberative_planner:v1    │ planner_inst     │ Running │ Healthy │        │
+│ │ episode_recorder:v1        │ recorder_inst    │ Running │ Healthy │        │
+│ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+(Abridged: the real output also carries a `Node stack` table per section and a
+`BINDINGS` column, both trimmed here to keep the placement visible.)
 
 Both slices report the same launch id and the same coordinator. That is what
 ties them together, and it is recorded on each slice rather than in the

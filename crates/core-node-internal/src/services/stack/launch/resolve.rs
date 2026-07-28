@@ -199,11 +199,20 @@ pub(super) fn resolve_placements(
             let Some(link) = &instance.core_node else {
                 continue;
             };
-            // The parser already refused a `core_node` naming an undeclared
-            // link, and every declared link is wired by the checks above.
-            let core_node = links
-                .get(link.as_str())
-                .expect("every declared link is wired and every core_node names a declared link");
+            // The parser refuses a `core_node` naming an undeclared link and
+            // the checks above wire every declared one, so this lookup should
+            // not miss. It is reported rather than asserted because the launch
+            // runs in a spawned task: a panic here would take the task down
+            // with no message the operator could act on, whereas a refusal
+            // names the link that fell through.
+            let Some(core_node) = links.get(link.as_str()) else {
+                return Err(format!(
+                    "instance `{}` is placed on core node link `{link}`, which this launcher \
+                     does not declare. Add it to `core_nodes`, or remove the instance's \
+                     `core_node` field.",
+                    instance.instance_id
+                ));
+            };
             by_instance.insert(instance.instance_id.to_string(), core_node.clone());
         }
     }
