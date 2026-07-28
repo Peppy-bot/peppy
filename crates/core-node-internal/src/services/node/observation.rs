@@ -183,7 +183,8 @@ impl ObservationCoordinator {
         observations: &BTreeMap<String, ObservationTarget>,
     ) {
         let mut registry = self.registry.lock().unwrap();
-        Self::unregister_observer_locked(&mut registry, observer_instance_id);
+        // A re-run replaces its records rather than accumulating them.
+        registry.by_observer.remove(observer_instance_id);
         for (observer_link_id, target) in observations {
             Self::insert_record(
                 &mut registry,
@@ -218,7 +219,8 @@ impl ObservationCoordinator {
     /// source is currently live is delivered. Both can hold for one instance.
     pub async fn on_instance_running(&self, instance_id: &str) {
         let source = SourceKey::new(self.updates.core_node_name(), instance_id);
-        self.source_reached_running(&source, Some(instance_id)).await;
+        self.source_reached_running(&source, Some(instance_id))
+            .await;
     }
 
     /// A source on ANOTHER daemon reached Running, as reported by that daemon.
@@ -279,22 +281,8 @@ impl ObservationCoordinator {
                 *counter += 1;
                 *counter
             };
-            let source_deliveries: Vec<Delivery> = registry
-                .by_observer
-                .iter()
-                .flat_map(|(observer_id, records)| {
-                    records
-                        .iter()
-                        .filter(|record| &record.source() == source)
-                        .cloned()
-                        .map(|record| Delivery {
-                            observer_instance_id: observer_id.clone(),
-                            record,
-                            source_generation: generation,
-                            source_live: true,
-                        })
-                })
-                .collect();
+            let source_deliveries =
+                Self::deliveries_for_source(&registry, source, generation, true);
             let observer_deliveries: Vec<Delivery> = local_observer_instance
                 .and_then(|instance_id| {
                     registry
@@ -330,9 +318,11 @@ impl ObservationCoordinator {
         // A remote source's liveness cannot be read from the local stack, so it
         // is taken from its last reported incarnation: a source with a
         // generation has reported Running and not since reported stopped.
-        self.deliver_many(observer_deliveries.into_iter().filter(|delivery| {
-            self.source_is_live(&delivery.record.source(), &live_instances)
-        }))
+        self.deliver_many(
+            observer_deliveries
+                .into_iter()
+                .filter(|delivery| self.source_is_live(&delivery.record.source(), &live_instances)),
+        )
         .await;
     }
 
@@ -366,7 +356,11 @@ impl ObservationCoordinator {
         // Drop this instance's own observer registrations. Only a local
         // instance can be an observer here, which is why this half has no
         // remote counterpart.
-        self.registry.lock().unwrap().by_observer.remove(instance_id);
+        self.registry
+            .lock()
+            .unwrap()
+            .by_observer
+            .remove(instance_id);
         self.mark_source_down(&source).await;
     }
 
@@ -389,14 +383,18 @@ impl ObservationCoordinator {
         .await;
     }
 
-    /// Every "source went down" update owed to this source's observers, with
-    /// the generation retained so a later restart is strictly newer.
-    fn source_down_deliveries_locked(registry: &mut Registry, source: &SourceKey) -> Vec<Delivery> {
-        let generation = registry
-            .source_generation
-            .get(source)
-            .copied()
-            .unwrap_or(0);
+    /// Every update owed to `source`'s observers, stamped with `generation` and
+    /// whether the source is up.
+    ///
+    /// One function because the up and down paths must reach exactly the same
+    /// observers: a "went down" addressed to fewer observers than the matching
+    /// "came up" leaves the difference permanently stale.
+    fn deliveries_for_source(
+        registry: &Registry,
+        source: &SourceKey,
+        generation: u64,
+        source_live: bool,
+    ) -> Vec<Delivery> {
         registry
             .by_observer
             .iter()
@@ -405,14 +403,21 @@ impl ObservationCoordinator {
                     .iter()
                     .filter(|record| &record.source() == source)
                     .cloned()
-                    .map(|record| Delivery {
+                    .map(move |record| Delivery {
                         observer_instance_id: observer_id.clone(),
                         record,
                         source_generation: generation,
-                        source_live: false,
+                        source_live,
                     })
             })
             .collect()
+    }
+
+    /// Every "source went down" update owed to this source's observers, with
+    /// the generation retained so a later restart is strictly newer.
+    fn source_down_deliveries_locked(registry: &mut Registry, source: &SourceKey) -> Vec<Delivery> {
+        let generation = registry.source_generation.get(source).copied().unwrap_or(0);
+        Self::deliveries_for_source(registry, source, generation, false)
     }
 
     /// Keeps a source generation only while at least one observer may
@@ -426,12 +431,6 @@ impl ObservationCoordinator {
         if !still_observed {
             registry.source_generation.remove(source);
         }
-    }
-
-    /// Clears an observer for callers that already hold the registry lock
-    /// (currently [`register_instance`] replacing a re-run's records).
-    fn unregister_observer_locked(registry: &mut Registry, observer_id: &str) {
-        registry.by_observer.remove(observer_id);
     }
 
     /// Delivers independent absolute-state updates concurrently. Entity labels

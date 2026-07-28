@@ -114,8 +114,7 @@ async fn send_node_run_goal(
     result_secs: u64,
     env_vars: Vec<(String, String)>,
 ) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
-    let goal =
-        NodeRunGoal::new(instance_plan, node_name, tag, result_secs).with_env_vars(env_vars);
+    let goal = NodeRunGoal::new(instance_plan, node_name, tag, result_secs).with_env_vars(env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;

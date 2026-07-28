@@ -15,23 +15,23 @@
 
 use super::{ReserveOutcome, SliceOwnership};
 use crate::Result;
-use crate::services::node::{RelationshipCoordinators, manifest_fingerprint, resolve_node_config};
+use crate::services::node::{
+    RelationshipCoordinators, manifest_fingerprint_of_json5, resolve_node_config,
+};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    LaunchIdentity, PairCommitRequest, PairCommitResponse, ParticipantReleaseRequest, ParticipantReleaseResponse,
-    ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
-    ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
-    RelationshipNotificationAck, ResolvedManifest,
+    LaunchIdentity, PairCommitRequest, PairCommitResponse, ParticipantReleaseRequest,
+    ParticipantReleaseResponse, ParticipantReserveRequest, ParticipantReserveResponse,
+    ParticipantSliceBeginRequest, ParticipantSliceBeginResponse, RelationshipEvent,
+    RelationshipNotification, RelationshipNotificationAck, ResolvedManifest,
 };
-use daemon_config::launcher::DeploymentSource;
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
+use daemon_config::launcher::DeploymentSource;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext};
 use peppylib::types::Payload;
-use peppylib::{
-    CoreNodePresenceMessenger, LivelinessEvent, MessengerHandle, PeppyResult, ServiceMessenger,
-};
+use peppylib::{CoreNodePresenceMessenger, LivelinessEvent, MessengerHandle, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -59,33 +59,68 @@ pub(crate) struct FederationServiceContext {
     pub(crate) shutdown_token: CancellationToken,
 }
 
-pub(crate) async fn listen_for_participant_reserve(
-    context: FederationServiceContext,
-    node_name: &str,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        &context.messenger,
-        &context.core_node_name,
-        &context.root_instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ServiceId::ParticipantReserve.name(),
-    )
-    .await?;
+/// Declares the listener for one federation endpoint.
+///
+/// The five endpoints differ only in which [`ServiceId`] they bind and which
+/// handler they run; binding, spawning, and turning the handler's `Result` into
+/// a service response are identical for all of them. Stating that once is what
+/// stops a change to how these endpoints are served from landing on four of the
+/// five.
+macro_rules! federation_endpoint {
+    ($listen:ident, $service:expr, $inner:ident) => {
+        pub(crate) async fn $listen(
+            context: FederationServiceContext,
+            node_name: &str,
+        ) -> Result<JoinHandle<Result<()>>> {
+            let mut endpoint = ServiceMessenger::listen(
+                &context.messenger,
+                &context.core_node_name,
+                &context.root_instance_id,
+                SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+                $service.name(),
+            )
+            .await?;
 
-    Ok(tokio::spawn(async move {
-        endpoint
-            .handle_requests(|request| handle_reserve(request, context.clone()))
-            .await
-            .map_err(Into::into)
-    }))
+            Ok(tokio::spawn(async move {
+                endpoint
+                    .handle_requests(|request| {
+                        let context = context.clone();
+                        async move {
+                            into_service_response(&request, $inner(&request, &context).await)
+                        }
+                    })
+                    .await
+                    .map_err(Into::into)
+            }))
+        }
+    };
 }
 
-async fn handle_reserve(
-    request: ServiceRequestContext,
-    context: FederationServiceContext,
-) -> PeppyResult<Payload> {
-    into_service_response(&request, reserve_inner(&request, &context).await)
-}
+federation_endpoint!(
+    listen_for_participant_reserve,
+    ServiceId::ParticipantReserve,
+    reserve_inner
+);
+federation_endpoint!(
+    listen_for_participant_slice_begin,
+    ServiceId::ParticipantSliceBegin,
+    slice_begin_inner
+);
+federation_endpoint!(
+    listen_for_pair_commit,
+    ServiceId::PairCommit,
+    pair_commit_inner
+);
+federation_endpoint!(
+    listen_for_participant_release,
+    ServiceId::ParticipantRelease,
+    release_inner
+);
+federation_endpoint!(
+    listen_for_relationship_notify,
+    ServiceId::RelationshipNotify,
+    notify_inner
+);
 
 async fn reserve_inner(
     request: &ServiceRequestContext,
@@ -150,24 +185,35 @@ async fn reserve_inner(
 
 /// Resolves one manifest per requested deployment source, in request order, so
 /// the coordinator can align them with the deployments it asked about.
+///
+/// Concurrently: each source is a distinct git clone, download, or cache read
+/// with nothing shared between them, and the whole call has to fit inside the
+/// coordinator's preflight budget. Resolving them one at a time would spend
+/// that budget on the sum of every fetch rather than the slowest one.
+/// `try_join_all` preserves request order, which is what the alignment relies
+/// on.
 async fn resolve_slice_manifests(
     context: &FederationServiceContext,
     sources_json5: &[String],
 ) -> std::result::Result<Vec<ResolvedManifest>, String> {
-    let mut manifests = Vec::with_capacity(sources_json5.len());
-    for (index, source_json5) in sources_json5.iter().enumerate() {
-        let source: DeploymentSource = serde_json5::from_str(source_json5)
-            .map_err(|e| format!("deployment source #{index} is not decodable: {e}"))?;
-        let source = crate::services::stack::portable_node_source(&source)?;
-        let config = resolve_node_config(source, &context.peppy_dirs)
-            .await
-            .map_err(|e| format!("deployment source #{index} failed to resolve: {e}"))?;
-        let fingerprint = manifest_fingerprint(&config)?;
-        let config_json5 = json5_pretty::to_string_pretty(&config)
-            .map_err(|e| format!("deployment source #{index} failed to serialize: {e}"))?;
-        manifests.push(ResolvedManifest::new(config_json5, fingerprint));
-    }
-    Ok(manifests)
+    futures::future::try_join_all(sources_json5.iter().enumerate().map(
+        |(index, source_json5)| async move {
+            let source: DeploymentSource = serde_json5::from_str(source_json5)
+                .map_err(|e| format!("deployment source #{index} is not decodable: {e}"))?;
+            let source = crate::services::stack::portable_node_source(&source)?;
+            let config = resolve_node_config(source, &context.peppy_dirs)
+                .await
+                .map_err(|e| format!("deployment source #{index} failed to resolve: {e}"))?;
+            // Serialize once: the fingerprint is defined over exactly these
+            // bytes, so hashing them is the same answer `manifest_fingerprint`
+            // would reach after re-serializing.
+            let config_json5 = json5_pretty::to_string_pretty(&config)
+                .map_err(|e| format!("deployment source #{index} failed to serialize: {e}"))?;
+            let fingerprint = manifest_fingerprint_of_json5(&config_json5);
+            Ok(ResolvedManifest::new(config_json5, fingerprint))
+        },
+    ))
+    .await
 }
 
 /// Turns the reservation into a LEASE: while this daemon holds a reservation
@@ -236,34 +282,6 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
     });
 }
 
-pub(crate) async fn listen_for_participant_slice_begin(
-    context: FederationServiceContext,
-    node_name: &str,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        &context.messenger,
-        &context.core_node_name,
-        &context.root_instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ServiceId::ParticipantSliceBegin.name(),
-    )
-    .await?;
-
-    Ok(tokio::spawn(async move {
-        endpoint
-            .handle_requests(|request| handle_slice_begin(request, context.clone()))
-            .await
-            .map_err(Into::into)
-    }))
-}
-
-async fn handle_slice_begin(
-    request: ServiceRequestContext,
-    context: FederationServiceContext,
-) -> PeppyResult<Payload> {
-    into_service_response(&request, slice_begin_inner(&request, &context).await)
-}
-
 /// The commit point of a federated launch on this machine: the coordinator has
 /// every participant reserved, so this daemon's slice is now replaced.
 ///
@@ -316,42 +334,13 @@ async fn slice_begin_inner(
     // launch that dies halfway must still be findable by `stack reset
     // --federated`: recording only on success would leave exactly the wreckage
     // that needs cleaning up as the one state nobody can find.
-    context.ownership.record_slice(LaunchIdentity::new(
-        decoded.launch_id.clone(),
-        coordinator,
-    ));
+    context
+        .ownership
+        .record_slice(LaunchIdentity::new(decoded.launch_id.clone(), coordinator));
 
     ParticipantSliceBeginResponse::began()
         .encode()
         .map_err(Into::into)
-}
-
-pub(crate) async fn listen_for_pair_commit(
-    context: FederationServiceContext,
-    node_name: &str,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        &context.messenger,
-        &context.core_node_name,
-        &context.root_instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ServiceId::PairCommit.name(),
-    )
-    .await?;
-
-    Ok(tokio::spawn(async move {
-        endpoint
-            .handle_requests(|request| handle_pair_commit(request, context.clone()))
-            .await
-            .map_err(Into::into)
-    }))
-}
-
-async fn handle_pair_commit(
-    request: ServiceRequestContext,
-    context: FederationServiceContext,
-) -> PeppyResult<Payload> {
-    into_service_response(&request, pair_commit_inner(&request, &context).await)
 }
 
 /// Records this daemon's half of a cross-daemon pair, on behalf of the daemon
@@ -385,35 +374,7 @@ async fn pair_commit_inner(
     response.encode().map_err(Into::into)
 }
 
-pub(crate) async fn listen_for_participant_release(
-    context: FederationServiceContext,
-    node_name: &str,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        &context.messenger,
-        &context.core_node_name,
-        &context.root_instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ServiceId::ParticipantRelease.name(),
-    )
-    .await?;
-
-    Ok(tokio::spawn(async move {
-        endpoint
-            .handle_requests(|request| handle_release(request, context.clone()))
-            .await
-            .map_err(Into::into)
-    }))
-}
-
-async fn handle_release(
-    request: ServiceRequestContext,
-    context: FederationServiceContext,
-) -> PeppyResult<Payload> {
-    into_service_response(&request, release_inner(&request, &context))
-}
-
-fn release_inner(
+async fn release_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
@@ -435,34 +396,6 @@ fn release_inner(
     };
 
     response.encode().map_err(Into::into)
-}
-
-pub(crate) async fn listen_for_relationship_notify(
-    context: FederationServiceContext,
-    node_name: &str,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        &context.messenger,
-        &context.core_node_name,
-        &context.root_instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ServiceId::RelationshipNotify.name(),
-    )
-    .await?;
-
-    Ok(tokio::spawn(async move {
-        endpoint
-            .handle_requests(|request| handle_notify(request, context.clone()))
-            .await
-            .map_err(Into::into)
-    }))
-}
-
-async fn handle_notify(
-    request: ServiceRequestContext,
-    context: FederationServiceContext,
-) -> PeppyResult<Payload> {
-    into_service_response(&request, notify_inner(&request, &context).await)
 }
 
 /// Applies a peer daemon's report about an instance it owns.

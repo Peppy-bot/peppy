@@ -46,11 +46,6 @@ const GOAL_ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// it is allowed to take as long as a cooperative shutdown of that stack takes.
 const SLICE_BEGIN_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// How long each feedback drain slice waits before re-checking the idle and
-/// deadline budgets. Small enough that a blown budget is noticed promptly,
-/// large enough not to spin.
-const FEEDBACK_DRAIN_SLICE: Duration = Duration::from_millis(50);
-
 /// One of the three node actions, viewed as something a coordinator dispatches.
 ///
 /// The three differ only in their codecs and in which launch step their output
@@ -101,7 +96,6 @@ macro_rules! impl_remote_goal {
                         .error_message
                         .unwrap_or_else(|| format!("{} failed with no error message", $label)));
                 }
-                #[allow(clippy::redundant_closure_call)]
                 Ok($take(result))
             }
         }
@@ -116,7 +110,7 @@ impl_remote_goal!(
     NodeAddFeedback,
     NodeAddResult,
     NodeAddResult,
-    |result| result
+    std::convert::identity
 );
 impl_remote_goal!(
     NodeBuildGoal,
@@ -126,7 +120,7 @@ impl_remote_goal!(
     NodeBuildFeedback,
     NodeBuildResult,
     (),
-    |_result| ()
+    drop
 );
 impl_remote_goal!(
     NodeRunGoal,
@@ -136,7 +130,7 @@ impl_remote_goal!(
     NodeRunFeedback,
     NodeRunResult,
     (),
-    |_result| ()
+    drop
 );
 
 /// Sends one goal to `core_node` and drives it to completion, relaying its
@@ -185,7 +179,17 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             ));
         }
 
-        match tokio::time::timeout(FEEDBACK_DRAIN_SLICE, handle.on_next_feedback()).await {
+        // Wait exactly until the nearer of the two budgets would be blown,
+        // rather than ticking. A remote build can be silent for minutes, and
+        // both budgets are re-checked at the top of the loop anyway, so waking
+        // any earlier than the deadline that would end the wait is pure spin —
+        // multiplied by every peer running a goal concurrently.
+        let idle_expiry = last_activity + idle_timeout;
+        let wake_at = match ctx.launch_deadline {
+            Some(deadline) => idle_expiry.min(deadline),
+            None => idle_expiry,
+        };
+        match tokio::time::timeout_at(wake_at, handle.on_next_feedback()).await {
             Ok(Ok(message)) => {
                 last_activity = tokio::time::Instant::now();
                 if let Some(line) = G::decode_feedback_line(message.payload().as_ref()) {
@@ -194,7 +198,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             }
             // End of stream: the peer completed the goal.
             Ok(Err(_)) => break,
-            // Drain slice elapsed with nothing to read; re-check the budgets.
+            // A budget elapsed with nothing to read; the checks above name it.
             Err(_) => {}
         }
     }
@@ -284,11 +288,7 @@ pub(in crate::services::stack) async fn clear_participant_slices(
         ctx,
         format!(
             "Clearing the slice this launch started on: {}",
-            participants
-                .iter()
-                .map(|core_node| format!("`{core_node}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            daemon_config::format_quoted_list(participants)
         ),
         LaunchFeedbackStep::LauncherStep,
     )

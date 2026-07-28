@@ -538,38 +538,30 @@ impl CoreNode {
                 Arc::clone(&self.slice_ownership),
             )
             .boxed(),
-            ServiceId::ParticipantReserve => {
-                federation::listen_for_participant_reserve(
-                    self.federation_context(ctx),
-                    self.node_name(),
-                )
-                .boxed()
-            }
-            ServiceId::ParticipantSliceBegin => {
-                federation::listen_for_participant_slice_begin(
-                    self.federation_context(ctx),
-                    self.node_name(),
-                )
-                .boxed()
-            }
+            ServiceId::ParticipantReserve => federation::listen_for_participant_reserve(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
+            ServiceId::ParticipantSliceBegin => federation::listen_for_participant_slice_begin(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
             ServiceId::PairCommit => {
                 federation::listen_for_pair_commit(self.federation_context(ctx), self.node_name())
                     .boxed()
             }
-            ServiceId::ParticipantRelease => {
-                federation::listen_for_participant_release(
-                    self.federation_context(ctx),
-                    self.node_name(),
-                )
-                .boxed()
-            }
-            ServiceId::RelationshipNotify => {
-                federation::listen_for_relationship_notify(
-                    self.federation_context(ctx),
-                    self.node_name(),
-                )
-                .boxed()
-            }
+            ServiceId::ParticipantRelease => federation::listen_for_participant_release(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
+            ServiceId::RelationshipNotify => federation::listen_for_relationship_notify(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
             ServiceId::NodeInit => node::listen_for_node_init(
                 &self.messenger,
                 ctx.core_node_name,

@@ -115,14 +115,7 @@ pub fn validate_observations(
                     });
                     continue;
                 };
-                match resolve_observation(
-                    owner_id,
-                    own_dep,
-                    key,
-                    target,
-                    &lookup,
-                    placements,
-                ) {
+                match resolve_observation(owner_id, own_dep, key, target, &lookup, placements) {
                     Ok(planned) => out.planned.push(planned),
                     Err(error) => out.errors.push(error),
                 }

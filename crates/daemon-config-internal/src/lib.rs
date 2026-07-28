@@ -39,7 +39,7 @@ mod internal {
 // -- error --
 pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
-    LinkUnknownSlot, ParsingError, SlotKind, format_bulleted,
+    LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
 };
 
 // -- core_node_name --

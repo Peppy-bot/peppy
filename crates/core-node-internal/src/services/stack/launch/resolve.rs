@@ -5,6 +5,7 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource,
 };
 use daemon_config::consts::PeppyDirs;
+use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use parking_lot::Mutex as StdMutex;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -33,12 +34,7 @@ pub(crate) fn portable_node_source(
     source: &DeploymentSource,
 ) -> std::result::Result<NodeSource, String> {
     match source {
-        DeploymentSource::Local(spec) => Err(format!(
-            "`local:{}` cannot be placed on another core node: the path names a tree on the \
-             coordinator's filesystem. A `local:` deployment must keep all of its instances on \
-             one core node; publish the node to a repo or url source to split it across machines.",
-            spec.local.display()
-        )),
+        DeploymentSource::Local(spec) => Err(local_source_refusal(spec)),
         DeploymentSource::Repo(spec) => NodeSource::repo_node(&spec.name, &spec.tag)
             .map_err(|e| format!("invalid repo node `{}:{}`: {e}", spec.name, spec.tag)),
         DeploymentSource::Git(spec) => Ok(NodeSource::Git {
@@ -52,6 +48,24 @@ pub(crate) fn portable_node_source(
             sha256: Some(spec.sha256.clone()),
         }),
     }
+}
+
+/// Why a `local:` source cannot cross a machine boundary.
+///
+/// Stated once because two sides refuse it at different moments: the
+/// coordinator before it even asks a peer to reserve, and
+/// [`portable_node_source`] when a source is translated for a peer. The two
+/// must say the same thing, or the same misconfiguration reads as two
+/// different problems depending on where it is caught.
+pub(crate) fn local_source_refusal(
+    spec: &daemon_config::launcher::DeploymentLocalSource,
+) -> String {
+    format!(
+        "`local:{}` cannot be placed on another core node: the path names a tree on the \
+         coordinator's filesystem. A `local:` deployment must keep all of its instances on \
+         one core node; publish the node to a repo or url source to split it across machines.",
+        spec.local.display()
+    )
 }
 
 fn deployment_label(deployment: &Deployment) -> String {
@@ -83,9 +97,9 @@ pub(crate) fn node_source_from_deployment_source(
         } else {
             nodes_directory.join(&spec.local)
         })),
-        DeploymentSource::Repo(spec) => {
-            crate::services::repo::cache::resolve_repo_node_source(&spec.name, &spec.tag, peppy_dirs)
-        }
+        DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
+            &spec.name, &spec.tag, peppy_dirs,
+        ),
         portable => portable_node_source(portable),
     }
 }
@@ -172,12 +186,7 @@ pub(super) fn resolve_placements(
     let declared: BTreeSet<&str> = launcher.core_nodes.iter().map(String::as_str).collect();
 
     if declared.is_empty() && !goal.core_node_links.is_empty() {
-        let wired = goal
-            .core_node_links
-            .keys()
-            .map(|link| format!("`{link}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let wired = format_quoted_list(goal.core_node_links.keys());
         return Err(format!(
             "--place was given ({wired}) but this launcher declares no `core_nodes`. Either \
              remove --place, or add a `core_nodes` list naming the machines the launcher spans."
@@ -198,11 +207,7 @@ pub(super) fn resolve_placements(
             "these core node links are declared but not wired: {}. Wire each one with \
              `--place <core-node-link>@<core-node>`, or run the whole launcher on this machine \
              with `--local`.",
-            missing
-                .iter()
-                .map(|link| format!("`{link}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            format_quoted_list(&missing)
         ));
     }
     let undeclared: Vec<&str> = goal
@@ -214,19 +219,11 @@ pub(super) fn resolve_placements(
     if !undeclared.is_empty() {
         return Err(format!(
             "--place names core node links this launcher does not declare: {}. It declares: {}",
-            undeclared
-                .iter()
-                .map(|link| format!("`{link}`"))
-                .collect::<Vec<_>>()
-                .join(", "),
+            format_quoted_list(&undeclared),
             if declared.is_empty() {
                 "nothing".to_owned()
             } else {
-                declared
-                    .iter()
-                    .map(|link| format!("`{link}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                format_quoted_list(&declared)
             }
         ));
     }
@@ -402,8 +399,8 @@ async fn adopt_delegated_manifest(
     )
     .await;
 
-    let config: config::node::NodeConfig = serde_json5::from_str(&manifest.config_json5)
-        .map_err(|e| {
+    let config: config::node::NodeConfig =
+        serde_json5::from_str(&manifest.config_json5).map_err(|e| {
             format!(
                 "`{}` sent an undecodable manifest for deployment {}: {e}",
                 manifest.core_node,
@@ -424,11 +421,11 @@ async fn resolve_here(
 ) -> std::result::Result<ResolvedDeployment, String> {
     let source = node_source_from_deployment_source(deployment, nodes_directory, &ctx.peppy_dirs)
         .map_err(|err| {
-            format!(
-                "failed to resolve source for deployment {}: {err}",
-                deployment_label(deployment)
-            )
-        })?;
+        format!(
+            "failed to resolve source for deployment {}: {err}",
+            deployment_label(deployment)
+        )
+    })?;
 
     publish_stdout(
         ctx,

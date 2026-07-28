@@ -790,10 +790,16 @@ impl NodeStackInner {
     }
 
     /// This daemon's core-node name, read from the root entity of the graph.
-    /// The `NodeStack` wrapper exposes the same thing publicly; both read the
-    /// root rather than caching a copy that could drift.
+    /// The one definition; `NodeStack::core_node_name` is the public door onto
+    /// it, so neither side can drift from a cached copy.
     fn root_core_node_name(&self) -> String {
-        self.root().read().config().manifest.name.as_str().to_owned()
+        self.root()
+            .read()
+            .config()
+            .manifest
+            .name
+            .as_str()
+            .to_owned()
     }
 
     fn prune_dead_pairs(&mut self) {
@@ -1055,7 +1061,7 @@ impl NodeStack {
     /// to tell its own slots from a peer daemon's, which is what stops a
     /// remote instance's death from dissolving a same-named local one's pairs.
     pub fn core_node_name(&self) -> String {
-        self.root().read().config().manifest.name.as_str().to_owned()
+        self.shared.read().root_core_node_name()
     }
 
     pub fn contains(&self, name: &str, tag: &str) -> bool {
@@ -1307,6 +1313,20 @@ impl NodeStack {
     pub fn pairs(&self) -> Vec<Pairing> {
         let mut guard = self.shared.write();
         guard.pairs_impl()
+    }
+
+    /// [`Self::pairs`] without the copy, for callers that only want to derive
+    /// something from the set and then drop it.
+    ///
+    /// The lifecycle paths ask "who else needs to hear about this instance?"
+    /// on every start and stop, and cloning the whole registry to answer a
+    /// question about one instance is the bulk of that cost — on stacks with
+    /// no pairs at all as much as on federated ones. `f` runs under the
+    /// registry guard, so it must not touch this stack.
+    pub fn with_pairs<R>(&self, f: impl FnOnce(&[Pairing]) -> R) -> R {
+        let mut guard = self.shared.write();
+        guard.prune_dead_pairs();
+        f(guard.pairing_registry.pairs())
     }
 
     /// Read-only variant of [`Self::pairs`]: dead pairs are liveness-

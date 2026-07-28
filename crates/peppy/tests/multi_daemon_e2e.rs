@@ -206,28 +206,27 @@ struct Daemon {
 }
 
 impl Daemon {
-    async fn stack_list(&self, target: Option<&str>) -> ExecOutput {
-        let mut cmd = vec![CONTAINER_PEPPY_BINARY, "stack", "list"];
-        if let Some(target) = target {
-            cmd.extend(["--core-node", target]);
-        }
+    /// Runs `peppy` inside this container and returns its combined output.
+    async fn peppy(&self, args: &[&str]) -> ExecOutput {
+        let mut cmd = vec![CONTAINER_PEPPY_BINARY];
+        cmd.extend_from_slice(args);
         let mut result = self
             .container
             .exec(ExecCommand::new(cmd).with_cmd_ready_condition(CmdWaitFor::exit()))
             .await
-            .unwrap_or_else(|error| panic!("failed to exec stack list in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("failed to exec peppy in {}: {error}", self.name));
         let exit_code = result
             .exit_code()
             .await
-            .unwrap_or_else(|error| panic!("stack list exit code in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("peppy exit code in {}: {error}", self.name));
         let stdout = result
             .stdout_to_vec()
             .await
-            .unwrap_or_else(|error| panic!("stack list stdout in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("peppy stdout in {}: {error}", self.name));
         let stderr = result
             .stderr_to_vec()
             .await
-            .unwrap_or_else(|error| panic!("stack list stderr in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("peppy stderr in {}: {error}", self.name));
         ExecOutput {
             exit_code,
             text: format!(
@@ -236,6 +235,14 @@ impl Daemon {
                 String::from_utf8_lossy(&stderr)
             ),
         }
+    }
+
+    async fn stack_list(&self, target: Option<&str>) -> ExecOutput {
+        let mut cmd = vec!["stack", "list"];
+        if let Some(target) = target {
+            cmd.extend(["--core-node", target]);
+        }
+        self.peppy(&cmd).await
     }
 
     async fn wait_for_stack(&self, predicate: impl Fn(&str) -> bool) -> String {
@@ -643,39 +650,6 @@ const ROBOT_INSTANCES: [&str; 3] = ["wrist_cam_inst", "arm_inst", "reflex_inst"]
 const CLOUD_INSTANCES: [&str; 2] = ["planner_inst", "recorder_inst"];
 
 impl Daemon {
-    /// Runs `peppy` inside this container and returns its combined output.
-    async fn peppy(&self, args: &[&str]) -> ExecOutput {
-        let mut cmd = vec![CONTAINER_PEPPY_BINARY];
-        cmd.extend_from_slice(args);
-        let mut result = self
-            .container
-            .exec(ExecCommand::new(cmd).with_cmd_ready_condition(CmdWaitFor::exit()))
-            .await
-            .unwrap_or_else(|error| panic!("failed to exec peppy in {}: {error}", self.name));
-        let exit_code = result
-            .exit_code()
-            .await
-            .unwrap_or_else(|error| panic!("peppy exit code in {}: {error}", self.name));
-        let stdout = result
-            .stdout_to_vec()
-            .await
-            .unwrap_or_else(|error| panic!("peppy stdout in {}: {error}", self.name));
-        let stderr = result
-            .stderr_to_vec()
-            .await
-            .unwrap_or_else(|error| panic!("peppy stderr in {}: {error}", self.name));
-        ExecOutput {
-            exit_code,
-            text: format!(
-                "{}{}",
-                String::from_utf8_lossy(&stdout),
-                String::from_utf8_lossy(&stderr)
-            ),
-        }
-    }
-}
-
-impl Daemon {
     /// Waits for one of this daemon's node instances to log `marker`.
     ///
     /// Reads the per-instance run log rather than the container's stdout: node
@@ -891,7 +865,9 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     // launch that ran half its work on a machine you cannot see the output of
     // is not one you can debug.
     assert!(
-        launch.text.contains(&format!("[{}]", federation.cloud_core_node)),
+        launch
+            .text
+            .contains(&format!("[{}]", federation.cloud_core_node)),
         "the peer's feedback must be relayed and attributed:\n{}",
         launch.text
     );
@@ -947,7 +923,11 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         .robot
         .peppy(&["stack", "reset", "--federated"])
         .await;
-    assert!(reset.success(), "federated reset must succeed:\n{}", reset.text);
+    assert!(
+        reset.success(),
+        "federated reset must succeed:\n{}",
+        reset.text
+    );
 
     for (daemon, instances) in [
         (&federation.robot, ROBOT_INSTANCES.as_slice()),
@@ -970,7 +950,11 @@ async fn a_finished_launch_releases_its_participants_so_the_next_one_can_run() {
     let federation = start_federation("peppy-fed-relaunch").await;
 
     let first = federation.launch_split().await;
-    assert!(first.success(), "the first launch must succeed:\n{}", first.text);
+    assert!(
+        first.success(),
+        "the first launch must succeed:\n{}",
+        first.text
+    );
 
     let second = federation.launch_split().await;
     assert!(
@@ -1005,10 +989,7 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
         .await;
 
     // Restart the coordinator's daemon. Everything it knew in RAM is gone.
-    let restart = federation
-        .robot
-        .peppy(&["service", "restart"])
-        .await;
+    let restart = federation.robot.peppy(&["service", "restart"]).await;
     assert!(
         restart.success(),
         "restarting the coordinator daemon must succeed:\n{}",

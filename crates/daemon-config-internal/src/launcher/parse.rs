@@ -248,11 +248,8 @@ mod tests {
     /// coordinator, so a single-machine launcher is unchanged.
     #[test]
     fn an_instance_may_omit_its_placement() {
-        let launcher = parse_launcher(&split_compute(
-            r#"core_nodes: ["robot_onboard"],"#,
-            "",
-        ))
-        .expect("valid launcher");
+        let launcher = parse_launcher(&split_compute(r#"core_nodes: ["robot_onboard"],"#, ""))
+            .expect("valid launcher");
         assert_eq!(launcher.deployments[0].instances[0].core_node, None);
     }
 

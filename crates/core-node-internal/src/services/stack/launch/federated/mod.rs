@@ -36,6 +36,7 @@ use core_node_api::encoding::{
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
     ResolvedManifest,
 };
+use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, Placements};
 use futures::future::join_all;
 use peppylib::core_node::transport::poll;
@@ -57,23 +58,23 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
 /// plan. Without it a straddling deployment (instances on two machines) would
 /// have no way to say "this manifest is for THAT entry".
 #[derive(Debug, Clone)]
-pub(crate) struct PlacedDeployment {
-    pub(crate) index: usize,
-    pub(crate) deployment: Deployment,
+struct PlacedDeployment {
+    index: usize,
+    deployment: Deployment,
 }
 
 /// What a coordinator learned from one participant during preflight.
 #[derive(Debug, Clone)]
-pub(crate) struct ParticipantSlice {
-    pub(crate) core_node: String,
+struct ParticipantSlice {
+    core_node: String,
     /// This participant's root-entity instance id, folded into the
     /// coordinator's stack-wide instance-id uniqueness check.
-    pub(crate) root_instance_id: String,
-    /// One per deployment placed on this participant, in the order they were
-    /// requested, so the coordinator can align them with its own plan.
-    pub(crate) manifests: Vec<ResolvedManifest>,
-    /// The deployments this participant hosts, in manifest order.
-    pub(crate) deployments: Vec<PlacedDeployment>,
+    root_instance_id: String,
+    /// What this participant resolved, keyed by the deployment's index in the
+    /// coordinator's plan. Keying on the index rather than pairing two
+    /// position-aligned lists is what lets a straddling deployment say "this
+    /// manifest is for THAT entry" without an alignment invariant to keep.
+    manifests: BTreeMap<usize, ResolvedManifest>,
 }
 
 /// A manifest the coordinator did not resolve itself, and the participant that
@@ -89,19 +90,13 @@ pub(super) struct DelegatedManifest {
     pub(super) config_json5: String,
 }
 
-/// Everything preflight established, ready for validation and dispatch.
-#[derive(Debug, Default)]
-pub(crate) struct Preflight {
-    pub(crate) slices: Vec<ParticipantSlice>,
-}
-
 /// Which deployments each participant hosts.
 ///
 /// A deployment goes to every core node hosting at least one of its instances,
 /// because that daemon must add and build the node before starting its share.
 /// One node split across daemons is therefore added on both, which is exactly
 /// what "several placed instances under one deployment" means operationally.
-pub(crate) fn partition_deployments(
+fn partition_deployments(
     deployments: &[Deployment],
     placements: &Placements,
     coordinator: &str,
@@ -141,7 +136,7 @@ pub(crate) fn partition_deployments(
 /// Liveness is read from zenoh presence, not from the platform HTTP roster: a
 /// launch depends on being able to TALK to a machine right now, which the
 /// roster does not attest. `peppy platform list` stays the human-facing view.
-pub(crate) async fn reject_unreachable_core_nodes(
+async fn reject_unreachable_core_nodes(
     messenger: &MessengerHandle,
     wanted: &BTreeSet<String>,
 ) -> std::result::Result<(), String> {
@@ -164,18 +159,11 @@ pub(crate) async fn reject_unreachable_core_nodes(
         "these core nodes are not live on the federation: {}. Live right now: {}. \
          Check `peppy platform list`, and that each machine's daemon is running and \
          logged into this workspace.",
-        missing
-            .iter()
-            .map(|name| format!("`{name}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
+        format_quoted_list(&missing),
         if live.is_empty() {
             "nothing".to_owned()
         } else {
-            live.iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            format_quoted_list(&live)
         }
     ))
 }
@@ -185,21 +173,16 @@ pub(crate) async fn reject_unreachable_core_nodes(
 /// All-or-nothing: on any refusal the reservations already obtained are
 /// released before the error returns, so a failed preflight leaves no machine
 /// held. Only after a full set of acks does anything get torn down anywhere.
-pub(crate) async fn reserve_participants(
+async fn reserve_participants(
     messenger: &MessengerHandle,
     coordinator: &str,
     caller_instance_id: &str,
     launch_id: &str,
-    slices: &BTreeMap<String, Vec<PlacedDeployment>>,
+    peers: BTreeMap<String, Vec<PlacedDeployment>>,
     own_version: &str,
-) -> std::result::Result<Preflight, String> {
-    let peers: Vec<(&String, &Vec<PlacedDeployment>)> = slices
-        .iter()
-        .filter(|(core_node, _)| core_node.as_str() != coordinator)
-        .collect();
-
-    let acks = join_all(peers.iter().map(|(core_node, deployments)| {
-        let request = build_reserve_request(launch_id, coordinator, deployments);
+) -> std::result::Result<Vec<ParticipantSlice>, String> {
+    let acks = join_all(peers.into_iter().map(|(core_node, deployments)| {
+        let request = build_reserve_request(launch_id, coordinator, &deployments);
         async move {
             let outcome = match request {
                 Ok(request) => poll(
@@ -207,19 +190,19 @@ pub(crate) async fn reserve_participants(
                     messenger,
                     coordinator,
                     caller_instance_id,
-                    core_node,
+                    &core_node,
                     PREFLIGHT_TIMEOUT,
                 )
                 .await
                 .map_err(|e| format!("`{core_node}` did not answer the reservation: {e}")),
                 Err(reason) => Err(format!("`{core_node}`: {reason}")),
             };
-            ((*core_node).clone(), (*deployments).clone(), outcome)
+            (core_node, deployments, outcome)
         }
     }))
     .await;
 
-    let mut preflight = Preflight::default();
+    let mut slices: Vec<ParticipantSlice> = Vec::new();
     let mut reserved: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
 
@@ -228,11 +211,17 @@ pub(crate) async fn reserve_participants(
             Ok(response) if response.accepted => {
                 reserved.push(core_node.clone());
                 match check_version(&core_node, &response, own_version) {
-                    Ok(()) => preflight.slices.push(ParticipantSlice {
+                    // The peer answers in the order it was asked, so zipping the
+                    // requested deployments back onto the manifests is what
+                    // recovers each one's index in the coordinator's plan.
+                    Ok(()) => slices.push(ParticipantSlice {
                         core_node,
                         root_instance_id: response.root_instance_id,
-                        manifests: response.manifests,
-                        deployments,
+                        manifests: deployments
+                            .into_iter()
+                            .map(|placed| placed.index)
+                            .zip(response.manifests)
+                            .collect(),
                     }),
                     Err(reason) => refusals.push(reason),
                 }
@@ -248,7 +237,7 @@ pub(crate) async fn reserve_participants(
     }
 
     if refusals.is_empty() {
-        return Ok(preflight);
+        return Ok(slices);
     }
 
     // Release everything obtained before failing. This is the whole point of
@@ -297,21 +286,14 @@ fn build_reserve_request(
     for placed in deployments {
         let deployment = &placed.deployment;
         if let DeploymentSource::Local(spec) = &deployment.source {
-            return Err(format!(
-                "`local:{}` cannot be placed on another core node: the path names a tree on \
-                 the coordinator's filesystem. A `local:` deployment must keep all of its \
-                 instances on one core node; publish the node to a repo or url source to \
-                 split it across machines.",
-                spec.local.display()
-            ));
+            return Err(super::resolve::local_source_refusal(spec));
         }
         sources.push(
             serde_json5::to_string(&deployment.source)
                 .map_err(|e| format!("could not encode a deployment source: {e}"))?,
         );
     }
-    Ok(ParticipantReserveRequest::new(launch_id, coordinator)
-        .with_deployment_sources(sources))
+    Ok(ParticipantReserveRequest::new(launch_id, coordinator).with_deployment_sources(sources))
 }
 
 /// Best-effort release of every named participant. Failures are logged, not
@@ -342,6 +324,172 @@ pub(crate) async fn release_participants(
         }
     }))
     .await;
+}
+
+/// What a federated launch established before anything was torn down.
+#[derive(Default)]
+pub(super) struct FederatedLaunch {
+    /// Empty for a single-machine launch.
+    participants: Vec<ParticipantSlice>,
+    /// Plan indices of the deployments the coordinator hosts at least one
+    /// instance of. Needed to tell a wholly-remote deployment (whose manifest is
+    /// delegated) from a straddling one (which the coordinator must resolve for
+    /// itself anyway).
+    coordinator_indices: BTreeSet<usize>,
+}
+
+/// The whole preflight, in the order the plan requires.
+///
+/// Runs BEFORE the teardown that a launch performs, so every refusal here
+/// leaves the coordinator's existing stack, and every participant's, exactly as
+/// it was. That ordering is the feature: a launch that cannot succeed must not
+/// cost you the stack you already had.
+pub(super) async fn preflight(
+    ctx: &super::ProcessLaunchContext,
+    launch_id: &str,
+    deployments: &[Deployment],
+    placements: &Placements,
+) -> std::result::Result<FederatedLaunch, String> {
+    if !placements.is_federated() {
+        return Ok(FederatedLaunch::default());
+    }
+
+    let mut slices = partition_deployments(deployments, placements, ctx.bound_core_node.as_str());
+
+    // Splitting the coordinator's own share out first leaves `slices` holding
+    // exactly the peers, so each one's deployments can be moved into its
+    // reservation rather than cloned.
+    let coordinator_indices: BTreeSet<usize> = slices
+        .remove(ctx.bound_core_node.as_str())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|placed| placed.index)
+        .collect();
+
+    // A wired core node is validated by live zenoh presence, not the platform
+    // HTTP roster: what a launch needs is to be able to talk to the machine
+    // right now, which the roster does not attest.
+    reject_unreachable_core_nodes(&ctx.messenger, &slices.keys().cloned().collect()).await?;
+
+    let participants = reserve_participants(
+        &ctx.messenger,
+        ctx.bound_core_node.as_str(),
+        ctx.core_instance_id.as_str(),
+        launch_id,
+        slices,
+        &ctx.peppy_version,
+    )
+    .await?;
+
+    Ok(FederatedLaunch {
+        participants,
+        coordinator_indices,
+    })
+}
+
+impl FederatedLaunch {
+    /// Every peer taking part, in a stable order so failure messages and
+    /// release fan-outs read the same way twice.
+    pub(super) fn core_nodes(&self) -> Vec<String> {
+        self.participants
+            .iter()
+            .map(|slice| slice.core_node.clone())
+            .collect()
+    }
+
+    /// The manifests the coordinator will validate against instead of
+    /// resolving them itself, keyed by deployment index.
+    ///
+    /// A deployment that straddles the coordinator and a peer is deliberately
+    /// NOT delegated: the coordinator has to resolve it anyway to add it
+    /// locally, so it resolves it and [`Self::disagreeing_manifests`] then
+    /// checks that both machines read the same thing.
+    pub(super) fn delegated_manifests(&self) -> BTreeMap<usize, DelegatedManifest> {
+        let mut delegated = BTreeMap::new();
+        for slice in &self.participants {
+            for (index, manifest) in &slice.manifests {
+                if self.coordinator_indices.contains(index) {
+                    continue;
+                }
+                delegated.insert(
+                    *index,
+                    DelegatedManifest {
+                        core_node: slice.core_node.clone(),
+                        config_json5: manifest.config_json5.clone(),
+                    },
+                );
+            }
+        }
+        delegated
+    }
+
+    /// Instance ids in the plan that collide with a participant's own root
+    /// entity.
+    ///
+    /// Each daemon's root entity keeps its instance id across launches (the
+    /// teardown preserves it), so it is part of that machine's namespace before
+    /// this launch places anything there. The coordinator cannot see it without
+    /// asking, which is why the reservation response carries it: a collision
+    /// would otherwise surface as a confusing failure on the peer, after that
+    /// machine's stack had already been replaced.
+    pub(super) fn root_instance_collisions(
+        &self,
+        planned_instance_ids: &BTreeSet<&str>,
+    ) -> Vec<String> {
+        self.participants
+            .iter()
+            .filter(|slice| planned_instance_ids.contains(slice.root_instance_id.as_str()))
+            .map(|slice| {
+                format!(
+                    "instance id `{}` is already the root entity of `{}`, which this launch \
+                     places instances on. Rename the instance in the launcher.",
+                    slice.root_instance_id, slice.core_node
+                )
+            })
+            .collect()
+    }
+
+    /// The manifest hash a participant reported for the deployment at `index`,
+    /// echoed onto every instance the coordinator dispatches to it.
+    pub(super) fn manifest_sha256(&self, core_node: &str, index: usize) -> Option<&str> {
+        self.participants
+            .iter()
+            .find(|slice| slice.core_node == core_node)?
+            .manifests
+            .get(&index)
+            .map(|manifest| manifest.config_sha256.as_str())
+    }
+
+    /// Straddling deployments whose two machines resolved DIFFERENT manifests.
+    ///
+    /// One node running on two machines under one launcher entry must be the
+    /// same node on both, or the graph the coordinator validated describes
+    /// neither. Two caches that have drifted is exactly how that happens, and
+    /// it is silent unless something compares them.
+    pub(super) fn disagreeing_manifests(
+        &self,
+        coordinator: &str,
+        own_fingerprints: &BTreeMap<usize, String>,
+    ) -> Vec<String> {
+        let mut disagreements = Vec::new();
+        for slice in &self.participants {
+            for (index, manifest) in &slice.manifests {
+                let Some(own) = own_fingerprints.get(index) else {
+                    continue;
+                };
+                if own == &manifest.config_sha256 {
+                    continue;
+                }
+                disagreements.push(format!(
+                    "one deployment places instances on both `{coordinator}` and `{}`, but the \
+                     two resolve different manifests for it ({own} here, {} there). Refresh both \
+                     machines' caches so they agree, or split the deployment.",
+                    slice.core_node, manifest.config_sha256
+                ));
+            }
+        }
+        disagreements
+    }
 }
 
 #[cfg(test)]
@@ -378,11 +526,8 @@ mod tests {
     #[test]
     fn a_single_machine_launch_partitions_onto_the_coordinator() {
         let deployments = vec![deployment("uvc_camera", vec![instance("cam_1")])];
-        let partitioned = partition_deployments(
-            &deployments,
-            &Placements::all_on("cn-robot"),
-            "cn-robot",
-        );
+        let partitioned =
+            partition_deployments(&deployments, &Placements::all_on("cn-robot"), "cn-robot");
         assert_eq!(partitioned.len(), 1);
         assert_eq!(partitioned["cn-robot"].len(), 1);
         assert_eq!(partitioned["cn-robot"][0].index, 0);
@@ -518,11 +663,7 @@ mod tests {
             root_instance_id: format!("{core_node}_root"),
             manifests: entries
                 .iter()
-                .map(|(_, config, sha)| ResolvedManifest::new(*config, *sha))
-                .collect(),
-            deployments: entries
-                .iter()
-                .map(|(index, _, _)| placed(*index, deployment("planner", vec![instance("p_1")])))
+                .map(|(index, config, sha)| (*index, ResolvedManifest::new(*config, *sha)))
                 .collect(),
         }
     }
@@ -534,11 +675,15 @@ mod tests {
     fn a_wholly_remote_deployment_takes_its_peers_manifest() {
         let federated = FederatedLaunch {
             participants: vec![slice("cn-atlas", &[(1, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_slice: vec![placed(0, deployment("camera", vec![instance("cam_1")]))],
+            coordinator_indices: BTreeSet::from([0]),
         };
 
         let delegated = federated.delegated_manifests();
-        assert_eq!(delegated.len(), 1, "only the remote deployment is delegated");
+        assert_eq!(
+            delegated.len(),
+            1,
+            "only the remote deployment is delegated"
+        );
         assert_eq!(delegated[&1].core_node, "cn-atlas");
         assert_eq!(delegated[&1].config_json5, "{ manifest: {} }");
         assert!(
@@ -554,7 +699,7 @@ mod tests {
     fn a_straddling_deployment_is_resolved_locally_rather_than_delegated() {
         let federated = FederatedLaunch {
             participants: vec![slice("cn-atlas", &[(0, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_slice: vec![placed(0, deployment("camera", vec![instance("cam_1")]))],
+            coordinator_indices: BTreeSet::from([0]),
         };
         assert!(
             federated.delegated_manifests().is_empty(),
@@ -569,22 +714,31 @@ mod tests {
     fn two_machines_resolving_one_node_differently_is_refused() {
         let federated = FederatedLaunch {
             participants: vec![slice("cn-atlas", &[(0, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_slice: vec![placed(0, deployment("camera", vec![instance("cam_1")]))],
+            coordinator_indices: BTreeSet::from([0]),
         };
 
         let own = BTreeMap::from([(0, "sha-robot".to_owned())]);
         let disagreements = federated.disagreeing_manifests("cn-robot", &own);
         assert_eq!(disagreements.len(), 1);
-        assert!(disagreements[0].contains("sha-robot"), "got: {disagreements:?}");
-        assert!(disagreements[0].contains("sha-cloud"), "got: {disagreements:?}");
-        assert!(disagreements[0].contains("cn-atlas"), "got: {disagreements:?}");
+        assert!(
+            disagreements[0].contains("sha-robot"),
+            "got: {disagreements:?}"
+        );
+        assert!(
+            disagreements[0].contains("sha-cloud"),
+            "got: {disagreements:?}"
+        );
+        assert!(
+            disagreements[0].contains("cn-atlas"),
+            "got: {disagreements:?}"
+        );
     }
 
     #[test]
     fn two_machines_resolving_one_node_identically_is_accepted() {
         let federated = FederatedLaunch {
             participants: vec![slice("cn-atlas", &[(0, "{ manifest: {} }", "sha-same")])],
-            coordinator_slice: vec![placed(0, deployment("camera", vec![instance("cam_1")]))],
+            coordinator_indices: BTreeSet::from([0]),
         };
         let own = BTreeMap::from([(0, "sha-same".to_owned())]);
         assert!(federated.disagreeing_manifests("cn-robot", &own).is_empty());
@@ -597,7 +751,7 @@ mod tests {
     fn a_delegated_deployment_is_not_compared_against_itself() {
         let federated = FederatedLaunch {
             participants: vec![slice("cn-atlas", &[(1, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_slice: vec![placed(0, deployment("camera", vec![instance("cam_1")]))],
+            coordinator_indices: BTreeSet::from([0]),
         };
         // Index 1 is absent from the local fingerprints: this daemon never read it.
         let own = BTreeMap::from([(0, "sha-robot".to_owned())]);
@@ -613,7 +767,7 @@ mod tests {
                 "cn-atlas",
                 &[(1, "{ a: 1 }", "sha-a"), (2, "{ b: 2 }", "sha-b")],
             )],
-            coordinator_slice: Vec::new(),
+            coordinator_indices: BTreeSet::new(),
         };
         assert_eq!(federated.manifest_sha256("cn-atlas", 2), Some("sha-b"));
         assert_eq!(federated.manifest_sha256("cn-atlas", 1), Some("sha-a"));
@@ -632,13 +786,16 @@ mod tests {
     fn an_instance_id_colliding_with_a_peers_root_entity_is_refused() {
         let federated = FederatedLaunch {
             participants: vec![slice("cn-atlas", &[])],
-            coordinator_slice: Vec::new(),
+            coordinator_indices: BTreeSet::new(),
         };
 
         let collisions =
             federated.root_instance_collisions(&BTreeSet::from(["cn-atlas_root", "planner_inst"]));
         assert_eq!(collisions.len(), 1);
-        assert!(collisions[0].contains("cn-atlas_root"), "got: {collisions:?}");
+        assert!(
+            collisions[0].contains("cn-atlas_root"),
+            "got: {collisions:?}"
+        );
         assert!(collisions[0].contains("cn-atlas"), "got: {collisions:?}");
 
         assert!(
@@ -665,176 +822,5 @@ mod tests {
                 .root_instance_collisions(&BTreeSet::from(["anything"]))
                 .is_empty()
         );
-    }
-}
-
-/// What a federated launch established before anything was torn down.
-#[derive(Default)]
-pub(super) struct FederatedLaunch {
-    /// Empty for a single-machine launch.
-    pub(super) participants: Vec<ParticipantSlice>,
-    /// The deployments the coordinator hosts at least one instance of. Needed
-    /// to tell a wholly-remote deployment (whose manifest is delegated) from a
-    /// straddling one (which the coordinator must resolve for itself anyway).
-    coordinator_slice: Vec<PlacedDeployment>,
-}
-
-/// The whole preflight, in the order the plan requires.
-///
-/// Runs BEFORE the teardown that a launch performs, so every refusal here
-/// leaves the coordinator's existing stack, and every participant's, exactly as
-/// it was. That ordering is the feature: a launch that cannot succeed must not
-/// cost you the stack you already had.
-pub(super) async fn preflight(
-    ctx: &super::ProcessLaunchContext,
-    launch_id: &str,
-    deployments: &[Deployment],
-    placements: &Placements,
-) -> std::result::Result<FederatedLaunch, String> {
-    if !placements.is_federated() {
-        return Ok(FederatedLaunch::default());
-    }
-
-    let slices = partition_deployments(deployments, placements, ctx.bound_core_node.as_str());
-
-    let peers: BTreeSet<String> = slices
-        .keys()
-        .filter(|core_node| core_node.as_str() != ctx.bound_core_node.as_str())
-        .cloned()
-        .collect();
-
-    // A wired core node is validated by live zenoh presence, not the platform
-    // HTTP roster: what a launch needs is to be able to talk to the machine
-    // right now, which the roster does not attest.
-    reject_unreachable_core_nodes(&ctx.messenger, &peers).await?;
-
-    let preflight = reserve_participants(
-        &ctx.messenger,
-        ctx.bound_core_node.as_str(),
-        ctx.core_instance_id.as_str(),
-        launch_id,
-        &slices,
-        &ctx.peppy_version,
-    )
-    .await?;
-
-    Ok(FederatedLaunch {
-        participants: preflight.slices,
-        coordinator_slice: slices
-            .get(ctx.bound_core_node.as_str())
-            .cloned()
-            .unwrap_or_default(),
-    })
-}
-
-impl FederatedLaunch {
-    /// Every peer taking part, in a stable order so failure messages and
-    /// release fan-outs read the same way twice.
-    pub(super) fn core_nodes(&self) -> Vec<String> {
-        self.participants
-            .iter()
-            .map(|slice| slice.core_node.clone())
-            .collect()
-    }
-
-    /// The manifests the coordinator will validate against instead of
-    /// resolving them itself, keyed by deployment index.
-    ///
-    /// A deployment that straddles the coordinator and a peer is deliberately
-    /// NOT delegated: the coordinator has to resolve it anyway to add it
-    /// locally, so it resolves it and [`Self::disagreeing_manifests`] then
-    /// checks that both machines read the same thing.
-    pub(super) fn delegated_manifests(&self) -> BTreeMap<usize, DelegatedManifest> {
-        let mut delegated = BTreeMap::new();
-        for slice in &self.participants {
-            for (placed, manifest) in slice.deployments.iter().zip(&slice.manifests) {
-                if self
-                    .coordinator_slice
-                    .iter()
-                    .any(|own| own.index == placed.index)
-                {
-                    continue;
-                }
-                delegated.insert(
-                    placed.index,
-                    DelegatedManifest {
-                        core_node: slice.core_node.clone(),
-                        config_json5: manifest.config_json5.clone(),
-                    },
-                );
-            }
-        }
-        delegated
-    }
-
-    /// Instance ids in the plan that collide with a participant's own root
-    /// entity.
-    ///
-    /// Each daemon's root entity keeps its instance id across launches (the
-    /// teardown preserves it), so it is part of that machine's namespace before
-    /// this launch places anything there. The coordinator cannot see it without
-    /// asking, which is why the reservation response carries it: a collision
-    /// would otherwise surface as a confusing failure on the peer, after that
-    /// machine's stack had already been replaced.
-    pub(super) fn root_instance_collisions(&self, planned_instance_ids: &BTreeSet<&str>) -> Vec<String> {
-        self.participants
-            .iter()
-            .filter(|slice| planned_instance_ids.contains(slice.root_instance_id.as_str()))
-            .map(|slice| {
-                format!(
-                    "instance id `{}` is already the root entity of `{}`, which this launch \
-                     places instances on. Rename the instance in the launcher.",
-                    slice.root_instance_id, slice.core_node
-                )
-            })
-            .collect()
-    }
-
-    /// The manifest hash a participant reported for the deployment at `index`,
-    /// echoed onto every instance the coordinator dispatches to it.
-    pub(super) fn manifest_sha256(&self, core_node: &str, index: usize) -> Option<&str> {
-        let slice = self
-            .participants
-            .iter()
-            .find(|slice| slice.core_node == core_node)?;
-        let position = slice
-            .deployments
-            .iter()
-            .position(|placed| placed.index == index)?;
-        slice
-            .manifests
-            .get(position)
-            .map(|manifest| manifest.config_sha256.as_str())
-    }
-
-    /// Straddling deployments whose two machines resolved DIFFERENT manifests.
-    ///
-    /// One node running on two machines under one launcher entry must be the
-    /// same node on both, or the graph the coordinator validated describes
-    /// neither. Two caches that have drifted is exactly how that happens, and
-    /// it is silent unless something compares them.
-    pub(super) fn disagreeing_manifests(
-        &self,
-        coordinator: &str,
-        own_fingerprints: &BTreeMap<usize, String>,
-    ) -> Vec<String> {
-        let mut disagreements = Vec::new();
-        for slice in &self.participants {
-            for (placed, manifest) in slice.deployments.iter().zip(&slice.manifests) {
-                let Some(own) = own_fingerprints.get(&placed.index) else {
-                    continue;
-                };
-                if own == &manifest.config_sha256 {
-                    continue;
-                }
-                disagreements.push(format!(
-                    "one deployment places instances on both `{coordinator}` and `{}`, but the \
-                     two resolve different manifests for it ({own} here, {} there). Refresh both \
-                     machines' caches so they agree, or split the deployment.",
-                    slice.core_node, manifest.config_sha256
-                ));
-            }
-        }
-        disagreements
     }
 }

@@ -848,12 +848,7 @@ async fn process_node_run(
             deferred: &deferred_pairs,
             covered: &covered_pairs,
         };
-        match plan_requested_pairs(
-            &snapshot,
-            &live_pairs,
-            &request,
-            &ctx.action.core_node_name,
-        ) {
+        match plan_requested_pairs(&snapshot, &live_pairs, &request, &ctx.action.core_node_name) {
             Ok(p) => p,
             Err(msg) => {
                 write_error_to_log(&ctx.log_file, &msg);
@@ -1058,13 +1053,7 @@ async fn process_node_run(
     // fails here — loudly — instead of double-pairing. Pins are NOT
     // delivered yet; that happens after the instance commits to Running.
     for pair in &planned_pairs {
-        let Err(reserve_msg) = ctx
-            .action
-            .relationships
-            .pairing()
-            .reserve(pair)
-            .await
-        else {
+        let Err(reserve_msg) = ctx.action.relationships.pairing().reserve(pair).await else {
             continue;
         };
         let reason = format!(
@@ -2081,8 +2070,11 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let defaults =
-            DaemonDefaults::from_peppy_config(&config, config::namespace::Namespace::local(), false);
+        let defaults = DaemonDefaults::from_peppy_config(
+            &config,
+            config::namespace::Namespace::local(),
+            false,
+        );
 
         assert!(!defaults.gossip);
         assert_eq!(

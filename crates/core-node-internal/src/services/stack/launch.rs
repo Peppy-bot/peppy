@@ -1,7 +1,7 @@
+mod federated;
 mod feedback;
 mod orchestrate;
 mod phases;
-mod federated;
 mod resolve;
 
 pub(crate) use resolve::portable_node_source;
@@ -257,7 +257,10 @@ pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 /// A node is added and built on every machine that runs part of it, which is
 /// what "several placed instances under one deployment" means operationally:
 /// each daemon has to have the node present before it can start its share.
-fn hosts_of(item: &PlannedDeployment, placements: &daemon_config::launcher::Placements) -> Vec<String> {
+fn hosts_of(
+    item: &PlannedDeployment,
+    placements: &daemon_config::launcher::Placements,
+) -> Vec<String> {
     let mut hosts: Vec<String> = item
         .deployment
         .instances
@@ -307,13 +310,9 @@ async fn add_nodes_to_stack(
     }
 
     let local = ctx.bound_core_node.as_str();
-    let groups = futures::future::join_all(
-        by_core_node
-            .iter()
-            .map(|(core_node, keys)| {
-                add_and_build_group(ctx, goal, core_node, keys, planned_by_key, local)
-            }),
-    )
+    let groups = futures::future::join_all(by_core_node.iter().map(|(core_node, keys)| {
+        add_and_build_group(ctx, goal, core_node, keys, planned_by_key, local)
+    }))
     .await;
 
     let mut failure: Option<String> = None;
@@ -485,11 +484,15 @@ async fn prepare_container_host_mounts(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     placements: &daemon_config::launcher::Placements,
 ) -> std::result::Result<(), LaunchResult> {
-    let mut mount_sources =
-        match collect_container_mount_sources(ordered, planned_by_key, placements, ctx.bound_core_node.as_str()) {
-            Ok(paths) => paths,
-            Err(reason) => return Err(fail_and_clear_stack(ctx, reason, &[]).await),
-        };
+    let mut mount_sources = match collect_container_mount_sources(
+        ordered,
+        planned_by_key,
+        placements,
+        ctx.bound_core_node.as_str(),
+    ) {
+        Ok(paths) => paths,
+        Err(reason) => return Err(fail_and_clear_stack(ctx, reason, &[]).await),
+    };
 
     if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
         return Err(fail_and_clear_stack(ctx, reason, &[]).await);
@@ -744,7 +747,10 @@ async fn start_node_instances(
         let watchers = watchers_by_source
             .entry(observation.source.instance_id.as_str())
             .or_default();
-        if !watchers.iter().any(|existing| existing == observer_core_node) {
+        if !watchers
+            .iter()
+            .any(|existing| existing == observer_core_node)
+        {
             watchers.push(observer_core_node.to_owned());
         }
     }
@@ -1155,7 +1161,8 @@ async fn handle_goal_request(
 /// 7. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse the launcher and bind its core node links to machines.
-    let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await {
+    let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await
+    {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };
@@ -1164,15 +1171,14 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     // participant's own manifests, all BEFORE anything is resolved or torn
     // down. Reserving first is what makes every later refusal free: no machine,
     // including this one, has been touched yet.
-    let federated = match federated::preflight(&ctx, &goal.launch_id, &deployments, &placements)
-        .await
-    {
-        Ok(federated) => federated,
-        Err(reason) => {
-            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return LaunchResult::failure(&ctx.log_path, reason);
-        }
-    };
+    let federated =
+        match federated::preflight(&ctx, &goal.launch_id, &deployments, &placements).await {
+            Ok(federated) => federated,
+            Err(reason) => {
+                publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+                return LaunchResult::failure(&ctx.log_path, reason);
+            }
+        };
     let participants = federated.core_nodes();
 
     // Step 3: Resolve deployments. Anything placed wholly on a peer takes the
@@ -1202,17 +1208,19 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
             .map(|instance| instance.instance_id.as_str())
             .collect(),
     );
-    refusals.extend(federated.disagreeing_manifests(
-        ctx.bound_core_node.as_str(),
-        &planned
-            .iter()
-            .filter_map(|item| {
-                item.manifest_sha256
-                    .as_ref()
-                    .map(|sha| (item.deployment_index, sha.clone()))
-            })
-            .collect(),
-    ));
+    refusals.extend(
+        federated.disagreeing_manifests(
+            ctx.bound_core_node.as_str(),
+            &planned
+                .iter()
+                .filter_map(|item| {
+                    item.manifest_sha256
+                        .as_ref()
+                        .map(|sha| (item.deployment_index, sha.clone()))
+                })
+                .collect(),
+        ),
+    );
     if !refusals.is_empty() {
         let msg = daemon_config::format_bulleted(&refusals);
         publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
@@ -1277,54 +1285,47 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     // concurrently because nothing orders one machine's add against another's,
     // and fetching plus building is where a launch spends its time; within a
     // group the dependency order is preserved exactly as on a single machine.
-    let add_result = add_nodes_to_stack(
-        &ctx,
-        &goal,
-        &ordered,
-        &planned_by_key,
-        &placements,
-        &federated,
-        &mut add_log_paths,
-        &mut build_log_paths,
-    )
+    //
+    // Steps 6-8 short-circuit: each phase appends to the log vectors before
+    // returning `Err`, so the logs collected up to a failure are reported
+    // whichever phase failed.
+    let outcome = async {
+        add_nodes_to_stack(
+            &ctx,
+            &goal,
+            &ordered,
+            &planned_by_key,
+            &placements,
+            &federated,
+            &mut add_log_paths,
+            &mut build_log_paths,
+        )
+        .await?;
+
+        // Step 7: Prepare any Lima host mounts before the first container
+        // starts. Updating Lima's mount table can restart the VM; doing it
+        // lazily during a later instance start would kill containers already
+        // launched by this stack operation.
+        prepare_container_host_mounts(&ctx, &ordered, &planned_by_key, &placements).await?;
+
+        // Step 8: Start instances in dependency order.
+        start_node_instances(
+            &ctx,
+            &goal,
+            &ordered,
+            &planned_by_key,
+            &mut run_log_paths,
+            &resolved_slot_bindings,
+            &planned_pairings,
+            &planned_observations,
+            &placements,
+            &federated,
+        )
+        .await
+    }
     .await;
 
-    // Step 7: Prepare any Lima host mounts before the first container starts.
-    // Updating Lima's mount table can restart the VM; doing it lazily during
-    // a later instance start would kill containers already launched by this
-    // stack operation.
-    let mount_result = if add_result.is_ok() {
-        Some(prepare_container_host_mounts(&ctx, &ordered, &planned_by_key, &placements).await)
-    } else {
-        None
-    };
-
-    // Step 8: Start instances in dependency order (only if add and mount
-    // preparation succeeded)
-    let start_result = if add_result.is_ok() && mount_result.as_ref().is_none_or(|r| r.is_ok()) {
-        Some(
-            start_node_instances(
-                &ctx,
-                &goal,
-                &ordered,
-                &planned_by_key,
-                &mut run_log_paths,
-                &resolved_slot_bindings,
-                &planned_pairings,
-                &planned_observations,
-                &placements,
-                &federated,
-            )
-            .await,
-        )
-    } else {
-        None
-    };
-
-    for result in [add_result, mount_result.unwrap_or(Ok(())), start_result.unwrap_or(Ok(()))] {
-        let Err(mut launch_result) = result else {
-            continue;
-        };
+    if let Err(mut launch_result) = outcome {
         launch_result.node_add_logs = add_log_paths;
         launch_result.node_build_logs = build_log_paths;
         launch_result.node_run_logs = run_log_paths;

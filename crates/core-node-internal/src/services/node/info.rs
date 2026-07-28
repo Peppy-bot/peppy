@@ -183,7 +183,8 @@ async fn handle_node_info_request_inner(
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let config_integrity = super::manifest_fingerprint(&node_config).map_err(InfoError::Internal)?;
+    let config_integrity =
+        super::manifest_fingerprint(&node_config).map_err(InfoError::Internal)?;
 
     NodeInfoResponse::Found(Box::new(NodeInfo {
         config: node_config,

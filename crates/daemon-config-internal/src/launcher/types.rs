@@ -157,11 +157,7 @@ fn validate_core_node_links(core_nodes: &[String]) -> Result<(), String> {
 /// what it could have named. The two failure shapes are different problems: a
 /// document with no `core_nodes` at all is single-machine and the field simply
 /// does not apply, while one with a list has a typo or a missing entry.
-fn undeclared_core_node_message(
-    instance_id: &str,
-    core_node: &str,
-    declared: &[String],
-) -> String {
+fn undeclared_core_node_message(instance_id: &str, core_node: &str, declared: &[String]) -> String {
     if declared.is_empty() {
         return format!(
             "instance `{instance_id}` sets `core_node: \"{core_node}\"`, but this launcher \
@@ -173,11 +169,7 @@ fn undeclared_core_node_message(
     format!(
         "instance `{instance_id}` sets `core_node: \"{core_node}\"`, which is not a declared \
          core node link. This launcher declares: {}",
-        declared
-            .iter()
-            .map(|name| format!("`{name}`"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        crate::error::format_quoted_list(declared)
     )
 }
 
@@ -1103,30 +1095,11 @@ impl Placements {
             .unwrap_or(&self.coordinator)
     }
 
-    /// The daemon that received the launch, where unplaced instances run.
-    pub fn coordinator(&self) -> &str {
-        &self.coordinator
-    }
-
     /// Whether any instance is placed off the coordinator, i.e. whether this
     /// launch actually spans machines.
     pub fn is_federated(&self) -> bool {
         self.by_instance
             .values()
             .any(|core_node| core_node != &self.coordinator)
-    }
-
-    /// Every core node hosting at least one instance, the coordinator
-    /// included, in a deterministic order.
-    pub fn participants(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .by_instance
-            .values()
-            .cloned()
-            .chain(std::iter::once(self.coordinator.clone()))
-            .collect();
-        out.sort();
-        out.dedup();
-        out
     }
 }

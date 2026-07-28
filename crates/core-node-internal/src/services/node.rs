@@ -95,9 +95,15 @@ pub(crate) async fn resolve_node_config(
 pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<String, String> {
     let serialized = json5_pretty::to_string_pretty(config)
         .map_err(|e| format!("failed to serialize node config for fingerprinting: {e}"))?;
-    Ok(config::fingerprint::fingerprint_for_bytes(
-        serialized.as_bytes(),
-    ))
+    Ok(manifest_fingerprint_of_json5(&serialized))
+}
+
+/// The same fingerprint, for a caller that already holds the canonical
+/// serialization and would otherwise pay to produce it twice. The fingerprint
+/// is defined over exactly these bytes, so this is the same definition rather
+/// than a second one.
+pub(crate) fn manifest_fingerprint_of_json5(config_json5: &str) -> String {
+    config::fingerprint::fingerprint_for_bytes(config_json5.as_bytes())
 }
 
 /// The daemon authorities responsible for relationships between node instances.

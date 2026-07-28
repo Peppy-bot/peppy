@@ -44,7 +44,11 @@ impl SlotAddr {
 
 impl std::fmt::Display for SlotAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}:{}", self.core_node, self.instance_id, self.link_id)
+        write!(
+            f,
+            "{}/{}:{}",
+            self.core_node, self.instance_id, self.link_id
+        )
     }
 }
 
@@ -112,23 +116,9 @@ impl Pairing {
     /// instances, and a remote one dying must not dissolve the local one's
     /// pairs.
     pub fn involves(&self, core_node: &str, instance_id: &str) -> bool {
-        [&self.a, &self.b]
-            .iter()
-            .any(|endpoint| endpoint.slot.core_node == core_node && endpoint.slot.instance_id == instance_id)
-    }
-
-    /// The endpoint of this pair that lives on `core_node`, if any. A pair
-    /// spanning two daemons is recorded on both, and each side only ever
-    /// delivers to the endpoint it owns.
-    pub fn local_endpoint(&self, core_node: &str) -> Option<&PairEndpoint> {
-        [&self.a, &self.b]
-            .into_iter()
-            .find(|endpoint| endpoint.slot.is_on(core_node))
-    }
-
-    /// Whether both endpoints live on the same daemon.
-    pub fn is_same_daemon(&self) -> bool {
-        self.a.slot.core_node == self.b.slot.core_node
+        [&self.a, &self.b].iter().any(|endpoint| {
+            endpoint.slot.core_node == core_node && endpoint.slot.instance_id == instance_id
+        })
     }
 }
 

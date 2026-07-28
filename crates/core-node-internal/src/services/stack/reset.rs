@@ -129,7 +129,14 @@ async fn handle_node_reset_request_inner(
     let _request = StackResetRequest::decode(payload.as_ref())?;
 
     debug!("Received `node_reset` request from {sender_instance_id}");
-    clear_stack_slice(messenger, core_node_node, instance_id, &node_stack, observation).await;
+    clear_stack_slice(
+        messenger,
+        core_node_node,
+        instance_id,
+        &node_stack,
+        observation,
+    )
+    .await;
     // An emptied stack belongs to no launch. Clearing this also releases any
     // reservation held over this machine, so a reset is a complete escape
     // hatch rather than one that leaves the daemon refusing future launches.

@@ -189,15 +189,12 @@ pub(super) async fn start_node_directly(
 
     // Assemble here, from the daemon's own state, exactly as the action-server
     // path does. The launch never builds a config it hands to something else.
-    let runtime_config = match crate::services::node::assemble_runtime_config(
-        &node_run_goal,
-        &action_context,
-    )
-    .await
-    {
-        Ok(config) => config,
-        Err(reason) => return (Err(reason), Some(log_path)),
-    };
+    let runtime_config =
+        match crate::services::node::assemble_runtime_config(&node_run_goal, &action_context).await
+        {
+            Ok(config) => config,
+            Err(reason) => return (Err(reason), Some(log_path)),
+        };
 
     let result = run_phase(
         run_node_run(
@@ -353,17 +350,7 @@ pub(super) async fn validate_and_order_dependencies(
         .map(|inst| inst.instance_id().as_str().to_owned());
     let root_instances: Vec<daemon_config::launcher::DeploymentInstance> = root_instance_id_str
         .and_then(|id_str| config::runtime::Name::new(id_str).ok())
-        .map(|instance_id| daemon_config::launcher::DeploymentInstance {
-            instance_id,
-            arguments: Default::default(),
-            env_vars: Default::default(),
-            framework: Default::default(),
-            links: Default::default(),
-            defer_links: Default::default(),
-            // The root entity is this daemon's own core node, so it is never
-            // placed anywhere else.
-            core_node: None,
-        })
+        .map(daemon_config::launcher::DeploymentInstance::empty)
         .into_iter()
         .collect();
 

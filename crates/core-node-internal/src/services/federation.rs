@@ -155,43 +155,38 @@ impl SliceOwnership {
         Some(launch_id)
     }
 
-    /// Whether a launch other than `launch_id` currently holds this daemon.
-    ///
-    /// The reservation covers the WHOLE machine, so local `node add` / `node
-    /// run` consult this too. Without that, a federated launch would only
-    /// exclude other launches, and a local `peppy node run` could still race
-    /// it: the per-action gates are per-action, and a coordinator dispatching
-    /// to a peer goes through the node actions rather than the launch one.
-    pub fn is_reserved_by_another_launch(&self, launch_id: Option<&str>) -> Option<String> {
-        let state = self.state.lock();
-        let held = state.reservation.as_ref()?;
-        match launch_id {
-            Some(id) if id == held.launch_id => None,
-            _ => Some(held.launch_id.clone()),
-        }
-    }
-
     /// The refusal a node action owes its caller when this machine is
     /// committed to a federated launch other than the one asking.
     ///
     /// Every node action shares it so the three cannot explain the same
     /// situation three different ways. `launch_id` is the goal's own: `None`
     /// for anything a user typed, `Some` for a coordinator's dispatch.
+    ///
+    /// The reservation covers the WHOLE machine, so local `node add` / `node
+    /// run` consult this too. Without that, a federated launch would only
+    /// exclude other launches, and a local `peppy node run` could still race
+    /// it: the per-action gates are per-action, and a coordinator dispatching
+    /// to a peer goes through the node actions rather than the launch one.
+    ///
+    /// Decided under one lock: the launch that holds the daemon and the
+    /// coordinator driving it are two halves of one answer, and reading them
+    /// separately would let the reservation change between the two.
     pub fn refuse_if_reserved_elsewhere(
         &self,
         launch_id: Option<&str>,
     ) -> std::result::Result<(), String> {
-        let Some(held) = self.is_reserved_by_another_launch(launch_id) else {
+        let state = self.state.lock();
+        let Some(held) = state.reservation.as_ref() else {
             return Ok(());
         };
-        let coordinator = self
-            .held_reservation()
-            .map(|(_, coordinator)| coordinator)
-            .unwrap_or_else(|| "an unknown core node".to_owned());
+        if launch_id == Some(held.launch_id.as_str()) {
+            return Ok(());
+        }
         Err(format!(
-            "this daemon is reserved for federated launch `{held}`, driven by `{coordinator}`, \
+            "this daemon is reserved for federated launch `{}`, driven by `{}`, \
              which is replacing its whole stack. Wait for that launch to finish, or clear the \
-             reservation with `peppy stack reset`."
+             reservation with `peppy stack reset`.",
+            held.launch_id, held.coordinator_core_node
         ))
     }
 
@@ -361,23 +356,29 @@ mod tests {
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
         let ownership = SliceOwnership::new();
-        assert_eq!(ownership.is_reserved_by_another_launch(None), None);
+        assert!(ownership.refuse_if_reserved_elsewhere(None).is_ok());
 
         ownership.try_reserve("launch-a", "cn-robot-7");
 
-        assert_eq!(
-            ownership.is_reserved_by_another_launch(None),
-            Some("launch-a".to_owned()),
-            "a local action names no launch, so it is excluded"
+        let refusal = ownership
+            .refuse_if_reserved_elsewhere(None)
+            .expect_err("a local action names no launch, so it is excluded");
+        assert!(refusal.contains("launch-a"), "got: {refusal}");
+        assert!(
+            refusal.contains("cn-robot-7"),
+            "the refusal must name the coordinator to wait on; got: {refusal}"
         );
-        assert_eq!(
-            ownership.is_reserved_by_another_launch(Some("launch-a")),
-            None,
+
+        assert!(
+            ownership
+                .refuse_if_reserved_elsewhere(Some("launch-a"))
+                .is_ok(),
             "the reserving launch's own dispatch must pass"
         );
-        assert_eq!(
-            ownership.is_reserved_by_another_launch(Some("launch-b")),
-            Some("launch-a".to_owned())
+        assert!(
+            ownership
+                .refuse_if_reserved_elsewhere(Some("launch-b"))
+                .is_err()
         );
     }
 

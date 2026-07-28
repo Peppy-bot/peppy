@@ -318,8 +318,8 @@ async fn launch_async(
     // daemon would open a different tree or nothing at all. Same guard the
     // other daemon-scoped commands already apply.
     if matches!(launcher_origin, LauncherOrigin::Fs(_)) {
-        crate::commands::reject_remote_target_for_local_path(&conn, "peppy stack launch")
-            .map_err(|_| {
+        crate::commands::reject_remote_target_for_local_path(&conn, "peppy stack launch").map_err(
+            |_| {
                 Error::ExecutionFailed(format!(
                     "`peppy stack launch` with a launcher file path cannot target the remote \
                      daemon `{}`: the path names a tree on this machine. Use a repository \
@@ -327,11 +327,11 @@ async fn launch_async(
                      machine that holds the file.",
                     conn.target_core_node
                 ))
-            })?;
+            },
+        )?;
     }
 
-    let core_node_links =
-        placement.resolve(&conn.target_core_node, declared_links.as_deref())?;
+    let core_node_links = placement.resolve(&conn.target_core_node, declared_links.as_deref())?;
 
     // State loudly which remote daemons are about to have their stacks
     // replaced. A launch is destructive on every machine it touches, and the
@@ -664,11 +664,6 @@ mod tests {
             other => panic!("expected Repository, got {other:?}"),
         }
     }
-}
-
-#[cfg(test)]
-mod placement_tests {
-    use super::*;
 
     fn places(pairs: &[(&str, &str)]) -> PlacementArgs {
         PlacementArgs {
@@ -711,12 +706,9 @@ mod placement_tests {
     /// describes a two-machine topology must still be runnable on one box.
     #[test]
     fn two_links_may_share_one_core_node() {
-        let resolved = places(&[
-            ("robot_onboard", "cn-solo"),
-            ("cloud_inference", "cn-solo"),
-        ])
-        .resolve("cn-robot-7", None)
-        .expect("valid wiring");
+        let resolved = places(&[("robot_onboard", "cn-solo"), ("cloud_inference", "cn-solo")])
+            .resolve("cn-robot-7", None)
+            .expect("valid wiring");
         assert_eq!(resolved.len(), 2);
         assert!(resolved.values().all(|target| target == "cn-solo"));
     }
@@ -729,10 +721,7 @@ mod placement_tests {
         ])
         .resolve("cn-robot-7", None)
         .expect_err("a link takes exactly one core node");
-        assert!(
-            error.to_string().contains("more than once"),
-            "got: {error}"
-        );
+        assert!(error.to_string().contains("more than once"), "got: {error}");
     }
 
     #[test]
@@ -752,7 +741,10 @@ mod placement_tests {
             places: Vec::new(),
             local: true,
         }
-        .resolve("cn-robot-7", Some(&declared(&["robot_onboard", "cloud_inference"])))
+        .resolve(
+            "cn-robot-7",
+            Some(&declared(&["robot_onboard", "cloud_inference"])),
+        )
         .expect("valid wiring");
 
         assert_eq!(resolved.len(), 2);

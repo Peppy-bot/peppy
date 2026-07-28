@@ -17,11 +17,11 @@
 //! restart rejects stale re-deliveries from the old daemon's queue.
 
 use config::runtime::Name;
+use core_node_api::encoding::PairCommitRequest;
 use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, LinkValue, PairingValidationItem, validate_pairings,
 };
-use core_node_api::encoding::PairCommitRequest;
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
@@ -154,15 +154,11 @@ impl PairingCoordinator {
     /// what makes cross-daemon dissolution work for a pair formed outside a
     /// launch, by a `peppy node run --pair` naming a peer on another machine,
     /// with no planner involved.
-    pub fn remote_peer_core_nodes(
-        &self,
-        instance_id: &str,
-    ) -> std::collections::BTreeSet<String> {
-        remote_peer_core_nodes_of(
-            &self.updates.node_stack().pairs(),
-            self.updates.core_node_name(),
-            instance_id,
-        )
+    pub fn remote_peer_core_nodes(&self, instance_id: &str) -> std::collections::BTreeSet<String> {
+        let local = self.updates.core_node_name();
+        self.updates
+            .node_stack()
+            .with_pairs(|pairs| remote_peer_core_nodes_of(pairs, local, instance_id))
     }
 
     /// Sends both endpoints of `pairing` their pins; reverts on failure per
@@ -189,10 +185,7 @@ impl PairingCoordinator {
                     // The peer's OWN core node, not this daemon's: a pin names
                     // where the peer actually runs, and for a cross-daemon pair
                     // those differ.
-                    producer: ProducerRef::new(
-                        peer.slot.core_node.clone(),
-                        &peer.slot.instance_id,
-                    ),
+                    producer: ProducerRef::new(peer.slot.core_node.clone(), &peer.slot.instance_id),
                     peer_link_id: peer.slot.link_id.clone(),
                 };
                 self.send_peer_update(&endpoint.slot, Some(pin)).await
@@ -808,7 +801,10 @@ mod tests {
             PairingCoordinator::slots_from_commit_request(&request, TEST_CORE);
 
         assert_eq!(local, SlotAddr::new(TEST_CORE, "reflex_inst", "delegation"));
-        assert_eq!(remote, SlotAddr::new("core_b", "planner_inst", "delegation"));
+        assert_eq!(
+            remote,
+            SlotAddr::new("core_b", "planner_inst", "delegation")
+        );
         assert_eq!(
             meta,
             RemoteSlotMeta {
@@ -885,7 +881,10 @@ mod tests {
             &[],
         )
         .expect("pinned target resolves");
-        assert_eq!(planned[0].peer, SlotAddr::new(TEST_CORE, "arm_1", "controller"));
+        assert_eq!(
+            planned[0].peer,
+            SlotAddr::new(TEST_CORE, "arm_1", "controller")
+        );
 
         let err = plan(
             &arm_snapshot(),

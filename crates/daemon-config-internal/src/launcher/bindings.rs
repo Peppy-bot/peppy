@@ -188,7 +188,10 @@ pub fn validate_bindings(
                         slot_failed = true;
                         continue;
                     }
-                    producers.push(ProducerRef::new(placements.of(target_id), target_id.clone()));
+                    producers.push(ProducerRef::new(
+                        placements.of(target_id),
+                        target_id.clone(),
+                    ));
                 }
                 if slot_failed {
                     continue;
@@ -1691,12 +1694,10 @@ mod tests {
     /// launcher with no `core_nodes` stamps exactly as it always did.
     #[test]
     fn unplaced_producers_are_stamped_with_the_coordinator() {
-        let cons_instances = parse_instances(
-            r#"[{ instance_id: "cons1", links: { main: "prod1" } }]"#,
-        );
-        let depends_on = parse_depends_on(
-            r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#,
-        );
+        let cons_instances =
+            parse_instances(r#"[{ instance_id: "cons1", links: { main: "prod1" } }]"#);
+        let depends_on =
+            parse_depends_on(r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#);
         let prod_instances = parse_instances(r#"[{ instance_id: "prod1" }]"#);
         let items = vec![
             item("cons", "v1", &cons_instances, Some(&depends_on)),

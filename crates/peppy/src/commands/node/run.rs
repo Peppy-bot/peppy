@@ -1,7 +1,7 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
-use config::runtime::PairingSlotBinding;
 use config::runtime::Name;
+use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
