@@ -238,9 +238,10 @@ fn application_column(entry: &client::CoreNodeEntry) -> String {
 /// The REGISTERED column: the UTC date this name was first registered, or `-`
 /// for a name that is live but has no registry row.
 ///
-/// Deliberately not the config-pull timestamp. Rendering that as "last seen"
-/// would read as liveness, and it is not one. UTC rather than local time, so
-/// the output does not depend on the machine's timezone.
+/// Deliberately the FIRST registration, not the most recent one. The latter
+/// moves on every daemon start, so rendering it would read as liveness, and it
+/// is not one. UTC rather than local time, so the output does not depend on the
+/// machine's timezone.
 fn registered_column(entry: &client::CoreNodeEntry) -> String {
     entry
         .first_seen_at
@@ -269,7 +270,7 @@ fn render_json(listing: &CoreNodeListing, api_url: &str) -> String {
                 "core_node_name": entry.core_node_name,
                 "registered": entry.registered,
                 "first_seen_at": entry.first_seen_at,
-                "last_config_pull_at": entry.last_config_pull_at,
+                "last_registered_at": entry.last_registered_at,
                 "network": {
                     "status": entry.network.status,
                     "router_zid": entry.network.router_zid,
@@ -319,7 +320,7 @@ mod tests {
             core_node_name: name.to_string(),
             registered,
             first_seen_at: registered.then(|| format!("{first_seen_date}T10:00:00Z")),
-            last_config_pull_at: registered.then(|| "2026-07-24T09:12:33Z".to_string()),
+            last_registered_at: registered.then(|| "2026-07-24T09:12:33Z".to_string()),
             // The two columns are set independently so a test can pair any
             // network status with any application status, which is the whole
             // point of reporting them separately.
@@ -531,12 +532,12 @@ mod tests {
         let entry = &doc["core_nodes"][0];
         assert_eq!(entry["registered"], serde_json::json!(true));
         assert_eq!(
-            entry["last_config_pull_at"],
+            entry["last_registered_at"],
             serde_json::json!("2026-07-24T09:12:33Z")
         );
         assert!(
             entry.get("last_seen_at").is_none(),
-            "the pull timestamp never appears under a name that reads as liveness"
+            "the timestamp never appears under a name that reads as liveness"
         );
         assert_eq!(entry["application"]["status"], serde_json::json!("online"));
         assert_eq!(entry["network"]["status"], serde_json::json!("linked"));
