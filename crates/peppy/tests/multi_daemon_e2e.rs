@@ -38,6 +38,23 @@ const UV_VERSION: &str = "0.11.33";
 /// ">=3.13,<3.14"`). Baked into the image so no node build has to fetch one.
 const NODE_PYTHON_VERSION: &str = "3.13";
 
+/// `HOME` for the daemon inside the container, and the reason it is not
+/// `/root`.
+///
+/// Apptainer binds the host's `$HOME` over the same path inside every container
+/// it starts. A container node built by `uv` puts its interpreter under the
+/// build user's home, and `%post` builds as root, so the venv's `python`
+/// symlink points into `/root`. Leave the daemon's `HOME` at `/root` and that
+/// bind drops the container's own `/root` out from under the interpreter: the
+/// node dies at exec with `./.venv/bin/python: not found`, having built
+/// perfectly.
+///
+/// Nothing here is special to the test. It is what a daemon running as a
+/// non-root user gets for free, which is the shape `peppy service install`
+/// prefers whenever it is not run as root, and the shape this container should
+/// model rather than the root-service edge case.
+const CONTAINER_DAEMON_HOME: &str = "/home/peppy";
+
 async fn require_docker() {
     let client = docker_client_instance()
         .await
@@ -204,7 +221,9 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
          \x20&& rm -rf /var/lib/apt/lists/*\n\
          COPY --from=ghcr.io/astral-sh/uv:{UV_VERSION} /uv /uvx /usr/local/bin/\n\
          ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python\n\
-         RUN uv python install {NODE_PYTHON_VERSION}\n"
+         RUN uv python install {NODE_PYTHON_VERSION}\n\
+         RUN mkdir -p {CONTAINER_DAEMON_HOME}\n\
+         ENV HOME={CONTAINER_DAEMON_HOME}\n"
     )
 }
 
