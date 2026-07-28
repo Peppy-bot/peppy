@@ -9,8 +9,10 @@ import { Code } from '@astrojs/starlight/components';
 import splitComputeLauncher from '../guides/snippets/launchers/split_compute_manipulation.json5?raw';
 
 Two machines logged into the same workspace share one namespace and can address
-each other. Federation is what lets you treat them as one robot: a single
-launcher file, a single command, and one stack whose graph spans both.
+each other. A core node is one machine, and typically one robot, so a federation
+is a network of robots and the machines that support them. Federation is what
+lets a single stack span that network: one launcher file, one command, and one
+graph whose instances are spread across several core nodes.
 
 ## The problem it solves
 
@@ -117,9 +119,16 @@ Mixing `--local` with `--place` is an error: pick one way to say where things go
 
 <Code code={splitComputeLauncher} lang="json5" title="split_compute_manipulation.json5" />
 
-Run it from the robot, so the robot's daemon coordinates. That is the natural
-direction: the machine that owns the mission and the hardware delegates thinking
-upward, rather than a datacenter reaching down into a robot.
+Run it from either machine. The daemon you send it to coordinates, and the only
+thing that changes is what `self` binds to: from the robot that is
+`--place robot_onboard@self`, from the cloud instance the same launch reads
+`--place robot_onboard@cn-robot-7 --place cloud_inference@self`. Coordinating is
+a planning role, not a privileged one, so the topology does not depend on where
+the command was typed.
+
+Two things do follow the coordinator, and both argue for the robot here: an
+instance that omits `core_node` runs there, and container bind sources are
+created only for the instances that machine runs itself (see [Limits](#limits)).
 
 ```bash
 peppy stack launch --place robot_onboard@self \
