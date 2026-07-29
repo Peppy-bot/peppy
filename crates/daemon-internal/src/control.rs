@@ -38,11 +38,12 @@ pub const REFEDERATE_VERB: &str = "refederate";
 
 /// Extra time the client waits for the daemon's ack on top of the configured
 /// federation connect timeout. Kept strictly larger than the daemon-side ack
-/// budget (`APPLY_ACK_SLACK`, which itself covers the verifying poke's TLS probe)
-/// so the daemon always replies a definite status (even "timed out applying")
-/// before the client gives up, turning a slow apply into a definite status rather
-/// than a client-side timeout. (The `ack_budget_*` test guards this ordering.)
-pub const POKE_READ_SLACK: Duration = Duration::from_secs(11);
+/// budget (`APPLY_ACK_SLACK`, which itself covers the verifying poke's TLS probe
+/// and its core-node registration) so the daemon always replies a definite status
+/// (even "timed out applying") before the client gives up, turning a slow apply
+/// into a definite status rather than a client-side timeout. (The `ack_budget_*`
+/// test guards this ordering.)
+pub const POKE_READ_SLACK: Duration = Duration::from_secs(16);
 
 /// Where the daemon binds (and the client connects to) the federation control
 /// socket for a given [`PeppyDirs`]. Derived, never stored, so both sides agree.
@@ -69,6 +70,11 @@ pub enum ControlResponse {
     /// The daemon attempted the apply and it failed (e.g. backend unreachable
     /// within the federation timeout).
     Error { message: String },
+    /// Federation is in effect, but the daemon could not register this machine
+    /// with the platform, so the platform's roster entry for it is stale (or
+    /// missing). Distinct from `error` on purpose: the transport is working, and
+    /// wording this as a failed apply would send the user to debug it.
+    NotRegistered { message: String },
     /// The credentials changed the daemon's *workspace namespace*, which is
     /// immutable for a live session, so the daemon is restarting its whole
     /// generation to re-open every session under the new namespace. The daemon
@@ -98,6 +104,9 @@ pub enum PokeOutcome {
     /// cloud router does not validate (e.g. UnknownCA); federation with
     /// platform-backend is not in effect.
     Unreachable(String),
+    /// Federation is in effect, but the platform's record of this machine could
+    /// not be updated, so `peppy platform list` shows a stale entry for it.
+    NotRegistered(String),
     /// No running daemon to poke (no socket, or the connection was refused).
     /// Federation will be applied the next time `serve` starts.
     DaemonNotRunning,
@@ -149,6 +158,7 @@ fn poke_inner(socket_path: &Path, read_timeout: Duration) -> std::io::Result<Pok
         ControlResponse::Ok { applied } => PokeOutcome::Applied(applied),
         ControlResponse::Pinned => PokeOutcome::Pinned,
         ControlResponse::Unreachable { message } => PokeOutcome::Unreachable(message),
+        ControlResponse::NotRegistered { message } => PokeOutcome::NotRegistered(message),
         ControlResponse::Error { message } => PokeOutcome::DaemonError(message),
         ControlResponse::Restarting => PokeOutcome::Restarting,
     })
@@ -211,6 +221,10 @@ mod tests {
             (
                 "{\"status\":\"unreachable\",\"message\":\"received fatal alert: UnknownCA\"}\n",
                 PokeOutcome::Unreachable("received fatal alert: UnknownCA".to_string()),
+            ),
+            (
+                "{\"status\":\"not_registered\",\"message\":\"backend temporarily unavailable\"}\n",
+                PokeOutcome::NotRegistered("backend temporarily unavailable".to_string()),
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();

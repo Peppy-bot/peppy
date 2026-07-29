@@ -80,15 +80,6 @@ pub struct RouterSession {
     /// reused under the wrong workspace. Empty for a PAT pull (no session). Required
     /// for the same clean-break reason as `namespace`.
     pub subject: String,
-    /// The core-node name the config was pulled under (the pull's POST body,
-    /// which registers the daemon in the backend's core-node registry). Tags
-    /// the cache like `subject` does: a fresh cache pulled under a *different*
-    /// name is not reused, so a renamed daemon (e.g. after a
-    /// `CoreNodeNameTaken` collision fix) re-pulls — and re-registers — on its
-    /// next resolve instead of staying absent from the registry until the
-    /// cache goes stale. Required for the same clean-break reason as
-    /// `namespace`.
-    pub core_node_name: String,
 }
 
 impl RouterSession {
@@ -329,7 +320,6 @@ mod tests {
                 )
                 .unwrap(),
                 subject: "auth0|alice".into(),
-                core_node_name: "core-node-alice-1".into(),
             }),
             ..Default::default()
         };
@@ -345,14 +335,17 @@ mod tests {
             "550e8400-e29b-41d4-a716-446655440000"
         );
         assert_eq!(rs.subject, "auth0|alice");
-        assert_eq!(rs.core_node_name, "core-node-alice-1");
     }
 
-    /// A cached router session missing the `core_node_name` tag is rejected
-    /// outright (no back-compat default), the same clean break as
-    /// `namespace`: `auth login`/`logout` start fresh.
+    /// A credentials file written while `RouterSession` still carried a
+    /// `core_node_name` tag keeps parsing: the key is ignored and dropped on the
+    /// next save. No migration, no version bump.
+    ///
+    /// Worth pinning rather than assuming, because it rests entirely on this
+    /// document not being `deny_unknown_fields`: adding that would log out every
+    /// machine on disk without any code here changing.
     #[test]
-    fn rejects_a_router_session_missing_the_core_node_name() {
+    fn a_router_session_carrying_the_removed_name_tag_still_parses() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
@@ -362,15 +355,23 @@ mod tests {
                 r#"{{ version: {CREDENTIALS_VERSION}, router: {{
                     endpoint: "tls/cap:7443", protocol: "tls", repull_after: 1,
                     namespace: "550e8400-e29b-41d4-a716-446655440000",
-                    subject: "auth0|alice" }} }}"#
+                    subject: "auth0|alice", core_node_name: "cn-old" }} }}"#
             ),
         )
-        .expect("write pre-name-tag file");
+        .expect("write a file carrying the removed tag");
 
-        let err = load(&path).expect_err("missing name tag must be rejected");
+        let loaded = load(&path).expect("the removed tag must not fail the load");
+        assert_eq!(
+            loaded.router.as_ref().expect("router session").subject,
+            "auth0|alice"
+        );
+
+        save(&path, &loaded).expect("save");
         assert!(
-            err.to_string().contains("failed to parse"),
-            "rejection should surface as a parse error: {err}"
+            !std::fs::read_to_string(&path)
+                .expect("read back")
+                .contains("core_node_name"),
+            "the stale key is dropped on the next save rather than carried forever"
         );
     }
 
@@ -410,7 +411,6 @@ mod tests {
             namespace: config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000")
                 .unwrap(),
             subject: "auth0|alice".into(),
-            core_node_name: "core-node-alice-1".into(),
         };
         assert!(!rs.is_stale(900, 30));
         assert!(rs.is_stale(980, 30)); // 980 + 30 >= 1000

@@ -2,9 +2,11 @@
 //! session.
 //!
 //! The flow mirrors the OAuth resolver: reuse the cached router config while it
-//! is fresh, otherwise fetch a new one from `POST /me/cli/federation`
-//! (refreshing the access token on a `401` via [`client::establish_federation`])
-//! and cache it beside the session. The CA the router is validated against is
+//! is fresh, otherwise fetch a new one from `GET /me/cli/router-config`
+//! (refreshing the access token on a `401` via [`client::fetch_router_config`])
+//! and cache it beside the session. That fetch is side-effect free: claiming
+//! this machine's identity is [`register_core_node`], a separate call the daemon
+//! makes only once it has settled its namespace and owns its router. The CA the router is validated against is
 //! resolved CLI-side at connect time (see [`resolve_router_ca`]), **not** taken
 //! from the server's response: a debug build trusts the committed dev CA embedded
 //! in the binary; a release build validates against the system trust store. There
@@ -115,15 +117,10 @@ fn materialize_embedded(cache_dir: &Path, filename: &str, bytes: &[u8]) -> Optio
 /// is fresh, else pulls a new config and caches it. `api_url` and `pat` follow the
 /// same resolution the auth commands use; `ca_certificate` (the trust anchor, see
 /// [`resolve_router_ca`]) is applied fresh to the live TLS at connect
-/// time (never cached on disk). `core_node_name` is the daemon's core-node name,
-/// carried in the pull's POST body to register the daemon in the backend's
-/// core-node registry (see [`client::establish_federation`]); it also
-/// tags the cache, so a resolve under a different name (a renamed daemon) always
-/// re-pulls and re-registers rather than reusing a still-fresh cache.
-/// `router_zid` is the managed router's pinned transport identity, carried in
-/// the same POST so the registered row can be matched against the shared
-/// router's live session list. Unlike the name, it deliberately does not
-/// participate in cache reuse (see the cache comment below).
+/// time (never cached on disk).
+///
+/// Carries no daemon identity: the router config is identical for every core
+/// node in a workspace, and registering one is [`register_core_node`]'s job.
 ///
 /// Only the pull path needs a credential, so a fresh cache is reused without
 /// touching the token at all.
@@ -133,8 +130,6 @@ pub fn resolve_router_endpoint(
     api_url: &str,
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
-    core_node_name: &str,
-    router_zid: &pmi::RouterId,
 ) -> Result<RouterEndpoint> {
     let now = storage::now_unix();
     // Load once: the cached router config and the active session's subject come
@@ -156,39 +151,21 @@ pub fn resolve_router_endpoint(
     // cannot match on this fast path, and re-pulling is cheap (federation resolves
     // only at startup and on a login/logout poke).
     //
-    // The cache is additionally bound to the core-node name it was pulled under
-    // (`rs.core_node_name`): the pull's POST is what registers the daemon in the
-    // backend's core-node registry, so a renamed daemon (the `CoreNodeNameTaken`
-    // collision-fix workflow: set `core_node_name`, restart) must re-pull — and
-    // thereby register its new name — instead of reusing a still-fresh cache and
-    // staying absent from the registry until the cache goes stale.
-    //
-    // The router zid deliberately does NOT tag the cache. It changes only when
-    // the workspace changes (which clears this cache with the session) or when
-    // the identity record is lost, and adding it to the cached `RouterSession`
-    // would invalidate every credentials file on disk to close that second,
-    // narrow case. A re-minted identity simply re-registers on the next stale
-    // pull; until then the row reads `indirect`, which is a less specific answer
-    // rather than a wrong one.
+    // Nothing else tags the cache. Neither the core-node name nor the router zid
+    // changes what the backend answers here (the config is per workspace, not per
+    // daemon), and registration no longer rides on this pull, so a rename or a
+    // re-minted identity has no reason to force one. The `subject` tag stays: it
+    // guards a real cross-identity leak.
     let reuse_cache = pat.is_none() && !active_subject.is_empty();
     let (endpoint, namespace) = match creds.router {
         Some(rs)
             if reuse_cache
                 && !rs.is_stale(now, REPULL_SKEW_SECS)
-                && rs.subject == active_subject
-                && rs.core_node_name == core_node_name =>
+                && rs.subject == active_subject =>
         {
             (rs.endpoint, rs.namespace)
         }
-        _ => pull_and_cache(
-            creds_path,
-            http,
-            api_url,
-            pat,
-            now,
-            core_node_name,
-            router_zid,
-        )?,
+        _ => pull_and_cache(creds_path, http, api_url, pat, now)?,
     };
 
     let (host, port) = client::split_locator(&endpoint)?;
@@ -204,17 +181,13 @@ pub fn resolve_router_endpoint(
 /// the session, and returns the endpoint locator. `now` is threaded in so the
 /// cached `repull_after` uses the same clock reading as the freshness check. The
 /// trust anchor is resolved fresh at connect time (see [`resolve_router_ca`]), so
-/// it is deliberately not part of the cached `RouterSession`. The pull identifies
-/// the daemon by `core_node_name` and `router_zid` (the POST body), upserting
-/// both into the backend's core-node registry.
+/// it is deliberately not part of the cached `RouterSession`.
 fn pull_and_cache(
     creds_path: &Path,
     http: &HttpClient,
     api_url: &str,
     pat: Option<String>,
     now: i64,
-    core_node_name: &str,
-    router_zid: &pmi::RouterId,
 ) -> Result<(String, config::namespace::Namespace)> {
     let mut cred = resolver::resolve(creds_path, http, pat)?;
     // The identity this pull is actually authenticated as drives the cache tag
@@ -222,7 +195,7 @@ fn pull_and_cache(
     // session subject; doing so would let the session reuse the PAT's workspace once the
     // PAT is gone (a cross-identity leak).
     let is_pat = matches!(cred.kind, resolver::CredentialKind::Pat);
-    let cfg = client::establish_federation(http, api_url, &mut cred, core_node_name, router_zid)?;
+    let cfg = client::fetch_router_config(http, api_url, &mut cred)?;
 
     // Validate the config *before* it is written to `creds.router`: a malformed
     // endpoint or an unsupported transport must not poison the on-disk
@@ -265,9 +238,6 @@ fn pull_and_cache(
         repull_after: now.saturating_add(saturating_secs_to_i64(cfg.reconnect_after_secs)),
         namespace: cfg.namespace.clone(),
         subject,
-        // Tag the cache with the name this pull registered, so a rename forces
-        // a re-pull (and re-registration) even while the cache is still fresh.
-        core_node_name: core_node_name.to_string(),
     });
     storage::save(creds_path, &creds)?;
     Ok((cfg.endpoint, cfg.namespace))
@@ -287,11 +257,6 @@ fn pull_and_cache(
 /// backend can't stall the caller (federation at startup / on a login-poke)
 /// beyond it; on timeout the pull errors and this returns `None`.
 ///
-/// `core_node_name` is the daemon's core-node name and `router_zid` its managed
-/// router's pinned transport identity; both are sent in every pull's POST body
-/// so the backend registry records which daemon federated (and when it last
-/// pulled), and can match this site against the shared router's session list.
-///
 /// `peppy_dirs` is the caller's resolved peppy data root: the credentials file
 /// and the materialized dev TLS material both derive from it, so a daemon
 /// running under an injected root (a test) never reads the machine's real
@@ -301,8 +266,6 @@ pub fn resolve_federation_target(
     peppy_dirs: &PeppyDirs,
     api_url: &str,
     connect_timeout: Duration,
-    core_node_name: &str,
-    router_zid: &pmi::RouterId,
 ) -> Option<(String, pmi::TlsConfig)> {
     let cache_dir = peppy_dirs.cache_dir();
     resolve_federation_target_at(
@@ -311,8 +274,6 @@ pub fn resolve_federation_target(
         resolver::pat_from_env(),
         resolve_router_ca(&cache_dir),
         connect_timeout,
-        core_node_name,
-        router_zid,
     )
 }
 
@@ -326,8 +287,6 @@ pub fn resolve_federation_target_at(
     pat: Option<String>,
     ca_certificate: Option<PathBuf>,
     connect_timeout: Duration,
-    core_node_name: &str,
-    router_zid: &pmi::RouterId,
 ) -> Option<(String, pmi::TlsConfig)> {
     // Skip the network entirely when there is plainly no identity to pull for, so
     // an un-provisioned dev box does not log a spurious auth error every poll. Take
@@ -349,15 +308,7 @@ pub fn resolve_federation_target_at(
         }
     }
     let http = HttpClient::with_timeout(connect_timeout);
-    match resolve_router_endpoint(
-        creds_path,
-        &http,
-        api_url,
-        pat,
-        ca_certificate,
-        core_node_name,
-        router_zid,
-    ) {
+    match resolve_router_endpoint(creds_path, &http, api_url, pat, ca_certificate) {
         // Fail-closed gate, single source: only a validated, non-local namespace
         // federates. The daemon session is resolved from the same cached value.
         Ok(ep) if !ep.namespace.is_local() => {
@@ -378,6 +329,34 @@ pub fn resolve_federation_target_at(
             None
         }
     }
+}
+
+/// Claim this machine's identity on the platform: record that `core_node_name`
+/// runs behind the router `router_zid` pins
+/// (`POST /me/core-nodes`, see [`client::register_core_node`]).
+///
+/// Blocking, and errors propagate rather than degrading to `None`: unlike the
+/// federation target, a failure here is not "stay standalone", it is "the
+/// platform's view of this machine is now stale", which the caller reports.
+///
+/// The credential is resolved exactly as [`resolve_federation_target`] resolves
+/// it (`PEPPY_API_KEY` first, else the on-disk session), and that parity is load
+/// bearing. The backend derives the workspace from whichever principal
+/// authenticated, so a session-authenticated registration paired with a
+/// PAT-authenticated config pull would write this row into the **session
+/// owner's** workspace while the daemon runs under the **PAT owner's**
+/// namespace. That is the same class of bug this split exists to remove.
+pub fn register_core_node(
+    peppy_dirs: &PeppyDirs,
+    api_url: &str,
+    connect_timeout: Duration,
+    core_node_name: &str,
+    router_zid: &pmi::RouterId,
+) -> Result<()> {
+    let creds_path = storage::credentials_path(peppy_dirs);
+    let http = HttpClient::with_timeout(connect_timeout);
+    let mut cred = resolver::resolve(&creds_path, &http, resolver::pat_from_env())?;
+    client::register_core_node(&http, api_url, &mut cred, core_node_name, router_zid)
 }
 
 /// Resolve the daemon's session namespace from credentials. A missing file or a

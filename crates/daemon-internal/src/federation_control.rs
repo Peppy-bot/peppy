@@ -33,12 +33,18 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Extra time the daemon waits for the federation loop to apply, on top of the
 /// configured connect timeout (which bounds the resolve). It must cover the
-/// post-resolve work of a *verifying* login poke: the zenohd bounce plus the TLS
-/// reachability probe ([`super::router_federation::PROBE_TIMEOUT`]). Kept smaller
-/// than the client's read slack ([`crate::control::POKE_READ_SLACK`]) so
-/// the daemon always replies a definite outcome before the client gives up (the
-/// `ack_budget_*` test guards both relationships).
-const APPLY_ACK_SLACK: Duration = Duration::from_secs(8);
+/// post-resolve work of a *verifying* login poke: the zenohd bounce, the TLS
+/// reachability probe ([`super::router_federation::PROBE_TIMEOUT`]), and the
+/// core-node registration ([`super::router_federation::REGISTER_TIMEOUT`]), which
+/// runs after the probe on that same critical path. Kept smaller than the
+/// client's read slack ([`crate::control::POKE_READ_SLACK`]) so the daemon always
+/// replies a definite outcome before the client gives up (the `ack_budget_*` test
+/// guards both relationships).
+///
+/// The cost of covering the registration is that a poke which is going to fail
+/// takes up to `REGISTER_TIMEOUT` longer to say so. The budget exists to
+/// guarantee a definite answer, not a fast one.
+const APPLY_ACK_SLACK: Duration = Duration::from_secs(13);
 
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
@@ -47,6 +53,7 @@ impl From<FederationOutcome> for ControlResponse {
             FederationOutcome::Pinned => ControlResponse::Pinned,
             FederationOutcome::Failed(message) => ControlResponse::Error { message },
             FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
+            FederationOutcome::NotRegistered(message) => ControlResponse::NotRegistered { message },
             FederationOutcome::Restart => ControlResponse::Restarting,
         }
     }
@@ -284,16 +291,22 @@ mod tests {
     use tokio::sync::mpsc;
 
     /// The daemon ack budget must cover the verifying poke's post-resolve work
-    /// (the TLS probe + bounce), and the client must always outlast the daemon so
-    /// it receives a definite reply rather than a client-side timeout. Guards the
-    /// constants from drifting back into the pre-probe sizing.
+    /// (the TLS probe, the registration, and the zenohd bounce), and the client
+    /// must always outlast the daemon so it receives a definite reply rather than
+    /// a client-side timeout. Guards the constants from drifting back into the
+    /// pre-probe (or pre-registration) sizing, either of which turns a working
+    /// login into a hard `TimedOut` error.
     #[test]
     fn ack_budget_covers_the_verify_probe_and_client_outlasts_daemon() {
         use crate::control::POKE_READ_SLACK;
-        use crate::router_federation::PROBE_TIMEOUT;
+        use crate::router_federation::{PROBE_TIMEOUT, REGISTER_TIMEOUT};
+        /// Headroom for the zenohd bounce that runs alongside the two network
+        /// steps, preserved exactly as it was sized before the registration.
+        const BOUNCE_HEADROOM: Duration = Duration::from_secs(3);
         assert!(
-            PROBE_TIMEOUT < APPLY_ACK_SLACK,
-            "the daemon ack slack must cover the verify probe (plus the bounce)"
+            PROBE_TIMEOUT + REGISTER_TIMEOUT + BOUNCE_HEADROOM <= APPLY_ACK_SLACK,
+            "the daemon ack slack must cover the verify probe AND the registration, \
+             plus the bounce"
         );
         assert!(
             APPLY_ACK_SLACK < POKE_READ_SLACK,
@@ -313,6 +326,22 @@ mod tests {
                 assert_eq!(message, "received fatal alert: UnknownCA")
             }
             other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    /// A registration failure crosses the wire as its own status too, never as
+    /// `error`. Collapsing it would report "the daemon could not apply
+    /// federation" for a daemon whose federation is in effect.
+    #[test]
+    fn not_registered_outcome_maps_to_its_own_response() {
+        let resp = ControlResponse::from(FederationOutcome::NotRegistered(
+            "backend temporarily unavailable".to_string(),
+        ));
+        match resp {
+            ControlResponse::NotRegistered { message } => {
+                assert_eq!(message, "backend temporarily unavailable")
+            }
+            other => panic!("expected NotRegistered, got {other:?}"),
         }
     }
 
